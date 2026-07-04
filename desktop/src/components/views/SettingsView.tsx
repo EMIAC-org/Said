@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { formatKeycap, type Platform } from "@/lib/hotkeys";
+import { formatKeycap, hotkeyDisplay, type Platform } from "@/lib/hotkeys";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Shield, Key, Info, Wifi, Check, Sparkles,
@@ -15,6 +15,7 @@ import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
 import { DictationSttSection } from "@/components/DictationSttSection";
+import { HotkeyPicker } from "@/components/HotkeyPicker";
 
 import {
   getConnection as enterpriseGetConnection,
@@ -912,10 +913,7 @@ export function SettingsView({
   // so it's hidden from the picker on Windows entirely.
   const isWindows = snapshot?.platform === "windows";
   const platform = (snapshot?.platform ?? "macos") as Platform;
-  const recordHotkeyLabel =
-    recordHotkey === "right_option" ? (isWindows ? "Right Alt" : "Right Option") :
-    recordHotkey === "fn" ? (isWindows ? "Caps Lock" : "Fn") :
-    "Caps Lock";
+  const recordHotkeyLabel = hotkeyDisplay(recordHotkey, platform).label;
   // Polish chord shown per-platform (cmd+shift+p → Ctrl+Shift+P on Windows).
   const polishHotkeyLabel = formatKeycap(prefs?.polish_text_hotkey ?? "cmd+shift+p", platform);
 
@@ -1254,38 +1252,14 @@ export function SettingsView({
                 </p>
               </div>
             </div>
-            <div
-              className="flex mt-3 rounded-xl p-0.5 gap-0.5"
-              style={{ background: "hsl(var(--surface-4))" }}
-            >
-              {([
-                { key: "caps_lock", label: "Caps Lock" },
-                { key: "right_option", label: isWindows ? "Right Alt" : "Right Option" },
-                ...(!isWindows ? [{ key: "fn", label: "Fn / Globe" }] : []),
-              ] as { key: "caps_lock" | "right_option" | "fn"; label: string }[]).map((opt) => {
-                const isActive = recordHotkey === opt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    aria-pressed={isActive}
-                    disabled={saving}
-                    onClick={() => patch({ record_hotkey: opt.key })}
-                    className="flex-1 text-[13px] font-medium rounded-[10px] py-1.5 transition-all disabled:opacity-60"
-                    style={{
-                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
-                      color: isActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
-                      boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.25)" : "none",
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+            <div className="mt-3">
+              <HotkeyPicker
+                value={recordHotkey}
+                onChange={(id) => patch({ record_hotkey: id })}
+                platform={platform}
+                disabled={saving}
+              />
             </div>
-            <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
-              Current: {recordHotkeyLabel}.{!isWindows ? " macOS requires Input Monitoring for global hotkeys." : ""}
-            </p>
             {saveError && (
               <p className="text-[11px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
                 {saveError}
@@ -1781,31 +1755,13 @@ export function SettingsView({
               </div>
             </div>
             <div
-              className="flex mt-3 rounded-xl p-0.5 gap-0.5"
-              style={{ background: "hsl(var(--surface-4))" }}
+              className="mt-3"
             >
-              {([
-                { key: "caps_lock", label: "Caps Lock" },
-                { key: "right_option", label: isWindows ? "Right Alt" : "Right Option" },
-                // Fn / Globe key has no Windows analog — hide the option there.
-                ...(!isWindows ? [{ key: "fn", label: "Fn" }] : []),
-              ] as { key: "caps_lock" | "right_option" | "fn"; label: string }[]).map((opt) => {
-                const isActive = recordHotkey === opt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    onClick={() => patch({ record_hotkey: opt.key })}
-                    className="flex-1 text-[13px] font-medium rounded-[10px] py-1.5 transition-all"
-                    style={{
-                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
-                      color: isActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
-                      boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.25)" : "none",
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+              <HotkeyPicker
+                value={recordHotkey}
+                onChange={(id) => patch({ record_hotkey: id })}
+                platform={platform}
+              />
             </div>
           </div>
         </Section>

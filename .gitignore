@@ -69,6 +69,7 @@ tools/stt-compare/.local_stt_benchmark.json
 
 # Reference repo (read-only design reference; not part of the build)
 /boring.notch/
+/reference-voicetypr/
 
 # Native notch HUD sidecar (Swift) — build output + staged sidecar binary
 desktop/notch-sidecar/.build/

@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AirNote — Status Pill Redesign (all states)</title>
+<style>
+  :root {
+    --bg: hsl(240 6% 4%);
+    --panel: hsl(240 5% 7%);
+    --capsule: hsl(240 6% 9% / 0.92);
+    --stroke: hsl(0 0% 100% / 0.10);
+    --fg: hsl(240 6% 92%);
+    --fg-muted: hsl(240 5% 56%);
+    --primary: hsl(226 80% 78%);
+    --primary-dim: hsl(226 55% 66%);
+    --primary-bright: hsl(226 92% 85%);
+    --amber: hsl(38 92% 66%);
+    --red: hsl(2 78% 66%);
+    --ok: hsl(150 62% 60%);
+    --info: hsl(210 80% 72%);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: radial-gradient(1200px 600px at 50% -10%, hsl(226 40% 12% / 0.5), transparent 60%), var(--bg);
+    color: var(--fg);
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 36px 24px 90px; }
+  header h1 { font-size: 19px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px; }
+  header p { color: var(--fg-muted); margin: 0 0 24px; max-width: 720px; }
+
+  /* ── Stage ── */
+  .stage {
+    position: relative; height: 230px; border-radius: 18px; overflow: visible;
+    background: linear-gradient(180deg, hsl(240 8% 10%), hsl(240 8% 6%));
+    box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.05);
+    display: grid; place-items: center; padding-bottom: 8px;
+  }
+
+  /* ── THE PILL — width is measured from content, then animated ── */
+  .pill {
+    position: relative; z-index: 2;
+    display: inline-block; overflow: hidden;
+    border-radius: 20px;
+    background: var(--capsule);
+    box-shadow: inset 0 0 0 1px var(--stroke), 0 10px 34px hsl(240 40% 2% / 0.6), 0 2px 8px hsl(240 40% 2% / 0.5);
+    backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
+    color: var(--fg);
+    transition: width 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+                height 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+                background 0.3s ease, box-shadow 0.3s ease;
+    will-change: width, height;
+  }
+  .pill.is-card { border-radius: 16px; }
+  .pill.tint-err    { background: hsl(2 42% 12% / 0.94);  box-shadow: inset 0 0 0 1px hsl(2 70% 60% / 0.3), 0 10px 34px hsl(240 40% 2% / 0.6); }
+  .pill.tint-warn   { background: hsl(38 40% 12% / 0.94); box-shadow: inset 0 0 0 1px hsl(38 80% 60% / 0.28), 0 10px 34px hsl(240 40% 2% / 0.6); }
+  .pill.tint-accent { box-shadow: inset 0 0 0 1px hsl(226 80% 78% / 0.35), 0 10px 34px hsl(240 40% 2% / 0.6); }
+
+  /* inner is natural-width; we read its scrollWidth to size the pill */
+  .inner { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; white-space: nowrap; }
+  .is-card .inner { display: flex; flex-direction: column; align-items: stretch; gap: 8px; height: auto; white-space: normal; padding: 12px 13px; width: 300px; }
+
+  /* Waveform */
+  .wave { display: inline-flex; align-items: center; gap: 2px; height: 18px; }
+  .wave .bar { width: 2.5px; height: 18px; border-radius: 999px; background: var(--primary); transform: scaleY(0.14); transform-origin: center; will-change: transform; }
+
+  .idle-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); animation: breathe 2.6s ease-in-out infinite; }
+  @keyframes breathe { 0%,100%{opacity:.45;transform:scale(.85)} 50%{opacity:1;transform:scale(1)} }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+  .dot.rec { background: var(--red); animation: recpulse 1.2s ease-in-out infinite; }
+  @keyframes recpulse { 0%,100%{box-shadow:0 0 0 0 hsl(2 78% 66%/.5)} 70%{box-shadow:0 0 0 6px hsl(2 78% 66%/0)} }
+  .dot.ok{background:var(--ok)} .dot.warn{background:var(--amber)} .dot.info{background:var(--info)} .dot.pri{background:var(--primary)}
+
+  .spinner { width: 13px; height: 13px; border-radius: 50%; border: 2px solid hsl(0 0% 100% / 0.18); border-top-color: var(--primary); flex: 0 0 auto; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .glyph { display: inline-flex; flex: 0 0 auto; }
+  .glyph.ok{color:var(--ok)} .glyph.warn{color:var(--amber)} .glyph.pri{color:var(--primary)} .glyph.info{color:var(--info)}
+  .pop { animation: pop 0.3s cubic-bezier(0.2,1.4,0.4,1); }
+  @keyframes pop { from{transform:scale(.4);opacity:0} to{transform:scale(1);opacity:1} }
+
+  .txt { font-size: 12px; letter-spacing: -0.005em; }
+  .txt b { color: var(--fg); font-weight: 650; }
+  .txt.muted { color: var(--fg-muted); }
+  .txt.err { color: hsl(2 90% 84%); overflow: hidden; text-overflow: ellipsis; }
+
+  .btn { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 9px; border-radius: 999px; border: 0; cursor: pointer; font: 600 11px/1 inherit; color: var(--fg); background: hsl(0 0% 100% / 0.10); }
+  .btn:hover { background: hsl(0 0% 100% / 0.16); }
+  .btn.pri { background: var(--primary); color: hsl(240 8% 8%); }
+  .btn.circle { width: 22px; padding: 0; justify-content: center; border-radius: 50%; }
+  .btn.ok { background: hsl(150 60% 42% / 0.9); color: #fff; }
+  .btn.no { background: hsl(2 60% 48% / 0.85); color: #fff; }
+
+  /* card bits */
+  .card-head { display: flex; align-items: center; gap: 7px; }
+  .card-head .title { font-size: 12px; font-weight: 600; }
+  .card-head .x { margin-left: auto; color: var(--fg-muted); cursor: pointer; display: inline-flex; }
+  .card-body { font-size: 12px; color: var(--fg-muted); line-height: 1.45; }
+  .card-body .quote { color: var(--fg); }
+  .card-row { display: flex; gap: 6px; }
+  .chip { flex: 0 0 auto; height: 24px; padding: 0 10px; border-radius: 8px; font: 600 11px/1 inherit; display:inline-flex; align-items:center; color: var(--fg); background: hsl(0 0% 100% / 0.07); box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.08); cursor: pointer; }
+  .chip:hover { background: hsl(0 0% 100% / 0.12); }
+  .prog { height: 4px; border-radius: 999px; background: hsl(0 0% 100% / 0.1); overflow: hidden; }
+  .prog > i { display: block; height: 100%; width: 42%; border-radius: 999px; background: var(--primary); animation: indet 1.4s ease-in-out infinite; }
+  @keyframes indet { 0%{margin-left:-42%} 100%{margin-left:100%} }
+  .steps { font-size: 11px; color: var(--fg-muted); display: flex; flex-direction: column; gap: 3px; }
+  .steps .done { color: var(--ok); }
+
+  /* ── Catalog ── */
+  h2.sec { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted); margin: 30px 0 12px; }
+  .cat { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .cat button { text-align: left; height: 34px; padding: 0 12px; border-radius: 9px; cursor: pointer; border: 0; font: 500 12px inherit; color: var(--fg); background: hsl(0 0% 100% / 0.05); box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.07); transition: all 0.12s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cat button:hover { background: hsl(0 0% 100% / 0.11); }
+  .cat button.active { background: var(--primary); color: hsl(240 8% 8%); box-shadow: none; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; align-items: center; }
+  .toolbar .play { height: 32px; padding: 0 14px; border-radius: 9px; cursor: pointer; border: 0; font: 600 12px inherit; background: var(--primary); color: hsl(240 8% 8%); }
+  .toolbar .ghost { height: 32px; padding: 0 14px; border-radius: 9px; cursor: pointer; border: 0; font: 600 12px inherit; color: var(--fg); background: hsl(0 0% 100% / 0.06); box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.08); }
+  .now { color: var(--fg-muted); font-size: 12px; margin-left: 6px; }
+  .now b { color: var(--primary); }
+
+  .note { margin-top: 34px; padding: 16px 18px; border-radius: 12px; background: hsl(226 40% 12% / 0.4); box-shadow: inset 0 0 0 1px hsl(226 80% 78% / 0.18); color: hsl(226 40% 88%); line-height: 1.55; }
+  .note b { color: var(--fg); }
+  code { background: hsl(0 0% 100% / 0.08); padding: 1px 5px; border-radius: 5px; font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>AirNote — Status Pill Redesign · <span style="color:var(--fg-muted)">all HUD states</span></h1>
+    <p>One capsule, every state. The width is <b>measured from the rendered content and animated</b> — text states hug their copy and morph as it changes (try <b>Play flow</b>, then flip through the catalog). Waveform for voice phases; icon + responsive text for everything else; column cards for the few genuinely-bigger prompts.</p>
+  </header>
+
+  <div class="stage">
+    <div class="pill" id="pill"><div class="inner" id="inner"></div></div>
+  </div>
+
+  <div class="toolbar">
+    <button class="play" id="play">▶ Play dictation flow</button>
+    <button class="ghost" id="playLearn">▶ Play learning flow</button>
+    <span class="now" id="now"></span>
+  </div>
+
+  <h2 class="sec">Core dictation</h2>
+  <div class="cat" data-cat="core"></div>
+  <h2 class="sec">Learning &amp; vocabulary</h2>
+  <div class="cat" data-cat="learn"></div>
+  <h2 class="sec">System &amp; updates</h2>
+  <div class="cat" data-cat="system"></div>
+  <h2 class="sec">Divo agent (Ctrl hold-to-talk)</h2>
+  <div class="cat" data-cat="divo"></div>
+
+  <div class="note">
+    <b>Responsive sizing:</b> after each render the pill reads <code>inner.scrollWidth</code> / <code>scrollHeight</code> and animates <code>width</code>/<code>height</code> to fit — the same content-driven measure the real HUD already does in <code>pillSize()</code> + <code>resize_status_bar()</code>, just expressed as a smooth capsule morph instead of a step resize.<br>
+    <b>Scope:</b> pure visual layer. Every state machine, event listener, and the card prompts (review / recovered / update / Divo) keep their logic — only the shell (waveform, capsule shape, morph transition, icon+text rows) is reskinned. Notch untouched, as asked.
+  </div>
+</div>
+
+<script>
+  const I = {
+    check: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+    warn:  '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-9-16a1 1 0 0 0-1.7 0l-9 16A1 1 0 0 0 3 19.5h18a1 1 0 0 0 .7-1.5"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    retry: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+    clip:  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
+    undo:  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/></svg>',
+    list:  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg>',
+    chev:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+    spark: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 2.6 8.6 6.4 4.8 7.7l3.8 1.3 1.3 3.8 1.3-3.8 3.8-1.3-3.8-1.3z"/><path d="M18 10l-1 2.5L14.5 14 17 15l1 2.5 1-2.5 2.5-1L19 12.5z"/></svg>',
+    dl:    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>',
+    move:  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9 2 12l3 3"/><path d="m9 5 3-3 3 3"/><path d="m15 19-3 3-3-3"/><path d="m19 9 3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/></svg>',
+    clock: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
+    send:  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5 21 11l-6.5 6.5"/><path d="M21 11H3"/></svg>',
+  };
+
+  // ── Waveform math ──
+  const N = 15, C = (N - 1) / 2, REST = 0.14;
+  const ENV = Array.from({ length: N }, (_, i) => { const d = Math.abs(i - C) / C; return 0.35 + (1 - d * d) * 0.65; });
+  const waveHTML = () => '<span class="wave">' + '<span class="bar"></span>'.repeat(N) + '</span>';
+
+  // ── State catalog ──
+  const STATES = {
+    // core
+    idle:         { cat:"core", label:"Idle", html:'<span class="idle-dot"></span>' },
+    listening:    { cat:"core", label:"Listening", wave:"listening", html:'<span class="dot rec"></span>'+waveHTML() },
+    transcribing: { cat:"core", label:"Transcribing", wave:"transcribing", accent:"dim", html:waveHTML() },
+    polishing:    { cat:"core", label:"Polishing (AI)", wave:"polishing", accent:"bright", html:waveHTML() },
+    done:         { cat:"core", label:"Done · Pasted", html:'<span class="glyph ok pop">'+I.check+'</span><span class="txt muted">Pasted</span>' },
+    manual_paste: { cat:"core", label:"Manual paste", html:'<span class="glyph pri">'+I.clip+'</span><span class="txt">Paste latest</span><button class="btn">Paste</button>' },
+    error:        { cat:"core", label:"Error + retry", tint:"err", html:'<span class="glyph warn">'+I.warn+'</span><span class="txt err">Couldn’t reach the server</span><button class="btn">'+I.retry+'Retry</button>' },
+
+    // learning
+    learned:      { cat:"learn", label:"Word learned", html:'<span class="dot ok"></span><span class="txt"><b>Kraków</b> learned</span><button class="btn">'+I.undo+'Undo</button>' },
+    email_saved:  { cat:"learn", label:"Email saved", html:'<span class="dot ok"></span><span class="txt"><b>rahul@emiac…</b> saved</span>' },
+    queued:       { cat:"learn", label:"Queued term", html:'<span class="dot pri"></span><span class="txt">“Kraków” — 2 more edits to learn</span>' },
+    confirming:   { cat:"learn", label:"Confirm learn", tint:"accent", html:'<span class="txt">Learn <b>“Kraków”</b>?</span><button class="btn ok circle">'+I.check+'</button><button class="btn no circle">✕</button>' },
+    negative_confirm:{ cat:"learn", label:"Block wrong fix", tint:"warn", html:'<span class="glyph warn">'+I.warn+'</span><span class="txt">Stop typing “Krakov” for “Kraków”?</span><button class="btn ok circle">'+I.check+'</button><button class="btn no circle">✕</button>' },
+    wrong_fixed:  { cat:"learn", label:"Wrong fixed", html:'<span class="dot ok"></span><span class="txt">Won’t type “Krakov” for “Kraków”</span>' },
+    reviewing:    { cat:"learn", label:"Review (collapsed)", html:'<span class="glyph pri">'+I.list+'</span><span class="txt">3 corrections</span><span class="glyph muted" style="color:var(--fg-muted)">'+I.chev+'</span>' },
+    reviewing_card:{ cat:"learn", label:"Review (expanded)", card:true, html:
+      '<div class="card-head"><span class="glyph pri">'+I.list+'</span><span class="title">Review 3 corrections</span><span class="x">✕</span></div>'
+      +'<div class="card-body"><label style="display:flex;gap:8px;align-items:center;padding:5px 0"><input type="checkbox" checked> <span><b>krakov → Kraków</b> · swapped</span></label>'
+      +'<label style="display:flex;gap:8px;align-items:center;padding:5px 0"><input type="checkbox" checked> <span><b>demo → Demo</b> · capitalization</span></label>'
+      +'<label style="display:flex;gap:8px;align-items:center;padding:5px 0"><input type="checkbox"> <span><b>hai</b> · new word</span></label></div>'
+      +'<div class="card-row"><button class="btn pri" style="height:26px">Save 2</button><button class="btn" style="height:26px">Dismiss</button></div>' },
+    retraining:   { cat:"learn", label:"Retraining", html:'<span class="spinner"></span><span class="txt muted">Improving model…</span>' },
+    retrain_done: { cat:"learn", label:"Model updated", html:'<span class="glyph pri pop">'+I.spark+'</span><span class="txt">Model updated (1.2s)</span>' },
+
+    // system
+    polish_mode:  { cat:"system", label:"Polish mode", html:'<span class="dot ok"></span><span class="txt">Polish mode on</span>' },
+    placement:    { cat:"system", label:"Placement", tint:"accent", html:'<span class="glyph info">'+I.move+'</span><span class="txt">Drag AirNote anywhere · Esc to finish</span>' },
+    update_ready: { cat:"system", label:"Update ready", card:true, tint:"accent", html:
+      '<div class="card-head"><span class="glyph pri">'+I.dl+'</span><span class="title">Update 2.4.3 ready</span><span class="x">✕</span></div>'
+      +'<div class="card-body">Restart AirNote to use the new version.</div>'
+      +'<div class="card-row"><button class="btn pri" style="height:26px">Restart now</button><button class="btn" style="height:26px">Later</button></div>' },
+    recovered:    { cat:"system", label:"Recovered dictation", card:true, html:
+      '<div class="card-head"><span class="dot ok"></span><span class="title">Recovered dictation</span><span class="x">✕</span></div>'
+      +'<div class="card-body quote">“Kal ka demo ready hai — let’s ship it. Bhej dena team ko.”</div>'
+      +'<div class="card-row"><button class="btn pri" style="height:26px">'+I.clip+' Copy</button></div>' },
+    problem_ambiguous:{ cat:"system", label:"Ambiguous project", card:true, tint:"warn", html:
+      '<div class="card-head"><span class="dot warn"></span><span class="title">Ambiguous project match</span><span class="x">✕</span></div>'
+      +'<div class="card-body">Pick the project context to continue.</div>'
+      +'<div class="card-row"><span class="chip">AirNote</span><span class="chip">Control-plane</span><span class="chip">Divo</span></div>' },
+
+    // divo
+    divo_min:     { cat:"divo", label:"Divo working (min)", html:'<span class="spinner"></span><span class="txt muted">Divo is working…</span>' },
+    divo_ready:   { cat:"divo", label:"Divo ready badge", tint:"accent", html:'<span class="glyph pri">'+I.spark+'</span><span class="txt"><b>Divo</b> (1)</span>' },
+    divo_streaming:{ cat:"divo", label:"Divo streaming", card:true, tint:"accent", html:
+      '<div class="card-head"><span class="spinner"></span><span class="title">Sending to Divo…</span></div>'
+      +'<div class="prog"><i></i></div>'
+      +'<div class="steps"><span class="done">✓ Read thread history</span><span class="done">✓ Fetched invoice</span><span>▶ Drafting reply…</span></div>' },
+    divo_stage:   { cat:"divo", label:"Divo stage (review)", card:true, html:
+      '<div class="card-head"><span class="glyph pri">'+I.spark+'</span><span class="title">Send to Divo</span><span class="x">✕</span></div>'
+      +'<div class="card-body quote">“Reply to Rahul that the Kraków demo is ready.”</div>'
+      +'<div class="card-row"><button class="btn pri" style="height:26px">'+I.send+' Send</button><button class="btn" style="height:26px">✎ Edit / route</button></div>' },
+    divo_answer:  { cat:"divo", label:"Divo answer", card:true, html:
+      '<div class="card-head"><span class="glyph pri">'+I.spark+'</span><span class="title">Divo</span><span class="x">✕</span></div>'
+      +'<div class="card-body">Done — replied to Rahul in <b>#krakow-demo</b> and marked the invoice paid.</div>'
+      +'<div class="card-row"><button class="btn" style="height:26px">'+I.clip+' Copy</button></div>' },
+    divo_pending: { cat:"divo", label:"Divo pending", tint:"warn", html:'<span class="glyph warn">'+I.clock+'</span><span class="txt">Pending approval in Lark</span>' },
+    divo_error:   { cat:"divo", label:"Divo error", tint:"err", html:'<span class="glyph warn">'+I.warn+'</span><span class="txt err">Divo couldn’t finish</span><button class="btn">'+I.retry+'Retry</button>' },
+  };
+
+  const pill = document.getElementById("pill");
+  const inner = document.getElementById("inner");
+  const now = document.getElementById("now");
+  let cur = "idle", bars = [], t = 0;
+
+  function measure() {
+    // width/height hug the rendered content → smooth capsule morph
+    const w = inner.scrollWidth, h = inner.scrollHeight;
+    pill.style.width = w + "px";
+    pill.style.height = h + "px";
+  }
+
+  function render(key) {
+    const def = STATES[key]; if (!def) return;
+    cur = key;
+    pill.className = "pill" + (def.card ? " is-card" : "") + (def.tint ? " tint-" + def.tint : "");
+    inner.innerHTML = def.html;
+    bars = [...inner.querySelectorAll(".wave .bar")];
+    if (def.accent === "dim")    bars.forEach(b => b.style.background = "var(--primary-dim)");
+    if (def.accent === "bright") bars.forEach(b => b.style.background = "var(--primary-bright)");
+    now.innerHTML = "showing <b>" + (def.label || key) + "</b>";
+    document.querySelectorAll(".cat button").forEach(b => b.classList.toggle("active", b.dataset.k === key));
+    // measure after layout
+    requestAnimationFrame(measure);
+  }
+
+  const simLevel = (x) => { const b = 0.45 + 0.35 * Math.sin(x*2.1)*Math.sin(x*0.7); const j = (Math.sin(x*13.3)*0.5+0.5)*0.25; return Math.max(0.05, Math.min(1, Math.abs(b)+j-0.1)); };
+
+  function frame() {
+    t += 0.016;
+    const w = STATES[cur]?.wave;
+    if (w && bars.length) {
+      const lvl = simLevel(t);
+      for (let i = 0; i < bars.length; i++) {
+        let s;
+        if (w === "listening") { const tr = 0.5+0.5*Math.sin(t*6-i*0.55); const pk = REST+lvl*ENV[i]*(1-REST); s = REST+(pk-REST)*tr; }
+        else if (w === "transcribing") { const p=(t*1.2)%1; const d=Math.abs(i/(N-1)-p); s = REST+Math.max(0,1-d*6)*ENV[i]*0.5; }
+        else { const p=(t*1.9)%1.2; const d=Math.abs(i/(N-1)-p); s = REST+Math.max(0,1-d*3.5)*ENV[i]*0.85; }
+        bars[i].style.transform = `scaleY(${s.toFixed(3)})`;
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // build catalog
+  document.querySelectorAll(".cat").forEach(host => {
+    const c = host.dataset.cat;
+    Object.entries(STATES).filter(([,d]) => d.cat === c).forEach(([k, d]) => {
+      const b = document.createElement("button");
+      b.dataset.k = k; b.textContent = d.label || k;
+      b.onclick = () => { stop(); render(k); };
+      host.appendChild(b);
+    });
+  });
+
+  // flows
+  let timers = [];
+  const stop = () => { timers.forEach(clearTimeout); timers = []; };
+  const run = (steps) => { stop(); steps.forEach(([ms, k]) => timers.push(setTimeout(() => render(k), ms))); };
+  document.getElementById("play").onclick = () => run([[0,"listening"],[2600,"transcribing"],[4200,"polishing"],[5600,"done"],[7100,"idle"]]);
+  document.getElementById("playLearn").onclick = () => run([[0,"queued"],[1800,"confirming"],[3600,"learned"],[6000,"idle"]]);
+
+  render("idle");
+  requestAnimationFrame(frame);
+  setTimeout(() => document.getElementById("play").click(), 500);
+</script>
+</body>
+</html>

@@ -741,6 +741,83 @@
   .onb-try-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; padding: 4px 9px; border-radius: 999px; color: hsl(140 60% 70%); background: hsl(140 60% 50% / 0.1); box-shadow: inset 0 0 0 1px hsl(140 60% 50% / 0.2); }
   .onb-try-hint { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: hsl(var(--muted-foreground)); margin-top: 12px; }
   .onb-try-kbd { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; padding: 2px 7px; border-radius: 6px; color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.06); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)); }
+
+  /* Try-it: read-aloud prompt + failure feedback */
+  .onb-try-readaloud { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; padding: 10px 12px; border-radius: 10px; background: hsl(var(--primary) / 0.06); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.16); }
+  .onb-try-readaloud-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: hsl(var(--muted-foreground)); }
+  .onb-try-readaloud-text { font-size: 13px; color: hsl(var(--foreground)); font-weight: 500; }
+  .onb-try-error { margin-top: 10px; font-size: 11.5px; color: hsl(var(--destructive)); }
+  .onb-try-warn { margin-top: 10px; font-size: 11.5px; color: hsl(38 92% 62%); }
+
+  /* Skip / ghost text link (test step + error boundary) */
+  .onb-skip-link { align-self: center; background: none; border: none; cursor: pointer; font-size: 11.5px; color: hsl(var(--muted-foreground)); padding: 4px 8px; transition: color 0.15s ease; }
+  .onb-skip-link:hover { color: hsl(var(--foreground)); }
+
+  /* Permissions: Open-System-Settings recovery link under an ungranted row */
+  .onb-perm-wrap { display: flex; flex-direction: column; }
+  .onb-perm-settings-link { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; margin: -2px 0 8px 44px; background: none; border: none; cursor: pointer; font-size: 11px; color: hsl(var(--primary)); transition: opacity 0.15s ease; }
+  .onb-perm-settings-link:hover { opacity: 0.8; }
+
+  /* Old-model cleanup row inside the new-model card */
+  .onb-reclaim { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 10px 11px; border-radius: 10px; background: hsl(0 0% 100% / 0.025); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
+  .onb-reclaim-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .onb-reclaim-copy { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 11.5px; color: hsl(var(--muted-foreground)); }
+  .onb-reclaim-error { font-size: 11px; color: hsl(var(--destructive)); }
+  .onb-reclaim-done { flex-direction: row; align-items: center; gap: 7px; font-size: 11.5px; color: hsl(140 65% 65%); background: hsl(140 65% 50% / 0.1); box-shadow: inset 0 0 0 1px hsl(140 65% 50% / 0.2); }
+
+  /* Onboarding error boundary fallback */
+  .onb-error-screen { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: hsl(var(--background)); }
+  .onb-error-card { max-width: 380px; text-align: center; padding: 28px; border-radius: 16px; background: hsl(240 5% 6% / 0.9); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
+  .onb-error-title { font-size: 17px; font-weight: 600; color: hsl(var(--foreground)); margin-bottom: 8px; }
+  .onb-error-desc { font-size: 12.5px; line-height: 1.6; color: hsl(var(--muted-foreground)); margin-bottom: 20px; }
+  .onb-error-actions { display: flex; flex-direction: column; gap: 8px; }
+
+  /* Forced post-update "Meet the new model" migration screen */
+  .mig-card { max-width: 440px; width: 100%; padding: 30px; border-radius: 18px; background: hsl(240 5% 6% / 0.92); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
+  .mig-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: hsl(var(--primary)); background: hsl(var(--primary) / 0.14); padding: 4px 9px; border-radius: 999px; margin-bottom: 14px; }
+  .mig-title { font-size: 19px; font-weight: 600; color: hsl(var(--foreground)); margin-bottom: 8px; }
+  .mig-desc { font-size: 12.5px; line-height: 1.65; color: hsl(var(--muted-foreground)); margin-bottom: 18px; }
+  .mig-model { border-radius: 12px; padding: 12px; background: hsl(var(--primary) / 0.05); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.25); margin-bottom: 18px; }
+  .mig-model-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .mig-model-left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .mig-model-ico { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; flex-shrink: 0; background: hsl(var(--primary)); color: white; }
+  .mig-model-name { font-size: 12.5px; font-weight: 500; color: hsl(var(--foreground)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mig-ready { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: hsl(140 65% 65%); flex-shrink: 0; }
+  .mig-bar { margin-top: 10px; height: 6px; border-radius: 999px; overflow: hidden; background: hsl(var(--surface-4)); }
+  .mig-bar > div { height: 100%; border-radius: 999px; background: hsl(var(--primary)); transition: width 0.2s ease; }
+  .mig-actions { display: flex; flex-direction: column; gap: 8px; }
+
+  /* Hold-to-talk hotkey picker (onboarding + settings + migration) */
+  .hk-picker { display: flex; flex-direction: column; gap: 10px; }
+  .hk-capture { width: 100%; text-align: left; padding: 12px 14px; border-radius: 12px; background: hsl(0 0% 100% / 0.03); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); cursor: pointer; transition: box-shadow 0.15s ease, background 0.15s ease; }
+  .hk-capture:hover { background: hsl(0 0% 100% / 0.05); }
+  .hk-capturing { box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.6), 0 0 0 3px hsl(var(--primary) / 0.1); background: hsl(var(--primary) / 0.06); }
+  .hk-capture-prompt { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: hsl(var(--primary)); font-weight: 500; }
+  .hk-esc { font-size: 11px; color: hsl(var(--muted-foreground)); font-weight: 400; }
+  .hk-current { display: inline-flex; align-items: center; gap: 10px; width: 100%; }
+  .hk-keycap { min-width: 30px; height: 30px; padding: 0 8px; border-radius: 8px; display: inline-grid; place-items: center; font-size: 14px; font-weight: 600; color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.06); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)); }
+  .hk-current-label { font-size: 13px; font-weight: 500; color: hsl(var(--foreground)); }
+  .hk-mode { font-size: 11px; color: hsl(var(--muted-foreground)); }
+  .hk-change { margin-left: auto; font-size: 11.5px; font-weight: 600; color: hsl(var(--primary)); }
+  .hk-hint { font-size: 11.5px; color: hsl(38 92% 62%); }
+  .hk-capture-note { font-size: 11px; color: hsl(var(--muted-foreground)); }
+  .hk-warn { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; line-height: 1.45; margin-top: 2px; }
+  .hk-warn svg { flex-shrink: 0; margin-top: 1.5px; }
+  .hk-warn-warning { color: hsl(38 92% 62%); }
+  .hk-warn-error { color: hsl(var(--destructive)); }
+  /* Actionable error row — friendly copy + a one-click fix (Retry / Open Settings). */
+  .err-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 11.5px; color: hsl(var(--destructive)); line-height: 1.45; }
+  .err-notice-icon { flex-shrink: 0; }
+  .err-notice-msg { flex: 1 1 auto; min-width: 0; }
+  .err-notice-action { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 8px; font-size: 11px; font-weight: 600; color: hsl(var(--foreground)); background: hsl(var(--surface-2)); box-shadow: inset 0 0 0 1px hsl(var(--surface-3)); cursor: pointer; transition: all 0.12s ease; white-space: nowrap; }
+  .err-notice-action:hover { background: hsl(var(--surface-3)); }
+  .hk-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .hk-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 9px; font-size: 11.5px; color: hsl(var(--muted-foreground)); background: hsl(var(--surface-2)); box-shadow: inset 0 0 0 1px hsl(var(--surface-3)); cursor: pointer; transition: all 0.12s ease; }
+  .hk-chip:hover { color: hsl(var(--foreground)); background: hsl(var(--surface-3)); }
+  .hk-chip-active { color: hsl(var(--foreground)); background: hsl(var(--primary) / 0.12); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.5); }
+  .hk-chip-glyph { font-weight: 600; min-width: 16px; text-align: center; }
+  .hk-chip-check { color: hsl(var(--primary)); }
+  .hk-foot { font-size: 11px; color: hsl(var(--muted-foreground)); line-height: 1.5; }
   .onb-form {
     position: relative;
     /* Dense near-black form canvas — readable, sits one notch lighter than
@@ -2019,6 +2096,28 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   pointer-events: auto;
 }
 
+/* Sleek pill: the voice phases and every single-row compact state read as a
+   full-round glass capsule that morphs its width/height to hug the content
+   (the native window is a fixed canvas; this capsule floats and resizes inside
+   it). Placed after the base blocks so it overrides their radius/transition. */
+.sb-survey--voice,
+.sb-survey--compact {
+  border-radius: 999px;
+  background: hsl(var(--card) / 0.86);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  transition:
+    width 0.3s cubic-bezier(0.2, 0.9, 0.2, 1),
+    height 0.3s cubic-bezier(0.2, 0.9, 0.2, 1),
+    border-radius 0.28s ease,
+    background 0.3s ease;
+}
+
+/* Transcript open → grow into a rounded card, not a stretched stadium. */
+.sb-survey--voice.sb-survey--tall {
+  border-radius: 20px;
+}
+
 .sb-survey-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -2188,25 +2287,35 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
 }
 
 .sb-survey-visualizer {
-  height: 28px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 2.5px;
+  gap: 2px;
   overflow: visible;
 }
 
+/* Fluid waveform: fixed-height bars animated via scaleY (center origin) by the
+   RAF driver. No per-bar transition — the driver runs at 60fps, so a transition
+   would smear the motion. Only the colour crossfades between phases. */
 .sb-survey-visualizer span {
   width: 2.5px;
-  min-height: 3px;
-  border-radius: 99px;
-  background: hsl(var(--muted-foreground) / 0.45);
-  transition: background 0.15s ease, box-shadow 0.15s ease;
+  height: 20px;
+  border-radius: 999px;
+  transform: scaleY(0.14);
+  transform-origin: center;
+  will-change: transform;
+  background: hsl(var(--primary));
+  transition: background 0.25s ease, box-shadow 0.25s ease;
 }
 
-.sb-survey-visualizer--active span {
-  background: hsl(var(--primary) / 0.88);
-  box-shadow: 0 0 6px hsl(var(--primary) / 0.22);
+/* Phase = motion + hue, no text. Listening tracks the mic; transcription is a
+   dim left→right ripple; AI-polish is a brighter, taller sweep. */
+.sb-wave--listening span { background: hsl(var(--primary)); }
+.sb-wave--transcribing span { background: hsl(var(--primary) / 0.6); }
+.sb-wave--polishing span {
+  background: hsl(226 92% 85%);
+  box-shadow: 0 0 7px hsl(226 90% 80% / 0.4);
 }
 
 .sb-mode-badge {

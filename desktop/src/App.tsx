@@ -4,6 +4,9 @@ import { Sidebar } from "@/components/Sidebar";
 import { InviteTeamModal } from "@/components/InviteTeamModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { OnboardingFlow } from "@/components/OnboardingFlow";
+import { OnboardingErrorBoundary } from "@/components/OnboardingErrorBoundary";
+import { ModelMigrationGate } from "@/components/ModelMigrationGate";
+import { MIGRATION_VERSION, loadMigrationDone, markMigrationDone } from "@/lib/migration";
 import { loadOnboardingProgress } from "@/lib/onboardingProgress";
 import { Topbar } from "@/components/Topbar";
 import { DashboardView } from "@/components/views/DashboardView";
@@ -206,6 +209,10 @@ export default function App() {
       return false;
     }
   });
+  // Post-update migration gate — forces already-onboarded users through newly
+  // required steps (e.g. the new on-device model) that they'd otherwise miss by
+  // updating straight past onboarding. See lib/migration.ts.
+  const [migrationDone, setMigrationDone] = useState<number>(() => loadMigrationDone());
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -662,6 +669,15 @@ export default function App() {
     try {
       localStorage.setItem("said:onboarding-complete", "true");
     } catch { /* ignore */ }
+    // A fresh onboarded user already saw the new model in onboarding — stamp the
+    // migration version so the post-update gate never shows them the same page.
+    markMigrationDone();
+    setMigrationDone(MIGRATION_VERSION);
+  }, []);
+
+  const handleMigrationDone = useCallback(() => {
+    markMigrationDone();
+    setMigrationDone(MIGRATION_VERSION);
   }, []);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
@@ -710,23 +726,39 @@ export default function App() {
 
   if (needsEnterprise || needsSetup) {
     return (
-      <OnboardingFlow
-        snapshot={snapshotWithHistory}
-        workspaceOnly={workspaceOnly}
-        enterpriseRequired={needsEnterprise}
-        initialProgress={loadOnboardingProgress()}
-        requireLocalModelSetup={localModelSetupRequired}
-        onEnterpriseConnected={handleEnterpriseConnected}
-        onMicrophone={handleMicrophone}
-        onAccessibility={handleAccessibility}
-        onInputMonitoring={handleInputMonitoring}
-        onFinish={handleOnboardingFinish}
-      />
+      <OnboardingErrorBoundary>
+        <OnboardingFlow
+          snapshot={snapshotWithHistory}
+          workspaceOnly={workspaceOnly}
+          enterpriseRequired={needsEnterprise}
+          initialProgress={loadOnboardingProgress()}
+          requireLocalModelSetup={localModelSetupRequired}
+          onEnterpriseConnected={handleEnterpriseConnected}
+          onMicrophone={handleMicrophone}
+          onAccessibility={handleAccessibility}
+          onInputMonitoring={handleInputMonitoring}
+          onRefreshPermissions={() => void refreshSnapshot().catch(() => {})}
+          onFinish={handleOnboardingFinish}
+        />
+      </OnboardingErrorBoundary>
     );
   }
 
   if (setupLoader === "running") {
     return <SetupLoader status={setupStatus} />;
+  }
+
+  // Post-update required-step gate: an already-onboarded user who updated past
+  // onboarding is forced through outstanding new steps once (backend is up by
+  // now, so the model download works). They install the new model or explicitly
+  // keep their current setup — either way it stamps the version and never repeats.
+  if (migrationDone < MIGRATION_VERSION) {
+    return (
+      <ModelMigrationGate
+        onDone={handleMigrationDone}
+        platform={(snapshot?.platform ?? "macos") as "macos" | "windows" | "linux"}
+      />
+    );
   }
 
   const liveMeetingActive = activeView === "live-meeting" && !!liveMeetingId;

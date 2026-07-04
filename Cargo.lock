@@ -5080,6 +5080,7 @@ dependencies = [
  "screencapturekit",
  "serde",
  "serde_json",
+ "sha2",
  "signal-hook",
  "sysinfo",
  "tauri",

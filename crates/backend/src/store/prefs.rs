@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use super::{DbPool, now_ms};
 
 fn normalize_record_hotkey(raw: &str) -> String {
+    // Canonical ids must match the picker (desktop/src/lib/hotkeys.ts) and the
+    // hotkey crate's `RecordHotkey::from_id`. Any sided modifier is valid — an
+    // unknown value still falls back to caps_lock so a bad string never bricks
+    // recording.
     match raw
         .trim()
         .to_ascii_lowercase()
@@ -13,6 +17,15 @@ fn normalize_record_hotkey(raw: &str) -> String {
         "caps_lock" | "capslock" => "caps_lock".into(),
         "right_option" | "right_alt" | "rightoption" | "rightalt" => "right_option".into(),
         "fn" | "function" | "globe" => "fn".into(),
+        "left_command" | "left_cmd" | "left_meta" | "left_win" | "leftwin" => "left_command".into(),
+        "right_command" | "right_cmd" | "right_meta" | "right_win" | "rightwin" => {
+            "right_command".into()
+        }
+        "left_control" | "left_ctrl" | "leftcontrol" => "left_control".into(),
+        "right_control" | "right_ctrl" | "rightcontrol" => "right_control".into(),
+        "left_option" | "left_alt" | "leftoption" | "leftalt" => "left_option".into(),
+        "left_shift" | "leftshift" => "left_shift".into(),
+        "right_shift" | "rightshift" => "right_shift".into(),
         _ => "caps_lock".into(),
     }
 }
@@ -343,6 +356,13 @@ mod tests {
         assert_eq!(normalize_record_hotkey("right_alt"), "right_option");
         assert_eq!(normalize_record_hotkey("Function"), "fn");
         assert_eq!(normalize_record_hotkey("globe"), "fn");
+        // Sided modifiers (the picker's expanded set) round-trip unchanged.
+        assert_eq!(normalize_record_hotkey("right_shift"), "right_shift");
+        assert_eq!(normalize_record_hotkey("Right Shift"), "right_shift");
+        assert_eq!(normalize_record_hotkey("left_control"), "left_control");
+        assert_eq!(normalize_record_hotkey("right_command"), "right_command");
+        assert_eq!(normalize_record_hotkey("right_win"), "right_command");
+        assert_eq!(normalize_record_hotkey("left_alt"), "left_option");
     }
 
     #[test]

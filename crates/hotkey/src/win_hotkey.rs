@@ -168,6 +168,9 @@ pub fn target_vk(hotkey: RecordHotkey) -> Option<u32> {
         RecordHotkey::CapsLock => Some(VK_CAPITAL),
         RecordHotkey::RightOption => Some(VK_RMENU),
         RecordHotkey::Function => None,
+        // Any sided modifier maps straight to its VK; the hook's keydown/keyup +
+        // was_down tracking already gives correct hold/release for any VK.
+        RecordHotkey::Modifier { win_vk, .. } => Some(win_vk),
     }
 }
 
@@ -351,6 +354,9 @@ pub fn classify_long_dictation(
             mods.alt && mods.right_alt && !mods.left_alt && !mods.ctrl && !mods.shift
         }
         RecordHotkey::Function => false,
+        // Space-to-lock long dictation is only wired for the preset keys; a custom
+        // sided modifier records normally but doesn't gate the long-dictation lock.
+        RecordHotkey::Modifier { .. } => false,
     }
 }
 

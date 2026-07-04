@@ -34,12 +34,18 @@ use crate::win_hotkey::{
 // 0 = CapsLock, 1 = RightOption (mapped to VK_RMENU on Windows),
 // 2 = Function (no Windows analog — falls back to pass-through).
 static RECORD_HOTKEY: AtomicU8 = AtomicU8::new(0);
+// Backing store for the `Modifier { win_vk }` variant (kind == 3).
+static RECORD_MOD_VK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 pub fn set_record_hotkey(hotkey: RecordHotkey) {
     let encoded = match hotkey {
         RecordHotkey::CapsLock => 0,
         RecordHotkey::RightOption => 1,
         RecordHotkey::Function => 2,
+        RecordHotkey::Modifier { win_vk, .. } => {
+            RECORD_MOD_VK.store(win_vk, Ordering::Relaxed);
+            3
+        }
     };
     RECORD_HOTKEY.store(encoded, Ordering::Relaxed);
     tracing::info!("[hotkey] record hotkey set to {:?}", hotkey);
@@ -49,6 +55,11 @@ fn current_record_hotkey() -> RecordHotkey {
     match RECORD_HOTKEY.load(Ordering::Relaxed) {
         1 => RecordHotkey::RightOption,
         2 => RecordHotkey::Function,
+        3 => RecordHotkey::Modifier {
+            mac_keycode: 0,
+            mac_mask: 0,
+            win_vk: RECORD_MOD_VK.load(Ordering::Relaxed),
+        },
         _ => RecordHotkey::CapsLock,
     }
 }

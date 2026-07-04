@@ -1700,18 +1700,18 @@ fn latest_saved_voice_audio_id() -> Option<String> {
 }
 
 fn parse_record_hotkey(raw: &str) -> hotkey::RecordHotkey {
-    match raw {
-        "right_option" => hotkey::RecordHotkey::RightOption,
-        // Fn/Globe is macOS-only; on Windows the win_hotkey backend has no VK for
-        // it (target_vk(Function)=None) so hold-to-record would be silently dead.
-        // A "fn" pref can still arrive via account sync from a Mac profile — degrade
-        // gracefully to Caps Lock on non-macOS instead of leaving recording broken.
-        #[cfg(target_os = "macos")]
-        "fn" => hotkey::RecordHotkey::Function,
-        #[cfg(not(target_os = "macos"))]
-        "fn" => hotkey::RecordHotkey::CapsLock,
-        _ => hotkey::RecordHotkey::CapsLock,
+    // Fn/Globe is macOS-only; on Windows the win_hotkey backend has no VK for it
+    // (target_vk(Function)=None) so hold-to-record would be silently dead. A "fn"
+    // pref can still arrive via account sync from a Mac profile — degrade to Caps
+    // Lock on non-macOS instead of leaving recording broken.
+    #[cfg(not(target_os = "macos"))]
+    if raw == "fn" {
+        return hotkey::RecordHotkey::CapsLock;
     }
+    // Preset keys + any sided modifier are resolved from their stable string id in
+    // the hotkey crate (which owns the platform keycodes/masks/VKs). Unknown ids
+    // fall back to Caps Lock.
+    hotkey::RecordHotkey::from_id(raw).unwrap_or(hotkey::RecordHotkey::CapsLock)
 }
 
 fn cache_last_voice_action(
@@ -3642,6 +3642,53 @@ fn request_microphone(
     permissions::request_microphone();
     let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
     Ok(snapshot_for_ui(&app, &snap))
+}
+
+/// Open the OS privacy pane for the microphone so the user can flip access on by
+/// hand — the recovery path when a grant prompt was dismissed/denied and the
+/// onboarding step is otherwise stuck "waiting for grants". macOS opens the
+/// System Settings anchor; Windows opens the microphone privacy page.
+#[tauri::command]
+fn open_microphone_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            .spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", "ms-settings:privacy-microphone"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+}
+
+/// Open the macOS Accessibility privacy pane (recovery path for a denied grant).
+/// No-op off macOS — Windows/Linux don't gate HID typing behind this permission.
+#[tauri::command]
+fn open_accessibility_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn();
+    }
+}
+
+/// Open the macOS Input Monitoring privacy pane (recovery path for a denied
+/// grant). No-op off macOS — Windows/Linux don't require this permission.
+#[tauri::command]
+fn open_input_monitoring_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+            .spawn();
+    }
 }
 
 /// Whether Screen Recording is already granted (no prompt). Used to gate meeting
@@ -10889,6 +10936,9 @@ fn main() {
             request_accessibility,
             request_input_monitoring,
             request_microphone,
+            open_microphone_settings,
+            open_accessibility_settings,
+            open_input_monitoring_settings,
             screen_recording_granted,
             request_screen_recording,
             diagnose_ax,
@@ -10972,6 +11022,9 @@ fn main() {
             meeting_engine::download_dictation_model,
             meeting_engine::dictation_model_status,
             meeting_engine::delete_dictation_model,
+            meeting_engine::apex_model_status,
+            meeting_engine::delete_apex_model,
+            meeting_engine::reclaim_old_models,
             meeting_engine::meeting_download_silero_vad_model,
             meeting_engine::meeting_delete_silero_vad_model,
             meeting_engine::silero_vad_model_status,
