@@ -36,6 +36,13 @@ pub fn ensure_model_loaded(model_path: &str) -> Result<(), String> {
 }
 
 pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptResult, String> {
+    // Whole-utterance conditioning: DC/high-pass + loudness normalize just before
+    // inference; whisper.cpp's Silero VAD then runs inside `full()`. Length is
+    // preserved, so downstream math is unchanged.
+    let mut conditioned = audio_f32.to_vec();
+    said_core::preprocess::condition_16k(&mut conditioned);
+    let audio_f32: &[f32] = &conditioned;
+
     let ctx_mutex = WHISPER_CTX
         .get()
         .ok_or("whisper model not loaded — call ensure_model_loaded first")?;
@@ -211,7 +218,11 @@ fn decode_wav_to_f32(wav_data: &[u8]) -> Result<Vec<f32>, String> {
             "[whisper] WAV sample rate {}Hz != expected {}Hz — resampling",
             sample_rate, WHISPER_SAMPLE_RATE
         );
-        Ok(resample(&mono, sample_rate as usize, WHISPER_SAMPLE_RATE))
+        // Band-limited (anti-aliased) resample — batch path, whole utterance.
+        Ok(said_core::preprocess::resample_16k_hq(
+            &mono,
+            sample_rate as usize,
+        ))
     } else {
         Ok(mono)
     }
@@ -234,24 +245,6 @@ fn find_data_chunk(wav: &[u8]) -> Option<usize> {
     None
 }
 
-fn resample(input: &[f32], from_rate: usize, to_rate: usize) -> Vec<f32> {
-    if from_rate == to_rate || input.is_empty() {
-        return input.to_vec();
-    }
-    let ratio = from_rate as f64 / to_rate as f64;
-    let out_len = (input.len() as f64 / ratio).ceil() as usize;
-    (0..out_len)
-        .map(|i| {
-            let src = i as f64 * ratio;
-            let idx = src as usize;
-            let frac = (src - idx as f64) as f32;
-            let a = input[idx.min(input.len() - 1)];
-            let b = input[(idx + 1).min(input.len() - 1)];
-            a + frac * (b - a)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,19 +253,5 @@ mod tests {
     fn decode_wav_rejects_invalid() {
         assert!(decode_wav_to_f32(b"not a wav").is_err());
         assert!(decode_wav_to_f32(&[0; 10]).is_err());
-    }
-
-    #[test]
-    fn resample_identity() {
-        let input = vec![0.1, 0.2, 0.3, 0.4];
-        let out = resample(&input, 16000, 16000);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn resample_downsample() {
-        let input: Vec<f32> = (0..32000).map(|i| (i as f32 / 32000.0).sin()).collect();
-        let out = resample(&input, 32000, 16000);
-        assert!((out.len() as f64 - 16000.0).abs() < 2.0);
     }
 }
