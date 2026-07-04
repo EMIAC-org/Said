@@ -189,6 +189,22 @@ export interface Recording {
   polished_output: string | null;
 }
 
+/** Resolved identity of an app the user dictated into (name + category + icon). */
+export interface AppIdentity {
+  key:      string;
+  name:     string | null;
+  category: string | null;
+  icon:     string | null; // data:image/png;base64,…
+}
+
+/** Per-app dictation usage row (Insights "apps you dictate in"). */
+export interface AppUsageRow {
+  app:          string; // the target_app key (bundle-id / exe path)
+  count:        number;
+  total_words:  number;
+  last_used_ms: number;
+}
+
 /** Backend endpoint info (url + shared secret) */
 export interface BackendEndpoint {
   url:    string;

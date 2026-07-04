@@ -1,8 +1,9 @@
-import React, { useMemo } from "react";
-import { Info, CheckCircle2, PenLine } from "lucide-react";
+import React, { useMemo, useState, useEffect } from "react";
+import { Info, CheckCircle2, PenLine, Monitor } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import type { AppSnapshot, HistoryItem } from "@/types";
+import { listAppUsage, getAppIdentity } from "@/lib/invoke";
+import type { AppSnapshot, HistoryItem, AppIdentity, AppUsageRow } from "@/types";
 
 interface InsightsViewProps {
   snapshot: AppSnapshot | null;
@@ -121,6 +122,106 @@ function computeAccuracy(history: HistoryItem[]) {
     : 0;
 
   return { allTime, recent, accepted, edited, total: history.length };
+}
+
+// ── Apps you dictate in ───────────────────────────────────────────────────────
+
+interface AppRow extends AppUsageRow {
+  identity: AppIdentity | null;
+}
+
+/** Prettify a raw app key when we couldn't resolve a friendly name:
+ *  bundle-id `com.tinyspeck.slack` → "Slack"; exe path → stem without extension. */
+function formatKey(key: string): string {
+  const t = key.trim();
+  if (t.includes("/") || t.includes("\\")) {
+    const seg = t.split(/[\\/]/).pop() ?? t;
+    return seg.replace(/\.(app|exe)$/i, "");
+  }
+  if (!t.includes(".")) return t;
+  const seg = t.split(".").pop() ?? t;
+  return seg.charAt(0).toUpperCase() + seg.slice(1);
+}
+
+/** "Apps you dictate in" — per-app usage with real icons, names and categories.
+ *  This is the knowledge-base showpiece: it maps every recording to where it was
+ *  typed. Populates as new dictations are captured (older ones have no app). */
+function AppUsageSection() {
+  const [rows, setRows] = useState<AppRow[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void listAppUsage().then(async (usage) => {
+      const top = usage.slice(0, 8);
+      const withIdentity = await Promise.all(
+        top.map(async (u) => ({ ...u, identity: await getAppIdentity(u.app) })),
+      );
+      if (alive) setRows(withIdentity);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  if (rows === null) return null; // loading — stay quiet until resolved
+
+  const maxCount = rows.reduce((m, r) => Math.max(m, r.count), 0) || 1;
+
+  return (
+    <div className="panel p-5 mt-3">
+      <div className="flex items-baseline justify-between mb-5">
+        <h2 className="text-[14px] font-semibold text-foreground">Apps you dictate in</h2>
+        <span className="section-label">{rows.length} app{rows.length === 1 ? "" : "s"}</span>
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="text-[12px] text-muted-foreground">
+          Dictate into your apps and they’ll show up here — every recording is mapped
+          to where you typed it.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {rows.map((r) => {
+            const name = r.identity?.name ?? formatKey(r.app);
+            const pct = Math.round((r.count / maxCount) * 100);
+            return (
+              <div key={r.app} className="flex items-center gap-3">
+                <div
+                  className="w-9 h-9 flex-shrink-0 rounded-lg overflow-hidden flex items-center justify-center"
+                  style={{ background: "hsl(var(--surface-4))" }}
+                >
+                  {r.identity?.icon ? (
+                    <img src={r.identity.icon} alt={name} className="w-full h-full object-contain" draggable={false} />
+                  ) : (
+                    <Monitor size={16} className="text-muted-foreground" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[13px] font-medium text-foreground truncate">{name}</span>
+                    <span className="text-[11px] text-muted-foreground tabular-nums flex-shrink-0">
+                      {r.count} · {r.total_words.toLocaleString()} words
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "hsl(var(--surface-4))" }}>
+                      <div className="h-full rounded-full" style={{ width: `${pct}%`, background: "hsl(var(--accent-violet))" }} />
+                    </div>
+                    {r.identity?.category && (
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded-md flex-shrink-0"
+                        style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                      >
+                        {r.identity.category}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────
@@ -400,6 +501,9 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
             </div>
           </div>
         </div>
+
+        {/* ── Apps you dictate in ─────────────────────── */}
+        <AppUsageSection />
 
       </div>
     </ScrollArea>

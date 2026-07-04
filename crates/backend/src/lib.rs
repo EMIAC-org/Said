@@ -379,6 +379,7 @@ pub fn router_with_state(state: AppState) -> Router {
             post(routes::vocabulary::toggle_star),
         )
         .route("/v1/history", get(routes::history::list))
+        .route("/v1/history/apps", get(routes::history::app_usage))
         .route(
             "/v1/voice-runs/latest-failed",
             get(routes::voice_runs::latest_failed),

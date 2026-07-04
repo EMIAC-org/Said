@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod app_identity; // resolve target_app pid → bundle-id/exe + app icon (App Identity Service)
 mod backend;
 mod backend_guard;
 mod chaos; // env-gated fault injection for torture-testing the resilience paths
@@ -3505,9 +3506,42 @@ async fn patch_preferences(
 async fn get_history(
     backend: State<'_, BackendState>,
     limit: Option<i64>,
+    // Pagination cursor: return only recordings older than this timestamp (ms).
+    // Lets History load one page at a time instead of the whole table at once.
+    before: Option<i64>,
 ) -> Result<Vec<api::Recording>, String> {
     let ep = get_endpoint(&backend)?;
-    api::get_history(&ep, limit.unwrap_or(50)).await
+    api::get_history(&ep, limit.unwrap_or(50), before).await
+}
+
+/// Resolve a stored `target_app` key (bundle-id on macOS / exe path on Windows)
+/// to a `data:image/png;base64,…` icon URL for the History page. Results are
+/// cached in-process, so calling this per row for repeated apps is cheap.
+/// Returns `None` when the app can't be found or has no icon (row falls back to
+/// the generic placeholder).
+#[tauri::command]
+async fn get_app_icon(app_key: String) -> Option<String> {
+    if app_key.trim().is_empty() {
+        return None;
+    }
+    app_identity::icon_data_url(&app_key)
+}
+
+/// Full identity (name + category + icon) for a stored `target_app` key. Used by
+/// the Insights "apps you dictate in" section. Cached in-process.
+#[tauri::command]
+async fn get_app_identity(app_key: String) -> Option<app_identity::AppIdentity> {
+    if app_key.trim().is_empty() {
+        return None;
+    }
+    Some(app_identity::describe(&app_key))
+}
+
+/// Per-app dictation usage (grouped by target_app) for the Insights section.
+#[tauri::command]
+async fn get_app_usage(backend: State<'_, BackendState>) -> Result<Vec<api::AppUsage>, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_app_usage(&ep).await
 }
 
 #[tauri::command]
@@ -5331,7 +5365,10 @@ fn do_finish_recording(
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
-            None,
+            // Resolve the locked target pid → app key (bundle-id on macOS, exe on
+            // Windows) so History can render which app this was dictated into.
+            // `Option<i32>` is Copy, so this doesn't disturb edit_target_pid's later use.
+            edit_target_pid.and_then(app_identity::app_key_for_pid),
             client_run_id.clone(),
             pre_transcript,
             None,
@@ -11024,6 +11061,9 @@ fn main() {
             swift_model::swift_stt_delete_model,
             patch_preferences,
             get_history,
+            get_app_icon,
+            get_app_identity,
+            get_app_usage,
             submit_edit_feedback,
             toggle_recording,
             set_mode,

@@ -144,6 +144,46 @@ pub fn list_recordings(
         .unwrap_or_default()
 }
 
+/// Per-app dictation usage for the Insights "apps you dictate in" section.
+/// Groups the local `recordings` table by `target_app`, skipping rows where no
+/// app was captured (older dictations, before app-capture shipped), most-used
+/// first. App identity (name/category/icon) is resolved on the desktop side from
+/// the returned `app` key.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AppUsage {
+    /// The `target_app` key (bundle-id on macOS / exe path on Windows).
+    pub app: String,
+    pub count: i64,
+    pub total_words: i64,
+    pub last_used_ms: i64,
+}
+
+pub fn list_app_usage(pool: &DbPool, user_id: &str) -> Vec<AppUsage> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let sql = "SELECT target_app, COUNT(*), COALESCE(SUM(word_count), 0), MAX(timestamp_ms)
+                 FROM recordings
+                WHERE user_id = ?1 AND target_app IS NOT NULL AND TRIM(target_app) <> ''
+                GROUP BY target_app
+                ORDER BY COUNT(*) DESC";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(params![user_id], |row| {
+        Ok(AppUsage {
+            app: row.get(0)?,
+            count: row.get(1)?,
+            total_words: row.get(2)?,
+            last_used_ms: row.get(3)?,
+        })
+    })
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
+}
+
 /// Delete recordings older than 1 day.
 ///
 /// Best-effort retention only. Driven by the 6 h sweep in `main.rs`, whose

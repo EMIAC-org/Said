@@ -8,12 +8,31 @@ import type { Recording } from "@/types";
 import {
   deleteRecording,
   listHistory,
+  getAppIcon,
   downloadRecordingAudio as saveRecordingAudio,
   getRecordingAudioBytes,
   exportHistory,
   revealDownloadedFile,
 } from "@/lib/invoke";
 import { friendlyError } from "@/lib/friendlyError";
+
+// App-icon cache shared across all rows: app_key → data URL (or null miss).
+// Dedups in-flight lookups so N rows pasted into the same app cost one backend
+// call total, and survives re-renders/scroll without re-fetching.
+const appIconCache = new Map<string, string | null>();
+const appIconInflight = new Map<string, Promise<string | null>>();
+function resolveAppIcon(appKey: string): Promise<string | null> {
+  if (appIconCache.has(appKey)) return Promise.resolve(appIconCache.get(appKey) ?? null);
+  const inflight = appIconInflight.get(appKey);
+  if (inflight) return inflight;
+  const p = getAppIcon(appKey).then((url) => {
+    appIconCache.set(appKey, url);
+    appIconInflight.delete(appKey);
+    return url;
+  });
+  appIconInflight.set(appKey, p);
+  return p;
+}
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -324,7 +343,20 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
   const [showOriginal, setShowOriginal] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [hasAudio, setHasAudio] = useState(Boolean(recording.audio_id));
+  const [appIcon, setAppIcon] = useState<string | null>(() =>
+    recording.target_app ? appIconCache.get(recording.target_app) ?? null : null,
+  );
   const btnRef = useRef<HTMLButtonElement>(null);
+
+  // Resolve the icon of the app this dictation was pasted into. Cached + deduped
+  // module-side, so this is a no-op for apps already seen.
+  useEffect(() => {
+    const key = recording.target_app;
+    if (!key || !key.trim()) { setAppIcon(null); return; }
+    let alive = true;
+    void resolveAppIcon(key).then((url) => { if (alive) setAppIcon(url); });
+    return () => { alive = false; };
+  }, [recording.target_app]);
 
   useEffect(() => {
     let alive = true;
@@ -388,13 +420,23 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
       onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-2))"; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "hsl(var(--surface-1))"; }}
     >
-      {/* Source-app anchor */}
+      {/* Source-app anchor — real app icon where the dictation was pasted, with
+          a generic monitor fallback when we couldn't resolve one. */}
       <div
-        className="w-8 h-8 flex-shrink-0 rounded-lg flex items-center justify-center mt-0.5"
+        className="w-8 h-8 flex-shrink-0 rounded-lg flex items-center justify-center mt-0.5 overflow-hidden"
         style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
         title={source}
       >
-        <Monitor size={15} />
+        {appIcon ? (
+          <img
+            src={appIcon}
+            alt={source}
+            className="w-full h-full object-contain"
+            draggable={false}
+          />
+        ) : (
+          <Monitor size={15} />
+        )}
       </div>
 
       {/* Body */}
@@ -518,7 +560,10 @@ function Skeleton() {
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
-const HISTORY_LIMIT = 200;
+// One page of history. We load the most-recent page and let the user pull older
+// pages on demand ("Load older"), instead of holding the whole table in memory.
+// ~50 ≈ a day of normal use; older days are one click away.
+const PAGE_SIZE = 50;
 
 export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSuccess?: (path: string) => void; refreshKey?: number }) {
   const [recordings, setRecordings] = useState<Recording[]>([]);
@@ -530,19 +575,42 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const { toasts, push, dismiss } = useToasts();
   const pendingDeletes = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; commit: () => void }>());
 
   const loadHistory = useCallback(async (soft = false) => {
     if (soft) setRefreshing(true);
     try {
-      const recs = await listHistory(HISTORY_LIMIT);
+      const recs = await listHistory(PAGE_SIZE);
       setRecordings(recs);
+      setHasMore(recs.length >= PAGE_SIZE);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, []);
+
+  // Optimistic "load older": fetch the next page using the oldest loaded row as
+  // the cursor and append it. Recordings come back newest-first, so the tail is
+  // the oldest we currently hold.
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const oldest = recordings[recordings.length - 1]?.timestamp_ms;
+      const older = await listHistory(PAGE_SIZE, oldest);
+      if (older.length > 0) {
+        setRecordings((prev) => {
+          const seen = new Set(prev.map((r) => r.id));
+          return [...prev, ...older.filter((r) => !seen.has(r.id))];
+        });
+      }
+      setHasMore(older.length >= PAGE_SIZE);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [recordings]);
 
   useEffect(() => { void loadHistory(); }, [loadHistory, refreshKey]);
   useEffect(() => () => {
@@ -684,7 +752,6 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
 
   const timeline = groupRecordingsByDay(filtered);
   const hasFilters = query.trim().length > 0 || sourceFilter !== "all" || timeFilter !== "all";
-  const capped = recordings.length >= HISTORY_LIMIT;
 
   return (
     <ScrollArea className="h-full">
@@ -762,12 +829,6 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
                 options={[{ value: "all", label: "All time" }, { value: "today", label: "Today" }, { value: "7d", label: "Last 7 days" }, { value: "30d", label: "Last 30 days" }]} />
             </div>
 
-            {capped && (
-              <p className="text-[11px] text-muted-foreground mb-4 px-1">
-                Showing the latest {HISTORY_LIMIT}. Search &amp; filters apply to these.
-              </p>
-            )}
-
             {/* No results */}
             {filtered.length === 0 ? (
               <div className="text-center py-16">
@@ -783,25 +844,39 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
                 )}
               </div>
             ) : (
-              <div className="space-y-7">
-                {timeline.map((group) => (
-                  <div key={group.label}>
-                    <div className="flex items-center gap-2 mb-2.5 px-1">
-                      <span className="text-[12px] font-semibold text-foreground">{group.label}</span>
-                      <span className="text-[11px] text-muted-foreground tabular-nums">· {group.items.length}</span>
+              <>
+                <div className="space-y-7">
+                  {timeline.map((group) => (
+                    <div key={group.label}>
+                      <div className="flex items-center gap-2 mb-2.5 px-1">
+                        <span className="text-[12px] font-semibold text-foreground">{group.label}</span>
+                        <span className="text-[11px] text-muted-foreground tabular-nums">· {group.items.length}</span>
+                      </div>
+                      <div className="space-y-2">
+                        {group.items.map((rec) => (
+                          <HistoryRow key={rec.id} recording={rec} playingId={playingId}
+                            onPlay={handlePlay} onDelete={handleDelete}
+                            onCopyToast={(kind, title) => push({ kind, title, duration: 2000 })}
+                            onDownloadSuccess={onDownloadSuccess}
+                            onDownloadError={(msg) => push({ kind: "error", title: "Download failed", sub: msg, duration: 4000 })} />
+                        ))}
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      {group.items.map((rec) => (
-                        <HistoryRow key={rec.id} recording={rec} playingId={playingId}
-                          onPlay={handlePlay} onDelete={handleDelete}
-                          onCopyToast={(kind, title) => push({ kind, title, duration: 2000 })}
-                          onDownloadSuccess={onDownloadSuccess}
-                          onDownloadError={(msg) => push({ kind: "error", title: "Download failed", sub: msg, duration: 4000 })} />
-                      ))}
-                    </div>
+                  ))}
+                </div>
+                {hasMore && (
+                  <div className="flex justify-center mt-6">
+                    <button
+                      onClick={() => void loadMore()}
+                      disabled={loadingMore}
+                      className="text-[12px] font-semibold px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
+                      style={{ color: "hsl(var(--primary))", background: "hsl(var(--surface-2))" }}
+                    >
+                      {loadingMore ? "Loading…" : "Load older"}
+                    </button>
                   </div>
-                ))}
-              </div>
+                )}
+              </>
             )}
           </>
         )}

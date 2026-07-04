@@ -946,8 +946,17 @@ pub async fn list_polish_models(
 
 // ── History ───────────────────────────────────────────────────────────────────
 
-pub async fn get_history(ep: &BackendEndpoint, limit: i64) -> Result<Vec<Recording>, String> {
-    let url = format!("{}/v1/history?limit={limit}", ep.url);
+pub async fn get_history(
+    ep: &BackendEndpoint,
+    limit: i64,
+    before: Option<i64>,
+) -> Result<Vec<Recording>, String> {
+    // `before` (ms) paginates older pages; the backend `/v1/history` already
+    // supports it via list_recordings(pool, user, limit, before).
+    let url = match before {
+        Some(ms) => format!("{}/v1/history?limit={limit}&before={ms}", ep.url),
+        None => format!("{}/v1/history?limit={limit}", ep.url),
+    };
     Client::new()
         .get(&url)
         .header("Authorization", ep.bearer())
@@ -957,6 +966,29 @@ pub async fn get_history(ep: &BackendEndpoint, limit: i64) -> Result<Vec<Recordi
         .json::<Vec<Recording>>()
         .await
         .map_err(|e| format!("parse history failed: {e}"))
+}
+
+/// Per-app dictation usage from the backend (`/v1/history/apps`). The `app` field
+/// is the raw target_app key; the desktop resolves its icon/name/category.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppUsage {
+    pub app: String,
+    pub count: i64,
+    pub total_words: i64,
+    pub last_used_ms: i64,
+}
+
+pub async fn get_app_usage(ep: &BackendEndpoint) -> Result<Vec<AppUsage>, String> {
+    let url = format!("{}/v1/history/apps", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("get app usage failed: {e}"))?
+        .json::<Vec<AppUsage>>()
+        .await
+        .map_err(|e| format!("parse app usage failed: {e}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

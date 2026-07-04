@@ -1,6 +1,8 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AppIdentity,
+  AppUsageRow,
   AppSnapshot,
   BackendEndpoint,
   CloudAuthResponse,
@@ -345,10 +347,41 @@ export async function openaiDisconnect(): Promise<boolean> {
 }
 
 /** Fetch recording history from the backend (newest first). */
-export async function listHistory(limit = 50): Promise<Recording[]> {
+export async function listHistory(limit = 50, before?: number): Promise<Recording[]> {
   if (!isTauriRuntime()) return [];
   try {
-    return await tauriInvoke<Recording[]>("get_history", { limit });
+    return await tauriInvoke<Recording[]>("get_history", { limit, before: before ?? null });
+  } catch {
+    return [];
+  }
+}
+
+/** Resolve a stored `target_app` (bundle-id on macOS / exe path on Windows) to a
+ *  `data:image/png;base64,…` icon URL. Cached in the backend; `null` if unknown. */
+export async function getAppIcon(appKey: string | null | undefined): Promise<string | null> {
+  if (!isTauriRuntime() || !appKey || !appKey.trim()) return null;
+  try {
+    return await tauriInvoke<string | null>("get_app_icon", { appKey });
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve a `target_app` key to its full identity (name + category + icon). */
+export async function getAppIdentity(appKey: string | null | undefined): Promise<AppIdentity | null> {
+  if (!isTauriRuntime() || !appKey || !appKey.trim()) return null;
+  try {
+    return await tauriInvoke<AppIdentity | null>("get_app_identity", { appKey });
+  } catch {
+    return null;
+  }
+}
+
+/** Per-app dictation usage (grouped by target_app, most-used first). */
+export async function listAppUsage(): Promise<AppUsageRow[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await tauriInvoke<AppUsageRow[]>("get_app_usage");
   } catch {
     return [];
   }

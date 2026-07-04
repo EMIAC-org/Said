@@ -37,6 +37,18 @@ pub async fn list(
     Ok(Json(items))
 }
 
+/// Per-app dictation usage, grouped by `target_app` (most-used first). Feeds the
+/// Insights "apps you dictate in" section; app identity is resolved desktop-side.
+pub async fn app_usage(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::store::history::AppUsage>>, StatusCode> {
+    let user_id = state.default_user_id.clone();
+    Ok(Json(crate::store::history::list_app_usage(
+        &state.pool,
+        &user_id,
+    )))
+}
+
 #[derive(Debug, Deserialize)]
 struct RuntimeHistoryItem {
     id: Uuid,
