@@ -689,6 +689,19 @@ pub async fn ingest_dictation(
             herr("database error")
         })?;
 
+    // Fire-and-forget: enqueue a coalesced profiling+KB window job once the user crosses
+    // the dictation threshold. Idempotent — at most one in-flight job per user.
+    let enqueue_db = state.db.clone();
+    let enqueue_account = user.account_id;
+    let enqueue_scope = crate::profile::store::resolve_org_scope(tenant_ctx.active_org_id);
+    tokio::spawn(async move {
+        if let Err(e) =
+            crate::profile::updater::batch::maybe_enqueue(&enqueue_db, enqueue_account, enqueue_scope).await
+        {
+            tracing::warn!("[profile-batch] enqueue failed: {e}");
+        }
+    });
+
     Ok(Json(IngestOk { ok: true }))
 }
 

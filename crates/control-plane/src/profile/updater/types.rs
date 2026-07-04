@@ -271,6 +271,55 @@ pub struct AliasChangeRecord {
     pub to_status: String,
 }
 
+// --- Batched per-user profiling + KB run (deepseek-v4-flash over a bucket window) ---
+
+/// One dictation in the analyzed window, as sent to DeepSeek.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchRunInput {
+    pub was_edited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_transcript: Option<String>,
+    pub polished_output: String,
+    pub final_text: String,
+}
+
+/// DeepSeek's per-run classification of an unknown app into the fixed bucket enum.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AppBucketSuggestion {
+    pub app_key: String,
+    pub bucket: String,
+    #[serde(default)]
+    pub confidence: f64,
+}
+
+/// DeepSeek's structured output for one bucket window: per-bucket style + global KB
+/// deltas + app-bucket classifications. Reuses the per-edit patch sub-structs.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct BatchProfileResponse {
+    /// The model's own recommendation to apply (gated further by `confidence`).
+    #[serde(default)]
+    pub apply: bool,
+    #[serde(default)]
+    pub confidence: f64,
+    /// Per-bucket style (-> the bucket overlay).
+    #[serde(default)]
+    pub style_updates: Vec<PatchStyleUpdate>,
+    #[serde(default)]
+    pub speech_patterns: Vec<PatchSpeechPattern>,
+    /// Global identity / KB (-> runtime_user_profiles, bucket-invariant).
+    #[serde(default)]
+    pub user_background: Option<PatchUserBackground>,
+    #[serde(default)]
+    pub add_domains: Vec<PatchDomain>,
+    #[serde(default)]
+    pub add_focus_areas: Vec<PatchFocusArea>,
+    /// Classifications for apps not yet in the static/agent bucket map.
+    #[serde(default)]
+    pub app_bucket_suggestions: Vec<AppBucketSuggestion>,
+    #[serde(default)]
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct LearnJobRow {
     pub id: Uuid,

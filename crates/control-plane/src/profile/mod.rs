@@ -2,6 +2,7 @@
 
 pub mod alias;
 pub mod alias_safety;
+pub mod bucket;
 pub mod store;
 pub mod updater;
 

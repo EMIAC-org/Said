@@ -231,6 +231,9 @@ async fn main() {
         profile_cache,
     };
 
+    // Per-user batched profiling + KB worker (deepseek-v4-flash, one run per ~10 dictations).
+    said_control_plane::profile::updater::batch_run::start_batch_worker(state.clone());
+
     let app = build_router(state);
 
     let shutdown = async {

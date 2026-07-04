@@ -5,10 +5,10 @@ use tracing::{info, warn};
 
 use crate::AppState;
 use crate::profile::updater::prompt::{
-    PROFILE_ALIAS_EXPANSION_SYSTEM_PROMPT, PROFILE_UPDATE_SYSTEM_PROMPT,
+    PROFILE_ALIAS_EXPANSION_SYSTEM_PROMPT, PROFILE_BATCH_SYSTEM_PROMPT, PROFILE_UPDATE_SYSTEM_PROMPT,
 };
 use crate::profile::updater::types::{
-    DeepSeekAliasProposal, DeepSeekProfileUpdateResponse, ProfileUpdateRequest,
+    BatchProfileResponse, DeepSeekAliasProposal, DeepSeekProfileUpdateResponse, ProfileUpdateRequest,
 };
 
 const REQUEST_TIMEOUT_SECS: u64 = 20;
@@ -260,6 +260,118 @@ pub async fn call_deepseek_alias_expansion(
         said_core::text::truncate_utf8(&parsed.1, 180),
     );
     Ok((parsed.0, parsed.1, started.elapsed().as_millis() as u64))
+}
+
+/// Batched per-bucket profiling + KB call over a window of dictations. `request` is a
+/// JSON object built by the batch worker (bucket, runs, current style, unknown apps).
+pub async fn call_deepseek_batch_profile(
+    state: &AppState,
+    request: &Value,
+) -> Result<(BatchProfileResponse, u64), String> {
+    if state.deepseek_api_key.trim().is_empty() {
+        return Err("DEEPSEEK_API_KEY is not configured".to_string());
+    }
+    let user_message = serde_json::to_string_pretty(request)
+        .map_err(|e| format!("batch request serialize failed: {e}"))?;
+    let model = profile_update_model();
+    let url = format!(
+        "{}/v1/chat/completions",
+        state.deepseek_base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "model": model,
+        "temperature": 0.1,
+        "top_p": 0.9,
+        "max_tokens": 2048,
+        "stream": false,
+        "response_format": { "type": "json_object" },
+        "thinking": { "type": "disabled" },
+        "messages": [
+            { "role": "system", "content": PROFILE_BATCH_SYSTEM_PROMPT },
+            { "role": "user", "content": user_message }
+        ]
+    });
+
+    let mut last_err = String::from("unknown DeepSeek error");
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let backoff_ms = if attempt == 1 { 1000 } else { 3000 };
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+        }
+        let started = std::time::Instant::now();
+        let resp = crate::HTTP_CLIENT
+            .post(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", state.deepseek_api_key),
+            )
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .send()
+            .await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                let value: Value = r
+                    .json()
+                    .await
+                    .map_err(|e| format!("batch response parse failed: {e}"))?;
+                let raw = value
+                    .get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("message"))
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if raw.is_empty() {
+                    last_err = "DeepSeek returned empty batch output".to_string();
+                    continue;
+                }
+                let parsed = parse_batch_profile_response(&raw)?;
+                info!(
+                    "[profile-batch] deepseek batch complete attempt={} latency_ms={} apply={} confidence={:.2} style_updates={} domains={} app_suggestions={}",
+                    attempt + 1,
+                    started.elapsed().as_millis(),
+                    parsed.apply,
+                    parsed.confidence,
+                    parsed.style_updates.len(),
+                    parsed.add_domains.len(),
+                    parsed.app_bucket_suggestions.len(),
+                );
+                return Ok((parsed, started.elapsed().as_millis() as u64));
+            }
+            Ok(r) => {
+                let status = r.status();
+                let preview = r.text().await.unwrap_or_default();
+                last_err = format!(
+                    "DeepSeek batch HTTP {status}: {}",
+                    preview.chars().take(200).collect::<String>()
+                );
+                warn!("[profile-batch] {last_err}");
+            }
+            Err(e) => {
+                last_err = format!("DeepSeek batch request failed: {e}");
+                warn!("[profile-batch] {last_err}");
+            }
+        }
+    }
+    Err(last_err)
+}
+
+pub fn parse_batch_profile_response(raw: &str) -> Result<BatchProfileResponse, String> {
+    let trimmed = raw.trim();
+    let json_str = if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            &trimmed[start..=end]
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+    serde_json::from_str(json_str).map_err(|e| format!("invalid batch JSON: {e}"))
 }
 
 pub fn parse_profile_update_response(raw: &str) -> Result<DeepSeekProfileUpdateResponse, String> {

@@ -333,6 +333,10 @@ pub struct VoiceWavRequest {
     pub app_version: Option<String>,
     #[serde(default)]
     pub stt_provider: Option<String>,
+    /// Focused app (macOS bundle id / Windows exe path). When present, the polish prompt
+    /// gets that app-bucket's learned style overlay; absent = global profile only.
+    #[serde(default)]
+    pub target_app: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1855,6 +1859,10 @@ async fn handle_voice_ws(
                                 &selected_model,
                                 screen_context.as_deref(),
                                 &safe_vocab_terms,
+                                // target_app not yet carried on the streaming path — global
+                                // profile still injects; per-bucket overlay lights up once
+                                // the stream forwards the focused app.
+                                None,
                             )
                             .await
                             {
@@ -2319,6 +2327,34 @@ async fn account_polish_persona(state: &AppState, account_id: Uuid) -> (String, 
     (tone_preset, custom_prompt)
 }
 
+/// Additive learned-profile block for polish: global profile markdown plus, when the
+/// focused app is known, the current app-bucket's style overlay. Empty when nothing has
+/// been learned yet (caller then injects nothing).
+async fn load_injected_profile(
+    state: &AppState,
+    account_id: Uuid,
+    org_scope: Uuid,
+    target_app: Option<&str>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Ok(Some(row)) =
+        crate::profile::store::get_profile_with_fallback(&state.db, account_id, org_scope).await
+        && !row.profile_markdown.trim().is_empty()
+    {
+        parts.push(row.profile_markdown);
+    }
+    if let Some(app) = target_app.filter(|a| !a.trim().is_empty()) {
+        let bucket = crate::profile::bucket::resolve_bucket(&state.db, app).await;
+        if let Ok(Some(overlay)) =
+            crate::profile::bucket::get_bucket_profile(&state.db, account_id, org_scope, bucket).await
+            && !overlay.profile_markdown.trim().is_empty()
+        {
+            parts.push(overlay.profile_markdown);
+        }
+    }
+    parts.join("\n\n")
+}
+
 async fn polish_runtime_transcript(
     state: &AppState,
     account_id: Uuid,
@@ -2328,6 +2364,7 @@ async fn polish_runtime_transcript(
     selected_model: &str,
     screen_context: Option<&str>,
     safe_vocab_terms: &[String],
+    target_app: Option<&str>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
     let formatted_transcript = crate::number_format::apply(transcript);
     if formatted_transcript != transcript {
@@ -2347,7 +2384,17 @@ async fn polish_runtime_transcript(
     }
 
     let (tone_preset, custom_prompt) = account_polish_persona(state, account_id).await;
-    let profile_md: Option<&str> = None;
+
+    // Additive learned-profile injection: global profile + (when the focused app is known)
+    // the current bucket's style overlay. Never replaces the base prompt or its hard rules.
+    let active_org_id = primary_org_id(state, account_id).await?;
+    let org_scope = crate::profile::store::resolve_org_scope(active_org_id);
+    let profile_block = load_injected_profile(state, account_id, org_scope, target_app).await;
+    let profile_md: Option<&str> = if profile_block.is_empty() {
+        None
+    } else {
+        Some(profile_block.as_str())
+    };
 
     let prompt_start = Instant::now();
     let system_prompt = build_voice_system_prompt(
@@ -2386,7 +2433,7 @@ async fn polish_runtime_transcript(
         tone_preset: &tone_preset,
         prompt_kind: "voice_polish",
         profile_version: None,
-        profile_status: "missing",
+        profile_status: if profile_md.is_some() { "injected" } else { "missing" },
         profile_cache_hit: false,
         profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
         profile_injected: profile_md.is_some(),
@@ -2396,7 +2443,6 @@ async fn polish_runtime_transcript(
     })
     .await;
     let model_start = Instant::now();
-    let active_org_id = primary_org_id(state, account_id).await?;
     let credential =
         runtime_provider_secret(state, account_id, active_org_id, provider_label).await?;
     let secret = credential.secret.clone();
@@ -2903,6 +2949,7 @@ pub async fn voice_wav(
             &req.selected_model,
             req.screen_context.as_deref(),
             &merged_vocab,
+            req.target_app.as_deref(),
         )
         .await
         {
