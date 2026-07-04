@@ -906,7 +906,10 @@ export default function App() {
       )}
 
       {/* ── Vocabulary toast (bottom-center) ─────────── */}
-      {vocabToast && !retryToast && !editToast && (
+      {/* Suppressed on the Vocabulary page — that view owns its own toasts
+          (with Undo) for explicit edits; this global surface is for background
+          auto-learning feedback while you're dictating elsewhere. */}
+      {vocabToast && activeView !== "vocabulary" && !retryToast && !editToast && (
         <VocabularyToast
           kind={vocabToast.kind}
           term={vocabToast.term}

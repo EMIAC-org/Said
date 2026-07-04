@@ -625,6 +625,13 @@ export async function downloadRecordingAudio(
   }
 }
 
+/** Export History transcripts to a file. Native save dialog; returns the saved
+ *  path, or null if cancelled / not in Tauri. Throws on write failure. */
+export async function exportHistory(content: string, filename: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  return await tauriInvoke<string | null>("export_history", { content, filename });
+}
+
 export async function revealDownloadedFile(path: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await tauriInvoke("reveal_downloaded_file", { path });
@@ -911,6 +918,28 @@ export async function listVocabulary(): Promise<VocabListResponse> {
     return await tauriInvoke<VocabListResponse>("list_vocabulary");
   } catch {
     return { terms: [], total: 0 };
+  }
+}
+
+/** A learned mishearing→canonical correction that rewrites dictation output. */
+export interface VocabAlias {
+  correct_form:    string;   // the canonical spelling (matches a vocab term)
+  transcript_form: string;   // the mis-heard form STT produced
+  use_count:       number;
+  active:          boolean;  // fires at runtime (approved + not blocked)
+}
+
+export interface VocabAliasesResponse {
+  aliases: VocabAlias[];
+}
+
+/** The real learned corrections behind vocab terms (stt_replacements). */
+export async function listVocabularyAliases(): Promise<VocabAliasesResponse> {
+  if (!isTauriRuntime()) return { aliases: [] };
+  try {
+    return await tauriInvoke<VocabAliasesResponse>("list_vocabulary_aliases");
+  } catch {
+    return { aliases: [] };
   }
 }
 

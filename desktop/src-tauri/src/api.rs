@@ -1759,6 +1759,34 @@ pub async fn get_stt_bias(ep: &BackendEndpoint) -> Result<BiasPackage, String> {
         .map_err(|e| format!("parse stt bias: {e}"))
 }
 
+// ── Vocabulary alias API (honest UI: learned wrong→right fixes) ─────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AliasRow {
+    pub correct_form: String,
+    pub transcript_form: String,
+    pub use_count: i64,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AliasesResponse {
+    pub aliases: Vec<AliasRow>,
+}
+
+pub async fn list_vocab_aliases(ep: &BackendEndpoint) -> Result<AliasesResponse, String> {
+    let url = format!("{}/v1/vocabulary/aliases", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("list vocab aliases failed: {e}"))?
+        .json::<AliasesResponse>()
+        .await
+        .map_err(|e| format!("parse vocab aliases: {e}"))
+}
+
 // ── Vocabulary management API (settings UI) ─────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

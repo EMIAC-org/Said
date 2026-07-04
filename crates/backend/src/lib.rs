@@ -361,6 +361,10 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/vocabulary/terms", get(routes::vocabulary::list_terms))
         .route(
+            "/v1/vocabulary/aliases",
+            get(routes::vocabulary::list_aliases),
+        )
+        .route(
             "/v1/vocabulary/all",
             axum::routing::delete(routes::vocabulary::delete_all),
         )

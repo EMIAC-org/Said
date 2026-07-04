@@ -7050,6 +7050,23 @@ fn download_meeting_audio(audio_path: String, filename: String) -> Result<Option
     Ok(Some(dest.display().to_string()))
 }
 
+/// Export the History transcripts to a user-chosen text/markdown file. The
+/// caller builds the full document (Markdown/plain text) in the webview; this
+/// just shows the native save dialog and writes it. Returns the saved path, or
+/// None if the user cancelled.
+#[tauri::command]
+fn export_history(content: String, filename: String) -> Result<Option<String>, String> {
+    let Some(path) = choose_recording_audio_save_path(&filename)? else {
+        return Ok(None);
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create export folder: {e}"))?;
+    }
+    std::fs::write(&path, content).map_err(|e| format!("couldn't save export: {e}"))?;
+    Ok(Some(path.display().to_string()))
+}
+
 #[tauri::command]
 fn reveal_downloaded_file(path: String) -> Result<(), String> {
     let path = std::path::PathBuf::from(path);
@@ -7416,6 +7433,14 @@ async fn list_vocabulary(
 ) -> Result<api::VocabListResponse, String> {
     let ep = get_endpoint(&backend)?;
     api::list_vocabulary(&ep).await
+}
+
+#[tauri::command]
+async fn list_vocabulary_aliases(
+    backend: State<'_, BackendState>,
+) -> Result<api::AliasesResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    api::list_vocab_aliases(&ep).await
 }
 
 #[tauri::command]
@@ -10969,6 +10994,7 @@ fn main() {
             get_recording_audio_url,
             get_recording_audio_bytes,
             download_recording_audio,
+            export_history,
             reveal_downloaded_file,
             reveal_saved_audio,
             download_meeting_audio,
@@ -10978,6 +11004,7 @@ fn main() {
             dismiss_pending_edit,
             // Vocabulary management
             list_vocabulary,
+            list_vocabulary_aliases,
             add_vocabulary_term,
             delete_vocabulary_term,
             confirm_term,

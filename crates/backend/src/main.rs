@@ -218,7 +218,10 @@ async fn main() {
         });
     }
 
-    // ── 7-day recording + 24h audio file cleanup (every 6 hours) ─────────────
+    // ── Retention sweep (every 6 h): delete recordings + audio older than 1 day
+    // (failed-retryable audio is protected up to 7 days — see cleanup_old_audio).
+    // NOTE: the 6 h interval RESETS on every backend restart, so this only fires
+    // after 6 h of continuous uptime; short-lived sessions rarely trigger it.
     {
         let pool2 = pool.clone();
         tokio::spawn(async move {
@@ -228,7 +231,7 @@ async fn main() {
                 interval.tick().await;
                 said_backend::store::history::cleanup_old_recordings(&pool2);
                 said_backend::routes::voice::cleanup_old_audio(&pool2);
-                info!("[cleanup] 7-day recording + 24h audio sweep complete");
+                info!("[cleanup] 1-day recording + audio retention sweep complete");
             }
         });
     }
@@ -404,7 +407,9 @@ async fn send_metering_report(
         .map(|s| s.to_string())
         .unwrap_or_else(|| cloud_url.to_string());
 
-    // Aggregate from recordings over the last 7 days (matches history retention)
+    // Aggregate recordings from the last 7 days for the metering report. (The
+    // retention sweep targets 1 day but rarely fires — see the cleanup task —
+    // so up to a week of rows is typically present.)
     let events: Vec<serde_json::Value> = {
         let conn = match pool.get() {
             Ok(c) => c,

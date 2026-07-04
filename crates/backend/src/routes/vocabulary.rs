@@ -184,6 +184,45 @@ pub async fn list(State(state): State<AppState>) -> Json<VocabListResponse> {
     Json(VocabListResponse { terms, total })
 }
 
+// ── GET /v1/vocabulary/aliases (honest UI: learned wrong→right fixes) ─────────
+//
+// Surfaces the `stt_replacements` rows — the mishearing→canonical corrections
+// that actually rewrite dictation output post-LLM (voice.rs apply_exact_safe).
+// The management UI groups these by `correct_form` (== a vocab term) so each
+// term can show the real fixes backing it, instead of an opaque weight score.
+
+#[derive(Serialize)]
+pub struct AliasRow {
+    /// The canonical spelling AirNote rewrites to (matches a vocabulary term).
+    pub correct_form: String,
+    /// The mis-heard form STT produced (what gets replaced).
+    pub transcript_form: String,
+    pub use_count: i64,
+    /// True when this alias actually fires at runtime: approved by review and
+    /// not blocked. Mirrors the gate in stt_replacements::apply_exact_safe.
+    pub active: bool,
+}
+
+#[derive(Serialize)]
+pub struct AliasesResponse {
+    pub aliases: Vec<AliasRow>,
+}
+
+pub async fn list_aliases(State(state): State<AppState>) -> Json<AliasesResponse> {
+    use crate::store::stt_replacements::{ExportTier, ReviewStatus};
+    let rows = stt_replacements::load_all(&state.pool, &state.default_user_id);
+    let aliases = rows
+        .into_iter()
+        .map(|r| AliasRow {
+            active: r.review_status == ReviewStatus::Approved && r.export_tier != ExportTier::Blocked,
+            correct_form: r.correct_form,
+            transcript_form: r.transcript_form,
+            use_count: r.use_count,
+        })
+        .collect();
+    Json(AliasesResponse { aliases })
+}
+
 // ── POST /v1/vocabulary (manual add) ─────────────────────────────────────────
 
 #[derive(Deserialize)]

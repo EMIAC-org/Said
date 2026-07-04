@@ -1588,25 +1588,6 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   letter-spacing: 0.02em;
 }
 
-.sb-progress-dots {
-  display: inline-flex;
-  gap: 2px;
-  height: 3px;
-}
-
-.sb-progress-dots span {
-  width: 3px;
-  height: 3px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.25);
-  animation: sb-dot-run 0.9s steps(5) infinite;
-}
-
-.sb-progress-dots span:nth-child(2) { animation-delay: 0.07s; }
-.sb-progress-dots span:nth-child(3) { animation-delay: 0.14s; }
-.sb-progress-dots span:nth-child(4) { animation-delay: 0.21s; }
-.sb-progress-dots span:nth-child(5) { animation-delay: 0.28s; }
-
 .sb-success {
   display: inline-flex;
   align-items: center;
@@ -1744,14 +1725,6 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
 }
 
 
-@keyframes sb-dot-run {
-  0%, 20% {
-    background: rgba(255, 255, 255, 0.86);
-  }
-  21%, 100% {
-    background: rgba(255, 255, 255, 0.25);
-  }
-}
 
 @keyframes sb-success-rise {
   0%, 100% {
@@ -2343,38 +2316,6 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   margin-right: 5px;
   background: hsl(var(--primary) / 0.14);
   box-shadow: none;
-}
-
-.sb-survey-visualizer--active .sb-mode-badge {
-  background: hsl(var(--primary) / 0.14);
-  box-shadow: none;
-}
-
-.sb-survey-processing {
-  height: 24px;
-  min-width: 80px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  color: hsl(var(--foreground) / 0.88);
-  font-size: 10.5px;
-  line-height: 1;
-  font-weight: 560;
-  letter-spacing: 0.02em;
-}
-
-.sb-processing-line {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  white-space: nowrap;
-}
-
-.sb-processing-line .sb-mode-badge {
-  flex: none;
 }
 
 .sb-survey-success {
