@@ -11,7 +11,8 @@ import { loadOnboardingProgress } from "@/lib/onboardingProgress";
 import { Topbar } from "@/components/Topbar";
 import { DashboardView } from "@/components/views/DashboardView";
 import { HistoryView } from "@/components/views/HistoryView";
-import { InsightsView } from "@/components/views/InsightsView";
+import { LearningsView } from "@/components/views/LearningsView";
+import { BucketsView } from "@/components/views/BucketsView";
 import { VocabularyView } from "@/components/views/VocabularyView";
 import { MeetingsView } from "@/components/views/MeetingsView";
 import { DivoView } from "@/components/views/DivoView";
@@ -64,8 +65,8 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "divo", "settings", "live-meeting"];
+export type ActiveView = "dashboard" | "history" | "vocabulary" | "learnings" | "buckets" | "meetings" | "divo" | "settings" | "live-meeting";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "learnings", "buckets", "meetings", "divo", "settings", "live-meeting"];
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -824,7 +825,8 @@ export default function App() {
                 )}
                 {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
                 {activeView === "vocabulary" && <VocabularyView />}
-                {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
+                {activeView === "learnings"  && <LearningsView />}
+                {activeView === "buckets"    && <BucketsView />}
                 {activeView === "meetings"   && (
                   <MeetingsView
                     focusMeetingId={focusMeetingId}

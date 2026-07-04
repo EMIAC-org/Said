@@ -1392,6 +1392,122 @@ pub async fn list_workspaces(
         .map_err(|e| format!("parse org list: {e}"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileRunStats {
+    pub run_count: i64,
+    pub skipped_count: i64,
+    pub last_run_at: Option<String>,
+    pub last_run_outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KnowledgeBase {
+    pub background: Option<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default)]
+    pub focus_areas: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BucketInsight {
+    pub bucket_key: String,
+    #[serde(default)]
+    pub style: Vec<String>,
+    #[serde(default)]
+    pub speech_patterns: Vec<String>,
+    pub version: i64,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileInsights {
+    pub run_stats: ProfileRunStats,
+    pub knowledge: KnowledgeBase,
+    #[serde(default)]
+    pub buckets: Vec<BucketInsight>,
+}
+
+/// GET /v1/runtime/profile/insights — what the cloud profiling brain has learned.
+pub async fn get_profile_insights(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+) -> Result<ProfileInsights, String> {
+    let url = format!(
+        "{}/v1/runtime/profile/insights",
+        server_url.trim_end_matches('/')
+    );
+    let mut req = Client::new()
+        .get(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    req.send()
+        .await
+        .map_err(|e| format!("profile insights failed: {e}"))?
+        .json::<ProfileInsights>()
+        .await
+        .map_err(|e| format!("parse profile insights: {e}"))
+}
+
+/// GET /v1/runtime/profile/buckets — apps the user dictates into, grouped by bucket.
+pub async fn get_app_buckets(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let url = format!(
+        "{}/v1/runtime/profile/buckets",
+        server_url.trim_end_matches('/')
+    );
+    let mut req = Client::new()
+        .get(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    req.send()
+        .await
+        .map_err(|e| format!("app buckets failed: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("parse app buckets: {e}"))
+}
+
+/// POST /v1/runtime/profile/buckets/override — re-file an app into a bucket (user override).
+pub async fn set_app_bucket(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+    app_key: &str,
+    bucket_key: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/v1/runtime/profile/buckets/override",
+        server_url.trim_end_matches('/')
+    );
+    let mut req = Client::new()
+        .post(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10))
+        .json(&serde_json::json!({ "app_key": app_key, "bucket_key": bucket_key }));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("set app bucket failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("set app bucket failed: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
 pub async fn activate_workspace_on_server(
     server_url: &str,
     token: &str,

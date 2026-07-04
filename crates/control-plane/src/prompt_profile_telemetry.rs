@@ -8,6 +8,7 @@ use uuid::Uuid;
 use said_core::polish::prompt::sanitize_profile_markdown;
 
 pub const PROFILE_SOURCE_CLIENT_LOCAL: &str = "client_local";
+pub const PROFILE_SOURCE_SERVER_DB: &str = "server_db";
 pub const PROFILE_SOURCE_NONE: &str = "none";
 
 pub struct PromptProfileSnapshot {
@@ -36,6 +37,17 @@ pub fn snapshot_from_raw(raw: Option<&str>) -> PromptProfileSnapshot {
         profile_chars,
         profile_hash,
     }
+}
+
+/// Same as [`snapshot_from_raw`] but tags the source as the server-learned KB
+/// (`server_db`) instead of the legacy client-shipped markdown. Used by the voice
+/// polish path now that the profile is injected from the server profile store.
+pub fn snapshot_from_server(raw: Option<&str>) -> PromptProfileSnapshot {
+    let mut snap = snapshot_from_raw(raw);
+    if snap.profile_chars > 0 {
+        snap.profile_source = PROFILE_SOURCE_SERVER_DB;
+    }
+    snap
 }
 
 pub fn hash_profile(markdown: &str) -> String {

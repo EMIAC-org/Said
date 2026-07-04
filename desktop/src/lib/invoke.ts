@@ -408,6 +408,74 @@ export async function getFavicon(host: string | null | undefined): Promise<strin
   }
 }
 
+export interface ProfileRunStats {
+  run_count: number;
+  skipped_count: number;
+  last_run_at: string | null;
+  last_run_outcome: string | null;
+}
+
+export interface KnowledgeBase {
+  background: string | null;
+  domains: string[];
+  focus_areas: string[];
+}
+
+export interface BucketInsight {
+  bucket_key: string;
+  style: string[];
+  speech_patterns: string[];
+  version: number;
+  updated_at: string | null;
+}
+
+export interface ProfileInsights {
+  run_stats: ProfileRunStats;
+  knowledge: KnowledgeBase;
+  buckets: BucketInsight[];
+}
+
+/** What the cloud profiling brain has learned. `null` when signed out / offline. */
+export async function getProfileInsights(): Promise<ProfileInsights | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<ProfileInsights>("get_profile_insights");
+  } catch {
+    return null;
+  }
+}
+
+/** One app resolved to its bucket, for the Buckets kanban. */
+export interface AppBucketRow {
+  app_key: string;
+  bucket_key: string;
+  /** "user" | "static" | "agent" | "default" */
+  source: string;
+  count: number;
+}
+
+export interface AppBuckets {
+  /** Canonical bucket keys in display order (the kanban columns). */
+  buckets: string[];
+  apps: AppBucketRow[];
+}
+
+/** Apps grouped by bucket. `null` when signed out / offline. */
+export async function getAppBuckets(): Promise<AppBuckets | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<AppBuckets>("get_app_buckets");
+  } catch {
+    return null;
+  }
+}
+
+/** Re-file an app into a bucket (user override; wins over static + agent). */
+export async function setAppBucket(appKey: string, bucketKey: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("set_app_bucket", { appKey, bucketKey });
+}
+
 /** Diagnostic — try all 5 AX field-reading methods on whatever is focused. */
 export interface AxMethodResult {
   method: string;
@@ -1060,6 +1128,35 @@ export async function requestBrowserAutomation(): Promise<string[]> {
     return await tauriInvoke<string[]>("request_browser_automation");
   } catch {
     return [];
+  }
+}
+
+export interface BrowserAutomation {
+  app_key: string;
+  name: string;
+  running: boolean;
+  status: "granted" | "denied" | "unknown";
+}
+
+/** Live macOS Automation consent state for every known browser currently
+ *  running. Empty when no known browser is open (Apple Events need a live
+ *  target), so the UI should tell the user to open their browser. */
+export async function browserAutomationStatus(): Promise<BrowserAutomation[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await tauriInvoke<BrowserAutomation[]>("browser_automation_status");
+  } catch {
+    return [];
+  }
+}
+
+/** Fire the Automation consent dialog for one specific browser (by bundle-id). */
+export async function triggerBrowserAutomation(appKey: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    return await tauriInvoke<boolean>("trigger_browser_automation", { appKey });
+  } catch {
+    return false;
   }
 }
 

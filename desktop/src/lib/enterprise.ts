@@ -483,11 +483,21 @@ export function saveConnection(conn: EnterpriseConnection): void {
   } catch {
     // ignore
   }
+  emitEnterpriseConnectionChanged();
 }
 
 /** Clear connection (disconnect) */
 export function disconnect(): void {
   localStorage.removeItem(STORAGE_KEY);
+  emitEnterpriseConnectionChanged();
+}
+
+function emitEnterpriseConnectionChanged(): void {
+  try {
+    window.dispatchEvent(new Event("airnote-enterprise-connection-changed"));
+  } catch {
+    // non-browser/test environment
+  }
 }
 
 export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseConnection | null> {

@@ -55,7 +55,10 @@ pub fn start_batch_worker(state: AppState) {
             }
         }
     });
-    info!("[profile-batch] started ({TICK_SECS}s poll, threshold={})", batch::runs_per_batch());
+    info!(
+        "[profile-batch] started ({TICK_SECS}s poll, threshold={})",
+        batch::runs_per_batch()
+    );
 }
 
 async fn process_job(state: &AppState, job: batch::BatchJobRow) {
@@ -65,14 +68,38 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
     let since = match batch::last_window_mark(&state.db, account_id, org_scope).await {
         Ok(m) => m,
         Err(e) => {
-            let _ = batch::finish_job(&state.db, job.id, "failed", None, 0, None, None, None, None, Some(&e.to_string())).await;
+            let _ = batch::finish_job(
+                &state.db,
+                job.id,
+                "failed",
+                None,
+                0,
+                None,
+                None,
+                None,
+                None,
+                Some(&e.to_string()),
+            )
+            .await;
             return;
         }
     };
     let window = match batch::collect_window(&state.db, account_id, since).await {
         Ok(w) => w,
         Err(e) => {
-            let _ = batch::finish_job(&state.db, job.id, "failed", None, 0, None, None, None, None, Some(&e.to_string())).await;
+            let _ = batch::finish_job(
+                &state.db,
+                job.id,
+                "failed",
+                None,
+                0,
+                None,
+                None,
+                None,
+                None,
+                Some(&e.to_string()),
+            )
+            .await;
             return;
         }
     };
@@ -82,7 +109,19 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
     let window_to = window.last().map(|r| r.run.created_at);
 
     if window.is_empty() {
-        let _ = batch::finish_job(&state.db, job.id, "skipped", Some("empty"), 0, None, None, None, None, None).await;
+        let _ = batch::finish_job(
+            &state.db,
+            job.id,
+            "skipped",
+            Some("empty"),
+            0,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         let _ = batch::bump_run_stats(&state.db, account_id, org_scope, "skipped", true).await;
         return;
     }
@@ -101,20 +140,53 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
         }
     }
 
-    let global_summary = load_global_summary(state, account_id, org_scope).await;
-    let started = std::time::Instant::now();
-    let mut applied_any = false;
-    let mut kb_deltas: Vec<BatchProfileResponse> = Vec::new();
-
+    // Which buckets in this window are worth a DeepSeek call (edited, or not yet learned).
+    let mut signal_buckets: Vec<Bucket> = Vec::new();
     for bucket in Bucket::ALL {
         let runs: Vec<&BucketedRun> = window.iter().filter(|r| r.bucket == bucket).collect();
         if runs.is_empty() {
             continue;
         }
         let edited_any = runs.iter().any(|r| r.was_edited);
-        if !bucket_has_signal(state, account_id, org_scope, bucket, edited_any).await {
-            continue;
+        if bucket_has_signal(state, account_id, org_scope, bucket, edited_any).await {
+            signal_buckets.push(bucket);
         }
+    }
+    if signal_buckets.is_empty() {
+        info!(
+            "[profile-batch] account={} skipped — no signal across {} runs (buckets already stable)",
+            account_id, run_count
+        );
+        let _ = batch::finish_job(
+            &state.db,
+            job.id,
+            "skipped",
+            Some("no_signal"),
+            run_count,
+            window_from,
+            window_to,
+            None,
+            None,
+            None,
+        )
+        .await;
+        let _ = batch::bump_run_stats(&state.db, account_id, org_scope, "skipped", true).await;
+        return;
+    }
+    info!(
+        "[profile-batch] account={} analyzing {} runs across buckets {:?}",
+        account_id,
+        run_count,
+        signal_buckets.iter().map(|b| b.as_key()).collect::<Vec<_>>()
+    );
+
+    let global_summary = load_global_summary(state, account_id, org_scope).await;
+    let started = std::time::Instant::now();
+    let mut applied_any = false;
+    let mut kb_deltas: Vec<BatchProfileResponse> = Vec::new();
+
+    for bucket in signal_buckets {
+        let runs: Vec<&BucketedRun> = window.iter().filter(|r| r.bucket == bucket).collect();
 
         let overlay_md = bucket::get_bucket_profile(&state.db, account_id, org_scope, bucket)
             .await
@@ -156,7 +228,10 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
         let resp = match deepseek::call_deepseek_batch_profile(state, &request).await {
             Ok((resp, _latency)) => resp,
             Err(e) => {
-                warn!("[profile-batch] bucket={} deepseek failed: {e}", bucket.as_key());
+                warn!(
+                    "[profile-batch] bucket={} deepseek failed: {e}",
+                    bucket.as_key()
+                );
                 continue;
             }
         };
@@ -167,7 +242,8 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
                 && b != Bucket::Default
                 && !s.app_key.trim().is_empty()
             {
-                let _ = bucket::upsert_app_bucket(&state.db, &s.app_key, b, "agent", s.confidence).await;
+                let _ = bucket::upsert_app_bucket(&state.db, &s.app_key, b, "agent", s.confidence)
+                    .await;
             }
         }
 
@@ -197,12 +273,18 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
         )
         .await
         {
-            warn!("[profile-batch] overlay upsert failed bucket={}: {e}", bucket.as_key());
+            warn!(
+                "[profile-batch] overlay upsert failed bucket={}: {e}",
+                bucket.as_key()
+            );
             continue;
         }
         applied_any = true;
 
-        if resp.user_background.is_some() || !resp.add_domains.is_empty() || !resp.add_focus_areas.is_empty() {
+        if resp.user_background.is_some()
+            || !resp.add_domains.is_empty()
+            || !resp.add_focus_areas.is_empty()
+        {
             kb_deltas.push(resp);
         }
     }
@@ -252,7 +334,11 @@ async fn bucket_has_signal(
 }
 
 /// Short markdown summary of the global profile, to prime per-bucket calls.
-async fn load_global_summary(state: &AppState, account_id: uuid::Uuid, org_scope: uuid::Uuid) -> String {
+async fn load_global_summary(
+    state: &AppState,
+    account_id: uuid::Uuid,
+    org_scope: uuid::Uuid,
+) -> String {
     store::get_profile_with_fallback(&state.db, account_id, org_scope)
         .await
         .ok()
@@ -289,8 +375,22 @@ async fn apply_global_kb(
                 json!({ "summary": bg.summary, "evidence": bg.evidence }),
             );
         }
-        merge_named(obj, "domains", "name", resp.add_domains.iter().map(|d| json!({"name": d.name, "weight": d.weight, "evidence": d.evidence})));
-        merge_named(obj, "focus_areas", "area", resp.add_focus_areas.iter().map(|f| json!({"area": f.area, "weight": f.weight, "evidence": f.evidence})));
+        merge_named(
+            obj,
+            "domains",
+            "name",
+            resp.add_domains
+                .iter()
+                .map(|d| json!({"name": d.name, "weight": d.weight, "evidence": d.evidence})),
+        );
+        merge_named(
+            obj,
+            "focus_areas",
+            "area",
+            resp.add_focus_areas
+                .iter()
+                .map(|f| json!({"area": f.area, "weight": f.weight, "evidence": f.evidence})),
+        );
     }
 
     let markdown = regenerate_markdown_from_json(&json);
@@ -346,7 +446,10 @@ fn render_bucket_overlay_markdown(bucket: Bucket, overlay_json: &Value) -> Strin
             }
         }
     }
-    if let Some(sp) = overlay_json.get("speech_patterns").and_then(|v| v.as_array()) {
+    if let Some(sp) = overlay_json
+        .get("speech_patterns")
+        .and_then(|v| v.as_array())
+    {
         for s in sp.iter().take(4) {
             if let Some(p) = s.get("pattern").and_then(|v| v.as_str()) {
                 lines.push(format!("- {p}"));
@@ -375,8 +478,18 @@ mod tests {
     #[test]
     fn merge_named_dedups_on_key() {
         let mut obj = serde_json::Map::new();
-        merge_named(&mut obj, "domains", "name", [json!({"name": "rust"})].into_iter());
-        merge_named(&mut obj, "domains", "name", [json!({"name": "rust"}), json!({"name": "audio"})].into_iter());
+        merge_named(
+            &mut obj,
+            "domains",
+            "name",
+            [json!({"name": "rust"})].into_iter(),
+        );
+        merge_named(
+            &mut obj,
+            "domains",
+            "name",
+            [json!({"name": "rust"}), json!({"name": "audio"})].into_iter(),
+        );
         let arr = obj.get("domains").unwrap().as_array().unwrap();
         assert_eq!(arr.len(), 2);
     }

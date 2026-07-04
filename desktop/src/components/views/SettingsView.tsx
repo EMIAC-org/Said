@@ -35,6 +35,7 @@ import {
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
   getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
+  browserAutomationStatus, triggerBrowserAutomation, type BrowserAutomation,
   readBackendLog, backendLogLocation, openLogFolder,
   openExternal,
   getServerSettingsStatus,
@@ -614,6 +615,15 @@ export function SettingsView({
       console.warn("[settings] failed to write desktop prefs:", e);
     });
   }, []);
+  // Live per-browser Automation consent state (Apple Events), so the browser-
+  // context row can show granted/denied/not-asked and a working Grant button.
+  const [browserAuto, setBrowserAuto] = useState<BrowserAutomation[]>([]);
+  const refreshBrowserAuto = useCallback(async () => {
+    setBrowserAuto(await browserAutomationStatus());
+  }, []);
+  useEffect(() => {
+    if (desktopPrefs.browser_context_enabled) void refreshBrowserAuto();
+  }, [desktopPrefs.browser_context_enabled, refreshBrowserAuto]);
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
 
   // ── Auto-update state ─────────────────────────────────────────────────────
@@ -1864,7 +1874,9 @@ export function SettingsView({
                       onClick={() => {
                         const next = !desktopPrefs.browser_context_enabled;
                         writeDesktopPrefs({ ...desktopPrefs, browser_context_enabled: next });
-                        if (next) void requestBrowserAutomation();
+                        if (next) {
+                          void requestBrowserAutomation().then(refreshBrowserAuto);
+                        }
                       }}
                       className="relative h-6 w-11 rounded-full transition-colors"
                       style={{
@@ -1886,6 +1898,80 @@ export function SettingsView({
                     </button>
                   </div>
                 </div>
+
+                {/* Live per-browser Automation consent. Apple Events need a
+                    running target, so if nothing's open we prompt the user to
+                    open a browser; granted browsers show a badge, others a
+                    Grant button (denied → System Settings, macOS won't re-ask). */}
+                {desktopPrefs.browser_context_enabled && (
+                  <div className="mx-5 mb-4 -mt-1">
+                    {browserAuto.length === 0 ? (
+                      <div
+                        className="rounded-xl px-4 py-3 text-[12px] text-muted-foreground leading-relaxed"
+                        style={{ background: "hsl(var(--surface-3))" }}
+                      >
+                        Open a browser (Chrome, Safari, Edge, Brave, Arc…), then{" "}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 text-foreground"
+                          onClick={() => void refreshBrowserAuto()}
+                        >
+                          refresh
+                        </button>{" "}
+                        to grant access — macOS asks once per browser.
+                      </div>
+                    ) : (
+                      <div
+                        className="rounded-xl overflow-hidden"
+                        style={{ background: "hsl(var(--surface-3))" }}
+                      >
+                        {browserAuto.map((b, i) => (
+                          <div
+                            key={b.app_key}
+                            className="flex items-center gap-3 px-4 py-2.5"
+                            style={i > 0 ? { borderTop: "1px solid hsl(var(--surface-4))" } : undefined}
+                          >
+                            <span className="text-[12px] text-foreground flex-1 min-w-0 truncate">
+                              {b.name}
+                            </span>
+                            {b.status === "granted" ? (
+                              <span
+                                className="text-[11px] font-medium"
+                                style={{ color: "hsl(152 60% 50%)" }}
+                              >
+                                Granted
+                              </span>
+                            ) : b.status === "denied" ? (
+                              <button
+                                type="button"
+                                className="text-[11px] font-medium px-2.5 py-1 rounded-lg"
+                                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+                                onClick={() =>
+                                  void openExternal(
+                                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+                                  )
+                                }
+                              >
+                                Denied — open Settings
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="text-[11px] font-medium px-2.5 py-1 rounded-lg"
+                                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                                onClick={() =>
+                                  void triggerBrowserAutomation(b.app_key).then(refreshBrowserAuto)
+                                }
+                              >
+                                Grant
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
 

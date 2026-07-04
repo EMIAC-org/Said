@@ -105,7 +105,12 @@ pub async fn maybe_enqueue(
     org_scope: Uuid,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     let mark = last_window_mark(db, account_id, org_scope).await?;
-    if runs_since(db, account_id, mark).await? < runs_per_batch() {
+    let count = runs_since(db, account_id, mark).await?;
+    let threshold = runs_per_batch();
+    if count < threshold {
+        tracing::info!(
+            "[profile-batch] account={account_id} {count}/{threshold} dictations since last run"
+        );
         return Ok(None);
     }
     // INSERT only when no active job exists. The partial unique index makes the loser
@@ -127,7 +132,13 @@ pub async fn maybe_enqueue(
     .await;
 
     match inserted {
-        Ok(id) => Ok(id),
+        Ok(Some(id)) => {
+            tracing::info!(
+                "[profile-batch] account={account_id} QUEUED profiling run ({count} dictations)"
+            );
+            Ok(Some(id))
+        }
+        Ok(None) => Ok(None), // a run is already in flight — coalesced
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(None),
         Err(e) => Err(e),
     }
@@ -361,7 +372,11 @@ mod tests {
 
     #[test]
     fn edited_when_feedback_present() {
-        assert!(run_was_edited(&run("x", "x", json!({"class": "polish_error"}))));
+        assert!(run_was_edited(&run(
+            "x",
+            "x",
+            json!({"class": "polish_error"})
+        )));
     }
 
     #[test]
@@ -371,7 +386,10 @@ mod tests {
 
     #[test]
     fn signal_requires_an_edit() {
-        let clean = vec![bucketed(Bucket::Coding, false), bucketed(Bucket::Messaging, false)];
+        let clean = vec![
+            bucketed(Bucket::Coding, false),
+            bucketed(Bucket::Messaging, false),
+        ];
         assert!(!has_edit_signal(&clean));
         let mut dirty = clean.clone();
         dirty.push(bucketed(Bucket::Messaging, true));
@@ -385,6 +403,9 @@ mod tests {
             bucketed(Bucket::Coding, true),
             bucketed(Bucket::Messaging, true),
         ];
-        assert_eq!(buckets_present(&runs), vec![Bucket::Messaging, Bucket::Coding]);
+        assert_eq!(
+            buckets_present(&runs),
+            vec![Bucket::Messaging, Bucket::Coding]
+        );
     }
 }

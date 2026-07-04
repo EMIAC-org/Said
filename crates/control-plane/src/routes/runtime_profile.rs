@@ -26,7 +26,8 @@ use crate::{
         validator::{ValidatorDecision, ValidatorInput, validate_and_merge},
     },
     profile::{
-        self, CachedRuntimeProfile, ProfileCacheKey, invalidate_profile_cache, resolve_org_scope,
+        self, CachedRuntimeProfile, ProfileCacheKey, invalidate_app_bucket_cache,
+        invalidate_profile_scope_caches, resolve_org_scope,
     },
     routes::runtime::compute_user_edit_spans,
     tenant,
@@ -229,6 +230,210 @@ pub async fn get_profile(
     Ok(Json(response))
 }
 
+// ── Profile insights (read-only, for the desktop Insights page) ───────────────
+
+#[derive(Debug, Serialize, Default)]
+pub struct ProfileRunStats {
+    pub run_count: i64,
+    pub skipped_count: i64,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub last_run_outcome: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct KnowledgeBase {
+    pub background: Option<String>,
+    pub domains: Vec<String>,
+    pub focus_areas: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BucketInsight {
+    pub bucket_key: String,
+    pub style: Vec<String>,
+    pub speech_patterns: Vec<String>,
+    pub version: i64,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileInsightsResponse {
+    pub run_stats: ProfileRunStats,
+    pub knowledge: KnowledgeBase,
+    pub buckets: Vec<BucketInsight>,
+}
+
+/// Pull the `field` string from each object in `v[arr_key]`.
+fn json_array_field(v: &Value, arr_key: &str, field: &str) -> Vec<String> {
+    v.get(arr_key)
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.get(field).and_then(|x| x.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn knowledge_from_json(v: &Value) -> KnowledgeBase {
+    KnowledgeBase {
+        background: v
+            .get("user_background")
+            .and_then(|b| b.get("summary"))
+            .and_then(|s| s.as_str())
+            .map(str::to_string),
+        domains: json_array_field(v, "domains", "name"),
+        focus_areas: json_array_field(v, "focus_areas", "area"),
+    }
+}
+
+/// GET /v1/runtime/profile/insights — what the profiling brain has learned:
+/// run stats, the global knowledge base, and per-bucket learned style.
+pub async fn get_profile_insights(
+    State(state): State<AppState>,
+    user: AuthUser,
+    headers: HeaderMap,
+) -> Result<Json<ProfileInsightsResponse>, (StatusCode, Json<Value>)> {
+    let org_scope = resolve_scope(&state, &user, &headers).await?;
+    let account_id = user.account_id;
+
+    let global = store::get_profile_with_fallback(&state.db, account_id, org_scope)
+        .await
+        .map_err(internal_error)?;
+    let knowledge = global
+        .as_ref()
+        .map(|r| knowledge_from_json(&r.profile_json))
+        .unwrap_or_default();
+
+    let stats: Option<(i32, i32, Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
+        "SELECT profile_run_count, skipped_run_count, last_run_at, last_run_outcome
+           FROM runtime_user_profiles WHERE account_id = $1 AND org_scope = $2",
+    )
+    .bind(account_id)
+    .bind(org_scope)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(internal_error)?;
+    let run_stats = stats
+        .map(|(rc, sc, lra, lro)| ProfileRunStats {
+            run_count: rc as i64,
+            skipped_count: sc as i64,
+            last_run_at: lra,
+            last_run_outcome: lro,
+        })
+        .unwrap_or_default();
+
+    let buckets = profile::bucket::list_bucket_profiles(&state.db, account_id, org_scope)
+        .await
+        .map_err(internal_error)?
+        .into_iter()
+        .map(|r| BucketInsight {
+            style: json_array_field(&r.profile_json, "style", "preference"),
+            speech_patterns: json_array_field(&r.profile_json, "speech_patterns", "pattern"),
+            bucket_key: r.bucket_key,
+            version: r.version,
+            updated_at: r.last_rebuilt_at,
+        })
+        .collect();
+
+    Ok(Json(ProfileInsightsResponse {
+        run_stats,
+        knowledge,
+        buckets,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct AppBucketRow {
+    pub app_key: String,
+    pub bucket_key: String,
+    /// "user" | "static" | "agent" | "default"
+    pub source: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AppBucketsResponse {
+    /// Canonical bucket keys, in display order (the kanban columns).
+    pub buckets: Vec<String>,
+    pub apps: Vec<AppBucketRow>,
+}
+
+/// GET /v1/runtime/profile/buckets — every app the user has dictated into, each
+/// resolved to its current bucket + the source of that mapping. Powers the Buckets kanban.
+pub async fn get_app_buckets(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<AppBucketsResponse>, (StatusCode, Json<Value>)> {
+    let account_id = user.account_id;
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT target_app, count(*)::bigint
+           FROM runtime_history_items
+          WHERE account_id = $1 AND deleted_at IS NULL
+            AND target_app IS NOT NULL AND target_app <> ''
+          GROUP BY target_app
+          ORDER BY count(*) DESC",
+    )
+    .bind(account_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal_error)?;
+
+    let mut apps = Vec::with_capacity(rows.len());
+    for (app_key, count) in rows {
+        let (bucket, source) = profile::bucket::resolve_bucket_with_source(&state.db, &app_key).await;
+        apps.push(AppBucketRow {
+            app_key,
+            bucket_key: bucket.as_key().to_string(),
+            source: source.to_string(),
+            count,
+        });
+    }
+
+    Ok(Json(AppBucketsResponse {
+        buckets: profile::bucket::Bucket::ALL
+            .iter()
+            .map(|b| b.as_key().to_string())
+            .collect(),
+        apps,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetAppBucketRequest {
+    pub app_key: String,
+    pub bucket_key: String,
+}
+
+/// POST /v1/runtime/profile/buckets/override — the user re-files an app into a bucket.
+/// Stored as a `source='user'` mapping, which wins over static + agent in `resolve_bucket`.
+pub async fn set_app_bucket(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Json(req): Json<SetAppBucketRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(bucket) = profile::bucket::Bucket::from_key(&req.bucket_key) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid bucket_key" })),
+        ));
+    };
+    let app_key = req.app_key.trim();
+    if app_key.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "empty app_key" })),
+        ));
+    }
+    profile::bucket::upsert_app_bucket(&state.db, app_key, bucket, "user", 1.0)
+        .await
+        .map_err(internal_error)?;
+    invalidate_app_bucket_cache(&state, app_key);
+    Ok(Json(
+        json!({ "ok": true, "app_key": app_key, "bucket_key": bucket.as_key() }),
+    ))
+}
+
 pub async fn get_profile_memory(
     State(state): State<AppState>,
     user: AuthUser,
@@ -357,13 +562,7 @@ pub async fn patch_profile(
         )
     })?;
 
-    invalidate_profile_cache(
-        &state,
-        &ProfileCacheKey {
-            account_id: user.account_id,
-            org_scope,
-        },
-    );
+    invalidate_profile_scope_caches(&state, user.account_id, org_scope);
 
     tracing::info!(
         "[profile] patch account={} org_scope={} version={} status={}",
@@ -401,13 +600,7 @@ pub async fn rebuild_profile(
             )
         })?;
 
-    invalidate_profile_cache(
-        &state,
-        &ProfileCacheKey {
-            account_id: user.account_id,
-            org_scope,
-        },
-    );
+    invalidate_profile_scope_caches(&state, user.account_id, org_scope);
 
     tracing::info!(
         "[profile] rebuild queued account={} org_scope={} version={} status={}",
@@ -810,13 +1003,7 @@ pub async fn approve_profile_proposal(
     .map_err(internal_error)?;
 
     mark_review_job(&state, job_id, "approved", Some(row.version), None).await?;
-    invalidate_profile_cache(
-        &state,
-        &ProfileCacheKey {
-            account_id: user.account_id,
-            org_scope,
-        },
-    );
+    invalidate_profile_scope_caches(&state, user.account_id, org_scope);
 
     tracing::info!(
         "[profile] proposal approved account={} org_scope={} job={} edit_event={} v{}→v{} markdown_chars={} aliases_total={} terms_total={}",

@@ -44,6 +44,7 @@ enum RuntimeWsActorCommand {
         recording_id: String,
         ep: BackendEndpoint,
         screen_context: Option<String>,
+        target_app: Option<String>,
     },
     Pcm {
         recording_id: String,
@@ -78,6 +79,7 @@ pub fn maybe_spawn_live_audio_mirror(
     recording_id: String,
     ep: BackendEndpoint,
     screen_context: Option<String>,
+    target_app: Option<String>,
 ) -> Option<UnboundedSender<AudioMirrorCommand>> {
     if !server_stt_probe_enabled() {
         return None;
@@ -93,6 +95,7 @@ pub fn maybe_spawn_live_audio_mirror(
         recording_id: recording_id.clone(),
         ep,
         screen_context,
+        target_app,
     });
     tauri::async_runtime::spawn(forward_recording_audio_to_runtime_actor(
         recording_id,
@@ -179,7 +182,7 @@ async fn runtime_ws_actor_loop(mut rx: UnboundedReceiver<RuntimeWsActorCommand>)
                             }
                         }
                     }
-                    RuntimeWsActorCommand::Start { recording_id, ep, screen_context } => {
+                    RuntimeWsActorCommand::Start { recording_id, ep, screen_context, target_app } => {
                         let prefs = match api::get_preferences(&ep).await {
                             Ok(prefs) => prefs,
                             Err(e) => {
@@ -223,6 +226,7 @@ async fn runtime_ws_actor_loop(mut rx: UnboundedReceiver<RuntimeWsActorCommand>)
                             &prefs.output_language,
                             &prefs.stt_provider,
                             screen_context,
+                            target_app,
                         );
                         if send_runtime_text_with_reconnect(
                             &mut sink,
@@ -353,6 +357,7 @@ fn build_voice_start_message(
     output_language: &str,
     stt_provider: &str,
     screen_context: Option<String>,
+    target_app: Option<String>,
 ) -> String {
     json!({
         "type": "voice.start",
@@ -365,6 +370,7 @@ fn build_voice_start_message(
         "platform": std::env::consts::OS,
         "app_version": option_env!("CARGO_PKG_VERSION"),
         "screen_context": screen_context.map(|s| s.chars().take(500).collect::<String>()),
+        "target_app": target_app,
         "safe_vocab_terms": [],
         "audio": {
             "encoding": "linear16",

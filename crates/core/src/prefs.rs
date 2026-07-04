@@ -157,6 +157,7 @@ mod tests {
             message_polish_mode: true,
             launch_at_login: true,
             beta_mode: true,
+            browser_context_enabled: true,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
@@ -165,5 +166,6 @@ mod tests {
         assert!(back.message_polish_mode);
         assert!(back.launch_at_login);
         assert!(back.beta_mode);
+        assert!(back.browser_context_enabled);
     }
 }

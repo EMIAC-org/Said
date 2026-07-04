@@ -82,7 +82,12 @@ windows = { version = "0.58", features = [
     "Win32_Media_Multimedia",
     "Win32_System_Com",
     "Win32_System_Threading", # app_identity: OpenProcess + QueryFullProcessImageNameW (pid → exe)
+    "Win32_UI_WindowsAndMessaging", # browser_context: GetForegroundWindow (UIA capture root)
 ] }
 # App Identity Service icon path (exe → PNG). Does the HICON→PNG dance internally.
 # VERSION UNVERIFIED from this macOS dev box — confirm on the first Windows build.
 windows-icons = "0.1"
+# browser_context: read the foreground browser's omnibox URL via UI Automation
+# (no OS permission required on Windows, unlike macOS Apple Events). UNVERIFIED
+# from this macOS box — the UIA call sites compile only on the first Windows build.
+uiautomation = "0.25"

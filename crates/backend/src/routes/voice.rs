@@ -418,10 +418,11 @@ struct ServerRuntimeVoiceRequest {
     selected_model: String,
     screen_context: Option<String>,
     safe_vocab_terms: Vec<String>,
+    /// Focused-app key (bundle-id / exe). Lets the server pick the per-app profile
+    /// bucket. The learned profile now lives server-side, so the client no longer
+    /// ships `client_profile_markdown` — the server injects its own KB.
     #[serde(skip_serializing_if = "Option::is_none")]
-    client_profile_markdown: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    client_profile_version: Option<i64>,
+    target_app: Option<String>,
     client_run_id: Option<String>,
 }
 
@@ -1118,126 +1119,6 @@ pub async fn repair_transcript(
         .into_response()
 }
 
-async fn run_server_runtime_voice_probe(
-    http_client: &reqwest::Client,
-    pool: &crate::store::DbPool,
-    user_id: &str,
-    client_run_id: Option<&str>,
-    transcript: &str,
-    output_language: &str,
-    selected_model: &str,
-    screen_context: Option<&str>,
-    vocab_entries: &[VocabEntry],
-    client_profile_markdown: Option<&str>,
-    client_profile_version: Option<i64>,
-) -> Result<(crate::llm::PolishResult, String), String> {
-    let setup_start = Instant::now();
-    let Some(user) = crate::store::users::get_user(pool, user_id) else {
-        return Err("local user not found".to_string());
-    };
-    let token = user
-        .cloud_token
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "server runtime requires AirNote sign-in".to_string())?;
-    let base_url = user
-        .enterprise_server_url
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("https://airnote.emiactech.com")
-        .to_string();
-
-    let safe_vocab_terms = vocab_entries
-        .iter()
-        .map(|entry| entry.term.trim().to_string())
-        .filter(|term| !term.is_empty())
-        .take(20)
-        .collect::<Vec<_>>();
-
-    let req = ServerRuntimeVoiceRequest {
-        transcript: transcript.to_string(),
-        output_language: output_language.to_string(),
-        selected_model: selected_model.to_string(),
-        screen_context: screen_context.map(|s| s.chars().take(500).collect()),
-        safe_vocab_terms,
-        client_profile_markdown: client_profile_markdown.map(str::to_string),
-        client_profile_version,
-        client_run_id: client_run_id
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_string)
-            .or_else(|| Some(Uuid::new_v4().to_string())),
-    };
-
-    let url = format!("{}/v1/runtime/voice/polish", base_url.trim_end_matches('/'));
-    let start = Instant::now();
-    info!(
-        "[voice] server runtime request start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} profile_chars={} screen_context_chars={} setup_ms={}",
-        req.client_run_id.as_deref().unwrap_or("none"),
-        url,
-        transcript.chars().count(),
-        transcript.split_whitespace().count(),
-        selected_model,
-        output_language,
-        req.safe_vocab_terms.len(),
-        req.client_profile_markdown
-            .as_ref()
-            .map(|s| s.chars().count())
-            .unwrap_or(0),
-        req.screen_context
-            .as_ref()
-            .map(|s| s.chars().count())
-            .unwrap_or(0),
-        setup_start.elapsed().as_millis(),
-    );
-    let resp = crate::cp_client::with_org_context(
-        http_client
-            .post(&url)
-            .bearer_auth(token)
-            .json(&req)
-            .timeout(std::time::Duration::from_secs(30)),
-        Some(&user),
-    )
-    .send()
-    .await
-    .map_err(|e| format!("server runtime request failed: {e}"))?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "server runtime returned {status}: {}",
-            said_core::text::truncate_utf8(&body, 240)
-        ));
-    }
-
-    let parsed = resp
-        .json::<ServerRuntimeVoiceResponse>()
-        .await
-        .map_err(|e| format!("server runtime response parse failed: {e}"))?;
-    let measured_ms = start.elapsed().as_millis() as u64;
-    let server_ms = parsed.latency_ms.total.max(0) as u64;
-    let polish_ms = measured_ms.max(server_ms);
-    info!(
-        "[voice] server runtime request done run_id={} model={} measured_roundtrip_ms={} server_total_ms={} server_prompt_ms={} server_model_ms={} output_chars={} overhead_ms={}",
-        req.client_run_id.as_deref().unwrap_or("none"),
-        parsed.model_used,
-        measured_ms,
-        server_ms,
-        parsed.latency_ms.prompt,
-        parsed.latency_ms.model,
-        parsed.output.chars().count(),
-        measured_ms.saturating_sub(server_ms),
-    );
-
-    Ok((
-        crate::llm::PolishResult {
-            polished: parsed.output,
-            polish_ms,
-        },
-        format!("server-runtime:{}", parsed.model_used),
-    ))
-}
-
 async fn run_server_runtime_voice_stream(
     http_client: reqwest::Client,
     pool: crate::store::DbPool,
@@ -1248,8 +1129,7 @@ async fn run_server_runtime_voice_stream(
     selected_model: String,
     screen_context: Option<String>,
     vocab_entries: Vec<VocabEntry>,
-    client_profile_markdown: Option<String>,
-    client_profile_version: Option<i64>,
+    target_app: Option<String>,
     token_tx: mpsc::Sender<String>,
 ) -> Result<(crate::llm::PolishResult, String), String> {
     let setup_start = Instant::now();
@@ -1281,8 +1161,7 @@ async fn run_server_runtime_voice_stream(
         selected_model,
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
-        client_profile_markdown,
-        client_profile_version,
+        target_app,
         client_run_id: client_run_id
             .filter(|s| !s.trim().is_empty())
             .or_else(|| Some(Uuid::new_v4().to_string())),
@@ -1294,7 +1173,7 @@ async fn run_server_runtime_voice_stream(
     );
     let start = Instant::now();
     info!(
-        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} profile_chars={} screen_context_chars={} setup_ms={}",
+        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} target_app={} screen_context_chars={} setup_ms={}",
         req.client_run_id.as_deref().unwrap_or("none"),
         url,
         req.transcript.chars().count(),
@@ -1302,10 +1181,7 @@ async fn run_server_runtime_voice_stream(
         req.selected_model,
         req.output_language,
         req.safe_vocab_terms.len(),
-        req.client_profile_markdown
-            .as_ref()
-            .map(|s| s.chars().count())
-            .unwrap_or(0),
+        req.target_app.as_deref().unwrap_or("none"),
         req.screen_context
             .as_ref()
             .map(|s| s.chars().count())
@@ -3110,8 +2986,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 prefs.selected_model.clone(),
                 screen_context.clone(),
                 vocab_entries.clone(),
-                client_profile_markdown.map(str::to_string),
-                client_profile_version,
+                target_app.clone(),
                 token_tx,
             ));
 

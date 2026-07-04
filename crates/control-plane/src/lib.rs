@@ -112,26 +112,61 @@ pub struct AppState {
     pub runtime_memory_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
     pub profile_cache:
         Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
+    pub app_bucket_cache:
+        Arc<ttl_cache::TtlCache<profile::AppBucketCacheKey, profile::CachedAppBucket>>,
+    pub bucket_profile_cache: Arc<
+        ttl_cache::TtlCache<profile::BucketProfileCacheKey, Option<profile::CachedBucketProfile>>,
+    >,
+    pub prompt_profile_context_cache: Arc<
+        ttl_cache::TtlCache<profile::PromptProfileContextCacheKey, profile::CachedPromptProfileContext>,
+    >,
+    pub runtime_credential_cache: Arc<
+        ttl_cache::TtlCache<
+            routes::runtime::RuntimeCredentialCacheKey,
+            routes::runtime::RuntimeProviderSecret,
+        >,
+    >,
 }
 
-/// TTL for the per-account setup caches. Short enough that org/role and learned
-/// vocab changes self-heal within seconds even without explicit invalidation;
-/// long enough that a burst of dictations all hit warm.
-pub const SETUP_CACHE_TTL: Duration = Duration::from_secs(60);
+/// TTL for setup caches used before a polish model call. These are long-lived
+/// because beta usage is small; correctness comes from explicit invalidate-on-
+/// write helpers, not from waiting for TTL expiry.
+pub const SETUP_CACHE_TTL: Duration = Duration::from_secs(3 * 60 * 60);
 const RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES: usize = 24 * 1024 * 1024;
+
+pub struct SetupCaches {
+    pub tenant_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
+    pub runtime_memory_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
+    pub profile_cache:
+        Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
+    pub app_bucket_cache:
+        Arc<ttl_cache::TtlCache<profile::AppBucketCacheKey, profile::CachedAppBucket>>,
+    pub bucket_profile_cache: Arc<
+        ttl_cache::TtlCache<profile::BucketProfileCacheKey, Option<profile::CachedBucketProfile>>,
+    >,
+    pub prompt_profile_context_cache: Arc<
+        ttl_cache::TtlCache<profile::PromptProfileContextCacheKey, profile::CachedPromptProfileContext>,
+    >,
+    pub runtime_credential_cache: Arc<
+        ttl_cache::TtlCache<
+            routes::runtime::RuntimeCredentialCacheKey,
+            routes::runtime::RuntimeProviderSecret,
+        >,
+    >,
+}
 
 /// Construct the in-memory setup caches (one place so every `AppState` builder
 /// stays in sync).
-pub fn new_setup_caches() -> (
-    Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
-    Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
-    Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
-) {
-    (
-        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
-        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
-        Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
-    )
+pub fn new_setup_caches() -> SetupCaches {
+    SetupCaches {
+        tenant_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        runtime_memory_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        profile_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        app_bucket_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        bucket_profile_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        prompt_profile_context_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+        runtime_credential_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
+    }
 }
 
 // ── Router constructor ───────────────────────────────────────────────────────
@@ -208,6 +243,18 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES)),
         )
         .route("/v1/runtime/status", get(routes::runtime::status))
+        .route(
+            "/v1/runtime/profile/insights",
+            get(routes::runtime_profile::get_profile_insights),
+        )
+        .route(
+            "/v1/runtime/profile/buckets",
+            get(routes::runtime_profile::get_app_buckets),
+        )
+        .route(
+            "/v1/runtime/profile/buckets/override",
+            post(routes::runtime_profile::set_app_bucket),
+        )
         .route("/v1/runtime/runs", get(routes::runtime::list_runs))
         .route("/v1/runtime/runs/:id", get(routes::runtime::run_detail))
         .route(

@@ -3552,7 +3552,12 @@ async fn get_app_usage(backend: State<'_, BackendState>) -> Result<Vec<api::AppU
 /// granted). No-op / false for non-browsers and non-macOS.
 #[tauri::command]
 async fn trigger_browser_automation(app_key: String) -> bool {
-    browser_context::trigger_automation_prompt(&app_key)
+    // Blocks on the native consent dialog — keep it off the async executor.
+    tauri::async_runtime::spawn_blocking(move || {
+        browser_context::trigger_automation_prompt(&app_key)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Prompt macOS Automation consent for all currently-running known browsers, so
@@ -3560,7 +3565,20 @@ async fn trigger_browser_automation(app_key: String) -> bool {
 /// names prompted (empty on non-macOS / no browsers running).
 #[tauri::command]
 async fn request_browser_automation() -> Vec<String> {
-    browser_context::request_automation_upfront()
+    // Prompts each running browser in turn — blocking on user consent.
+    tauri::async_runtime::spawn_blocking(browser_context::request_automation_upfront)
+        .await
+        .unwrap_or_default()
+}
+
+/// Live Automation consent state for every known browser currently running, so
+/// Settings can show real per-browser status + a working "Grant" button. Empty on
+/// non-macOS or when no known browser is running.
+#[tauri::command]
+async fn browser_automation_status() -> Vec<browser_context::BrowserAutomation> {
+    tauri::async_runtime::spawn_blocking(browser_context::running_browser_automation)
+        .await
+        .unwrap_or_default()
 }
 
 /// Per-site dictation usage (grouped by host) for the Insights "Sites" section.
@@ -4800,6 +4818,12 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         let screen_context_for_server_runtime = app
             .try_state::<ScreenContextState>()
             .and_then(|ctx| ctx.0.lock().ok()?.clone());
+        // Focused app locked at record start (same PID the edit-watcher uses) → bundle-id /
+        // exe key, forwarded on voice.start so server polish can inject the app-bucket style.
+        let target_app_for_server_runtime = app
+            .try_state::<EditTargetState>()
+            .and_then(|s| *s.0.lock().ok()?)
+            .and_then(app_identity::app_key_for_pid);
         let echo_gate = app.try_state::<MeetingModeState>().and_then(|meeting| {
             if meeting.capture_enabled() {
                 Some(Arc::clone(&meeting.echo_gate))
@@ -4856,6 +4880,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                             recording_id.clone(),
                             ep,
                             screen_context_for_server_runtime,
+                            target_app_for_server_runtime,
                         )
                     });
                     let bridge_stop_handle = swift_stream::spawn_audio_bridge_with_echo_gate(
@@ -4893,6 +4918,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                         recording_id.clone(),
                         ep,
                         screen_context_for_server_runtime,
+                        target_app_for_server_runtime,
                     )
                 });
                 dg_stream::spawn_audio_bridge_with_echo_gate(
@@ -8244,6 +8270,69 @@ async fn list_workspaces(
     api::list_workspaces(&server_url, &token, status.active_org_id.as_deref()).await
 }
 
+/// What the cloud profiling brain has learned (run stats + KB + per-bucket style).
+#[tauri::command]
+async fn get_profile_insights(
+    backend: State<'_, BackendState>,
+) -> Result<api::ProfileInsights, String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::get_profile_insights(&server_url, &token, status.active_org_id.as_deref()).await
+}
+
+/// Apps the user dictates into, grouped by bucket (for the Buckets kanban).
+#[tauri::command]
+async fn get_app_buckets(
+    backend: State<'_, BackendState>,
+) -> Result<serde_json::Value, String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::get_app_buckets(&server_url, &token, status.active_org_id.as_deref()).await
+}
+
+/// Re-file an app into a bucket (user override; wins over static + agent mappings).
+#[tauri::command]
+async fn set_app_bucket(
+    app_key: String,
+    bucket_key: String,
+    backend: State<'_, BackendState>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::set_app_bucket(
+        &server_url,
+        &token,
+        status.active_org_id.as_deref(),
+        &app_key,
+        &bucket_key,
+    )
+    .await
+}
+
 #[tauri::command]
 async fn activate_workspace(
     org_id: String,
@@ -11140,6 +11229,7 @@ fn main() {
             get_favicon,
             trigger_browser_automation,
             request_browser_automation,
+            browser_automation_status,
             submit_edit_feedback,
             toggle_recording,
             set_mode,
@@ -11160,6 +11250,9 @@ fn main() {
             clear_enterprise_auth,
             get_enterprise_status,
             list_workspaces,
+            get_profile_insights,
+            get_app_buckets,
+            set_app_bucket,
             activate_workspace,
             deactivate_workspace,
             get_device_id,

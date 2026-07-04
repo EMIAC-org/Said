@@ -695,8 +695,12 @@ pub async fn ingest_dictation(
     let enqueue_account = user.account_id;
     let enqueue_scope = crate::profile::store::resolve_org_scope(tenant_ctx.active_org_id);
     tokio::spawn(async move {
-        if let Err(e) =
-            crate::profile::updater::batch::maybe_enqueue(&enqueue_db, enqueue_account, enqueue_scope).await
+        if let Err(e) = crate::profile::updater::batch::maybe_enqueue(
+            &enqueue_db,
+            enqueue_account,
+            enqueue_scope,
+        )
+        .await
         {
             tracing::warn!("[profile-batch] enqueue failed: {e}");
         }

@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 /// The fixed bucket taxonomy. Adding a variant means updating `as_key`, `from_key`,
 /// `ALL`, and the two DB CHECK constraints in migration 032.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Bucket {
     /// IDEs, editors, terminals, AI coding surfaces (VS Code, Cursor, Claude Code…).
     Coding,
@@ -140,20 +140,49 @@ pub fn static_bucket(app_key: &str) -> Option<Bucket> {
 /// Returns `Default` for unknown apps; the loop layer is responsible for enqueuing an
 /// agent classification so a future call resolves to a real bucket.
 pub async fn resolve_bucket(db: &PgPool, app_key: &str) -> Bucket {
+    resolve_bucket_with_source(db, app_key).await.0
+}
+
+/// Like [`resolve_bucket`] but also reports where the mapping came from:
+/// `"user"` (explicit override) > `"static"` (compiled-in) > `"agent"` (classifier) > `"default"`.
+/// A user override wins over the static map so re-filing in the Buckets UI always sticks.
+pub async fn resolve_bucket_with_source(db: &PgPool, app_key: &str) -> (Bucket, &'static str) {
     let keys = match_keys(app_key);
     if keys.is_empty() {
-        return Bucket::Default;
+        return (Bucket::Default, "default");
     }
-    if let Some(b) = static_bucket(app_key) {
-        return b;
-    }
-    // Agent-cached mapping (match on the primary/full key).
-    if let Ok(Some(key)) = get_mapped_bucket(db, &keys[0]).await
-        && let Some(b) = Bucket::from_key(&key)
+    let mapping = get_mapped_bucket_full(db, &keys[0]).await.ok().flatten();
+    // 1. Explicit user override wins over everything.
+    if let Some((key, source)) = &mapping
+        && source == "user"
+        && let Some(b) = Bucket::from_key(key)
     {
-        return b;
+        return (b, "user");
     }
-    Bucket::Default
+    // 2. Compiled-in authoritative static rule.
+    if let Some(b) = static_bucket(app_key) {
+        return (b, "static");
+    }
+    // 3. Agent-cached classification.
+    if let Some((key, _)) = &mapping
+        && let Some(b) = Bucket::from_key(key)
+    {
+        return (b, "agent");
+    }
+    (Bucket::Default, "default")
+}
+
+/// Fetch the persisted mapping (bucket_key, source) for an app_key (already lowercased).
+pub async fn get_mapped_bucket_full(
+    db: &PgPool,
+    app_key: &str,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT bucket_key, source FROM app_bucket_map WHERE app_key = $1")
+            .bind(app_key)
+            .fetch_optional(db)
+            .await?;
+    Ok(row)
 }
 
 /// Fetch a persisted agent/admin mapping for an app_key (already lowercased).
@@ -320,7 +349,10 @@ mod tests {
     #[test]
     fn static_bucket_resolves_known_macos_bundle() {
         assert_eq!(static_bucket("com.microsoft.VSCode"), Some(Bucket::Coding));
-        assert_eq!(static_bucket("net.whatsapp.WhatsApp"), Some(Bucket::Messaging));
+        assert_eq!(
+            static_bucket("net.whatsapp.WhatsApp"),
+            Some(Bucket::Messaging)
+        );
         assert_eq!(static_bucket("com.apple.Mail"), Some(Bucket::FormalWriting));
     }
 
@@ -330,7 +362,10 @@ mod tests {
             static_bucket(r"C:\Users\me\AppData\Local\Programs\cursor\Cursor.exe"),
             Some(Bucket::Coding)
         );
-        assert_eq!(static_bucket(r"C:\Program Files\Slack\slack.exe"), Some(Bucket::Messaging));
+        assert_eq!(
+            static_bucket(r"C:\Program Files\Slack\slack.exe"),
+            Some(Bucket::Messaging)
+        );
     }
 
     #[test]

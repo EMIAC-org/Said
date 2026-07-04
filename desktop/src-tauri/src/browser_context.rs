@@ -26,9 +26,68 @@ pub struct BrowserSite {
     pub title: String,
 }
 
-/// True if `app_key` (a macOS bundle-id) is a browser we know how to script.
+/// True if `app_key` is a browser we know how to read. `app_key` is a macOS
+/// bundle-id (`com.google.Chrome`) or, on Windows, the exe path
+/// (`…\chrome.exe`) — so detection is platform-specific.
 pub fn is_known_browser(app_key: &str) -> bool {
-    browser_app_name(app_key).is_some()
+    #[cfg(target_os = "macos")]
+    {
+        browser_app_name(app_key).is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        imp::is_known_browser(app_key)
+    }
+}
+
+/// macOS Automation (Apple Events) consent state for one target browser.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutomationStatus {
+    /// Consent granted — we can read the active tab.
+    Granted,
+    /// User explicitly denied in the prompt / System Settings.
+    Denied,
+    /// Never asked yet, or the browser isn't running so we can't tell.
+    Unknown,
+}
+
+/// One known browser, whether it's running, and its live Automation status.
+/// Powers the Settings per-browser grant list.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct BrowserAutomation {
+    pub app_key: String,
+    pub name: String,
+    pub running: bool,
+    pub status: AutomationStatus,
+}
+
+/// Preflight the Automation consent for `app_key` WITHOUT prompting — used by the
+/// UI to show granted/denied/not-asked. `Unknown` for non-browsers.
+pub fn automation_status(app_key: &str) -> AutomationStatus {
+    if is_known_browser(app_key) {
+        imp::automation_status(app_key)
+    } else {
+        AutomationStatus::Unknown
+    }
+}
+
+/// Every known browser currently running, with its live Automation status, so
+/// Settings can show real per-browser state and a working "Grant" button.
+pub fn running_browser_automation() -> Vec<BrowserAutomation> {
+    imp::running_bundle_ids()
+        .into_iter()
+        .filter_map(|b| browser_app_name(&b).map(|(name, _)| (b, name)))
+        .map(|(app_key, name)| {
+            let status = imp::automation_status(&app_key);
+            BrowserAutomation {
+                app_key,
+                name: name.to_string(),
+                running: true,
+                status,
+            }
+        })
+        .collect()
 }
 
 /// bundle-id → the AppleScript application name. `None` for non-browsers.
@@ -61,21 +120,30 @@ enum Engine {
     Safari,
 }
 
-/// Resolve the active tab's site for a browser bundle-id. `None` if it's not a
-/// known browser, is incognito, has no scriptable URL, or Automation isn't
+/// Resolve the active tab's site for a browser `app_key`. `None` if it's not a
+/// known browser, is incognito, has no readable URL, or (macOS) Automation isn't
 /// granted yet.
 pub fn active_site(app_key: &str) -> Option<BrowserSite> {
-    let (app, engine) = browser_app_name(app_key)?;
-    imp::active_site(app, engine)
+    #[cfg(target_os = "macos")]
+    {
+        let (app, engine) = browser_app_name(app_key)?;
+        imp::active_site(app, engine)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        imp::active_site(app_key)
+    }
 }
 
-/// Send a benign Apple Event to `app_key` to trigger the per-browser Automation
-/// consent prompt now (used by the "Enable" affordances), rather than mid-
-/// dictation. Returns true if the event went through (already granted).
+/// Trigger the per-browser Automation consent prompt now (used by the "Enable"
+/// affordances), rather than mid-dictation. Uses the native
+/// `AEDeterminePermissionToAutomateTarget` so the dialog is attributed to AirNote
+/// itself. Returns true if consent is already granted.
 pub fn trigger_automation_prompt(app_key: &str) -> bool {
-    match browser_app_name(app_key) {
-        Some((app, _)) => imp::trigger_prompt(app),
-        None => false,
+    if is_known_browser(app_key) {
+        imp::trigger_prompt(app_key)
+    } else {
+        false
     }
 }
 
@@ -170,10 +238,119 @@ mod imp {
         })
     }
 
-    pub fn trigger_prompt(app: &str) -> bool {
-        // Any Apple Event to the target fires the consent prompt; `get name` is
-        // harmless and does not launch or alter the browser.
-        run_osascript(&format!("tell application \"{app}\" to get name")).is_some()
+    /// Fire the Automation consent dialog for a target browser (by bundle-id),
+    /// attributed to AirNote. true if consent is already granted.
+    pub fn trigger_prompt(bundle_id: &str) -> bool {
+        ae::prompt(bundle_id)
+    }
+
+    /// Live Automation consent state for a target browser (by bundle-id), without
+    /// prompting.
+    pub fn automation_status(bundle_id: &str) -> super::AutomationStatus {
+        match ae::status(bundle_id) {
+            ae::Status::Granted => super::AutomationStatus::Granted,
+            ae::Status::Denied => super::AutomationStatus::Denied,
+            ae::Status::Unknown => super::AutomationStatus::Unknown,
+        }
+    }
+
+    /// Native Apple Events permission API. `AEDeterminePermissionToAutomateTarget`
+    /// is Apple's canonical way to both preflight (ask=false → real status) and
+    /// request (ask=true → consent dialog) Automation permission for a target app,
+    /// sent from *this* process so TCC attributes it to AirNote — unlike shelling
+    /// out to `osascript`, which was our earlier, unreliable trigger.
+    mod ae {
+        use std::os::raw::c_void;
+
+        type OSStatus = i32;
+        type OSType = u32;
+        type Boolean = u8;
+
+        #[repr(C)]
+        struct AEDesc {
+            descriptor_type: OSType,
+            data_handle: *mut c_void,
+        }
+
+        const fn four_cc(s: &[u8; 4]) -> OSType {
+            ((s[0] as u32) << 24) | ((s[1] as u32) << 16) | ((s[2] as u32) << 8) | (s[3] as u32)
+        }
+
+        // Address the target by bundle-id; wildcard event class/id checks overall
+        // Automation permission (Apple's documented pattern).
+        const TYPE_APPLICATION_BUNDLE_ID: OSType = four_cc(b"bund");
+        const TYPE_WILDCARD: OSType = four_cc(b"****");
+
+        const NO_ERR: OSStatus = 0;
+        const ERR_AE_EVENT_NOT_PERMITTED: OSStatus = -1743;
+        const ERR_AE_EVENT_WOULD_REQUIRE_USER_CONSENT: OSStatus = -1744;
+        const PROC_NOT_FOUND: OSStatus = -600;
+
+        #[link(name = "CoreServices", kind = "framework")]
+        unsafe extern "C" {
+            fn AECreateDesc(
+                type_code: OSType,
+                data_ptr: *const c_void,
+                data_size: isize,
+                result: *mut AEDesc,
+            ) -> OSStatus;
+            fn AEDisposeDesc(desc: *mut AEDesc) -> OSStatus;
+            fn AEDeterminePermissionToAutomateTarget(
+                target: *const AEDesc,
+                the_ae_event_class: OSType,
+                the_ae_event_id: OSType,
+                ask_user_if_needed: Boolean,
+            ) -> OSStatus;
+        }
+
+        pub enum Status {
+            Granted,
+            Denied,
+            Unknown,
+        }
+
+        fn determine(bundle_id: &str, ask: bool) -> OSStatus {
+            let bytes = bundle_id.as_bytes();
+            let mut desc = AEDesc {
+                descriptor_type: 0,
+                data_handle: std::ptr::null_mut(),
+            };
+            unsafe {
+                let err = AECreateDesc(
+                    TYPE_APPLICATION_BUNDLE_ID,
+                    bytes.as_ptr() as *const c_void,
+                    bytes.len() as isize,
+                    &mut desc,
+                );
+                if err != NO_ERR {
+                    return err;
+                }
+                let status = AEDeterminePermissionToAutomateTarget(
+                    &desc,
+                    TYPE_WILDCARD,
+                    TYPE_WILDCARD,
+                    Boolean::from(ask),
+                );
+                AEDisposeDesc(&mut desc);
+                status
+            }
+        }
+
+        /// Preflight, no prompt — real granted/denied/not-asked state for the UI.
+        pub fn status(bundle_id: &str) -> Status {
+            match determine(bundle_id, false) {
+                NO_ERR => Status::Granted,
+                ERR_AE_EVENT_NOT_PERMITTED => Status::Denied,
+                // -1744 never asked; -600 browser not running → can't tell yet.
+                ERR_AE_EVENT_WOULD_REQUIRE_USER_CONSENT | PROC_NOT_FOUND => Status::Unknown,
+                _ => Status::Unknown,
+            }
+        }
+
+        /// Fire the consent dialog. true if already granted (no dialog shown).
+        pub fn prompt(bundle_id: &str) -> bool {
+            determine(bundle_id, true) == NO_ERR
+        }
     }
 
     /// Bundle-ids of all currently-running apps, via NSWorkspace.
@@ -234,16 +411,112 @@ mod imp {
     }
 }
 
-// ── Non-macOS (Windows UIA is a follow-up) ──────────────────────────────────
-#[cfg(not(target_os = "macos"))]
+// ── Windows (UI Automation — no OS permission needed) ────────────────────────
+//
+// Unlike macOS, Windows has NO Automation consent gate: a same-integrity process
+// can read another window's UI tree freely. So there is nothing to prompt for and
+// nothing to "grant" — `automation_status` is always Granted and `trigger_prompt`
+// is a no-op success. We read the foreground browser's omnibox URL via UIA.
+//
+// COMPILE-VERIFIED for x86_64-pc-windows-msvc via an isolated probe crate (the
+// desktop crate itself can't cross-check on macOS — `ring`'s C build blocks it —
+// so the uiautomation v0.25 call sites + the HWND→isize→Handle bridge were built
+// standalone against windows 0.58). RUNTIME still to confirm on a real Windows
+// box: the "Address and search bar" omnibox name and LegacyIAccessibleValue read.
+#[cfg(target_os = "windows")]
 mod imp {
-    use super::{BrowserSite, Engine};
+    use uiautomation::UIAutomation;
+    use uiautomation::controls::ControlType;
+    use uiautomation::types::{Handle, UIProperty};
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
-    pub fn active_site(_app: &str, _engine: Engine) -> Option<BrowserSite> {
+    use super::{BrowserSite, host_from_url};
+
+    /// `app_key` is the exe path from app_identity (`…\chrome.exe`). Match on the
+    /// lowercased file name across the Chromium family + Firefox.
+    pub fn is_known_browser(app_key: &str) -> bool {
+        matches!(
+            exe_name(app_key).as_deref(),
+            Some(
+                "chrome.exe"
+                    | "msedge.exe"
+                    | "brave.exe"
+                    | "vivaldi.exe"
+                    | "opera.exe"
+                    | "opera_gx.exe"
+                    | "arc.exe"
+                    | "chromium.exe"
+                    | "browser.exe"
+                    | "firefox.exe"
+            )
+        )
+    }
+
+    fn exe_name(path: &str) -> Option<String> {
+        path.rsplit(['\\', '/']).next().map(str::to_ascii_lowercase)
+    }
+
+    /// Read the foreground browser's omnibox URL via UI Automation, host only.
+    pub fn active_site(_app_key: &str) -> Option<BrowserSite> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        // uiautomation bundles its own `windows` (0.62) whose HWND type differs
+        // from ours (0.58) — bridge through `isize` via `Handle: From<isize>`.
+        let raw = hwnd.0 as isize;
+        if raw == 0 {
+            return None;
+        }
+        let automation = UIAutomation::new().ok()?; // inits COM internally
+        let root = automation.element_from_handle(Handle::from(raw)).ok()?;
+        // Window title ("<page> - <Browser>"), best-effort; grabbed before `root`
+        // is moved into the matcher.
+        let title = root.get_name().unwrap_or_default();
+        // Chromium/Edge omnibox: an Edit named "Address and search bar". (Firefox
+        // exposes a different tree — its URL isn't found here yet; returns None.)
+        let edit = automation
+            .create_matcher()
+            .from(root)
+            .control_type(ControlType::Edit)
+            .name("Address and search bar")
+            .timeout(300)
+            .find_first()
+            .ok()?;
+        // LegacyIAccessible value is more reliable than ValueValue for the omnibox.
+        let raw_url = edit
+            .get_property_value(UIProperty::LegacyIAccessibleValue)
+            .ok()?
+            .get_string()
+            .ok()?;
+        let host = host_from_url(&raw_url)?;
+        Some(BrowserSite { host, title })
+    }
+
+    pub fn trigger_prompt(_bundle_id: &str) -> bool {
+        true // Windows UIA needs no consent — nothing to prompt.
+    }
+    pub fn automation_status(_bundle_id: &str) -> super::AutomationStatus {
+        super::AutomationStatus::Granted // no permission gate on Windows
+    }
+    pub fn running_bundle_ids() -> Vec<String> {
+        Vec::new() // per-target consent is macOS-only; unused on Windows
+    }
+}
+
+// ── Other platforms ─────────────────────────────────────────────────────────
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+mod imp {
+    use super::BrowserSite;
+
+    pub fn is_known_browser(_app_key: &str) -> bool {
+        false
+    }
+    pub fn active_site(_app_key: &str) -> Option<BrowserSite> {
         None
     }
-    pub fn trigger_prompt(_app: &str) -> bool {
+    pub fn trigger_prompt(_bundle_id: &str) -> bool {
         false
+    }
+    pub fn automation_status(_bundle_id: &str) -> super::AutomationStatus {
+        super::AutomationStatus::Unknown
     }
     pub fn running_bundle_ids() -> Vec<String> {
         Vec::new()

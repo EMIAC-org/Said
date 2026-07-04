@@ -5,10 +5,12 @@ use tracing::{info, warn};
 
 use crate::AppState;
 use crate::profile::updater::prompt::{
-    PROFILE_ALIAS_EXPANSION_SYSTEM_PROMPT, PROFILE_BATCH_SYSTEM_PROMPT, PROFILE_UPDATE_SYSTEM_PROMPT,
+    PROFILE_ALIAS_EXPANSION_SYSTEM_PROMPT, PROFILE_BATCH_SYSTEM_PROMPT,
+    PROFILE_UPDATE_SYSTEM_PROMPT,
 };
 use crate::profile::updater::types::{
-    BatchProfileResponse, DeepSeekAliasProposal, DeepSeekProfileUpdateResponse, ProfileUpdateRequest,
+    BatchProfileResponse, DeepSeekAliasProposal, DeepSeekProfileUpdateResponse,
+    ProfileUpdateRequest,
 };
 
 const REQUEST_TIMEOUT_SECS: u64 = 20;
@@ -39,10 +41,18 @@ pub async fn call_deepseek_profile_update(
         "model": model,
         "temperature": 0.1,
         "top_p": 0.9,
-        "max_tokens": 4096,
+        // Reasoning ("thinking") is enabled; keep the ceiling high so a reasoning
+        // preamble can never truncate the JSON answer. Billed on tokens actually
+        // generated, so the cap is purely a truncation safeguard.
+        "max_tokens": 8192,
         "stream": false,
         "response_format": { "type": "json_object" },
-        "thinking": { "type": "disabled" },
+        // High-effort reasoning. `thinking.enabled` turns the chain-of-thought on;
+        // `reasoning_effort` grades it — both are sent because a bare `thinking`
+        // toggle is treated as un-graded by some gateways (reasoning goes to the
+        // separate `reasoning_content` field, so the JSON `content` parse is safe).
+        "thinking": { "type": "enabled" },
+        "reasoning_effort": "high",
         "messages": [
             { "role": "system", "content": PROFILE_UPDATE_SYSTEM_PROMPT },
             { "role": "user", "content": user_message }
@@ -173,10 +183,17 @@ pub async fn call_deepseek_alias_expansion(
         "model": model,
         "temperature": 0.0,
         "top_p": 0.8,
-        "max_tokens": 1536,
+        // Reasoning enabled — ceiling raised from the old output-only cap so the
+        // JSON answer survives a reasoning preamble (billed on tokens generated).
+        "max_tokens": 4096,
         "stream": false,
         "response_format": { "type": "json_object" },
-        "thinking": { "type": "disabled" },
+        // High-effort reasoning. `thinking.enabled` turns the chain-of-thought on;
+        // `reasoning_effort` grades it — both are sent because a bare `thinking`
+        // toggle is treated as un-graded by some gateways (reasoning goes to the
+        // separate `reasoning_content` field, so the JSON `content` parse is safe).
+        "thinking": { "type": "enabled" },
+        "reasoning_effort": "high",
         "messages": [
             { "role": "system", "content": PROFILE_ALIAS_EXPANSION_SYSTEM_PROMPT },
             { "role": "user", "content": user_message }
@@ -282,10 +299,17 @@ pub async fn call_deepseek_batch_profile(
         "model": model,
         "temperature": 0.1,
         "top_p": 0.9,
-        "max_tokens": 2048,
+        // Reasoning enabled — per-bucket overlays are the largest output of the
+        // three calls; keep headroom so reasoning + JSON never collide with the cap.
+        "max_tokens": 6144,
         "stream": false,
         "response_format": { "type": "json_object" },
-        "thinking": { "type": "disabled" },
+        // High-effort reasoning. `thinking.enabled` turns the chain-of-thought on;
+        // `reasoning_effort` grades it — both are sent because a bare `thinking`
+        // toggle is treated as un-graded by some gateways (reasoning goes to the
+        // separate `reasoning_content` field, so the JSON `content` parse is safe).
+        "thinking": { "type": "enabled" },
+        "reasoning_effort": "high",
         "messages": [
             { "role": "system", "content": PROFILE_BATCH_SYSTEM_PROMPT },
             { "role": "user", "content": user_message }

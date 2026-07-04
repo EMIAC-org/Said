@@ -202,8 +202,7 @@ async fn main() {
     let deepseek_message_polish_model = std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
         .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
 
-    let (tenant_cache, runtime_memory_cache, profile_cache) =
-        said_control_plane::new_setup_caches();
+    let setup_caches = said_control_plane::new_setup_caches();
 
     let state = AppState {
         db: db.clone(),
@@ -226,9 +225,13 @@ async fn main() {
         deepseek_api_key,
         deepseek_base_url,
         deepseek_message_polish_model,
-        tenant_cache,
-        runtime_memory_cache,
-        profile_cache,
+        tenant_cache: setup_caches.tenant_cache,
+        runtime_memory_cache: setup_caches.runtime_memory_cache,
+        profile_cache: setup_caches.profile_cache,
+        app_bucket_cache: setup_caches.app_bucket_cache,
+        bucket_profile_cache: setup_caches.bucket_profile_cache,
+        prompt_profile_context_cache: setup_caches.prompt_profile_context_cache,
+        runtime_credential_cache: setup_caches.runtime_credential_cache,
     };
 
     // Per-user batched profiling + KB worker (deepseek-v4-flash, one run per ~10 dictations).

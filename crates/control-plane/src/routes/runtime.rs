@@ -297,10 +297,10 @@ pub struct VoicePolishRequest {
     pub safe_vocab_terms: Vec<String>,
     #[serde(default)]
     pub client_run_id: Option<String>,
+    /// Bundle-id / exe app_key of the focused app, forwarded from the desktop so the
+    /// server can inject the matching per-app profile bucket. Absent → global KB only.
     #[serde(default)]
-    pub client_profile_markdown: Option<String>,
-    #[serde(default)]
-    pub client_profile_version: Option<i64>,
+    pub target_app: Option<String>,
     /// Optional per-request tone override (e.g. the iOS keyboard "rewrite selection"
     /// picks a tone per tap). When present it wins over the account's saved tone_preset;
     /// when absent — every existing caller — behavior is byte-for-byte unchanged.
@@ -758,6 +758,7 @@ pub async fn save_credential(
         provider,
         row.id
     );
+    invalidate_runtime_credential_cache_for_row(&state, &row, user.account_id);
 
     Ok(Json(row.into()))
 }
@@ -817,6 +818,7 @@ pub async fn validate_credential(
         .execute(&state.db)
         .await
         .map_err(db_err)?;
+        invalidate_runtime_credential_cache_for_secret_row(&state, &row, user.account_id);
         return Err(err.into_response());
     }
 
@@ -831,6 +833,7 @@ pub async fn validate_credential(
     .fetch_one(&state.db)
     .await
     .map_err(db_err)?;
+    invalidate_runtime_credential_cache_for_row(&state, &row, user.account_id);
 
     Ok(Json(row.into()))
 }
@@ -854,6 +857,7 @@ pub async fn revoke_credential(
     .execute(&state.db)
     .await
     .map_err(db_err)?;
+    invalidate_runtime_credential_cache_for_secret_row(&state, &row, user.account_id);
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1514,6 +1518,7 @@ async fn handle_voice_ws(
     let mut output_language = default_output_language();
     let mut safe_vocab_terms: Vec<String> = Vec::new();
     let mut screen_context: Option<String> = None;
+    let mut target_app: Option<String> = None;
     let mut client_run_id: Option<String> = None;
     let mut saw_first_transcript_event = false;
 
@@ -1560,6 +1565,12 @@ async fn handle_voice_ws(
                             .get("screen_context")
                             .and_then(Value::as_str)
                             .map(|s| s.chars().take(500).collect::<String>());
+                        target_app = value
+                            .get("target_app")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
                         safe_vocab_terms = value
                             .get("safe_vocab_terms")
                             .and_then(Value::as_array)
@@ -1859,10 +1870,7 @@ async fn handle_voice_ws(
                                 &selected_model,
                                 screen_context.as_deref(),
                                 &safe_vocab_terms,
-                                // target_app not yet carried on the streaming path — global
-                                // profile still injects; per-bucket overlay lights up once
-                                // the stream forwards the focused app.
-                                None,
+                                target_app.as_deref(),
                             )
                             .await
                             {
@@ -2336,23 +2344,9 @@ async fn load_injected_profile(
     org_scope: Uuid,
     target_app: Option<&str>,
 ) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Ok(Some(row)) =
-        crate::profile::store::get_profile_with_fallback(&state.db, account_id, org_scope).await
-        && !row.profile_markdown.trim().is_empty()
-    {
-        parts.push(row.profile_markdown);
-    }
-    if let Some(app) = target_app.filter(|a| !a.trim().is_empty()) {
-        let bucket = crate::profile::bucket::resolve_bucket(&state.db, app).await;
-        if let Ok(Some(overlay)) =
-            crate::profile::bucket::get_bucket_profile(&state.db, account_id, org_scope, bucket).await
-            && !overlay.profile_markdown.trim().is_empty()
-        {
-            parts.push(overlay.profile_markdown);
-        }
-    }
-    parts.join("\n\n")
+    crate::profile::load_prompt_profile_context_cached(state, account_id, org_scope, target_app)
+        .await
+        .markdown
 }
 
 async fn polish_runtime_transcript(
@@ -2433,7 +2427,11 @@ async fn polish_runtime_transcript(
         tone_preset: &tone_preset,
         prompt_kind: "voice_polish",
         profile_version: None,
-        profile_status: if profile_md.is_some() { "injected" } else { "missing" },
+        profile_status: if profile_md.is_some() {
+            "injected"
+        } else {
+            "missing"
+        },
         profile_cache_hit: false,
         profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
         profile_injected: profile_md.is_some(),
@@ -3932,18 +3930,33 @@ async fn execute_voice_polish(
         }
     };
 
+    // Additive server-learned profile injection: unified global KB + (when the focused
+    // app is known) the matching per-app bucket overlay. Replaces the legacy
+    // client-shipped `client_profile_markdown`; never overrides the base prompt/hard rules.
+    let org_scope = crate::profile::resolve_org_scope(&tenant_ctx);
+    let profile_start = Instant::now();
+    let profile_context = crate::profile::load_prompt_profile_context_cached(
+        &state,
+        user.account_id,
+        org_scope,
+        req.target_app.as_deref(),
+    )
+    .await;
+    let profile_ms = profile_start.elapsed().as_millis() as i64;
+    let profile_md: Option<&str> = if profile_context.markdown.trim().is_empty() {
+        None
+    } else {
+        Some(profile_context.markdown.as_str())
+    };
+
     // Build the prompt now that the persona has resolved (pure CPU).
     let build_start = Instant::now();
-    let profile_md = req
-        .client_profile_markdown
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_raw(profile_md);
-    let prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
-        &profile_snapshot,
-        req.client_profile_version,
-    );
+    let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_server(profile_md);
+    let prompt_built_meta =
+        crate::prompt_profile_telemetry::prompt_built_metadata(
+            &profile_snapshot,
+            profile_context.profile_version,
+        );
 
     let (system_prompt, user_message) = if is_rewrite {
         (
@@ -3963,10 +3976,10 @@ async fn execute_voice_polish(
             build_voice_user_message(&formatted_transcript, &req.output_language),
         )
     };
-    let prompt_ms = prompt_cpu_ms + build_start.elapsed().as_millis() as i64;
+    let prompt_ms = prompt_cpu_ms + profile_ms + build_start.elapsed().as_millis() as i64;
 
     tracing::info!(
-        "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, credential:{}}}",
+        "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, profile:{}, credential:{}}} cache={{profile_context:{}, global_profile:{}, app_bucket:{}, bucket_profile:{}}} bucket={:?} bucket_source={:?}",
         user.account_id,
         run_id,
         model,
@@ -3979,7 +3992,14 @@ async fn execute_voice_polish(
         memory_ms,
         session_ms,
         prompt_ms,
+        profile_ms,
         credential_ms,
+        profile_context.cache_hit,
+        profile_context.global_profile_cache_hit,
+        profile_context.app_bucket_cache_hit,
+        profile_context.bucket_profile_cache_hit,
+        profile_context.bucket_key.as_deref(),
+        profile_context.bucket_source,
     );
     write_runtime_prompt_debug_log(RuntimePromptDebug {
         route: "execute_voice_polish",
@@ -3995,13 +4015,13 @@ async fn execute_voice_polish(
         } else {
             "voice_polish"
         },
-        profile_version: req.client_profile_version,
+        profile_version: profile_context.profile_version,
         profile_status: if profile_snapshot.profile_chars > 0 {
-            "client_local"
+            "server_db"
         } else {
             "missing"
         },
-        profile_cache_hit: false,
+        profile_cache_hit: profile_context.cache_hit,
         profile_chars: profile_snapshot.profile_chars,
         profile_injected: !is_rewrite && profile_snapshot.profile_chars > 0,
         transcript_chars: transcript.chars().count(),
@@ -4192,7 +4212,7 @@ async fn execute_voice_polish(
         let org_id_for_history = tenant_ctx.active_org_id;
         let org_scope_for_profile = crate::profile::resolve_org_scope(&tenant_ctx);
         let bg_profile_snapshot = profile_snapshot;
-        let bg_client_profile_version = req.client_profile_version;
+        let bg_profile_version = profile_context.profile_version;
         tokio::spawn(async move {
             if let Some(ref credential) = bg_credential {
                 let _ = update_credential_used(&bg_state, credential.credential_id).await;
@@ -4219,7 +4239,7 @@ async fn execute_voice_polish(
                 org_scope_for_profile,
                 run_id,
                 &bg_profile_snapshot,
-                bg_client_profile_version,
+                bg_profile_version,
             )
             .await
             {
@@ -4662,11 +4682,72 @@ async fn load_owned_credential_secret(
     Ok(row)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct RuntimeCredentialCacheKey {
+    pub account_id: Uuid,
+    pub active_org_id: Option<Uuid>,
+    pub provider: String,
+}
+
 #[derive(Clone)]
-struct RuntimeProviderSecret {
-    credential_id: Option<Uuid>,
-    scope: String,
-    secret: String,
+pub struct RuntimeProviderSecret {
+    pub(crate) credential_id: Option<Uuid>,
+    pub(crate) scope: String,
+    pub(crate) secret: String,
+}
+
+fn credential_cache_key(
+    account_id: Uuid,
+    active_org_id: Option<Uuid>,
+    provider: &str,
+) -> RuntimeCredentialCacheKey {
+    RuntimeCredentialCacheKey {
+        account_id,
+        active_org_id,
+        provider: provider.trim().to_ascii_lowercase(),
+    }
+}
+
+fn invalidate_runtime_credential_cache_for_provider(
+    state: &AppState,
+    account_id: Option<Uuid>,
+    org_id: Option<Uuid>,
+    provider: &str,
+) {
+    let provider = provider.trim().to_ascii_lowercase();
+    state.runtime_credential_cache.invalidate_where(|key| {
+        key.provider == provider
+            && (account_id.map(|id| key.account_id == id).unwrap_or(false)
+                || org_id
+                    .map(|id| key.active_org_id == Some(id))
+                    .unwrap_or(false))
+    });
+}
+
+fn invalidate_runtime_credential_cache_for_row(
+    state: &AppState,
+    row: &CredentialRow,
+    fallback_account_id: Uuid,
+) {
+    invalidate_runtime_credential_cache_for_provider(
+        state,
+        row.account_id.or(Some(fallback_account_id)),
+        row.org_id,
+        &row.provider,
+    );
+}
+
+fn invalidate_runtime_credential_cache_for_secret_row(
+    state: &AppState,
+    row: &CredentialSecretRow,
+    fallback_account_id: Uuid,
+) {
+    invalidate_runtime_credential_cache_for_provider(
+        state,
+        row.account_id.or(Some(fallback_account_id)),
+        row.org_id,
+        &row.provider,
+    );
 }
 
 fn managed_deepgram_secrets(state: &AppState, run_id: Uuid) -> Vec<RuntimeProviderSecret> {
@@ -4742,6 +4823,19 @@ async fn runtime_provider_secret(
     active_org_id: Option<Uuid>,
     provider: &str,
 ) -> Result<RuntimeProviderSecret, (StatusCode, Json<Value>)> {
+    let provider = provider.trim().to_ascii_lowercase();
+    let cache_key = credential_cache_key(account_id, active_org_id, &provider);
+    if let Some(hit) = state.runtime_credential_cache.get(&cache_key) {
+        tracing::debug!(
+            "[runtime] credential cache hit provider={} account_id={} active_org_id={:?} scope={}",
+            provider,
+            account_id,
+            active_org_id,
+            hit.scope,
+        );
+        return Ok(hit);
+    }
+
     let row = if let Some(org_id) = active_org_id {
         sqlx::query_as::<_, CredentialSecretWithScopeRow>(
             "SELECT id, scope, secret_ciphertext, secret_nonce
@@ -4764,7 +4858,7 @@ async fn runtime_provider_secret(
               LIMIT 1",
         )
         .bind(account_id)
-        .bind(provider)
+        .bind(&provider)
         .bind(org_id)
         .fetch_optional(&state.db)
         .await
@@ -4789,13 +4883,13 @@ async fn runtime_provider_secret(
               LIMIT 1",
         )
         .bind(account_id)
-        .bind(provider)
+        .bind(&provider)
         .fetch_optional(&state.db)
         .await
         .map_err(db_err)?
     };
 
-    let env_fallback_present = match provider {
+    let env_fallback_present = match provider.as_str() {
         "deepgram" => !state.deepgram_api_keys.is_empty(),
         "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
@@ -4813,14 +4907,18 @@ async fn runtime_provider_secret(
             env_fallback_present,
             row.scope,
         );
-        return Ok(RuntimeProviderSecret {
+        let resolved = RuntimeProviderSecret {
             credential_id: Some(row.id),
             scope: row.scope,
             secret,
-        });
+        };
+        state
+            .runtime_credential_cache
+            .insert(cache_key, resolved.clone());
+        return Ok(resolved);
     }
 
-    let fallback = match provider {
+    let fallback = match provider.as_str() {
         "deepgram" => state.deepgram_api_key.trim(),
         "openai" => state.openai_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
@@ -4834,11 +4932,15 @@ async fn runtime_provider_secret(
             provider,
             account_id,
         );
-        return Ok(RuntimeProviderSecret {
+        let resolved = RuntimeProviderSecret {
             credential_id: None,
             scope: "airnote_env".to_string(),
             secret: fallback.to_string(),
-        });
+        };
+        state
+            .runtime_credential_cache
+            .insert(cache_key, resolved.clone());
+        return Ok(resolved);
     }
 
     tracing::warn!(

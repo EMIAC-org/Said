@@ -60,4 +60,18 @@ where
             guard.remove(key);
         }
     }
+
+    /// Drop every key matched by `predicate`. This is intentionally simple:
+    /// the control-plane cache cardinality is tiny, and wildcard invalidation is
+    /// safer than leaving stale account/org fallback entries behind.
+    pub fn invalidate_where(&self, mut predicate: impl FnMut(&K) -> bool) {
+        if let Ok(mut guard) = self.entries.write() {
+            guard.retain(|key, _| !predicate(key));
+        }
+    }
+
+    #[cfg(test)]
+    pub fn ttl(&self) -> Duration {
+        self.ttl
+    }
 }
