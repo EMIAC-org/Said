@@ -184,6 +184,60 @@ pub fn list_app_usage(pool: &DbPool, user_id: &str) -> Vec<AppUsage> {
     .unwrap_or_default()
 }
 
+/// Record one browser dictation's site (host). On-device only — this table is
+/// never synced to the cloud. Best-effort; a failure just drops the datapoint.
+pub fn record_site_visit(pool: &DbPool, user_id: &str, target_app: &str, host: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let _ = conn.execute(
+        "INSERT INTO site_visits (user_id, target_app, host, timestamp_ms)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![user_id, target_app, host, now_ms()],
+    );
+}
+
+/// Per-site dictation usage for the Insights "Sites you dictate in" section,
+/// grouped by host (most-used first). `target_app` is the most-recent browser
+/// the host was seen in — for nesting/labelling.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SiteUsage {
+    pub host: String,
+    pub target_app: String,
+    pub count: i64,
+    pub last_used_ms: i64,
+}
+
+pub fn list_site_usage(pool: &DbPool, user_id: &str) -> Vec<SiteUsage> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let sql = "SELECT host, COUNT(*), MAX(timestamp_ms),
+                      (SELECT target_app FROM site_visits s2
+                        WHERE s2.user_id = s.user_id AND s2.host = s.host
+                        ORDER BY timestamp_ms DESC LIMIT 1)
+                 FROM site_visits s
+                WHERE user_id = ?1
+                GROUP BY host
+                ORDER BY COUNT(*) DESC";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(params![user_id], |row| {
+        Ok(SiteUsage {
+            host: row.get(0)?,
+            count: row.get(1)?,
+            last_used_ms: row.get(2)?,
+            target_app: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        })
+    })
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
+}
+
 /// Delete recordings older than 1 day.
 ///
 /// Best-effort retention only. Driven by the 6 h sweep in `main.rs`, whose

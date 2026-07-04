@@ -2,8 +2,8 @@ import React, { useMemo, useState, useEffect } from "react";
 import { Info, CheckCircle2, PenLine, Monitor } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { listAppUsage, getAppIdentity } from "@/lib/invoke";
-import type { AppSnapshot, HistoryItem, AppIdentity, AppUsageRow } from "@/types";
+import { listAppUsage, getAppIdentity, listSiteUsage, getFavicon } from "@/lib/invoke";
+import type { AppSnapshot, HistoryItem, AppIdentity, AppUsageRow, SiteUsageRow } from "@/types";
 
 interface InsightsViewProps {
   snapshot: AppSnapshot | null;
@@ -220,6 +220,97 @@ function AppUsageSection() {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Sites you dictate in (browser context) ────────────────────────────────────
+
+const faviconCache = new Map<string, string | null>();
+const faviconInflight = new Map<string, Promise<string | null>>();
+function resolveFavicon(host: string): Promise<string | null> {
+  if (faviconCache.has(host)) return Promise.resolve(faviconCache.get(host) ?? null);
+  const inflight = faviconInflight.get(host);
+  if (inflight) return inflight;
+  const p = getFavicon(host).then((url) => {
+    faviconCache.set(host, url);
+    faviconInflight.delete(host);
+    return url;
+  });
+  faviconInflight.set(host, p);
+  return p;
+}
+
+/** Deterministic tile color from a host, for the no-favicon fallback. */
+function hostTint(host: string): string {
+  let h = 0;
+  for (let i = 0; i < host.length; i++) h = (h * 31 + host.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 45% 42%)`;
+}
+
+interface SiteRow extends SiteUsageRow {
+  favicon: string | null;
+}
+
+/** "Sites you dictate in" — per-site usage with real favicons. Only populates
+ *  when the opt-in browser-context feature is on and you've dictated into a
+ *  browser; hidden entirely otherwise. */
+function SitesUsageSection() {
+  const [rows, setRows] = useState<SiteRow[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void listSiteUsage().then(async (usage) => {
+      const top = usage.slice(0, 8);
+      const withIcons = await Promise.all(
+        top.map(async (u) => ({ ...u, favicon: await resolveFavicon(u.host) })),
+      );
+      if (alive) setRows(withIcons);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  // Hidden until there's something to show (keeps the page clean pre-opt-in).
+  if (rows === null || rows.length === 0) return null;
+
+  const maxCount = rows.reduce((m, r) => Math.max(m, r.count), 0) || 1;
+
+  return (
+    <div className="panel p-5 mt-3">
+      <div className="flex items-baseline justify-between mb-5">
+        <h2 className="text-[14px] font-semibold text-foreground">Sites you dictate in</h2>
+        <span className="section-label">{rows.length} site{rows.length === 1 ? "" : "s"}</span>
+      </div>
+      <div className="space-y-3">
+        {rows.map((r) => {
+          const pct = Math.round((r.count / maxCount) * 100);
+          return (
+            <div key={r.host} className="flex items-center gap-3">
+              <div
+                className="w-9 h-9 flex-shrink-0 rounded-lg overflow-hidden flex items-center justify-center text-[13px] font-semibold text-white"
+                style={{ background: r.favicon ? "hsl(var(--surface-4))" : hostTint(r.host) }}
+              >
+                {r.favicon ? (
+                  <img src={r.favicon} alt={r.host} className="w-full h-full object-contain" draggable={false} />
+                ) : (
+                  (r.host[0] ?? "?").toUpperCase()
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[13px] font-medium text-foreground truncate">{r.host}</span>
+                  <span className="text-[11px] text-muted-foreground tabular-nums flex-shrink-0">
+                    {r.count}
+                  </span>
+                </div>
+                <div className="mt-1.5 h-1.5 rounded-full overflow-hidden" style={{ background: "hsl(var(--surface-4))" }}>
+                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: "hsl(var(--secondary))" }} />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -504,6 +595,9 @@ export function InsightsView({ snapshot }: InsightsViewProps) {
 
         {/* ── Apps you dictate in ─────────────────────── */}
         <AppUsageSection />
+
+        {/* ── Sites you dictate in (browser context) ──── */}
+        <SitesUsageSection />
 
       </div>
     </ScrollArea>

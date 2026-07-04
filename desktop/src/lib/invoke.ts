@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AppIdentity,
   AppUsageRow,
+  SiteUsageRow,
   AppSnapshot,
   BackendEndpoint,
   CloudAuthResponse,
@@ -384,6 +385,26 @@ export async function listAppUsage(): Promise<AppUsageRow[]> {
     return await tauriInvoke<AppUsageRow[]>("get_app_usage");
   } catch {
     return [];
+  }
+}
+
+/** Per-site dictation usage (grouped by host, most-used first). On-device only. */
+export async function listSiteUsage(): Promise<SiteUsageRow[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await tauriInvoke<SiteUsageRow[]>("get_site_usage");
+  } catch {
+    return [];
+  }
+}
+
+/** Favicon for a site host as a data: URL (direct fetch, cached). `null` → fallback. */
+export async function getFavicon(host: string | null | undefined): Promise<string | null> {
+  if (!isTauriRuntime() || !host || !host.trim()) return null;
+  try {
+    return await tauriInvoke<string | null>("get_favicon", { host });
+  } catch {
+    return null;
   }
 }
 
@@ -1009,6 +1030,7 @@ export interface DesktopPrefs {
   message_polish_mode: boolean;
   launch_at_login: boolean;
   beta_mode: boolean;
+  browser_context_enabled: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -1019,6 +1041,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       message_polish_mode: false,
       launch_at_login: false,
       beta_mode: false,
+      browser_context_enabled: false,
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
@@ -1027,6 +1050,17 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
 export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("set_desktop_prefs", { prefs });
+}
+
+/** Prompt macOS Automation consent for running browsers (upfront, on Enable).
+ *  Returns the browser names prompted. */
+export async function requestBrowserAutomation(): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await tauriInvoke<string[]>("request_browser_automation");
+  } catch {
+    return [];
+  }
 }
 
 // ── Developer Problem Command ────────────────────────────────────────────────

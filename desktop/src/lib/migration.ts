@@ -11,7 +11,9 @@
 //   v1 → "Meet the new on-device model" page (install the new model, or keep the
 //        current setup). Everyone sees it once after updating.
 //   v2 → adds the hotkey step (pick any modifier / Caps Lock / Fn) after the model.
-export const MIGRATION_VERSION = 2;
+//   v3 → adds the optional "browser context" step (macOS) after the hotkey.
+//   v4 → re-shows the model step after the update-gate cleanup fix.
+export const MIGRATION_VERSION = 4;
 
 const STORAGE_KEY = "said:migration-done";
 

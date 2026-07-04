@@ -295,7 +295,7 @@ export default function App() {
         setErrorBanner(err instanceof Error ? err.message : String(err));
       });
     refreshHistory();
-  }, [refreshHistory]);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -690,8 +690,6 @@ export default function App() {
     }
     if (VALID_VIEWS.includes(view as ActiveView)) {
       setActiveView(view as ActiveView);
-      // Refresh history when user opens the history tab
-      if (view === "history") refreshHistory();
     }
   }, [refreshHistory]);
 

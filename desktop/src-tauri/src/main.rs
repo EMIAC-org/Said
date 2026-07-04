@@ -4,6 +4,7 @@ mod api;
 mod app_identity; // resolve target_app pid → bundle-id/exe + app icon (App Identity Service)
 mod backend;
 mod backend_guard;
+mod browser_context; // opt-in: active browser tab → site host (AppleScript, macOS)
 mod chaos; // env-gated fault injection for torture-testing the resilience paths
 mod desktop;
 mod developer_context;
@@ -12,6 +13,7 @@ mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostic
 mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
 mod enterprise_oauth;
+mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
 mod meeting_engine;
 mod notch_sidecar;
 mod whisper_dictation_stream; // crash-recovery PCM tap during on-device dictation (batch-only STT)
@@ -3544,6 +3546,37 @@ async fn get_app_usage(backend: State<'_, BackendState>) -> Result<Vec<api::AppU
     api::get_app_usage(&ep).await
 }
 
+/// Fire the macOS Automation consent prompt for a browser bundle-id (used by the
+/// opt-in "Enable browser context" affordances so the prompt shows up front
+/// rather than mid-dictation). Returns true if the event went through (already
+/// granted). No-op / false for non-browsers and non-macOS.
+#[tauri::command]
+async fn trigger_browser_automation(app_key: String) -> bool {
+    browser_context::trigger_automation_prompt(&app_key)
+}
+
+/// Prompt macOS Automation consent for all currently-running known browsers, so
+/// the user grants it upfront when they enable the feature. Returns the browser
+/// names prompted (empty on non-macOS / no browsers running).
+#[tauri::command]
+async fn request_browser_automation() -> Vec<String> {
+    browser_context::request_automation_upfront()
+}
+
+/// Per-site dictation usage (grouped by host) for the Insights "Sites" section.
+#[tauri::command]
+async fn get_site_usage(backend: State<'_, BackendState>) -> Result<Vec<api::SiteUsage>, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_site_usage(&ep).await
+}
+
+/// Favicon for a site host as a `data:` URL (direct fetch, cached). `None` →
+/// the frontend draws a letter-tile fallback.
+#[tauri::command]
+async fn get_favicon(host: String) -> Option<String> {
+    favicon::favicon_data_url(&host).await
+}
+
 #[tauri::command]
 async fn submit_edit_feedback(
     backend: State<'_, BackendState>,
@@ -5362,13 +5395,17 @@ fn do_finish_recording(
             return;
         }
 
+        // Resolve the locked target pid → app key (bundle-id on macOS, exe on
+        // Windows) so History can render which app this was dictated into.
+        // `Option<i32>` is Copy, so this doesn't disturb edit_target_pid's later use.
+        let target_app = edit_target_pid.and_then(app_identity::app_key_for_pid);
+        // Opt-in, on-device: if the target is a browser, capture the active
+        // tab's site (host only) for the Insights "Sites" section. Fire-and-forget.
+        maybe_capture_browser_site(&back_arc2, target_app.clone());
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
-            // Resolve the locked target pid → app key (bundle-id on macOS, exe on
-            // Windows) so History can render which app this was dictated into.
-            // `Option<i32>` is Copy, so this doesn't disturb edit_target_pid's later use.
-            edit_target_pid.and_then(app_identity::app_key_for_pid),
+            target_app,
             client_run_id.clone(),
             pre_transcript,
             None,
@@ -6003,6 +6040,41 @@ fn emit_problem_context_event(
 /// Async SSE consumer: streams tokens from backend, types them word-by-word,
 /// and stores the result for paste-latest re-paste.
 /// In meeting mode (`is_meeting`), skips word-by-word typing entirely.
+/// Opt-in browser-context capture. If `target_app` is a browser and the
+/// `browser_context_enabled` pref is set, read the active tab's site (host only)
+/// and record it to the LOCAL backend. Fully fire-and-forget and on-device — the
+/// host is never sent to the cloud runtime. No-op when disabled / not a browser.
+fn maybe_capture_browser_site(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    target_app: Option<String>,
+) {
+    let Some(app_key) = target_app else {
+        return;
+    };
+    if !browser_context::is_known_browser(&app_key) {
+        return;
+    }
+    if !said_core::prefs::load().browser_context_enabled {
+        return;
+    }
+    let back_arc = back_arc.clone();
+    tauri::async_runtime::spawn(async move {
+        // osascript is blocking — keep it off the async runtime thread.
+        let key = app_key.clone();
+        let site = tauri::async_runtime::spawn_blocking(move || browser_context::active_site(&key))
+            .await
+            .ok()
+            .flatten();
+        let Some(site) = site else {
+            return;
+        };
+        let ep = back_arc.lock().ok().and_then(|g| g.clone());
+        if let Some(ep) = ep {
+            let _ = api::record_site_context(&ep, &app_key, &site.host).await;
+        }
+    });
+}
+
 async fn run_voice_polish_sse(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
     wav: Vec<u8>,
@@ -11064,6 +11136,10 @@ fn main() {
             get_app_icon,
             get_app_identity,
             get_app_usage,
+            get_site_usage,
+            get_favicon,
+            trigger_browser_automation,
+            request_browser_automation,
             submit_edit_feedback,
             toggle_recording,
             set_mode,

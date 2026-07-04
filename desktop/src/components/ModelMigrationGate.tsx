@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowRight, Check, Cpu, Download, Keyboard, Loader2, Sparkles, X } from "lucide-react";
-import { getPreferences, invoke, patchPreferences } from "@/lib/invoke";
+import { ArrowRight, Check, Cpu, Download, Keyboard, Link, Loader2, Sparkles, X } from "lucide-react";
+import {
+  getPreferences, invoke, patchPreferences,
+  getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
+} from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 import { ReclaimOldModelsRow, type ReclaimResult } from "@/components/ReclaimOldModelsRow";
 import { friendlyError } from "@/lib/friendlyError";
@@ -44,7 +47,7 @@ export function ModelMigrationGate({
   onDone: () => void;
   platform: Platform;
 }) {
-  const [gateStep, setGateStep] = useState<"model" | "hotkey">("model");
+  const [gateStep, setGateStep] = useState<"model" | "hotkey" | "browser">("model");
   const [model, setModel] = useState<ModelStatus | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,6 +56,7 @@ export function ModelMigrationGate({
   const [reclaimResult, setReclaimResult] = useState<ReclaimResult | null>(null);
   const [reclaimError, setReclaimError] = useState("");
   const [recordHotkey, setRecordHotkey] = useState("caps_lock");
+  const [modelChecked, setModelChecked] = useState(false);
   const mounted = useRef(true);
 
   const installed = model?.installed ?? false;
@@ -69,8 +73,14 @@ export function ModelMigrationGate({
   }, []);
 
   const refresh = useCallback(async () => {
-    const s = await invoke<ModelStatus>("apex_model_status").catch(() => null);
-    if (s && mounted.current) setModel(s);
+    const s = await invoke<ModelStatus>("apex_model_status").catch((e) => {
+      if (mounted.current) setError(friendlyError(e));
+      return null;
+    });
+    if (mounted.current) {
+      setModel(s);
+      setModelChecked(true);
+    }
     return s;
   }, []);
 
@@ -103,9 +113,26 @@ export function ModelMigrationGate({
   const startDownload = useCallback(async () => {
     setBusy(true);
     setError("");
+    setReclaimError("");
+    setReclaimResult(null);
     try {
       await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
-      await refresh();
+      const status = await refresh();
+      if (!status?.installed) {
+        throw new Error(`${NEW_MODEL_NAME} did not install correctly.`);
+      }
+
+      // Best-effort disk reclaim after the new model is verified. Failure here
+      // should not block the user from continuing with the updated model.
+      if (mounted.current) setReclaiming(true);
+      try {
+        const result = await invoke<ReclaimResult>("reclaim_old_models");
+        if (mounted.current) setReclaimResult(result);
+      } catch (e) {
+        if (mounted.current) setReclaimError(friendlyError(e));
+      } finally {
+        if (mounted.current) setReclaiming(false);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg !== "cancelled") setError(friendlyError(msg));
@@ -135,6 +162,7 @@ export function ModelMigrationGate({
     download && download.total > 0
       ? Math.min(100, Math.round((download.received / download.total) * 100))
       : null;
+  const checkingModel = !modelChecked;
   const downloading = pct !== null && !installed;
   const hk = hotkeyDisplay(recordHotkey, platform);
   const hkToggle = hotkeyMode(recordHotkey, platform) === "toggle";
@@ -157,11 +185,52 @@ export function ModelMigrationGate({
           </div>
 
           <div className="mig-actions">
-            <button onClick={onDone} className="btn-primary btn-lg w-full">
+            <button
+              onClick={() => (platform === "macos" ? setGateStep("browser") : onDone())}
+              className="btn-primary btn-lg w-full"
+            >
               {hkToggle ? `Tap ${hk.label} to dictate — done` : `Hold ${hk.label} to dictate — done`}
               <ArrowRight size={14} />
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Browser context — macOS-only optional opt-in, announced in the forced update
+  // flow so every user sees it. Enabling asks macOS for Automation consent.
+  if (gateStep === "browser") {
+    const enable = async () => {
+      try {
+        const p = await getDesktopPrefs();
+        await setDesktopPrefs({ ...p, browser_context_enabled: true });
+        void requestBrowserAutomation();
+      } catch { /* best-effort */ }
+      onDone();
+    };
+    return (
+      <div className="onb-error-screen">
+        <div className="mig-card">
+          <div className="mig-badge">
+            <Link size={12} /> New: browser context
+          </div>
+          <h2 className="mig-title">Smarter context per website</h2>
+          <p className="mig-desc">
+            AirNote can remember which website you’re dictating into — so it learns that Gmail,
+            Twitter and your CMS each want a different style. It stores the domain only
+            (e.g. mail.google.com, never the full URL), on this Mac. Enabling asks macOS for
+            permission to read your browser’s active tab. Optional — change it anytime in Settings.
+          </p>
+          <div className="mig-actions">
+            <button onClick={() => void enable()} className="btn-primary btn-lg w-full">
+              Enable browser context
+              <ArrowRight size={14} />
+            </button>
+          </div>
+          <button type="button" onClick={onDone} className="onb-skip-link">
+            Not now
+          </button>
         </div>
       </div>
     );
@@ -187,7 +256,9 @@ export function ModelMigrationGate({
                 <Cpu size={13} />
               </span>
               <span className="mig-model-name">
-                {installed
+                {checkingModel
+                  ? `Checking ${NEW_MODEL_NAME}…`
+                  : installed
                   ? `${NEW_MODEL_NAME} · ${
                       model && model.size_bytes > 0 ? formatSize(model.size_bytes) : NEW_MODEL_SIZE_HINT
                     }`
@@ -196,7 +267,11 @@ export function ModelMigrationGate({
                     : `${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
               </span>
             </div>
-            {installed ? (
+            {checkingModel ? (
+              <span className="mig-ready">
+                <Loader2 size={12} className="animate-spin" /> Checking
+              </span>
+            ) : installed ? (
               <span className="mig-ready">
                 <Check size={12} /> Installed
               </span>
@@ -240,15 +315,19 @@ export function ModelMigrationGate({
           ) : (
             <button
               onClick={() => void startDownload()}
-              disabled={busy || downloading}
+              disabled={checkingModel || busy || downloading}
               className="btn-primary btn-lg w-full"
             >
-              {busy || downloading ? (
+              {checkingModel || busy || downloading ? (
                 <Loader2 size={14} className="animate-spin" />
               ) : (
                 <Download size={14} />
               )}
-              {downloading ? `Installing… ${pct ?? 0}%` : `Install ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
+              {checkingModel
+                ? "Checking local model…"
+                : downloading
+                ? `Installing… ${pct ?? 0}%`
+                : `Install ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
             </button>
           )}
           <button type="button" onClick={() => setGateStep("hotkey")} className="onb-skip-link">

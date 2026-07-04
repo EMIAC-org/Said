@@ -205,6 +205,14 @@ export interface AppUsageRow {
   last_used_ms: number;
 }
 
+/** Per-site dictation usage row (Insights "sites you dictate in"). Host only. */
+export interface SiteUsageRow {
+  host:         string; // domain only, e.g. mail.google.com
+  target_app:   string; // the browser bundle-id it was seen in
+  count:        number;
+  last_used_ms: number;
+}
+
 /** Backend endpoint info (url + shared secret) */
 export interface BackendEndpoint {
   url:    string;

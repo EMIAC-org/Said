@@ -15,8 +15,13 @@ pub async fn handler(State(state): State<AppState>) -> Json<Value> {
         |p| {
             let preferred = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
             let effective = key_guard::effective_stt_provider(p);
-            let ready =
-                said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref()).is_some();
+            let ready = if said_core::stt::is_whisper_local(&effective) {
+                said_core::paths::active_dictation_model_path().is_file()
+            } else if said_core::stt::is_swift_local(&effective) {
+                said_core::paths::swift_model_weights_path().is_file()
+            } else {
+                said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref()).is_some()
+            };
             (preferred, effective, ready)
         },
     );

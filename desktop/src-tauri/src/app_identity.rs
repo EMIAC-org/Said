@@ -106,8 +106,8 @@ fn prettify_category(raw: String) -> String {
 }
 
 /// Standard base64 (RFC 4648) with padding — small enough to inline rather than
-/// pull a crate into the desktop shell just for icon URLs.
-fn base64_encode(input: &[u8]) -> String {
+/// pull a crate into the desktop shell just for icon URLs. Shared with `favicon`.
+pub(crate) fn base64_encode(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {

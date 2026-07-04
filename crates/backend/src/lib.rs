@@ -380,6 +380,8 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/history", get(routes::history::list))
         .route("/v1/history/apps", get(routes::history::app_usage))
+        .route("/v1/history/sites", get(routes::history::site_usage))
+        .route("/v1/site-context", post(routes::history::record_site))
         .route(
             "/v1/voice-runs/latest-failed",
             get(routes::voice_runs::latest_failed),

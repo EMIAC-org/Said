@@ -73,6 +73,17 @@ pub fn apex_model_path() -> PathBuf {
         .join("ggml-apex-hinglish-q8_0.bin")
 }
 
+/// Active local dictation model path. Apex is the current preferred model; the
+/// old Oriserve file remains a fallback for users who have not migrated yet.
+pub fn active_dictation_model_path() -> PathBuf {
+    let apex = apex_model_path();
+    if apex.is_file() {
+        apex
+    } else {
+        whisper_model_path()
+    }
+}
+
 /// Silero VAD ggml model for whisper.cpp built-in voice-activity detection.
 /// Shared with the Meetings pipeline. When present, the live dictation path
 /// gates whisper on detected speech to suppress silence/noise hallucination.

@@ -26,7 +26,10 @@ import {
   loadSavedAuthMode,
 } from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
-import { getPreferences, invoke, patchPreferences } from "@/lib/invoke";
+import {
+  getPreferences, invoke, patchPreferences,
+  getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
+} from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 import { ReclaimOldModelsRow, type ReclaimResult } from "@/components/ReclaimOldModelsRow";
 import { friendlyError } from "@/lib/friendlyError";
@@ -917,6 +920,7 @@ export function OnboardingFlow({
               onOpenSettings={() => void invoke("open_input_monitoring_settings")}
             />
           )}
+          {!isWindows && <BrowserContextOnboardingRow />}
         </div>
 
         <div className="mt-6">
@@ -1193,6 +1197,35 @@ export function OnboardingFlow({
         </button>
       </div>
     </OnboardingShell>
+  );
+}
+
+// ── Browser context (optional opt-in) ──────────────────────────────────────
+// Reuses the PermRow look. "granted" is driven by the opt-in pref rather than an
+// OS check (macOS has no Automation preflight); enabling triggers the per-browser
+// Automation prompt so it's asked upfront, not mid-dictation.
+function BrowserContextOnboardingRow() {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    void getDesktopPrefs().then((p) => setEnabled(p.browser_context_enabled)).catch(() => {});
+  }, []);
+  const enable = async () => {
+    try {
+      const p = await getDesktopPrefs();
+      await setDesktopPrefs({ ...p, browser_context_enabled: true });
+      setEnabled(true);
+      void requestBrowserAutomation();
+    } catch { /* best-effort */ }
+  };
+  return (
+    <PermRow
+      icon={<Link size={15} />}
+      title="Browser context (optional)"
+      desc="Remember which website you dictate into — the domain only (e.g. mail.google.com), stored on this Mac. You can change this anytime in Settings."
+      granted={enabled}
+      onAllow={() => void enable()}
+      onOpenSettings={() => void enable()}
+    />
   );
 }
 

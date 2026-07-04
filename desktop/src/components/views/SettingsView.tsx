@@ -34,7 +34,7 @@ import {
   getPreferences, patchPreferences,
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
-  getDesktopPrefs, setDesktopPrefs,
+  getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
   readBackendLog, backendLogLocation, openLogFolder,
   openExternal,
   getServerSettingsStatus,
@@ -603,6 +603,7 @@ export function SettingsView({
     message_polish_mode: false,
     launch_at_login: false,
     beta_mode: false,
+    browser_context_enabled: false,
   });
   useEffect(() => {
     void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});
@@ -1829,6 +1830,60 @@ export function SettingsView({
                     ) : (
                       <span className="text-[12px] text-muted-foreground">macOS only</span>
                     )}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Browser context — opt-in, macOS. Reads the active tab's domain
+                for site-level dictation context; toggling on triggers the
+                per-browser Automation consent prompt. */}
+            {!isWindows && (
+              <>
+                <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+                <div className="flex items-center gap-4 px-5 py-4">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                  >
+                    <Link size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-foreground">Browser context</p>
+                    <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                      When you dictate into a browser, remember the site (domain only — e.g.
+                      mail.google.com, never the full URL), stored on this Mac only. Turning this
+                      on asks macOS for permission to read your browser’s active tab.
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 ml-4">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={desktopPrefs.browser_context_enabled}
+                      onClick={() => {
+                        const next = !desktopPrefs.browser_context_enabled;
+                        writeDesktopPrefs({ ...desktopPrefs, browser_context_enabled: next });
+                        if (next) void requestBrowserAutomation();
+                      }}
+                      className="relative h-6 w-11 rounded-full transition-colors"
+                      style={{
+                        background: desktopPrefs.browser_context_enabled
+                          ? "hsl(var(--primary))"
+                          : "hsl(var(--surface-4))",
+                      }}
+                    >
+                      <span
+                        className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                        style={{
+                          left: 4,
+                          transform: desktopPrefs.browser_context_enabled
+                            ? "translateX(20px)"
+                            : "translateX(0)",
+                          background: "hsl(var(--foreground))",
+                        }}
+                      />
+                    </button>
                   </div>
                 </div>
               </>

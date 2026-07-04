@@ -200,7 +200,7 @@ async fn main() {
     // finishes simply blocks on the same one-time init.
     #[cfg(feature = "local-stt")]
     {
-        let whisper_model = said_backend::paths::whisper_model_path();
+        let whisper_model = said_backend::paths::active_dictation_model_path();
         tokio::task::spawn_blocking(move || {
             if whisper_model.is_file() {
                 match said_backend::stt::whisper::ensure_model_loaded(

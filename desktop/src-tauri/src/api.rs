@@ -991,6 +991,46 @@ pub async fn get_app_usage(ep: &BackendEndpoint) -> Result<Vec<AppUsage>, String
         .map_err(|e| format!("parse app usage failed: {e}"))
 }
 
+/// Record a browser dictation's site to the LOCAL backend (`/v1/site-context`).
+/// On-device only — never reaches the cloud runtime.
+pub async fn record_site_context(
+    ep: &BackendEndpoint,
+    target_app: &str,
+    host: &str,
+) -> Result<(), String> {
+    let url = format!("{}/v1/site-context", ep.url);
+    Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "target_app": target_app, "host": host }))
+        .send()
+        .await
+        .map_err(|e| format!("record site failed: {e}"))?;
+    Ok(())
+}
+
+/// Per-site dictation usage (grouped by host) for the Insights "Sites" section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteUsage {
+    pub host: String,
+    pub target_app: String,
+    pub count: i64,
+    pub last_used_ms: i64,
+}
+
+pub async fn get_site_usage(ep: &BackendEndpoint) -> Result<Vec<SiteUsage>, String> {
+    let url = format!("{}/v1/history/sites", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("get site usage failed: {e}"))?
+        .json::<Vec<SiteUsage>>()
+        .await
+        .map_err(|e| format!("parse site usage failed: {e}"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceRun {
     pub run_id: String,

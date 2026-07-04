@@ -159,7 +159,7 @@ pub fn transcribe_wav(wav_data: &[u8], language: &str) -> Result<TranscriptResul
     // never load until the backend restarts. `WHISPER_CTX` is a OnceCell that only
     // stores on success, so a prior failed/absent load is safely retried here.
     if WHISPER_CTX.get().is_none() {
-        let model = crate::paths::whisper_model_path();
+        let model = crate::paths::active_dictation_model_path();
         let model_str = model
             .to_str()
             .ok_or_else(|| "whisper model path is not valid UTF-8".to_string())?;
