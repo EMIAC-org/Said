@@ -1,8 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reset only local setup/onboarding state for the macOS desktop app.
+# Reset local onboarding / post-update-gate state for the macOS desktop app, so
+# both first-run onboarding AND the "you just updated" forced gate can be
+# replayed on demand while iterating.
+#
+# Usage:
+#   reset-local-onboarding.sh            # FULL: replay fresh onboarding from scratch
+#   reset-local-onboarding.sh update     # UPDATE: replay ONLY the post-update gate
+#                                         #   (keeps you onboarded + your API keys /
+#                                         #    model / prefs; just re-arms the
+#                                         #    ModelMigrationGate as if you launched a
+#                                         #    freshly-updated build)
+#   reset-local-onboarding.sh update 1   # arm the gate as if you had satisfied
+#                                         #   migration v1 — you then see only the
+#                                         #   step(s) added after v1 (e.g. hotkey)
+#
 # Keeps recordings, audio, vocabulary, meetings, and downloaded local STT models.
+
+MODE="${1:-full}"
+FROM_VERSION="${2:-0}"
+
+case "$MODE" in
+  full|update) ;;
+  *)
+    echo "Unknown mode '$MODE'. Use 'full' (default) or 'update' [from_version]." >&2
+    exit 2
+    ;;
+esac
 
 APP_SUPPORT="${HOME}/Library/Application Support/VoicePolish"
 DB_PATH="${APP_SUPPORT}/db.sqlite"
@@ -12,7 +37,11 @@ WEBKIT_IDS=(
   "said-desktop"
 )
 
-echo "Resetting AirNote local onboarding state..."
+if [ "$MODE" = "update" ]; then
+  echo "Re-arming AirNote post-update gate (from migration v${FROM_VERSION})..."
+else
+  echo "Resetting AirNote local onboarding state..."
+fi
 
 if pgrep -x "AirNote" >/dev/null 2>&1; then
   echo "Quitting AirNote..."
@@ -24,16 +53,21 @@ pkill -x "AirNote" >/dev/null 2>&1 || true
 pkill -f "airnote-backend" >/dev/null 2>&1 || true
 pkill -f "said-backend" >/dev/null 2>&1 || true
 
-python3 - "$DB_PATH" "$WEBKIT_ROOT" "${WEBKIT_IDS[@]}" <<'PY'
-import os
+python3 - "$MODE" "$FROM_VERSION" "$DB_PATH" "$WEBKIT_ROOT" "${WEBKIT_IDS[@]}" <<'PY'
 import sqlite3
 import sys
 from pathlib import Path
 
-db_path = Path(sys.argv[1]).expanduser()
-webkit_root = Path(sys.argv[2]).expanduser()
-webkit_ids = sys.argv[3:]
+mode = sys.argv[1]
+from_version = int(sys.argv[2])
+db_path = Path(sys.argv[3]).expanduser()
+webkit_root = Path(sys.argv[4]).expanduser()
+webkit_ids = sys.argv[5:]
 
+# localStorage key that arms the post-update forced gate (see lib/migration.ts).
+MIGRATION_KEY = "said:migration-done"
+
+# Keys cleared for a FULL fresh-onboarding reset.
 LOCAL_STORAGE_KEYS = {
     "said:onboarding-complete",
     # Per-step progress — without this the flow resumes mid-way and SKIPS steps
@@ -48,6 +82,11 @@ LOCAL_STORAGE_KEYS = {
     # env/default backend.
     "said:server-url-mode",
     "said:server-url-override",
+    # Post-update gate + legacy model-setup flag — clear so a fresh user also sees
+    # the current migration flow (onboarding re-stamps the version on completion,
+    # so the gate never double-shows for the fresh path).
+    MIGRATION_KEY,
+    "said:local-model-setup-v1-done",
 }
 
 PREFERENCE_RESETS = {
@@ -144,13 +183,22 @@ def reset_app_db(path: Path) -> None:
         conn.close()
 
 
-def reset_local_storage(root: Path, app_id: str) -> None:
+def ls_dbs(root: Path, app_id: str) -> list[Path]:
     base = root / app_id
     if not base.exists():
-        return
+        return []
+    return list(base.glob("WebsiteData/Default/*/*/LocalStorage/localstorage.sqlite3"))
 
-    dbs = list(base.glob("WebsiteData/Default/*/*/LocalStorage/localstorage.sqlite3"))
-    for db in dbs:
+
+def _checkpoint(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.DatabaseError:
+        pass
+
+
+def clear_local_storage(root: Path, app_id: str, keys: set[str]) -> None:
+    for db in ls_dbs(root, app_id):
         conn = sqlite3.connect(db)
         try:
             if not table_exists(conn, "ItemTable"):
@@ -158,22 +206,64 @@ def reset_local_storage(root: Path, app_id: str) -> None:
             before = conn.execute("SELECT COUNT(*) FROM ItemTable").fetchone()[0]
             conn.executemany(
                 "DELETE FROM ItemTable WHERE key = ?",
-                [(key,) for key in LOCAL_STORAGE_KEYS],
+                [(key,) for key in keys],
             )
             conn.commit()
-            try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except sqlite3.DatabaseError:
-                pass
+            _checkpoint(conn)
             after = conn.execute("SELECT COUNT(*) FROM ItemTable").fetchone()[0]
             print(f"Cleared {before - after} localStorage key(s) in: {db}")
         finally:
             conn.close()
 
 
-reset_app_db(db_path)
-for app_id in webkit_ids:
-    reset_local_storage(webkit_root, app_id)
+def _encode(value: str) -> bytes:
+    # WebKit stores localStorage strings as UTF-16LE BLOBs (no BOM).
+    return value.encode("utf-16-le")
+
+
+def rearm_update_gate(root: Path, app_id: str, from_version: int) -> None:
+    """Keep the user onboarded but re-arm the post-update ModelMigrationGate.
+
+    Writes `said:onboarding-complete = "true"` (so onboarding is skipped) and sets
+    `said:migration-done` to `from_version` — deleting it entirely when that is 0 —
+    so App.tsx's `migrationDone < MIGRATION_VERSION` check fires the gate again.
+    """
+    for db in ls_dbs(root, app_id):
+        conn = sqlite3.connect(db)
+        try:
+            if not table_exists(conn, "ItemTable"):
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+                ("said:onboarding-complete", sqlite3.Binary(_encode("true"))),
+            )
+            if from_version > 0:
+                conn.execute(
+                    "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+                    (MIGRATION_KEY, sqlite3.Binary(_encode(str(from_version)))),
+                )
+            else:
+                conn.execute("DELETE FROM ItemTable WHERE key = ?", (MIGRATION_KEY,))
+            conn.commit()
+            _checkpoint(conn)
+            state = f"= {from_version}" if from_version > 0 else "cleared (→ 0)"
+            print(f"Armed update gate (onboarding-complete=true, {MIGRATION_KEY} {state}) in: {db}")
+        finally:
+            conn.close()
+
+
+if mode == "update":
+    # Existing, fully set-up user who just updated — leave the app DB untouched.
+    for app_id in webkit_ids:
+        rearm_update_gate(webkit_root, app_id, from_version)
+else:
+    reset_app_db(db_path)
+    for app_id in webkit_ids:
+        clear_local_storage(webkit_root, app_id, LOCAL_STORAGE_KEYS)
 PY
 
-echo "Done. Reopen AirNote to see the onboarding flow again."
+if [ "$MODE" = "update" ]; then
+  echo "Done. Reopen AirNote to see the post-update gate (Meet the new model → hotkey)."
+else
+  echo "Done. Reopen AirNote to see the onboarding flow again."
+fi
