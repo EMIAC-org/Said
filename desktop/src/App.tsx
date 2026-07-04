@@ -247,7 +247,7 @@ export default function App() {
   const [setupStatus, setSetupStatus] = useState<ServerMigrationStatus | null>(null);
 
   // Theme (light/dark) — persisted in localStorage, applied to <html>
-  const { theme, toggle: toggleTheme } = useTheme();
+  const { theme, toggle: toggleTheme, setTheme } = useTheme();
 
   // Backend watchdog heartbeat — detects unresponsive backend and shows recovery overlay
   const heartbeat = useBackendHeartbeat();
@@ -865,6 +865,8 @@ export default function App() {
         onPerformanceMonitorChange={setPerformanceMonitor}
         onEnterpriseDisconnect={handleEnterpriseDisconnect}
         initialSection={settingsSection}
+        theme={theme}
+        onThemeChange={setTheme}
       />
 
       {/* ── Retry toast (bottom-center) ──────────────── */}

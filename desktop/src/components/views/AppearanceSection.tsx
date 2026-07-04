@@ -1,46 +1,210 @@
 import { Check } from "lucide-react";
 import { useDashboardLayout, type DashboardLayout } from "@/lib/useDashboardLayout";
+import { useTheme, type Theme } from "@/lib/useTheme";
 
 /**
- * Appearance section in Settings. Two preview cards (Editorial / Split)
- * with miniature renderings of each layout. Click to select; the choice
- * persists in localStorage via {@link useDashboardLayout}.
+ * Appearance section in Settings. Two blocks:
+ *   1. Theme      — Dark vs Light (Warm Paper), each with a live mini preview.
+ *   2. Dashboard  — Editorial vs Split home layout.
+ * Theme is driven by the shared App-level source (passed in) so the picker and
+ * the topbar Sun/Moon toggle never fall out of sync. Falls back to its own
+ * {@link useTheme} instance if mounted without props.
  */
-export function AppearanceSection() {
+export function AppearanceSection({
+  theme, onThemeChange,
+}: { theme?: Theme; onThemeChange?: (t: Theme) => void } = {}) {
+  const fallback = useTheme();
+  const activeTheme = theme ?? fallback.theme;
+  const setTheme    = onThemeChange ?? fallback.setTheme;
   const { layout, setLayout } = useDashboardLayout();
 
   return (
-    <div className="space-y-5">
-      <header>
-        <h2
-          className="m-0"
-          style={{ fontSize: 16, fontWeight: 600, color: "hsl(var(--foreground))", letterSpacing: "-0.01em" }}
-        >
-          Dashboard layout
-        </h2>
-        <p
-          className="mt-1.5 mb-0"
-          style={{ fontSize: 12.5, color: "hsl(var(--muted-foreground))", lineHeight: 1.55, maxWidth: 480 }}
-        >
-          Choose how the home view surfaces your activity. You can switch any time.
-        </p>
-      </header>
+    <div className="space-y-8">
+      {/* ── Theme ─────────────────────────────────────────────────────── */}
+      <section className="space-y-5">
+        <SectionHeader
+          title="Theme"
+          desc="Dark for focus, Warm Paper for daylight. Applies instantly across the app."
+        />
+        <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr" }}>
+          <ThemeCard
+            palette={DARK_PALETTE}
+            title="Dark"
+            desc="Near-black floor, periwinkle accent, deep macOS glass."
+            selected={activeTheme === "dark"}
+            onSelect={() => setTheme("dark")}
+          />
+          <ThemeCard
+            palette={LIGHT_PALETTE}
+            title="Warm Paper"
+            desc="Warm off-white, indigo accent, soft layered depth."
+            selected={activeTheme === "light"}
+            onSelect={() => setTheme("light")}
+          />
+        </div>
+      </section>
 
-      <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr" }}>
-        <PreviewCard
-          option="split"
-          title="Insights ⟷ Timeline"
-          desc="Two columns. Stats on the left, day-grouped recordings on the right. Highest density."
-          selected={layout === "split"}
-          onSelect={() => setLayout("split")}
+      {/* ── Dashboard layout ──────────────────────────────────────────── */}
+      <section className="space-y-5">
+        <SectionHeader
+          title="Dashboard layout"
+          desc="Choose how the home view surfaces your activity. You can switch any time."
         />
-        <PreviewCard
-          option="editorial"
-          title="Editorial column"
-          desc="Single column, magazine-style. Personalised headline and calmly sectioned blocks."
-          selected={layout === "editorial"}
-          onSelect={() => setLayout("editorial")}
-        />
+        <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr" }}>
+          <PreviewCard
+            option="split"
+            title="Insights ⟷ Timeline"
+            desc="Two columns. Stats on the left, day-grouped recordings on the right. Highest density."
+            selected={layout === "split"}
+            onSelect={() => setLayout("split")}
+          />
+          <PreviewCard
+            option="editorial"
+            title="Editorial column"
+            desc="Single column, magazine-style. Personalised headline and calmly sectioned blocks."
+            selected={layout === "editorial"}
+            onSelect={() => setLayout("editorial")}
+          />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ── Section header ───────────────────────────────────────────────────────────
+
+function SectionHeader({ title, desc }: { title: string; desc: string }) {
+  return (
+    <header>
+      <h2
+        className="m-0"
+        style={{ fontSize: 16, fontWeight: 600, color: "hsl(var(--foreground))", letterSpacing: "-0.01em" }}
+      >
+        {title}
+      </h2>
+      <p
+        className="mt-1.5 mb-0"
+        style={{ fontSize: 12.5, color: "hsl(var(--muted-foreground))", lineHeight: 1.55, maxWidth: 480 }}
+      >
+        {desc}
+      </p>
+    </header>
+  );
+}
+
+// ── Theme card ───────────────────────────────────────────────────────────────
+
+/** A theme's mini-preview palette — hardcoded so the card always renders in
+    ITS theme's colors, regardless of the currently-active theme. */
+interface Palette {
+  floor: string; rail: string; card: string; line: string;
+  text: string; sub: string; accent: string; accentInk: string;
+}
+
+const DARK_PALETTE: Palette = {
+  floor:  "#0f0f13",
+  rail:   "#0d0d11",
+  card:   "#17171d",
+  line:   "rgba(255,255,255,0.06)",
+  text:   "rgba(233,233,238,0.90)",
+  sub:    "rgba(233,233,238,0.20)",
+  accent: "#c8b8ff",
+  accentInk: "#15151b",
+};
+
+const LIGHT_PALETTE: Palette = {
+  floor:  "hsl(40 30% 94.5%)",
+  rail:   "hsl(36 26% 92%)",
+  card:   "hsl(42 46% 99%)",
+  line:   "hsl(36 20% 84%)",
+  text:   "hsl(230 20% 24%)",
+  sub:    "hsl(36 14% 76%)",
+  accent: "hsl(232 74% 59%)",
+  accentInk: "#ffffff",
+};
+
+function ThemeCard({
+  palette, title, desc, selected, onSelect,
+}: {
+  palette: Palette;
+  title: string;
+  desc: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      className="text-left transition-all"
+      style={{
+        padding: 14,
+        borderRadius: 12,
+        background: "hsl(var(--surface-3))",
+        boxShadow: selected
+          ? "inset 0 0 0 1px hsl(var(--primary) / 0.55), 0 0 0 3px hsl(var(--primary) / 0.10)"
+          : "inset 0 0 0 1px hsl(var(--border))",
+        cursor: "pointer",
+      }}
+      onMouseEnter={(e) => {
+        if (!selected) e.currentTarget.style.boxShadow = "inset 0 0 0 1px hsl(var(--glass-stroke-strong))";
+      }}
+      onMouseLeave={(e) => {
+        if (!selected) e.currentTarget.style.boxShadow = "inset 0 0 0 1px hsl(var(--border))";
+      }}
+    >
+      <ThemeMini p={palette} />
+      <div className="flex items-center justify-between mt-3">
+        <div className="text-[13px] font-semibold" style={{ color: "hsl(var(--foreground))" }}>
+          {title}
+        </div>
+        <span
+          className="w-5 h-5 rounded-full flex items-center justify-center transition-all"
+          style={{
+            background: selected ? "hsl(var(--primary))" : "transparent",
+            boxShadow: selected ? "none" : "inset 0 0 0 1px hsl(var(--border))",
+            color: selected ? "hsl(var(--primary-foreground))" : "transparent",
+          }}
+        >
+          <Check size={12} strokeWidth={3} />
+        </span>
+      </div>
+      <p className="m-0 mt-1" style={{ fontSize: 11.5, color: "hsl(var(--muted-foreground))", lineHeight: 1.5 }}>
+        {desc}
+      </p>
+    </button>
+  );
+}
+
+/** Miniature app rendering in a fixed palette — rail + content + accent CTA. */
+function ThemeMini({ p }: { p: Palette }) {
+  return (
+    <div
+      className="relative w-full rounded-lg overflow-hidden"
+      style={{ aspectRatio: "16 / 10", background: p.floor, boxShadow: `inset 0 0 0 1px ${p.line}` }}
+    >
+      {/* Sidebar rail */}
+      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "24%", background: p.rail, borderRight: `1px solid ${p.line}` }}>
+        <MiniBar x={16} y={9}  w={62} h={5} color={p.accent} r={2} />
+        {[20, 30, 40].map((y, i) => (
+          <MiniBar key={y} x={16} y={y} w={58} h={4} color={i === 0 ? p.text : p.sub} r={2} />
+        ))}
+        {/* status card */}
+        <div style={{ position: "absolute", left: "10%", right: "10%", bottom: "9%", height: "22%", borderRadius: 4, background: p.card, boxShadow: `inset 0 0 0 1px ${p.line}` }} />
+      </div>
+
+      {/* Content mat */}
+      <div style={{ position: "absolute", left: "28%", top: "8%", right: "6%", bottom: "8%", borderRadius: 6, background: p.card, boxShadow: `0 2px 8px rgba(20,22,40,0.06), inset 0 0 0 1px ${p.line}` }}>
+        {/* kicker + headline */}
+        <MiniBar x={7} y={11} w={22} h={5}  color={p.accent} r={2} />
+        <MiniBar x={7} y={22} w={70} h={9}  color={p.text} r={2} />
+        <MiniBar x={7} y={36} w={46} h={4}  color={p.sub} r={2} />
+        {/* activity bars */}
+        {[7, 14, 21, 28, 35, 42, 49, 56, 63].map((x, i) => {
+          const h = [10, 16, 8, 20, 13, 24, 11, 18, 26][i];
+          return <MiniBar key={x} x={x} y={78 - h} w={4} h={h} color={i % 2 ? p.accent : p.sub} r={1} />;
+        })}
+        {/* accent CTA pill */}
+        <div style={{ position: "absolute", right: "7%", bottom: "10%", width: "26%", height: "13%", borderRadius: 999, background: p.accent }} />
       </div>
     </div>
   );
@@ -121,15 +285,15 @@ function PreviewCard({
 // ── Miniature renderings — pure SVG-like blocks ─────────────────────────────
 
 function MiniBar({
-  x, y, w, h, color = "hsl(var(--foreground) / 0.10)",
-}: { x: number; y: number; w: number; h: number; color?: string }) {
+  x, y, w, h, color = "hsl(var(--foreground) / 0.10)", r = 2,
+}: { x: number; y: number; w: number; h: number; color?: string; r?: number }) {
   return (
     <div
       style={{
         position: "absolute",
         left: `${x}%`, top: `${y}%`,
         width: `${w}%`, height: `${h}%`,
-        borderRadius: 2,
+        borderRadius: r,
         background: color,
       }}
     />

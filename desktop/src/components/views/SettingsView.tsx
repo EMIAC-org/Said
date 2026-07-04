@@ -14,6 +14,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
+import type { Theme } from "@/lib/useTheme";
 import { DictationSttSection } from "@/components/DictationSttSection";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
 
@@ -201,6 +202,7 @@ export type SettingsSection =
   | "about";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "appearance",     label: "Appearance"     },
   { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
   // Developer section hidden from the user-facing nav. The section type, panel,
@@ -678,6 +680,9 @@ interface SettingsViewProps {
   performanceMonitorEnabled?: boolean;
   onPerformanceMonitorChange?: (enabled: boolean) => void;
   onEnterpriseDisconnect?: () => void;
+  /** Active theme + setter for the Appearance theme picker. */
+  theme?:            Theme;
+  onThemeChange?:    (t: Theme) => void;
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────
@@ -694,6 +699,8 @@ export function SettingsView({
   performanceMonitorEnabled = false,
   onPerformanceMonitorChange,
   onEnterpriseDisconnect,
+  theme,
+  onThemeChange,
 }: SettingsViewProps) {
   // Helper — settings are always section-scoped in the stable UI. If a caller
   // omits the section, default to Models instead of rendering every advanced
@@ -1230,7 +1237,7 @@ export function SettingsView({
         {/* ── Appearance ────────────────────────────────── */}
         <Show when={isOn("appearance")}>
           <div className="mb-7">
-            <AppearanceSection />
+            <AppearanceSection theme={theme} onThemeChange={onThemeChange} />
           </div>
         </Show>
 

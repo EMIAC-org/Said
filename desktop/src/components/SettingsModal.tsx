@@ -12,6 +12,7 @@ import {
   type SettingsSection,
 } from "@/components/views/SettingsView";
 import type { AppSnapshot } from "@/types";
+import type { Theme } from "@/lib/useTheme";
 
 /* ════════════════════════════════════════════════════════════════════════════
    SettingsModal — two-pane modal mirroring the InviteTeamModal aesthetic.
@@ -46,7 +47,7 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
 };
 
 const SECTION_SUBTITLES: Record<SettingsSection, string> = {
-  "appearance":    "Choose how the dashboard surfaces your activity.",
+  "appearance":    "Theme, and how the dashboard surfaces your activity.",
   "writing":       "Advanced voice prompt controls.",
   "hotkeys":       "Choose the key AirNote listens for while you speak.",
   "models":        "Dictation speed, quality, and ChatGPT connection.",
@@ -71,12 +72,16 @@ interface Props {
   onEnterpriseDisconnect?: () => void;
   /** Optional initial section to land on. Defaults to "models". */
   initialSection?:    SettingsSection;
+  /** Active theme + setter — drives the Appearance theme picker, kept in
+      sync with the topbar toggle via the single source in App. */
+  theme:              Theme;
+  onThemeChange:      (t: Theme) => void;
 }
 
 export function SettingsModal({
   open, onClose, snapshot, onAccessibility, onInputMonitoring,
   onMicrophone, onScreenRecording, performanceMonitorEnabled, onPerformanceMonitorChange,
-  onEnterpriseDisconnect, initialSection,
+  onEnterpriseDisconnect, initialSection, theme, onThemeChange,
 }: Props) {
   const [activeSection, setActiveSection] = useState<SettingsSection>(
     initialSection ?? "models"
@@ -279,6 +284,8 @@ export function SettingsModal({
               onPerformanceMonitorChange={onPerformanceMonitorChange}
               onEnterpriseDisconnect={onEnterpriseDisconnect}
               activeSection={activeSection}
+              theme={theme}
+              onThemeChange={onThemeChange}
               hideHeader
               embedded
             />
