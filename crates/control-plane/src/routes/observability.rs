@@ -178,6 +178,43 @@ fn context_applied_from_prompt_meta(meta: &Value) -> Option<Value> {
     }))
 }
 
+fn remove_verbose_prompt_fields(mut metadata: Value) -> Value {
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.remove("system_prompt");
+    }
+    metadata
+}
+
+fn dictation_trace_with_runtime_prompt_stage(
+    base: &Value,
+    transcript: Option<&str>,
+    runtime_prompt_meta: Option<&Value>,
+) -> Value {
+    let Some(meta) = runtime_prompt_meta else {
+        return base.clone();
+    };
+    let Some(system_prompt) = meta
+        .get("system_prompt")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return base.clone();
+    };
+    let mut trace = said_core::dictation_trace::parse_trace_value(Some(base)).unwrap_or_default();
+    trace.add_stage(said_core::dictation_trace::TraceStageInput {
+        stage: "server_runtime.prompt_built",
+        component: "control-plane",
+        function: "build_voice_system_prompt",
+        input: transcript,
+        output: Some(system_prompt),
+        reason: Some("actual system prompt built for server-runtime polish model"),
+        risk: Some("prompt_context_bias"),
+        metadata: remove_verbose_prompt_fields(meta.clone()),
+        ..Default::default()
+    });
+    trace.into_value()
+}
+
 pub async fn list_org_dictation(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -282,7 +319,7 @@ pub async fn get_org_dictation_detail(
         return Err(json_err(StatusCode::BAD_REQUEST, "lookup key required"));
     }
 
-    let row: DictationDetailItem = sqlx::query_as(
+    let mut row: DictationDetailItem = sqlx::query_as(
         "SELECT
             h.id,
             h.account_id,
@@ -397,6 +434,11 @@ pub async fn get_org_dictation_detail(
         );
         None
     });
+    row.dictation_trace_json = dictation_trace_with_runtime_prompt_stage(
+        &row.dictation_trace_json,
+        row.transcript.as_deref().or(row.raw_transcript.as_deref()),
+        runtime_prompt_meta.as_ref(),
+    );
 
     // "Context applied" should reflect the actual run. Prefer the server-runtime
     // prompt_built stage metadata; only fall back to current DB state for older rows

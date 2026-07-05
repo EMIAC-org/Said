@@ -3952,7 +3952,7 @@ async fn execute_voice_polish(
     // Build the prompt now that the persona has resolved (pure CPU).
     let build_start = Instant::now();
     let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_server(profile_md);
-    let prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
+    let mut prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
         &profile_snapshot,
         profile_context.profile_version,
         profile_context.bucket_key.as_deref(),
@@ -3978,6 +3978,9 @@ async fn execute_voice_polish(
         )
     };
     let prompt_ms = prompt_cpu_ms + profile_ms + build_start.elapsed().as_millis() as i64;
+    prompt_built_meta["system_prompt"] = json!(system_prompt);
+    prompt_built_meta["system_prompt_chars"] = json!(system_prompt.chars().count());
+    prompt_built_meta["user_message_chars"] = json!(user_message.chars().count());
 
     tracing::info!(
         "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, profile:{}, credential:{}}} cache={{profile_context:{}, global_profile:{}, app_bucket:{}, bucket_profile:{}}} bucket={:?} bucket_source={:?}",
