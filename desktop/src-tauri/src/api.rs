@@ -133,6 +133,9 @@ pub struct Recording {
     pub source: String,
     pub audio_id: Option<String>,
     pub enriched_transcript: Option<String>,
+    pub raw_transcript: Option<String>,
+    pub local_corrected_transcript: Option<String>,
+    pub polished_output: Option<String>,
 }
 
 /// Result of a completed polish operation (from the `done` SSE event).

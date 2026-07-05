@@ -363,16 +363,15 @@ use crate::{
     llm::{
         openai_codex,
         prompt::{
-            VocabEntry, build_user_message_with_hints, build_voice_repair_system_prompt,
-            build_voice_repair_user_message, default_voice_prompt_template,
-            render_voice_system_prompt_template_with_profile,
-            resolved_vocab_terms_to_entries_with_aliases,
+            VocabEntry, VocabResolution, build_user_message_with_hints,
+            build_voice_repair_system_prompt, build_voice_repair_user_message,
+            default_voice_prompt_template, render_voice_system_prompt_template_with_profile,
+            selected_vocab_terms_to_entries_with_aliases,
         },
         script,
         stream_safety::{
             STREAM_RESET_SENTINEL, StreamProvider, StreamSafetyFilter, scrub_polished_output,
         },
-        vocab_resolver,
     },
     store::{
         company_vocab,
@@ -398,6 +397,46 @@ fn invalidate_openai_session_on_auth_error(
     true
 }
 
+fn vocab_trace_terms(terms: &[vocabulary::VocabTerm]) -> Vec<Value> {
+    terms
+        .iter()
+        .take(30)
+        .map(|term| {
+            json!({
+                "term": term.term,
+                "source": term.source,
+                "term_type": term.term_type,
+                "weight": term.weight,
+                "use_count": term.use_count,
+                "has_example_context": term.example_context.as_ref().is_some_and(|s| !s.trim().is_empty()),
+                "has_meaning": term.meaning.as_ref().is_some_and(|s| !s.trim().is_empty()),
+            })
+        })
+        .collect()
+}
+
+fn vocab_trace_selections(selections: &[vocab_embeddings::VocabSelection]) -> Vec<Value> {
+    selections
+        .iter()
+        .take(30)
+        .map(|selection| {
+            json!({
+                "term": selection.term.term,
+                "source": selection.term.source,
+                "term_type": selection.term.term_type,
+                "weight": selection.term.weight,
+                "use_count": selection.term.use_count,
+                "has_example_context": selection.term.example_context.as_ref().is_some_and(|s| !s.trim().is_empty()),
+                "has_meaning": selection.term.meaning.as_ref().is_some_and(|s| !s.trim().is_empty()),
+                "tier": selection.tier.as_str(),
+                "reason": selection.reason,
+                "evidence": selection.evidence,
+                "score": selection.score,
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 struct VoicePolishInput {
     wav_data: Vec<u8>,
@@ -418,12 +457,28 @@ struct ServerRuntimeVoiceRequest {
     selected_model: String,
     screen_context: Option<String>,
     safe_vocab_terms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    vocab_hints: Vec<ServerRuntimeVocabHint>,
     /// Focused-app key (bundle-id / exe). Lets the server pick the per-app profile
     /// bucket. The learned profile now lives server-side, so the client no longer
     /// ships `client_profile_markdown` — the server injects its own KB.
     #[serde(skip_serializing_if = "Option::is_none")]
     target_app: Option<String>,
     client_run_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ServerRuntimeVocabHint {
+    term: String,
+    tier: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meaning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    term_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1148,8 +1203,46 @@ async fn run_server_runtime_voice_stream(
         .unwrap_or("https://airnote.emiactech.com")
         .to_string();
 
-    let safe_vocab_terms = vocab_entries
+    let vocab_hints = vocab_entries
         .iter()
+        .filter_map(|entry| {
+            let term = entry.term.trim();
+            if term.is_empty() {
+                return None;
+            }
+            Some(ServerRuntimeVocabHint {
+                term: term.to_string(),
+                tier: match entry.resolution {
+                    VocabResolution::Resolved => "apply",
+                    VocabResolution::Candidate => "suggest",
+                }
+                .to_string(),
+                evidence: entry
+                    .evidence
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                meaning: entry
+                    .meaning
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                context: entry
+                    .context
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                term_type: entry.term_type.clone(),
+            })
+        })
+        .take(20)
+        .collect::<Vec<_>>();
+    let safe_vocab_terms = vocab_hints
+        .iter()
+        .filter(|hint| hint.tier == "apply")
         .map(|entry| entry.term.trim().to_string())
         .filter(|term| !term.is_empty())
         .take(20)
@@ -1161,6 +1254,7 @@ async fn run_server_runtime_voice_stream(
         selected_model,
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
+        vocab_hints,
         target_app,
         client_run_id: client_run_id
             .filter(|s| !s.trim().is_empty())
@@ -2719,36 +2813,45 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let examples_used = rag_examples.len();
         info!("[rag] {} example(s) retrieved", examples_used);
 
-        // ── STEP 4: Relevance-aware vocabulary slice ──────────────────────────────
-        // Use the transcript embedding to pick the vocab entries that match
-        // what the user actually said. Skip flooding the prompt with all 200
-        // vocab rows — pick starred + top-weight + top-relevance (deduped,
-        // capped at 25). Falls back to starred + top-weight when no embedding.
-        let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = {
+        // ── STEP 4: Tiered vocabulary retrieval ───────────────────────────────────
+        // Select only transcript-evidenced vocabulary. APPLY entries are exact /
+        // split / approved-alias matches; SUGGEST entries are near-surface matches
+        // that the polish model must judge from context.
+        let embedding_cache_hit = embedding.is_some();
+        let (resolved_transcript, vocab_entries, vocab_trace_metadata): (
+            String,
+            Vec<VocabEntry>,
+            Value,
+        ) = {
             let pool_v   = pool.clone();
             let uid_v    = user_id.clone();
             let lang_v   = prefs.output_language.clone();
             let emb_v    = embedding.clone();
             let txt_v = alias_result.text.clone();
-            let mut chosen = tokio::task::spawn_blocking(move || {
-                vocab_embeddings::select_for_prompt(
-                    &pool_v, &uid_v, &lang_v, emb_v.as_deref(), Some(&txt_v),
+            let selected_vocab = tokio::task::spawn_blocking(move || {
+                vocab_embeddings::select_for_prompt_with_tiers(
+                    &pool_v,
+                    &uid_v,
+                    &lang_v,
+                    emb_v.as_deref(),
+                    Some(&txt_v),
+                    8,
+                    12,
+                    40,
+                    0.55,
                 )
             }).await.unwrap_or_default();
-            // Company terms are not embedded in the local personal-vector index.
-            // Include the highest-priority company entries in the resolver
-            // candidate set so fresh enterprise installs get day-one value.
-            for term in vocab_full.iter().filter(|t| t.source == "company") {
-                if chosen.len() >= 25 {
-                    break;
-                }
-                if !chosen.iter().any(|t| t.term.eq_ignore_ascii_case(&term.term)) {
-                    chosen.push(term.clone());
-                }
-            }
-            // Load safe STT aliases for prompt rendering. These are displayed
-            // only for terms the resolver admits below; Tier 2 now carries
-            // protected-term evidence through polish and mutates only at the end.
+            let company_terms_available = vocab_full.iter().filter(|t| t.source == "company").count();
+            let selector_terms = vocab_trace_selections(&selected_vocab);
+            let apply_count = selected_vocab
+                .iter()
+                .filter(|s| s.tier == vocab_embeddings::VocabSelectionTier::Apply)
+                .count();
+            let suggest_count = selected_vocab
+                .iter()
+                .filter(|s| s.tier == vocab_embeddings::VocabSelectionTier::Suggest)
+                .count();
+            // Load safe STT aliases for prompt rendering.
             let alias_map: std::collections::HashMap<String, Vec<(String, i64)>> = {
                 let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
                     std::collections::HashMap::new();
@@ -2762,48 +2865,86 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 map
             };
 
-            if chosen.is_empty() {
+            if selected_vocab.is_empty() {
                 info!(
                     "[voice] vocab selector picked 0/{} entries — no transcript evidence",
                     vocab_full.len(),
                 );
-                (alias_result.text.clone(), vec![])
+                let metadata = json!({
+                    "embedding_cache_hit": embedding_cache_hit,
+                    "saved_terms_total": vocab_full.len(),
+                    "stt_replacement_rules": stt_replacement_rules.len(),
+                    "company_terms_available": company_terms_available,
+                    "company_terms_added_count": 0,
+                    "company_terms_added": [],
+                    "selector_terms": [],
+                    "apply_terms_count": 0,
+                    "suggest_terms_count": 0,
+                    "sent_to_prompt_count": 0,
+                    "dropped_candidate_count": 0,
+                    "apply_terms": [],
+                    "suggest_terms": [],
+                    "sent_to_prompt_terms": [],
+                    "selected_terms": 0,
+                    "terms": [],
+                });
+                (alias_result.text.clone(), vec![], metadata)
             } else {
-                let resolve_t0 = Instant::now();
-                let resolved = vocab_resolver::resolve_for_prompt(
-                    &alias_result.text,
-                    &chosen,
-                    &vocab_full,
-                    &alias_result,
-                );
-                let resolve_ms = resolve_t0.elapsed().as_millis() as i64;
                 info!(
-                    "[voice] vocab resolver={}ms alias_matches={} context_matches={} resolved={} candidates={}",
-                    resolve_ms,
-                    resolved.alias_match_count,
-                    resolved.context_match_count,
-                    resolved.resolved_terms.len(),
-                    resolved.candidate_terms.len(),
+                    "[voice] vocab selector picked apply={} suggest={} total={} saved={}",
+                    apply_count,
+                    suggest_count,
+                    selected_vocab.len(),
+                    vocab_full.len(),
                 );
-                let entries = resolved_vocab_terms_to_entries_with_aliases(
-                    resolved.resolved_terms,
+                let apply_terms = selected_vocab
+                    .iter()
+                    .filter(|s| s.tier == vocab_embeddings::VocabSelectionTier::Apply)
+                    .map(|s| s.term.term.clone())
+                    .collect::<Vec<_>>();
+                let suggest_terms = selected_vocab
+                    .iter()
+                    .filter(|s| s.tier == vocab_embeddings::VocabSelectionTier::Suggest)
+                    .map(|s| s.term.term.clone())
+                    .collect::<Vec<_>>();
+                let sent_to_prompt_terms = selected_vocab
+                    .iter()
+                    .map(|s| s.term.term.clone())
+                    .collect::<Vec<_>>();
+                let metadata = json!({
+                    "embedding_cache_hit": embedding_cache_hit,
+                    "saved_terms_total": vocab_full.len(),
+                    "stt_replacement_rules": stt_replacement_rules.len(),
+                    "company_terms_available": company_terms_available,
+                    "company_terms_added_count": 0,
+                    "company_terms_added": [],
+                    "selector_terms": selector_terms,
+                    "apply_terms_count": apply_count,
+                    "suggest_terms_count": suggest_count,
+                    "sent_to_prompt_count": selected_vocab.len(),
+                    "dropped_candidate_count": 0,
+                    "apply_terms": apply_terms,
+                    "suggest_terms": suggest_terms,
+                    "sent_to_prompt_terms": sent_to_prompt_terms,
+                    "selected_terms": selected_vocab.len(),
+                    "terms": selected_vocab.iter().take(20).map(|s| s.term.term.clone()).collect::<Vec<_>>(),
+                });
+                let entries = selected_vocab_terms_to_entries_with_aliases(
+                    selected_vocab,
                     &alias_map,
                 );
-                (resolved.transcript, entries)
+                (alias_result.text.clone(), entries, metadata)
             }
         };
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "vocab.resolve_for_prompt",
+            stage: "vocab.select_for_prompt",
             component: "backend",
-            function: "vocab_resolver::resolve_for_prompt",
+            function: "vocab_embeddings::select_for_prompt_with_tiers",
             input: Some(&stt_transcript),
             output: Some(&resolved_transcript),
             reason: Some("select memory/vocabulary candidates for prompt"),
             risk: Some("prompt_context_bias"),
-            metadata: json!({
-                "selected_terms": vocab_entries.len(),
-                "terms": vocab_entries.iter().take(20).map(|v| v.term.clone()).collect::<Vec<_>>(),
-            }),
+            metadata: vocab_trace_metadata,
             ..Default::default()
         });
         let client_profile_summary = {
@@ -3458,28 +3599,27 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ..Default::default()
         });
 
-        // Defense: strip any non-Latin script hallucinations (katakana, CJK, etc)
+        // This used to strip non-Latin characters after the model, but it also
+        // removed valid formatter output such as currency symbols. Keep it
+        // trace-only; Devanagari is handled by the safer recovery stage above.
         let before_non_latin_strip = llm_result.polished.clone();
-        if enforce_roman_hinglish {
-            let stripped = script::strip_non_latin_scripts(&llm_result.polished);
-            if stripped != llm_result.polished {
-                warn!(
-                    "[voice] stripped non-Latin hallucination: {} → {} chars",
-                    llm_result.polished.len(),
-                    stripped.len(),
-                );
-                llm_result.polished = stripped;
-            }
-        }
+        let would_strip_non_latin = enforce_roman_hinglish
+            .then(|| script::strip_non_latin_scripts(&llm_result.polished))
+            .filter(|stripped| stripped != &llm_result.polished);
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "post_llm.strip_non_latin",
             component: "backend",
             function: "script::strip_non_latin_scripts",
             input: Some(&before_non_latin_strip),
             output: Some(&llm_result.polished),
-            reason: Some("remove non-Latin script hallucinations"),
-            risk: Some("post_model_mutation"),
-            metadata: json!({ "enforce_roman_hinglish": enforce_roman_hinglish }),
+            reason: Some("disabled: destructive non-Latin stripping is trace-only"),
+            risk: Some("trace_only_would_mutate"),
+            metadata: json!({
+                "disabled": true,
+                "enforce_roman_hinglish": enforce_roman_hinglish,
+                "would_have_triggered": would_strip_non_latin.is_some(),
+                "would_have_output_chars": would_strip_non_latin.as_ref().map(|s| s.chars().count()),
+            }),
             ..Default::default()
         });
 

@@ -204,7 +204,7 @@ fn dictation_trace_with_runtime_prompt_stage(
     trace.add_stage(said_core::dictation_trace::TraceStageInput {
         stage: "server_runtime.prompt_built",
         component: "control-plane",
-        function: "build_voice_system_prompt",
+        function: "build_voice_system_prompt_with_vocab_hints",
         input: transcript,
         output: Some(system_prompt),
         reason: Some("actual system prompt built for server-runtime polish model"),
@@ -212,7 +212,30 @@ fn dictation_trace_with_runtime_prompt_stage(
         metadata: remove_verbose_prompt_fields(meta.clone()),
         ..Default::default()
     });
+    move_trace_stage_before_fallback_prompt(&mut trace, "server_runtime.prompt_built");
     trace.into_value()
+}
+
+fn move_trace_stage_before_fallback_prompt(
+    trace: &mut said_core::dictation_trace::DictationTrace,
+    stage_name: &str,
+) {
+    let Some(stage_pos) = trace.stages.iter().position(|stage| stage.stage == stage_name) else {
+        return;
+    };
+    let Some(insert_pos) = trace.stages.iter().position(|stage| {
+        stage.stage == "fallback_prompt.build" || stage.stage == "prompt.build"
+    }) else {
+        return;
+    };
+    if insert_pos >= stage_pos {
+        return;
+    }
+    let stage = trace.stages.remove(stage_pos);
+    trace.stages.insert(insert_pos, stage);
+    for (index, stage) in trace.stages.iter_mut().enumerate() {
+        stage.index = index;
+    }
 }
 
 pub async fn list_org_dictation(

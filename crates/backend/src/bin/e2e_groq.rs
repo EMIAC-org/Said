@@ -55,6 +55,7 @@ fn main() {
                 meaning: Some("Indian technology company".to_string()),
                 context: Some("Emiac ke naam se karenge hum".to_string()),
                 resolution: VocabResolution::Resolved,
+                evidence: None,
                 stt_aliases: vec![("meah".to_string(), 2)],
             }];
 
@@ -109,6 +110,7 @@ fn main() {
                 meaning: Some("Indian technology company".to_string()),
                 context: Some("Emiac ke naam se karenge hum".to_string()),
                 resolution: VocabResolution::Resolved,
+                evidence: None,
                 stt_aliases: vec![("meah".to_string(), 2)],
             }];
 

@@ -2,3 +2,7 @@ services:
   postgres:
     ports:
       - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_BIND:-127.0.0.1}:${REDIS_PORT:-6380}:6379"

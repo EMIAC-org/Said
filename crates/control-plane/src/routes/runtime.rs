@@ -49,8 +49,8 @@ use uuid::Uuid;
 use crate::notification_hub::DesktopNotification;
 use crate::stt::{self, runtime_stt_credential_provider};
 use crate::voice_polish_standalone::{
-    build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
-    build_voice_user_message,
+    RuntimeVocabHint, build_rewrite_system_prompt, build_rewrite_user_message,
+    build_voice_system_prompt_with_vocab_hints, build_voice_user_message,
 };
 use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
 
@@ -296,6 +296,8 @@ pub struct VoicePolishRequest {
     #[serde(default)]
     pub safe_vocab_terms: Vec<String>,
     #[serde(default)]
+    pub vocab_hints: Vec<RuntimeVocabHint>,
+    #[serde(default)]
     pub client_run_id: Option<String>,
     /// Bundle-id / exe app_key of the focused app, forwarded from the desktop so the
     /// server can inject the matching per-app profile bucket. Absent → global KB only.
@@ -321,6 +323,8 @@ pub struct VoiceWavRequest {
     pub screen_context: Option<String>,
     #[serde(default)]
     pub safe_vocab_terms: Vec<String>,
+    #[serde(default)]
+    pub vocab_hints: Vec<RuntimeVocabHint>,
     #[serde(default)]
     pub client_run_id: Option<String>,
     #[serde(default)]
@@ -1517,6 +1521,7 @@ async fn handle_voice_ws(
     let mut selected_model = default_selected_model();
     let mut output_language = default_output_language();
     let mut safe_vocab_terms: Vec<String> = Vec::new();
+    let mut vocab_hints: Vec<RuntimeVocabHint> = Vec::new();
     let mut screen_context: Option<String> = None;
     let mut target_app: Option<String> = None;
     let mut client_run_id: Option<String> = None;
@@ -1584,6 +1589,28 @@ async fn handle_voice_ws(
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default();
+                        vocab_hints = value
+                            .get("vocab_hints")
+                            .and_then(Value::as_array)
+                            .map(|items| {
+                                items
+                                    .iter()
+                                    .filter_map(|item| {
+                                        serde_json::from_value::<RuntimeVocabHint>(item.clone()).ok()
+                                    })
+                                    .map(|mut hint| {
+                                        hint.term = hint.term.trim().to_string();
+                                        hint.tier = hint.tier.trim().to_ascii_lowercase();
+                                        hint
+                                    })
+                                    .filter(|hint| !hint.term.is_empty())
+                                    .take(30)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        if !vocab_hints.is_empty() {
+                            safe_vocab_terms = apply_terms_from_vocab_hints(&vocab_hints);
+                        }
                         let sample_rate = value
                             .get("audio")
                             .and_then(|a| a.get("sample_rate"))
@@ -1870,6 +1897,7 @@ async fn handle_voice_ws(
                                 &selected_model,
                                 screen_context.as_deref(),
                                 &safe_vocab_terms,
+                                &vocab_hints,
                                 target_app.as_deref(),
                             )
                             .await
@@ -2358,6 +2386,7 @@ async fn polish_runtime_transcript(
     selected_model: &str,
     screen_context: Option<&str>,
     safe_vocab_terms: &[String],
+    vocab_hints: &[RuntimeVocabHint],
     target_app: Option<&str>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
     let formatted_transcript = crate::number_format::apply(transcript);
@@ -2391,12 +2420,13 @@ async fn polish_runtime_transcript(
     };
 
     let prompt_start = Instant::now();
-    let system_prompt = build_voice_system_prompt(
+    let system_prompt = build_voice_system_prompt_with_vocab_hints(
         output_language,
         &tone_preset,
         custom_prompt.as_deref(),
         screen_context,
         safe_vocab_terms,
+        vocab_hints,
         profile_md,
     );
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
@@ -2933,11 +2963,22 @@ pub async fn voice_wav(
             "server_message_polish_audio",
         )
     } else {
-        let merged_vocab = merge_vocab_terms(
-            &req.safe_vocab_terms,
-            &server_memory.vocab_terms,
-            &transcript,
-        );
+        let request_vocab_hints = normalize_runtime_vocab_hints(&req.vocab_hints);
+        let has_rich_vocab_hints = !request_vocab_hints.is_empty();
+        let merged_vocab = if has_rich_vocab_hints {
+            apply_terms_from_vocab_hints(&request_vocab_hints)
+        } else {
+            merge_vocab_terms(
+                &req.safe_vocab_terms,
+                &server_memory.vocab_terms,
+                &transcript,
+            )
+        };
+        let merged_vocab_hints = if has_rich_vocab_hints {
+            request_vocab_hints
+        } else {
+            vocab_hints_from_flat_terms(&merged_vocab)
+        };
         let output = match polish_runtime_transcript(
             &state,
             user.account_id,
@@ -2947,6 +2988,7 @@ pub async fn voice_wav(
             &req.selected_model,
             req.screen_context.as_deref(),
             &merged_vocab,
+            &merged_vocab_hints,
             req.target_app.as_deref(),
         )
         .await
@@ -3816,11 +3858,22 @@ async fn execute_voice_polish(
     let server_memory = load_runtime_memory_cached(&state, user.account_id)
         .await
         .unwrap_or_default();
-    let merged_vocab = merge_vocab_terms(
-        &req.safe_vocab_terms,
-        &server_memory.vocab_terms,
-        transcript,
-    );
+    let request_vocab_hints = normalize_runtime_vocab_hints(&req.vocab_hints);
+    let has_rich_vocab_hints = !request_vocab_hints.is_empty();
+    let merged_vocab = if has_rich_vocab_hints {
+        apply_terms_from_vocab_hints(&request_vocab_hints)
+    } else {
+        merge_vocab_terms(
+            &req.safe_vocab_terms,
+            &server_memory.vocab_terms,
+            transcript,
+        )
+    };
+    let merged_vocab_hints = if has_rich_vocab_hints {
+        request_vocab_hints
+    } else {
+        vocab_hints_from_flat_terms(&merged_vocab)
+    };
     let memory_ms = memory_start.elapsed().as_millis() as i64;
 
     let session_start = Instant::now();
@@ -3838,6 +3891,7 @@ async fn execute_voice_polish(
             "endpoint": "voice_polish_probe",
             "transcript_chars": transcript.chars().count(),
             "safe_vocab_terms": merged_vocab.len(),
+            "vocab_hints": merged_vocab_hints.len(),
             "server_vocab_count": server_memory.vocab_terms.len(),
         }),
     )
@@ -3966,12 +4020,13 @@ async fn execute_voice_polish(
         )
     } else {
         (
-            build_voice_system_prompt(
+            build_voice_system_prompt_with_vocab_hints(
                 &req.output_language,
                 &tone_preset,
                 custom_prompt.as_deref(),
                 req.screen_context.as_deref(),
                 &merged_vocab,
+                &merged_vocab_hints,
                 profile_md,
             ),
             build_voice_user_message(&formatted_transcript, &req.output_language),
@@ -3981,6 +4036,8 @@ async fn execute_voice_polish(
     prompt_built_meta["system_prompt"] = json!(system_prompt);
     prompt_built_meta["system_prompt_chars"] = json!(system_prompt.chars().count());
     prompt_built_meta["user_message_chars"] = json!(user_message.chars().count());
+    prompt_built_meta["vocab_hints"] = json!(merged_vocab_hints.len());
+    prompt_built_meta["apply_vocab_terms"] = json!(merged_vocab.len());
 
     tracing::info!(
         "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, profile:{}, credential:{}}} cache={{profile_context:{}, global_profile:{}, app_bucket:{}, bucket_profile:{}}} bucket={:?} bucket_source={:?}",
@@ -3991,7 +4048,7 @@ async fn execute_voice_polish(
         selected_model,
         credential_scope,
         transcript.len(),
-        merged_vocab.len(),
+        merged_vocab_hints.len(),
         tenant_ms,
         memory_ms,
         session_ms,
@@ -7243,6 +7300,57 @@ fn merge_vocab_terms(request: &[String], server: &[String], transcript: &str) ->
     merged
 }
 
+fn normalize_runtime_vocab_hints(hints: &[RuntimeVocabHint]) -> Vec<RuntimeVocabHint> {
+    hints
+        .iter()
+        .filter_map(|hint| {
+            let term = hint.term.trim();
+            if term.is_empty() {
+                return None;
+            }
+            let mut normalized = hint.clone();
+            normalized.term = term.to_string();
+            normalized.tier = match hint.tier.trim().to_ascii_lowercase().as_str() {
+                "suggest" => "suggest".to_string(),
+                _ => "apply".to_string(),
+            };
+            Some(normalized)
+        })
+        .take(30)
+        .collect()
+}
+
+fn apply_terms_from_vocab_hints(hints: &[RuntimeVocabHint]) -> Vec<String> {
+    hints
+        .iter()
+        .filter(|hint| !hint.tier.eq_ignore_ascii_case("suggest"))
+        .map(|hint| hint.term.trim())
+        .filter(|term| !term.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn vocab_hints_from_flat_terms(terms: &[String]) -> Vec<RuntimeVocabHint> {
+    terms
+        .iter()
+        .filter_map(|term| {
+            let trimmed = term.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(RuntimeVocabHint {
+                    term: trimmed.to_string(),
+                    tier: "apply".to_string(),
+                    evidence: None,
+                    meaning: None,
+                    context: None,
+                    term_type: None,
+                })
+            }
+        })
+        .collect()
+}
+
 fn is_vocab_term_relevant_to_transcript(term: &str, transcript: &str) -> bool {
     let term_norm = normalize_learning_text(term);
     if term_norm.is_empty() {
@@ -8038,15 +8146,15 @@ mod tests {
 
     #[test]
     fn server_voice_prompt_forbids_normal_word_translation() {
-        let prompt = build_voice_system_prompt("hinglish", "neutral", None, None, &[], None);
+        let prompt = crate::voice_polish_standalone::build_voice_system_prompt(
+            "hinglish", "neutral", None, None, &[], None,
+        );
         let user = build_voice_user_message("hello भाई कैसे हो", "hinglish");
 
-        assert!(prompt.contains("intentful dictation polisher"));
-        assert!(prompt.contains("STT as noisy evidence, not ground truth"));
-        assert!(prompt.contains("\"hello\" stays \"hello\""));
-        assert!(prompt.contains("\"time\" stays \"time\""));
-        assert!(prompt.contains("\"kaam\" stays \"kaam\""));
-        assert!(prompt.contains("\"deep gram API key\" -> \"Deepgram API key\""));
+        assert!(prompt.contains("Never translate"));
+        assert!(prompt.contains("Hinglish stays Roman Hinglish"));
+        assert!(prompt.contains("Hindi words in Latin script, English words in English"));
+        assert!(prompt.contains("\"hello bhai kaise ho\" must not become \"Namaste bhai kaise ho\""));
         assert!(user.contains("BEGIN TRANSCRIPT"));
     }
 

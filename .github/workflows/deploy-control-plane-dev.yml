@@ -24,6 +24,7 @@ env:
   POSTGRES_DB: said_control_plane_dev
   POSTGRES_PORT: "5433"
   POSTGRES_VOLUME_NAME: airnote-control-plane-dev_postgres-data
+  REDIS_PORT: "6380"
   DEV_DOMAIN: airnote-dev.103.180.163.41.sslip.io
 
 jobs:
@@ -140,7 +141,7 @@ jobs:
           GHCR_USER: ${{ github.actor }}
         run: |
           ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_TAG='$IMAGE_TAG' GHCR_USER='$GHCR_USER' GHCR_TOKEN='$GHCR_TOKEN' COMPOSE_PROJECT='$COMPOSE_PROJECT' CONTROL_PLANE_PORT='$CONTROL_PLANE_PORT' POSTGRES_DB='$POSTGRES_DB' POSTGRES_PORT='$POSTGRES_PORT' POSTGRES_VOLUME_NAME='$POSTGRES_VOLUME_NAME' DEV_DOMAIN='$DEV_DOMAIN' bash -s" <<'REMOTE'
+            "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_TAG='$IMAGE_TAG' GHCR_USER='$GHCR_USER' GHCR_TOKEN='$GHCR_TOKEN' COMPOSE_PROJECT='$COMPOSE_PROJECT' CONTROL_PLANE_PORT='$CONTROL_PLANE_PORT' POSTGRES_DB='$POSTGRES_DB' POSTGRES_PORT='$POSTGRES_PORT' POSTGRES_VOLUME_NAME='$POSTGRES_VOLUME_NAME' REDIS_PORT='$REDIS_PORT' DEV_DOMAIN='$DEV_DOMAIN' bash -s" <<'REMOTE'
           set -euo pipefail
           cd "$DEPLOY_PATH"
           tar xzf deploy.tgz
@@ -168,6 +169,9 @@ jobs:
               "POSTGRES_BIND": "127.0.0.1",
               "POSTGRES_PORT": os.environ["POSTGRES_PORT"],
               "POSTGRES_VOLUME_NAME": os.environ["POSTGRES_VOLUME_NAME"],
+              "REDIS_URL": "redis://redis:6379",
+              "REDIS_BIND": "127.0.0.1",
+              "REDIS_PORT": os.environ["REDIS_PORT"],
               "DOMAIN": os.environ["DEV_DOMAIN"],
           }
 
@@ -200,8 +204,8 @@ jobs:
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
           compose=(docker compose -p "$COMPOSE_PROJECT" -f docker-compose.yml -f docker-compose.dev.yml)
-          "${compose[@]}" pull control-plane
-          "${compose[@]}" up -d --force-recreate control-plane
+          "${compose[@]}" pull control-plane redis
+          "${compose[@]}" up -d --force-recreate redis control-plane
 
           cid="$("${compose[@]}" ps -q control-plane)"
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
@@ -210,6 +214,9 @@ jobs:
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^CEREBRAS_API_KEY=." \
             || (echo "CEREBRAS_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^REDIS_URL=redis://redis:6379" \
+            || (echo "REDIS_URL was not propagated into the dev control-plane container" && exit 1)
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^DEEPSEEK_API_KEY=." \
             || (echo "DEEPSEEK_API_KEY was not propagated into the dev control-plane container" && exit 1)

@@ -155,7 +155,7 @@ PHONE NUMBERS:
 - "plus ninety one" prefix → "+91"
 
 CURRENCY:
-- "five hundred rupees" → "₹500", "paanch sau rupaye" → "₹500"
+- "five hundred rupees" → "Rs 500", "paanch sau rupaye" → "Rs 500"
 - "fifty dollars" → "$50"
 
 CODE TOKENS (tech context only):
@@ -190,7 +190,7 @@ Input: meeting nineteenth may twenty twenty six ko hai saat baje
 Output: {"replace": true, "replacements": [{"find": "nineteenth may twenty twenty six", "replace": "19th May 2026"}, {"find": "saat baje", "replace": "7 baje"}]}
 
 Input: paanch sau rupaye mein teen kg aam milte hain
-Output: {"replace": true, "replacements": [{"find": "paanch sau rupaye", "replace": "₹500"}]}
+Output: {"replace": true, "replacements": [{"find": "paanch sau rupaye", "replace": "Rs 500"}]}
 
 Input: Hello bhai kaise ho
 Output: {"replace": false, "replacements": []}

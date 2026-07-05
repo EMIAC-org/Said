@@ -33,8 +33,8 @@ function prettyKey(appKey: string): string {
 
 /**
  * Buckets — a kanban of every app you dictate into, grouped by its bucket.
- * The AI classifies unknown apps; if it's wrong, use a card's ⋯ menu (or drag it)
- * to re-file it. That writes a user override which wins over the AI's guess.
+ * The AI classifies unknown apps; if it's wrong, use a card's ⋯ menu to re-file
+ * it. That writes a user override which wins over the AI's guess.
  */
 export function BucketsView() {
   const [snapshot, setSnapshot] = useState<BucketsCacheSnapshot>(() => getBucketsSnapshot());
@@ -85,7 +85,7 @@ export function BucketsView() {
                 boxShadow: "0 0 8px hsl(var(--accent-violet) / 0.5)",
               }}
             />
-            How your apps are grouped — use a card’s ⋯ menu (or drag it) to re-file
+            How your apps are grouped — use a card’s ⋯ menu to re-file
             {snapshot.refreshing && apps !== undefined ? " · refreshing" : ""}
           </p>
         </div>
@@ -259,7 +259,7 @@ export function BucketsView() {
                     })}
                     {cards.length === 0 && (
                       <div className="text-[11px] text-muted-foreground/60 px-1 py-6 text-center">
-                        Drop apps here
+                        No apps here yet
                       </div>
                     )}
                   </div>

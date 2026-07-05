@@ -1,12 +1,28 @@
 //! Standalone voice polish pipeline — mirrors `voice_polish` / `polish_runtime_transcript`
 //! in `routes/runtime.rs` without DB, auth, or telemetry. For local STT comparison scripts.
 
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::format_recover;
 use crate::number_format;
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuntimeVocabHint {
+    pub term: String,
+    #[serde(default)]
+    pub tier: String,
+    #[serde(default)]
+    pub evidence: Option<String>,
+    #[serde(default)]
+    pub meaning: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub term_type: Option<String>,
+}
 
 /// Full server-runtime polish path: number_format pre → Groq → literal restore → number_format post → email recover.
 pub async fn polish_transcript(
@@ -258,6 +274,26 @@ pub fn build_voice_system_prompt(
     safe_vocab_terms: &[String],
     profile_markdown: Option<&str>,
 ) -> String {
+    build_voice_system_prompt_with_vocab_hints(
+        output_language,
+        tone_preset,
+        custom_prompt,
+        screen_context,
+        safe_vocab_terms,
+        &[],
+        profile_markdown,
+    )
+}
+
+pub fn build_voice_system_prompt_with_vocab_hints(
+    output_language: &str,
+    tone_preset: &str,
+    custom_prompt: Option<&str>,
+    screen_context: Option<&str>,
+    safe_vocab_terms: &[String],
+    vocab_hints: &[RuntimeVocabHint],
+    profile_markdown: Option<&str>,
+) -> String {
     use said_core::polish::prompt::{
         VocabEntry, VocabResolution, build_system_prompt_with_profile,
     };
@@ -271,26 +307,55 @@ pub fn build_voice_system_prompt(
         tone_preset: tone_preset.to_string(),
         custom_prompt: custom_prompt.map(str::to_string),
     };
-    // Server vocab arrives as already-trusted bare terms (no STT aliases), so
-    // they render as Resolved entries and the common-word filter never fires.
-    let vocab_entries: Vec<VocabEntry> = safe_vocab_terms
-        .iter()
-        .filter_map(|t| {
-            let trimmed = t.trim();
+    let vocab_entries: Vec<VocabEntry> = if vocab_hints.is_empty() {
+        // Backward-compatible fallback for old callers that only know flat
+        // safe terms. New runtime requests should send tiered hints so prompt
+        // evidence and LLM arbitration are not lost.
+        safe_vocab_terms
+            .iter()
+            .filter_map(|t| {
+                let trimmed = t.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(VocabEntry {
+                        term: trimmed.to_string(),
+                        context: None,
+                        resolution: VocabResolution::Resolved,
+                        term_type: None,
+                        meaning: None,
+                        evidence: None,
+                        stt_aliases: vec![],
+                    })
+                }
+            })
+            .collect()
+    } else {
+        vocab_hints
+            .iter()
+            .filter_map(|hint| {
+                let trimmed = hint.term.trim();
             if trimmed.is_empty() {
                 None
             } else {
+                    let resolution = if hint.tier.eq_ignore_ascii_case("suggest") {
+                        VocabResolution::Candidate
+                    } else {
+                        VocabResolution::Resolved
+                    };
                 Some(VocabEntry {
                     term: trimmed.to_string(),
-                    context: None,
-                    resolution: VocabResolution::Resolved,
-                    term_type: None,
-                    meaning: None,
-                    stt_aliases: vec![],
+                        context: hint.context.clone(),
+                        resolution,
+                        term_type: hint.term_type.clone(),
+                        meaning: hint.meaning.clone(),
+                        evidence: hint.evidence.clone(),
+                        stt_aliases: vec![],
                 })
             }
         })
-        .collect();
+            .collect()
+    };
 
     let mut prompt = build_system_prompt_with_profile(
         &prefs,

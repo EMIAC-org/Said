@@ -1,0 +1,32 @@
+[
+  {
+    "sample_id": "remote-dev:4ebec724-28c9-4fec-9257-27621f8df620",
+    "valid_terms": ["Anugra"],
+    "note": "User confirmed Anukra/Anugrah should map to Anugra."
+  },
+  {
+    "sample_id": "remote-dev:c54ea40f-b8a4-4be0-9918-64fd8b84dc18",
+    "valid_terms": ["Anugra"],
+    "note": "User confirmed Anukra should map to Anugra."
+  },
+  {
+    "sample_id": "remote-dev:182e8c23-d597-4996-99e7-3d2d3246768d",
+    "valid_terms": ["Anugra"],
+    "note": "User confirmed Anugrah should map to Anugra."
+  },
+  {
+    "sample_id": "remote-dev:8d8c32dd-4f9b-4cf2-b2a8-a42488985a73",
+    "valid_terms": ["Macobs"],
+    "note": "User confirmed MACOPS should map to Macobs."
+  },
+  {
+    "sample_id": "remote-dev:035f4579-cf93-47d8-a6ed-abd0cbe8d00b",
+    "valid_terms": ["Macobs"],
+    "note": "User confirmed MECOBS should map to Macobs."
+  },
+  {
+    "sample_id": "local-recording:90f116b1-3c97-4f64-b849-b3445f1b1d5b",
+    "valid_terms": ["Anugra"],
+    "note": "User confirmed Anugrah should map to Anugra."
+  }
+]

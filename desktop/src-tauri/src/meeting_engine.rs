@@ -13894,6 +13894,12 @@ fn transcribe_dictation_summary(
     }
     let mut config = resolve_whisper_cpp_config()?;
     config.language = dictation_whisper_language(pref_language);
+    if config.vad_model.is_some() {
+        tracing::info!(
+            "[meeting_engine] dictation local STT disabling VAD; meetings still use VAD"
+        );
+        config.vad_model = None;
+    }
     // Parallel on-device model: prefer Apex (large-v3-turbo Hinglish, q8_0) for
     // dictation when it's installed. Set AIRNOTE_DICTATION_MODEL=oriserve to force
     // the Swift/Oriserve model instead. Meetings are unaffected (they resolve the

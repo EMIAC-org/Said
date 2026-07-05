@@ -128,7 +128,7 @@ static CURRENCY_UNITS: Lazy<[&'static str; 8]> = Lazy::new(|| {
 });
 
 /// Hindi words that look like numbers ONLY when followed by a currency/money word.
-/// "saath" = "together/with" in normal speech, but "saath rupaye" = ₹60.
+/// "saath" = "together/with" in normal speech, but "saath rupaye" = Rs 60.
 static CURRENCY_ONLY_NUMBERS: Lazy<HashMap<&'static str, u64>> =
     Lazy::new(|| HashMap::from([("saath", 60)]));
 
@@ -600,7 +600,7 @@ fn scaled_decimal_value(whole: u64, fraction: &str, scale: u64) -> Option<u64> {
 fn currency_symbol(word: &str) -> &'static str {
     match word {
         "dollar" | "dollars" | "usd" => "$",
-        _ => "₹",
+        _ => "Rs ",
     }
 }
 
@@ -793,7 +793,7 @@ fn parse_number_words(words: &[&str]) -> Option<u64> {
     }
 
     // Two consecutive small Hindi numbers without a scale between them is never
-    // a valid number. "do char sau" is "give ₹400", not ₹600. Hindi has
+    // a valid number. "do char sau" is "give Rs 400", not Rs 600. Hindi has
     // dedicated words for compound numbers (chheh=6, not do+char).
     for pair in words.windows(2) {
         if is_small_hindi_number(pair[0]) && is_small_hindi_number(pair[1]) {
@@ -1019,12 +1019,12 @@ mod tests {
 
     #[test]
     fn currency_preserves_unit_words() {
-        assert_eq!(apply("paanch sau rupaye"), "₹500");
+        assert_eq!(apply("paanch sau rupaye"), "Rs 500");
         assert_eq!(
             apply("Chaar soo rupaye ka invoice bhej do"),
-            "₹400 ka invoice bhej do"
+            "Rs 400 ka invoice bhej do"
         );
-        assert_eq!(apply("paanch sau rupaye bhejo"), "₹500 bhejo");
+        assert_eq!(apply("paanch sau rupaye bhejo"), "Rs 500 bhejo");
         assert_eq!(apply("five hundred dollars ka invoice"), "$500 ka invoice");
         assert_eq!(
             apply("monthly 5 dollar dena padega"),
@@ -1050,18 +1050,18 @@ mod tests {
 
     #[test]
     fn compound_verb_do_not_number() {
-        // "bata do char sau rupaye" = "tell (me) ₹400", NOT ₹600
+        // "bata do char sau rupaye" = "tell (me) Rs 400", NOT Rs 600
         assert_eq!(
             apply("bata do char sau rupaye chahiye"),
-            "bata do ₹400 chahiye"
+            "bata do Rs 400 chahiye"
         );
-        assert_eq!(apply("bhej do paanch sau rupaye"), "bhej do ₹500");
+        assert_eq!(apply("bhej do paanch sau rupaye"), "bhej do Rs 500");
         assert_eq!(
             apply("kar do teen sau rupaye transfer"),
-            "kar do ₹300 transfer"
+            "kar do Rs 300 transfer"
         );
         // But standalone "do sau rupaye" (200 rupees) still works
-        assert_eq!(apply("do sau rupaye bhejo"), "₹200 bhejo");
+        assert_eq!(apply("do sau rupaye bhejo"), "Rs 200 bhejo");
         // "laga do bees percent discount"
         assert_eq!(
             apply("laga do bees percent discount"),
@@ -1109,8 +1109,8 @@ mod tests {
                 "one twenty eight g b RAM wala laptop chahiye",
                 "128 GB RAM wala laptop chahiye",
             ),
-            ("paanch sau rupaye ka bill bhejo", "₹500 ka bill bhejo"),
-            ("do sau rupaye pending hai", "₹200 pending hai"),
+            ("paanch sau rupaye ka bill bhejo", "Rs 500 ka bill bhejo"),
+            ("do sau rupaye pending hai", "Rs 200 pending hai"),
             (
                 "sixty eight percent users active hain",
                 "68% users active hain",
@@ -1142,7 +1142,7 @@ mod tests {
         let cases = [
             (
                 "Hello bhai, kaise ho?, Yeh to batao kitna kaam ho gaya., Tum kuchh batate hi nahi ho, na? Yahhi to dikkat hai., Chaar soo rupaye ka invoice bhej do, main use clear karwa dunga achhe se, aaj ke aaj baarah tariikh tak ho jayega kaam aapka.",
-                "Hello bhai, kaise ho?, Yeh to batao kitna kaam ho gaya., Tum kuchh batate hi nahi ho, na? Yahhi to dikkat hai., ₹400 ka invoice bhej do, main use clear karwa dunga achhe se, aaj ke aaj 12 tariikh tak ho jayega kaam aapka.",
+                "Hello bhai, kaise ho?, Yeh to batao kitna kaam ho gaya., Tum kuchh batate hi nahi ho, na? Yahhi to dikkat hai., Rs 400 ka invoice bhej do, main use clear karwa dunga achhe se, aaj ke aaj 12 tariikh tak ho jayega kaam aapka.",
             ),
             (
                 "Aur agar yearly dete hain to one point nine nine baarah mahine ke hisaab se jo bhi amount hai us par bhi bees percent off ho jayega. Yeh total hisaab kitaab hai na?",
@@ -1158,8 +1158,8 @@ mod tests {
             ),
             ("500 dollars ka invoice bana do", "$500 ka invoice bana do"),
             ("500 dollar ka invoice bana do", "$500 ka invoice bana do"),
-            ("500 rupees ka bill bhejo", "₹500 ka bill bhejo"),
-            ("500 rupaye ka bill bhejo", "₹500 ka bill bhejo"),
+            ("500 rupees ka bill bhejo", "Rs 500 ka bill bhejo"),
+            ("500 rupaye ka bill bhejo", "Rs 500 ka bill bhejo"),
             (
                 "one point eighteen dollar per month hai",
                 "$1.18 per month hai",
@@ -1182,7 +1182,7 @@ mod tests {
             ),
             ("20 percent off ho jayega", "20% off ho jayega"),
             ("50 percent ka discount hai", "50% ka discount hai"),
-            ("200 rupaye pending hai", "₹200 pending hai"),
+            ("200 rupaye pending hai", "Rs 200 pending hai"),
             (
                 "thirty one thousand dollars pending hai",
                 "$31000 pending hai",
@@ -1246,14 +1246,14 @@ mod tests {
             ),
             (
                 "two point five lakh rupees pending hain",
-                "₹250000 pending hain",
+                "Rs 250000 pending hain",
             ),
             (
                 "one point five crore rupees ka revenue hai",
-                "₹15000000 ka revenue hai",
+                "Rs 15000000 ka revenue hai",
             ),
             ("five hundred dollars ka invoice hai", "$500 ka invoice hai"),
-            ("five hundred rupees ka bill hai", "₹500 ka bill hai"),
+            ("five hundred rupees ka bill hai", "Rs 500 ka bill hai"),
             ("twenty dollar ka plan hai", "$20 ka plan hai"),
             (
                 "thirty one thousand dollars pending hai",
@@ -1367,8 +1367,8 @@ mod tests {
                 "main tere saath office jaaunga",
             ),
             ("uske saath kaam karo", "uske saath kaam karo"),
-            ("saath rupaye dena", "₹60 dena"),
-            ("saath rupay ka tha", "₹60 ka tha"),
+            ("saath rupaye dena", "Rs 60 dena"),
+            ("saath rupay ka tha", "Rs 60 ka tha"),
             ("saath dollars lagenge", "$60 lagenge"),
         ];
 

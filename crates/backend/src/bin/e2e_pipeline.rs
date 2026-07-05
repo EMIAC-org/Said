@@ -524,6 +524,7 @@ fn main() {
             meaning: Some("Indian technology company".to_string()),
             context: Some("Emiac ke naam se karenge hum".to_string()),
             resolution: prompt::VocabResolution::Resolved,
+            evidence: None,
             stt_aliases: vec![],
         }];
         let prompt_text =
@@ -540,7 +541,7 @@ fn main() {
         );
     }
 
-    // D2: Candidate (unresolved) terms should NOT appear in the prompt.
+    // D2: Candidate (unresolved) terms should appear as SUGGEST, not hard APPLY.
     {
         let entries = vec![prompt::VocabEntry {
             term: "RandomTerm".to_string(),
@@ -548,18 +549,20 @@ fn main() {
             meaning: Some("Something".to_string()),
             context: None,
             resolution: prompt::VocabResolution::Candidate,
+            evidence: Some("random term".to_string()),
             stt_aliases: vec![],
         }];
         let prompt_text =
             prompt::build_system_prompt_with_vocab_entries(&make_test_prefs(), &[], &[], &entries);
         let has_term = prompt_text.contains("RandomTerm");
+        let has_suggest = prompt_text.contains("SUGGEST: RandomTerm");
         check(
             &mut total_pass,
             &mut total_fail,
             &mut failures,
-            "D2: Unresolved candidate 'RandomTerm' must NOT appear in prompt",
-            !has_term,
-            &format!("has_term={has_term}"),
+            "D2: Unresolved candidate 'RandomTerm' appears as SUGGEST in prompt",
+            has_term && has_suggest,
+            &format!("has_term={has_term}, has_suggest={has_suggest}"),
         );
     }
 

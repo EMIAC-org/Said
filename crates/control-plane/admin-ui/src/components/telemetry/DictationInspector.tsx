@@ -373,6 +373,245 @@ function ContextApplied({ context }: { context?: ContextAppliedData | null }) {
   )
 }
 
+function traceNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function traceBool(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
+}
+
+function traceTermName(value: unknown): string | null {
+  if (typeof value === 'string') return value
+  if (value && typeof value === 'object' && 'term' in value) {
+    const term = (value as { term?: unknown }).term
+    return typeof term === 'string' ? term : null
+  }
+  return null
+}
+
+type TraceTermDetail = {
+  term: string
+  detail?: string
+  tier?: 'apply' | 'suggest' | string
+  reason?: string
+  evidence?: string
+  score?: number
+}
+
+function traceTermDetails(value: unknown): TraceTermDetail | null {
+  const term = traceTermName(value)
+  if (!term) return null
+  if (!value || typeof value !== 'object') return { term }
+  const row = value as {
+    source?: unknown
+    term_type?: unknown
+    weight?: unknown
+    use_count?: unknown
+    has_example_context?: unknown
+    has_meaning?: unknown
+    tier?: unknown
+    reason?: unknown
+    evidence?: unknown
+    score?: unknown
+  }
+  const tier = typeof row.tier === 'string' ? row.tier : undefined
+  const reason = typeof row.reason === 'string' ? row.reason : undefined
+  const evidence = typeof row.evidence === 'string' && row.evidence.trim() ? row.evidence : undefined
+  const score = typeof row.score === 'number' && Number.isFinite(row.score) ? row.score : undefined
+  const parts = [
+    tier ? tier.toUpperCase() : null,
+    reason ?? null,
+    evidence ? `heard="${evidence}"` : null,
+    typeof score === 'number' ? `score=${score.toFixed(2)}` : null,
+    typeof row.source === 'string' ? row.source : null,
+    typeof row.term_type === 'string' ? row.term_type : null,
+    typeof row.weight === 'number' ? `w=${row.weight.toFixed(2)}` : null,
+    typeof row.use_count === 'number' ? `use=${row.use_count}` : null,
+    row.has_example_context === true ? 'ctx' : null,
+    row.has_meaning === true ? 'meaning' : null,
+  ].filter(Boolean)
+  return { term, detail: parts.join(' · ') || undefined, tier, reason, evidence, score }
+}
+
+function traceTermDetailsList(value: unknown): TraceTermDetail[] {
+  if (!Array.isArray(value)) return []
+  return value.map(traceTermDetails).filter((item): item is TraceTermDetail => !!item)
+}
+
+function findVocabStage(trace?: DictationTrace | Record<string, never>): DictationTraceStage | null {
+  if (!isTrace(trace)) return null
+  return (
+    trace.stages.find(stage => stage.stage === 'vocab.select_for_prompt') ??
+    trace.stages.find(stage => stage.stage === 'vocab.resolve_for_prompt') ??
+    null
+  )
+}
+
+function findRuntimePromptStage(trace?: DictationTrace | Record<string, never>): DictationTraceStage | null {
+  if (!isTrace(trace)) return null
+  return trace.stages.find(stage => stage.stage === 'server_runtime.prompt_built') ?? null
+}
+
+function TermPills({
+  terms,
+  empty,
+}: {
+  terms: TraceTermDetail[]
+  empty: string
+}) {
+  if (!terms.length) return <p className="text-[11px] text-fg-5">{empty}</p>
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {terms.slice(0, 30).map((term, index) => {
+        const tone =
+          term.tier === 'apply'
+            ? 'bg-ok/10 text-ok border-ok/20'
+            : term.tier === 'suggest'
+              ? 'bg-warn-bg text-warn border-warn/20'
+              : 'bg-surface-4 text-fg-3 border-transparent'
+        return (
+          <span
+            key={`${term.term}-${index}`}
+            title={term.detail}
+            className={`rounded-md border px-2 py-1 text-[10px] font-mono ${tone}`}
+          >
+            {term.term}
+          </span>
+        )
+      })}
+      {terms.length > 30 && <span className="text-[10px] text-fg-5">+{terms.length - 30} more</span>}
+    </div>
+  )
+}
+
+function VocabularyLifecycle({ trace }: { trace?: DictationTrace | Record<string, never> }) {
+  const stage = findVocabStage(trace)
+  const runtimePromptStage = findRuntimePromptStage(trace)
+  const meta = stage?.metadata ?? {}
+  const runtimeMeta = runtimePromptStage?.metadata ?? {}
+  const selectorTerms = traceTermDetailsList(meta.selector_terms)
+  const applyTerms =
+    selectorTerms.filter(term => term.tier === 'apply').length > 0
+      ? selectorTerms.filter(term => term.tier === 'apply')
+      : traceTermDetailsList(meta.apply_terms).map(term => ({ ...term, tier: 'apply' }))
+  const suggestTerms =
+    selectorTerms.filter(term => term.tier === 'suggest').length > 0
+      ? selectorTerms.filter(term => term.tier === 'suggest')
+      : traceTermDetailsList(meta.suggest_terms).map(term => ({ ...term, tier: 'suggest' }))
+  const selectedTerms = traceNumber(meta.selected_terms) ?? 0
+  const savedTotal = traceNumber(meta.saved_terms_total)
+  const selectorCount =
+    traceNumber(meta.selector_terms_after_company_count) ??
+    traceNumber(meta.sent_to_prompt_count) ??
+    (selectorTerms.length || null)
+  const resolvedCount = traceNumber(meta.apply_terms_count) ?? traceNumber(meta.resolved_terms_count) ?? applyTerms.length
+  const candidateCount = traceNumber(meta.suggest_terms_count) ?? traceNumber(meta.candidate_terms_count) ?? suggestTerms.length
+  const sentCount = traceNumber(meta.sent_to_prompt_count) ?? selectedTerms
+  const droppedCount = traceNumber(meta.dropped_candidate_count)
+  const aliasMatches = traceNumber(meta.resolver_alias_matches)
+  const contextMatches = traceNumber(meta.resolver_context_matches)
+  const companyAdded = traceNumber(meta.company_terms_added_count)
+  const companyAvailable = traceNumber(meta.company_terms_available)
+  const replacementRules = traceNumber(meta.stt_replacement_rules)
+  const embeddingHit = traceBool(meta.embedding_cache_hit)
+  const sentTerms =
+    selectorTerms.length > 0
+      ? selectorTerms
+      : traceTermDetailsList(meta.sent_to_prompt_terms).length > 0
+        ? traceTermDetailsList(meta.sent_to_prompt_terms)
+        : traceTermDetailsList(meta.terms)
+  const candidateTerms = traceTermDetailsList(meta.candidate_terms)
+  const companyTerms = traceTermDetailsList(meta.company_terms_added)
+  const runtimeVocabHints = traceNumber(runtimeMeta.vocab_hints)
+  const runtimeApplyTerms = traceNumber(runtimeMeta.apply_vocab_terms)
+  const newPipeline = stage?.stage === 'vocab.select_for_prompt'
+
+  return (
+    <div className="mb-4">
+      <SectionLabel>Vocabulary lifecycle</SectionLabel>
+      {!stage ? (
+        <p className="text-[12px] text-fg-4">No vocabulary filtering trace captured for this dictation.</p>
+      ) : (
+        <div className="rounded-xl border border-border-light bg-surface-3 p-4 space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="rounded-lg bg-surface-4 p-3">
+              <div className="text-[10px] uppercase text-fg-5 mb-1">Saved terms</div>
+              <div className="text-[16px] font-semibold text-fg">{savedTotal ?? '—'}</div>
+            </div>
+            <div className="rounded-lg bg-surface-4 p-3">
+              <div className="text-[10px] uppercase text-fg-5 mb-1">Selector output</div>
+              <div className="text-[16px] font-semibold text-fg">{selectorCount ?? '—'}</div>
+            </div>
+            <div className="rounded-lg bg-surface-4 p-3">
+              <div className="text-[10px] uppercase text-fg-5 mb-1">APPLY</div>
+              <div className="text-[16px] font-semibold text-ok">{resolvedCount}</div>
+            </div>
+            <div className="rounded-lg bg-surface-4 p-3">
+              <div className="text-[10px] uppercase text-fg-5 mb-1">SUGGEST</div>
+              <div className="text-[16px] font-semibold text-warn">{candidateCount}</div>
+            </div>
+            <div className="rounded-lg bg-surface-4 p-3">
+              <div className="text-[10px] uppercase text-fg-5 mb-1">Sent to prompt</div>
+              <div className="text-[16px] font-semibold text-ok">{sentCount}</div>
+            </div>
+            <div className="rounded-lg bg-surface-4 p-3">
+              <div className="text-[10px] uppercase text-fg-5 mb-1">{newPipeline ? 'Filtered out' : 'Dropped candidates'}</div>
+              <div className="text-[16px] font-semibold text-fg">{droppedCount ?? candidateCount ?? '—'}</div>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 text-[10px] text-fg-4">
+            <span className="rounded bg-surface-4 px-2 py-1">
+              selector: {newPipeline ? 'tiered v3' : 'legacy resolver'}
+            </span>
+            <span className="rounded bg-surface-4 px-2 py-1">embedding: {embeddingHit == null ? 'unknown' : embeddingHit ? 'hit' : 'miss'}</span>
+            {runtimePromptStage && (
+              <span className="rounded bg-surface-4 px-2 py-1">
+                runtime prompt: {runtimeVocabHints ?? '—'} hints / {runtimeApplyTerms ?? '—'} apply
+              </span>
+            )}
+            <span className="rounded bg-surface-4 px-2 py-1">STT alias rules: {replacementRules ?? '—'}</span>
+            <span className="rounded bg-surface-4 px-2 py-1">company available: {companyAvailable ?? '—'}</span>
+            <span className="rounded bg-surface-4 px-2 py-1">company added: {companyAdded ?? 0}</span>
+            {!newPipeline && <span className="rounded bg-surface-4 px-2 py-1">alias matches: {aliasMatches ?? '—'}</span>}
+            {!newPipeline && <span className="rounded bg-surface-4 px-2 py-1">context matches: {contextMatches ?? '—'}</span>}
+          </div>
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-ok mb-2">APPLY, normalize directly</div>
+            <TermPills terms={applyTerms} empty="No direct-apply vocab terms." />
+          </div>
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-warn mb-2">SUGGEST, model decides from context</div>
+            <TermPills terms={suggestTerms} empty="No suggest-tier vocab terms." />
+          </div>
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-ok mb-2">Sent to model prompt</div>
+            <TermPills terms={sentTerms} empty="No vocab terms reached the polish prompt." />
+          </div>
+          {!newPipeline && (
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-4 mb-2">Candidate but not sent</div>
+              <TermPills terms={candidateTerms} empty="No dropped vocab candidates." />
+            </div>
+          )}
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-4 mb-2">
+              {newPipeline ? 'Selector evidence rows' : 'Selector pool'}
+            </div>
+            <TermPills terms={selectorTerms} empty="No selector candidates." />
+          </div>
+          {companyTerms.length > 0 && (
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-fg-4 mb-2">Company additions</div>
+              <TermPills terms={companyTerms} empty="No company terms added." />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TraceTimeline({
   trace,
   modelUsed,
@@ -666,6 +905,7 @@ export function DictationInspector({
                     <DiffColumn label="User kept" text={detail.item.final_text} tone="kept" />
                   </div>
                   <ContextApplied context={detail.context_applied} />
+                  <VocabularyLifecycle trace={detail.item.dictation_trace_json} />
                   <TraceTimeline
                     trace={detail.item.dictation_trace_json}
                     modelUsed={detail.item.model_used}

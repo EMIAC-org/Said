@@ -11,7 +11,12 @@
 //!     call site stays byte-identical and the backend's real `is_common_word`
 //!     guard is injected into the shared builder.
 
-use crate::store::{corrections::Correction, prefs::Preferences, vocabulary::VocabTerm};
+use crate::store::{
+    corrections::Correction,
+    prefs::Preferences,
+    vocab_embeddings::{VocabSelection, VocabSelectionTier},
+    vocabulary::VocabTerm,
+};
 
 pub use said_core::polish::prompt::{
     FormatPreference, RagExample, VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE,
@@ -153,6 +158,7 @@ pub fn vocab_terms_to_entries(terms: Vec<VocabTerm>) -> Vec<VocabEntry> {
             resolution: VocabResolution::Candidate,
             term_type: v.term_type,
             meaning: v.meaning,
+            evidence: None,
             stt_aliases: vec![],
         })
         .collect()
@@ -167,26 +173,31 @@ pub fn resolved_vocab_terms_to_entries(terms: Vec<VocabTerm>) -> Vec<VocabEntry>
             resolution: VocabResolution::Resolved,
             term_type: v.term_type,
             meaning: v.meaning,
+            evidence: None,
             stt_aliases: vec![],
         })
         .collect()
 }
 
-pub fn resolved_vocab_terms_to_entries_with_aliases(
-    terms: Vec<VocabTerm>,
+pub fn selected_vocab_terms_to_entries_with_aliases(
+    selections: Vec<VocabSelection>,
     alias_map: &std::collections::HashMap<String, Vec<(String, i64)>>,
 ) -> Vec<VocabEntry> {
-    terms
+    selections
         .into_iter()
-        .map(|v| {
-            let key = v.term.to_ascii_lowercase();
+        .map(|selection| {
+            let key = selection.term.term.to_ascii_lowercase();
             let aliases = alias_map.get(&key).cloned().unwrap_or_default();
             VocabEntry {
-                term: v.term,
-                context: v.example_context,
-                resolution: VocabResolution::Resolved,
-                term_type: v.term_type,
-                meaning: v.meaning,
+                term: selection.term.term,
+                context: selection.term.example_context,
+                resolution: match selection.tier {
+                    VocabSelectionTier::Apply => VocabResolution::Resolved,
+                    VocabSelectionTier::Suggest => VocabResolution::Candidate,
+                },
+                term_type: selection.term.term_type,
+                meaning: selection.term.meaning,
+                evidence: (!selection.evidence.trim().is_empty()).then_some(selection.evidence),
                 stt_aliases: aliases,
             }
         })

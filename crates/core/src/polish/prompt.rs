@@ -14,10 +14,7 @@
 
 use super::types::{Correction, PolishPrefs};
 
-/// Render a single vocab entry for the polish prompt. Output shape:
-///   `  MACOBS [acronym]`
-///   `    means: indian SME stock acronym used in market-cap discussions`
-///   `    example: "MACOBS ka IPO ka 12 hazaar batana"`
+/// Render a single vocab entry for the polish prompt.
 ///
 /// Three layers of structured signal in one entry:
 ///   • The bracketed type tag drives type-aware reasoning (an acronym entry
@@ -46,16 +43,45 @@ fn format_vocab_entry(e: &VocabEntry, is_common: fn(&str) -> bool) -> String {
         .filter(|(form, _)| !is_common(form))
         .map(|(form, _)| form.as_str())
         .collect();
-    if aliases.is_empty() {
-        format!("{} ({})", e.term, type_short)
+    let tier = match e.resolution {
+        VocabResolution::Resolved => "APPLY",
+        VocabResolution::Candidate => "SUGGEST",
+    };
+    let mut lines = if aliases.is_empty() {
+        vec![format!("{tier}: {} ({})", e.term, type_short)]
     } else {
-        format!(
-            "{} ({}) \u{2192} {}",
+        vec![format!(
+            "{tier}: {} ({}) \u{2192} {}",
             e.term,
             type_short,
             aliases.join(", ")
-        )
+        )]
+    };
+    if let Some(evidence) = e
+        .evidence
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        lines.push(format!("  heard: {evidence}"));
     }
+    if let Some(meaning) = e
+        .meaning
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        lines.push(format!("  means: {meaning}"));
+    }
+    if let Some(context) = e
+        .context
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        lines.push(format!("  example: {context}"));
+    }
+    lines.join("\n")
 }
 
 pub struct RagExample {
@@ -95,6 +121,10 @@ pub struct VocabEntry {
     /// when meaning hasn't been generated yet — entry still renders, just
     /// without the meaning line.
     pub meaning: Option<String>,
+    /// Current-transcript evidence span that caused this entry to be selected
+    /// (for example `deep seek` for `DeepSeek`). This is not learned memory;
+    /// it is per-dictation retrieval evidence.
+    pub evidence: Option<String>,
     /// STT alias history — what STT has been observed to emit for this term.
     /// Each entry is `(transcript_form, use_count)`. Used as soft hints in
     /// the polish prompt ("STT often hears: ...") instead of hard Deepgram
@@ -110,6 +140,7 @@ impl VocabEntry {
             resolution: VocabResolution::Candidate,
             term_type: None,
             meaning: None,
+            evidence: None,
             stt_aliases: vec![],
         }
     }
@@ -124,10 +155,10 @@ impl VocabEntry {
 /// is intentional: a hard always-replace rule on a common English word would
 /// corrupt unrelated sentences.
 ///
-/// `vocabulary` is the user's personal STT-bias vocabulary.  We pass it into
-/// the polish prompt as well, so the LLM is told: "if you see any of these
-/// terms in the transcript, KEEP THEM VERBATIM."  This stops the polish step
-/// from helpfully "fixing" learned jargon back into a wrong common word.
+/// `vocabulary` is the user's personal STT-bias vocabulary. APPLY entries are
+/// deterministic normalization evidence; SUGGEST entries are possible matches
+/// with evidence/meaning/context so the model can accept or ignore them in
+/// context. Do not treat the whole vocab block as mandatory replacement.
 ///
 /// `rag_examples` are embedding-based similar past edits (contextual).
 pub fn build_system_prompt(
@@ -256,21 +287,24 @@ fn voice_prompt_blocks(
     let persona = persona_block(prefs);
     let tone = tone_description(&prefs.tone_preset);
 
-    // Vocabulary block — compact, hint-oriented. The model still gets the
-    // structured signals we learned (type, meaning, example), but the wording
-    // stays calm: vocabulary helps preserve or correct close matches; it must
-    // not become a reason to invent terms unsupported by the transcript.
+    // Vocabulary block — tiered and evidence-oriented. APPLY entries came from
+    // exact/split/approved-alias evidence; SUGGEST entries are near matches the
+    // model must judge from evidence + meaning/context.
     let vocab_block = {
         let entries = vocabulary_entries
             .iter()
-            .filter(|e| e.resolution == VocabResolution::Resolved)
             .map(|e| format_vocab_entry(e, is_common))
             .collect::<Vec<_>>()
             .join("\n");
         if entries.is_empty() {
             String::new()
         } else {
-            format!("VOCAB:\n{entries}\n\n")
+            format!(
+                "VOCAB:\n\
+                 APPLY means normalize this term when the evidence span appears.\n\
+                 SUGGEST means possible match only; use meaning/context and ignore when unrelated.\n\
+                 {entries}\n\n"
+            )
         }
     };
 
@@ -672,7 +706,7 @@ pub fn build_tray_format_system_prompt(
      Input: Subah paanch ya chah baje tak kaam khatam karo.\n\
      Output: Subah 5 ya 6 baje tak kaam khatam karo.\n\n\
      Input: Do sau rupaye ka aayega.\n\
-     Output: ₹200 ka aayega.\n\n\
+     Output: Rs 200 ka aayega.\n\n\
      Input: Transfer twenty five percent to account one two three four dash five six.\n\
      Output: Transfer 25% to account 1234-56.\n\n\
      Input: Transfer twenty five percent to account one two three four dash five six.\n\
@@ -914,6 +948,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: None,
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
             VocabEntry {
@@ -922,6 +957,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: None,
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
         ];
@@ -1028,8 +1064,7 @@ mod tests {
 
     #[test]
     fn vocab_block_compact_form_no_verbose_rules() {
-        // Candidate terms are now dropped from the prompt entirely.
-        // Only resolved terms render. Verify no verbose leftovers remain.
+        // Candidate terms render as SUGGEST, not as hard APPLY rules.
         let p = prefs();
         let entries = vec![VocabEntry {
             term: "MACOBS".into(),
@@ -1037,18 +1072,22 @@ mod tests {
             resolution: VocabResolution::Candidate,
             term_type: Some("acronym".into()),
             meaning: None,
+            evidence: Some("main cobs".into()),
             stt_aliases: vec![],
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
 
-        // Candidate-only entries should produce NO vocab block at all.
         assert!(
-            !prompt.contains("PERSONAL VOCABULARY"),
-            "candidate-only entries should not produce a vocab block"
+            prompt.contains("VOCAB:"),
+            "candidate entries should produce the vocab block"
         );
         assert!(
-            !prompt.contains("MACOBS"),
-            "candidate terms must not appear in the prompt"
+            prompt.contains("SUGGEST: MACOBS (acronym)"),
+            "candidate terms must render as SUGGEST"
+        );
+        assert!(
+            prompt.contains("heard: main cobs"),
+            "candidate evidence must be visible to the model"
         );
     }
 
@@ -1061,6 +1100,7 @@ mod tests {
             resolution: VocabResolution::Resolved,
             term_type: Some("acronym".into()),
             meaning: Some("Indian SME stock acronym.".into()),
+            evidence: None,
             stt_aliases: vec![],
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
@@ -1069,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_terms_are_excluded_from_prompt() {
+    fn candidate_terms_render_as_suggest_in_prompt() {
         let p = prefs();
         let entries = vec![VocabEntry {
             term: "CandidateOnlyXYZ".into(),
@@ -1077,14 +1117,14 @@ mod tests {
             resolution: VocabResolution::Candidate,
             term_type: Some("code_identifier".into()),
             meaning: Some("Workflow automation tool.".into()),
+            evidence: Some("candidate only xyz".into()),
             stt_aliases: vec![],
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
         assert!(
-            !prompt.contains("CandidateOnlyXYZ"),
-            "candidate terms must not appear in the prompt"
+            prompt.contains("SUGGEST: CandidateOnlyXYZ (code)"),
+            "candidate terms should be present as model-arbitrated suggestions"
         );
-        assert!(!prompt.contains("PERSONAL VOCABULARY"));
     }
 
     #[test]
@@ -1283,6 +1323,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: Some("acronym".into()),
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
             VocabEntry {
@@ -1291,6 +1332,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: Some("proper_noun".into()),
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
             VocabEntry {
@@ -1299,6 +1341,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: Some("code_identifier".into()),
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
             VocabEntry {
@@ -1307,6 +1350,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: Some("brand".into()),
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
             VocabEntry {
@@ -1315,6 +1359,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: Some("phrase".into()),
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
             VocabEntry {
@@ -1323,6 +1368,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: Some("other".into()),
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
         ];
@@ -1347,6 +1393,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: None,
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
             VocabEntry {
@@ -1355,6 +1402,7 @@ mod tests {
                 resolution: VocabResolution::Resolved,
                 term_type: None,
                 meaning: None,
+                evidence: None,
                 stt_aliases: vec![],
             },
         ];
@@ -1378,6 +1426,7 @@ mod tests {
             resolution: VocabResolution::Resolved,
             term_type: Some("acronym".into()),
             meaning: Some("Indian SME stock acronym used in market-cap discussions.".into()),
+            evidence: None,
             stt_aliases: vec![],
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
@@ -1396,6 +1445,7 @@ mod tests {
             resolution: VocabResolution::Resolved,
             term_type: Some("proper_noun".into()),
             meaning: None,
+            evidence: None,
             stt_aliases: vec![],
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
