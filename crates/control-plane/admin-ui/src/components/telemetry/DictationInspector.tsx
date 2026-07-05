@@ -201,7 +201,12 @@ function TraceStageCard({
         </div>
       </div>
       {reason && <div className="text-[11px] text-fg-4 mb-3">{reason}</div>}
-      {(input || output) && (
+      {fallbackOnly && (input || output) ? (
+        <div className="rounded-lg border border-warn/30 bg-warn-bg p-3 text-[11px] text-warn">
+          Prompt body hidden because this was not the active model prompt for this server-runtime run.
+          Check Context applied for the actual runtime profile/bucket context.
+        </div>
+      ) : (input || output) ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <TraceTextBlock
             label="Before"
@@ -220,7 +225,7 @@ function TraceStageCard({
             wordCap={120}
           />
         </div>
-      )}
+      ) : null}
       {meta && <div className="text-[10px] text-fg-5 font-mono mt-3 break-words">{meta}</div>}
     </div>
   )
