@@ -17,8 +17,6 @@ export const DEFAULT_CLOUD_SERVER_URL =
   (import.meta.env.VITE_AIRNOTE_SERVER_URL as string | undefined)?.trim() ||
   AIRNOTE_DEFAULT_CONTROL_PLANE_URL;
 
-const LEGACY_DEFAULT_CONTROL_PLANE_URLS = ["https://airnote.emiactech.com"];
-
 export type ServerUrlMode = "default" | "custom";
 
 /** Override mode — "default" (prod AirNote) or "custom" (user-pasted URL). */
@@ -59,17 +57,9 @@ function persistServerUrlConfig(mode: ServerUrlMode, customUrl?: string): void {
   }
 }
 
-function isLegacyDefaultServerUrl(url: string): boolean {
-  const normalized = normalizeServerUrl(url);
-  return LEGACY_DEFAULT_CONTROL_PLANE_URLS.some(
-    (legacy) => normalizeServerUrl(legacy) === normalized,
-  );
-}
-
-function shouldRewriteLegacyDefaultServerUrl(url: string): boolean {
+function shouldRewriteToBuildDefaultServerUrl(url: string): boolean {
   return (
     getServerUrlMode() === "default" &&
-    isLegacyDefaultServerUrl(url) &&
     normalizeServerUrl(DEFAULT_CLOUD_SERVER_URL) !== normalizeServerUrl(url)
   );
 }
@@ -112,12 +102,12 @@ export async function applyServerUrlConfig(
   return active;
 }
 
-/** Dev/tester builds can intentionally change the built-in default server.
- *  Existing installs may still store the old default URL locally. Rewrite only
- *  known old defaults, never user-provided custom servers. */
+/** Dev/tester builds can intentionally force a default server. In default mode,
+ *  any previously saved server is rewritten to the current build/env default.
+ *  Runtime custom mode remains untouched. */
 export async function reconcileBuildDefaultServerUrl(): Promise<EnterpriseConnection | null> {
   const conn = getConnection();
-  if (!conn || !shouldRewriteLegacyDefaultServerUrl(conn.serverUrl)) return conn;
+  if (!conn || !shouldRewriteToBuildDefaultServerUrl(conn.serverUrl)) return conn;
   const rewritten = { ...conn, serverUrl: currentBuildDefaultServerUrl() };
   saveConnection(rewritten);
   await writeEnterpriseAuthToLocalBackend(rewritten);
@@ -558,7 +548,7 @@ export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseCon
       return null;
     }
     const existing = getConnection();
-    const restoredServerUrl = shouldRewriteLegacyDefaultServerUrl(status.server_url)
+    const restoredServerUrl = shouldRewriteToBuildDefaultServerUrl(status.server_url)
       ? currentBuildDefaultServerUrl()
       : normalizeServerUrl(status.server_url);
     if (existing?.jwt === status.token && existing.serverUrl === restoredServerUrl) {
