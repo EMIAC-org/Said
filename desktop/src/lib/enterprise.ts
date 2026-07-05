@@ -10,9 +10,12 @@ const SERVER_URL_OVERRIDE_KEY = "said:server-url-override";
 
 /** Built-in default AirNote cloud server. Overridable at BUILD time via the
  *  VITE_AIRNOTE_SERVER_URL env var, and at RUNTIME via the Settings override. */
+export const AIRNOTE_DEFAULT_CONTROL_PLANE_URL =
+  "https://airnote-dev.103.180.163.41.sslip.io";
+
 export const DEFAULT_CLOUD_SERVER_URL =
   (import.meta.env.VITE_AIRNOTE_SERVER_URL as string | undefined)?.trim() ||
-  "https://airnote.emiactech.com";
+  AIRNOTE_DEFAULT_CONTROL_PLANE_URL;
 
 export type ServerUrlMode = "default" | "custom";
 

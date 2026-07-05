@@ -17,7 +17,6 @@ use crate::{
     },
 };
 
-const DEFAULT_CONTROL_PLANE_URL: &str = "https://airnote.emiactech.com";
 const SYNC_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -331,7 +330,7 @@ fn resolve_auth(state: &AppState) -> Option<AuthContext> {
         .map(str::to_string)
         .or_else(|| std::env::var("AIRNOTE_CONTROL_PLANE_URL").ok())
         .or_else(|| std::env::var("CLOUD_API_URL").ok())
-        .unwrap_or_else(|| DEFAULT_CONTROL_PLANE_URL.to_string());
+        .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
     Some(AuthContext {
         token,
         server_url,

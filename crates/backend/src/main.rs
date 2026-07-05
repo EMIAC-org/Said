@@ -70,10 +70,9 @@ async fn main() {
     // ── Load env vars ─────────────────────────────────────────────────────────
     said_core::load_env();
 
-    const DEFAULT_DIAGNOSTICS_BASE: &str = "https://airnote.emiactech.com";
     let diagnostics_base = std::env::var("AIRNOTE_DIAGNOSTICS_URL")
         .or_else(|_| std::env::var("AIRNOTE_CONTROL_PLANE_URL"))
-        .unwrap_or_else(|_| DEFAULT_DIAGNOSTICS_BASE.to_string());
+        .unwrap_or_else(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
     said_core::reporter::configure(&diagnostics_base);
     said_core::reporter::set_phase("backend_starting");
 

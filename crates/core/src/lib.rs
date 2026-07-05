@@ -19,6 +19,10 @@ pub mod text;
 pub const GATEWAY_BASE: &str = "https://gateway.outreachdeal.com";
 pub const VOICE_URL: &str = "https://gateway.outreachdeal.com/v1/voice/polish";
 
+// One build-time switch for the AirNote control-plane used by desktop/server
+// runtime defaults. For this dev-connected desktop build, point at dev.
+pub const AIRNOTE_DEFAULT_CONTROL_PLANE_URL: &str = "https://airnote-dev.103.180.163.41.sslip.io";
+
 // ── Mode registry ─────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Serialize, Deserialize)]

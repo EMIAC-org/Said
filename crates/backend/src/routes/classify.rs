@@ -125,7 +125,7 @@ fn post_runtime_memory_dirty(state: AppState) {
         let base_url = user
             .enterprise_server_url
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+            .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
         let url = format!("{}/v1/runtime/memory/dirty", base_url.trim_end_matches('/'));
         let _ = state
             .http_client
@@ -156,7 +156,7 @@ fn post_runtime_client_event(
         let base_url = user
             .enterprise_server_url
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+            .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
         let url = format!(
             "{}/v1/runtime/client-events",
             base_url.trim_end_matches('/')

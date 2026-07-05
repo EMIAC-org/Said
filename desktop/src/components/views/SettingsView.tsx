@@ -1274,7 +1274,7 @@ export function SettingsView({
                 <div className="min-w-0 flex-1">
                   <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
                   <p className="text-[12px] text-muted-foreground mt-0.5">
-                    {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
+                    {polishHotkeyLabel} polish runs on {DEFAULT_CLOUD_SERVER_URL.replace(/^https?:\/\//, "")} using Cerebras GPT OSS 120B.
                     {prefs?.stt_provider === "swift_local"
                       ? " Speech recognition stays on this Mac (Swift)."
                       : " Speech recognition uses Deepgram in the cloud."}

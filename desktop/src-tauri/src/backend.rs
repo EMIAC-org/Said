@@ -127,6 +127,16 @@ pub fn spawn() -> Result<BackendHandle, String> {
         .env(
             "DEEPINFRA_API_KEY",
             std::env::var("DEEPINFRA_API_KEY").unwrap_or_default(),
+        )
+        .env(
+            "AIRNOTE_CONTROL_PLANE_URL",
+            std::env::var("AIRNOTE_CONTROL_PLANE_URL")
+                .unwrap_or_else(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string()),
+        )
+        .env(
+            "AIRNOTE_DIAGNOSTICS_URL",
+            std::env::var("AIRNOTE_DIAGNOSTICS_URL")
+                .unwrap_or_else(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string()),
         );
 
     #[cfg(unix)]

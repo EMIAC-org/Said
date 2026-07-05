@@ -1200,7 +1200,7 @@ async fn run_server_runtime_voice_stream(
         .enterprise_server_url
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or("https://airnote.emiactech.com")
+        .unwrap_or(said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL)
         .to_string();
 
     let vocab_hints = vocab_entries
@@ -1489,7 +1489,7 @@ async fn run_server_runtime_voice_wav_probe(
         .enterprise_server_url
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or("https://airnote.emiactech.com")
+        .unwrap_or(said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL)
         .to_string();
 
     let encoded_len = base64_encoded_len(wav_data.len());
@@ -1627,7 +1627,7 @@ async fn run_server_runtime_voice_ws_probe(
         .enterprise_server_url
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or("https://airnote.emiactech.com")
+        .unwrap_or(said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL)
         .to_string();
 
     let wav = extract_pcm16_wav(wav_data)?;
