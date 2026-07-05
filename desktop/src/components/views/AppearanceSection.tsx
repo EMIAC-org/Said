@@ -1,21 +1,28 @@
 import { Check } from "lucide-react";
 import { useDashboardLayout, type DashboardLayout } from "@/lib/useDashboardLayout";
-import { useTheme, type Theme } from "@/lib/useTheme";
+import { useTheme, type Theme, type ThemePreference } from "@/lib/useTheme";
 
 /**
  * Appearance section in Settings. Two blocks:
- *   1. Theme      — Dark vs Light (Warm Paper), each with a live mini preview.
+ *   1. Theme      — Follow system / Dark / Warm Paper, each with a live mini preview.
  *   2. Dashboard  — Editorial vs Split home layout.
  * Theme is driven by the shared App-level source (passed in) so the picker and
  * the topbar Sun/Moon toggle never fall out of sync. Falls back to its own
  * {@link useTheme} instance if mounted without props.
  */
 export function AppearanceSection({
-  theme, onThemeChange,
-}: { theme?: Theme; onThemeChange?: (t: Theme) => void } = {}) {
+  preference, onPreferenceChange,
+}: {
+  /** Accepted for API compatibility with the shared App source; the picker
+      now drives everything through the preference (system/dark/light). */
+  theme?: Theme;
+  onThemeChange?: (t: Theme) => void;
+  preference?: ThemePreference;
+  onPreferenceChange?: (p: ThemePreference) => void;
+} = {}) {
   const fallback = useTheme();
-  const activeTheme = theme ?? fallback.theme;
-  const setTheme    = onThemeChange ?? fallback.setTheme;
+  const activePref  = preference ?? fallback.preference;
+  const setPref     = onPreferenceChange ?? fallback.setPreference;
   const { layout, setLayout } = useDashboardLayout();
 
   return (
@@ -24,22 +31,30 @@ export function AppearanceSection({
       <section className="space-y-5">
         <SectionHeader
           title="Theme"
-          desc="Dark for focus, Warm Paper for daylight. Applies instantly across the app."
+          desc="Follow your system, or pin a look. Applies instantly across the app."
         />
-        <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr" }}>
+        <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+          <ThemeCard
+            palette={LIGHT_PALETTE}
+            splitPalette={DARK_PALETTE}
+            title="System"
+            desc="Match your OS light/dark automatically."
+            selected={activePref === "system"}
+            onSelect={() => setPref("system")}
+          />
           <ThemeCard
             palette={DARK_PALETTE}
             title="Dark"
-            desc="Near-black floor, periwinkle accent, deep macOS glass."
-            selected={activeTheme === "dark"}
-            onSelect={() => setTheme("dark")}
+            desc="Near-black floor, periwinkle accent."
+            selected={activePref === "dark"}
+            onSelect={() => setPref("dark")}
           />
           <ThemeCard
             palette={LIGHT_PALETTE}
             title="Warm Paper"
-            desc="Warm off-white, indigo accent, soft layered depth."
-            selected={activeTheme === "light"}
-            onSelect={() => setTheme("light")}
+            desc="Warm off-white, indigo accent."
+            selected={activePref === "light"}
+            onSelect={() => setPref("light")}
           />
         </div>
       </section>
@@ -124,9 +139,12 @@ const LIGHT_PALETTE: Palette = {
 };
 
 function ThemeCard({
-  palette, title, desc, selected, onSelect,
+  palette, splitPalette, title, desc, selected, onSelect,
 }: {
   palette: Palette;
+  /** When set, the preview is split diagonally palette↘splitPalette — used by
+      the "System" card to signal it follows both OS appearances. */
+  splitPalette?: Palette;
   title: string;
   desc: string;
   selected: boolean;
@@ -152,7 +170,20 @@ function ThemeCard({
         if (!selected) e.currentTarget.style.boxShadow = "inset 0 0 0 1px hsl(var(--border))";
       }}
     >
-      <ThemeMini p={palette} />
+      {splitPalette ? (
+        <div className="relative w-full rounded-lg overflow-hidden" style={{ aspectRatio: "16 / 10" }}>
+          <ThemeMini p={palette} />
+          {/* Dark half, clipped to a diagonal so the card reads "auto both". */}
+          <div
+            className="absolute inset-0"
+            style={{ clipPath: "polygon(100% 0, 100% 100%, 0 100%)" }}
+          >
+            <ThemeMini p={splitPalette} />
+          </div>
+        </div>
+      ) : (
+        <ThemeMini p={palette} />
+      )}
       <div className="flex items-center justify-between mt-3">
         <div className="text-[13px] font-semibold" style={{ color: "hsl(var(--foreground))" }}>
           {title}

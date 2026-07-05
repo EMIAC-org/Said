@@ -14,7 +14,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
-import type { Theme } from "@/lib/useTheme";
+import type { Theme, ThemePreference } from "@/lib/useTheme";
 import { DictationSttSection } from "@/components/DictationSttSection";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
 
@@ -537,6 +537,9 @@ interface SettingsViewProps {
   /** Active theme + setter for the Appearance theme picker. */
   theme?:            Theme;
   onThemeChange?:    (t: Theme) => void;
+  /** Theme preference (system/dark/light) + setter for the Appearance picker. */
+  themePreference?:        ThemePreference;
+  onThemePreferenceChange?: (p: ThemePreference) => void;
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────
@@ -555,6 +558,8 @@ export function SettingsView({
   onEnterpriseDisconnect,
   theme,
   onThemeChange,
+  themePreference,
+  onThemePreferenceChange,
 }: SettingsViewProps) {
   // Helper — settings are always section-scoped in the stable UI. If a caller
   // omits the section, default to Models instead of rendering every advanced
@@ -973,7 +978,12 @@ export function SettingsView({
         {/* ── Appearance ────────────────────────────────── */}
         <Show when={isOn("appearance")}>
           <div className="mb-7">
-            <AppearanceSection theme={theme} onThemeChange={onThemeChange} />
+            <AppearanceSection
+              theme={theme}
+              onThemeChange={onThemeChange}
+              preference={themePreference}
+              onPreferenceChange={onThemePreferenceChange}
+            />
           </div>
         </Show>
 

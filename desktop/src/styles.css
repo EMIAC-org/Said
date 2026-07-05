@@ -786,6 +786,17 @@
   .onb-error-desc { font-size: 12.5px; line-height: 1.6; color: hsl(var(--muted-foreground)); margin-bottom: 20px; }
   .onb-error-actions { display: flex; flex-direction: column; gap: 8px; }
 
+  /* The onboarding BRAND canvas (left aurora panel) is intentionally always
+     dark — a dark-brand / light-form split is a deliberate premium pattern.
+     Its text uses --foreground, which flips to near-black under the Warm-Paper
+     light theme → invisible on the dark aurora. Pin --foreground to its dark
+     value here so the brand copy stays light regardless of app theme. The FORM
+     side (.onb-form) and the migration/error cards are NOT pinned — they adapt
+     to the active theme via the [data-theme="light"] overrides below. */
+  .onb-brand {
+    --foreground: 240 6% 93%;
+  }
+
   /* Forced post-update "Meet the new model" migration screen */
   .mig-card { max-width: 440px; width: 100%; padding: 30px; border-radius: 18px; background: hsl(240 5% 6% / 0.92); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
   .mig-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: hsl(var(--primary)); background: hsl(var(--primary) / 0.14); padding: 4px 9px; border-radius: 999px; margin-bottom: 14px; }
@@ -800,6 +811,47 @@
   .mig-bar { margin-top: 10px; height: 6px; border-radius: 999px; overflow: hidden; background: hsl(var(--surface-4)); }
   .mig-bar > div { height: 100%; border-radius: 999px; background: hsl(var(--primary)); transition: width 0.2s ease; }
   .mig-actions { display: flex; flex-direction: column; gap: 8px; }
+
+  /* ── Onboarding + migration under the Warm-Paper LIGHT theme ─────────
+     The brand aurora stays dark (pinned above). The form half and the
+     migration / error cards adopt the light palette; the dark-hardcoded
+     inner surfaces (inputs, rows, keycaps) are remapped to warm tokens so
+     everything stays legible on paper. Dark mode is untouched. */
+  [data-theme="light"] .onb-form {
+    background: hsl(var(--card));
+  }
+  [data-theme="light"] .mig-card,
+  [data-theme="light"] .onb-error-card {
+    background: hsl(var(--card));
+    box-shadow: inset 0 0 0 1px hsl(var(--border)), 0 18px 48px hsl(232 30% 35% / 0.14);
+  }
+  [data-theme="light"] .onb-try-field {
+    background: hsl(var(--surface-2));
+    box-shadow: inset 0 0 0 1px hsl(var(--border));
+  }
+  [data-theme="light"] .onb-try-field:focus {
+    background: hsl(var(--card));
+    box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.4), 0 0 0 3px hsl(var(--primary) / 0.08);
+  }
+  [data-theme="light"] .onb-try-kbd,
+  [data-theme="light"] .hk-keycap,
+  [data-theme="light"] .key-glyph {
+    background: hsl(var(--surface-4));
+    box-shadow: inset 0 0 0 1px hsl(var(--border));
+  }
+  [data-theme="light"] .onb-reclaim,
+  [data-theme="light"] .onb-row,
+  [data-theme="light"] .hk-capture {
+    background: hsl(var(--surface-2));
+  }
+  [data-theme="light"] .onb-row.selectable:hover,
+  [data-theme="light"] .hk-capture:hover,
+  [data-theme="light"] .onb-stepnav-clickable:hover {
+    background: hsl(var(--surface-4));
+  }
+  [data-theme="light"] .onb-row .ico-wrap {
+    background: hsl(var(--surface-4));
+  }
 
   /* Hold-to-talk hotkey picker (onboarding + settings + migration) */
   .hk-picker { display: flex; flex-direction: column; gap: 10px; }

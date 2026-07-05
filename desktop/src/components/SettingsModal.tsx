@@ -12,7 +12,7 @@ import {
   type SettingsSection,
 } from "@/components/views/SettingsView";
 import type { AppSnapshot } from "@/types";
-import type { Theme } from "@/lib/useTheme";
+import type { Theme, ThemePreference } from "@/lib/useTheme";
 
 /* ════════════════════════════════════════════════════════════════════════════
    SettingsModal — two-pane modal mirroring the InviteTeamModal aesthetic.
@@ -76,12 +76,17 @@ interface Props {
       sync with the topbar toggle via the single source in App. */
   theme:              Theme;
   onThemeChange:      (t: Theme) => void;
+  /** User's theme preference (system/dark/light) + setter — powers the
+      "Follow system" option in the Appearance picker. */
+  themePreference?:        ThemePreference;
+  onThemePreferenceChange?: (p: ThemePreference) => void;
 }
 
 export function SettingsModal({
   open, onClose, snapshot, onAccessibility, onInputMonitoring,
   onMicrophone, onScreenRecording, performanceMonitorEnabled, onPerformanceMonitorChange,
   onEnterpriseDisconnect, initialSection, theme, onThemeChange,
+  themePreference, onThemePreferenceChange,
 }: Props) {
   const [activeSection, setActiveSection] = useState<SettingsSection>(
     initialSection ?? "models"
@@ -286,6 +291,8 @@ export function SettingsModal({
               activeSection={activeSection}
               theme={theme}
               onThemeChange={onThemeChange}
+              themePreference={themePreference}
+              onThemePreferenceChange={onThemePreferenceChange}
               hideHeader
               embedded
             />
