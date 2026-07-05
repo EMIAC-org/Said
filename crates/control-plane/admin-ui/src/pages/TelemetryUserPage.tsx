@@ -15,6 +15,33 @@ import type {
   TelemetryUserProfile,
 } from '../types'
 
+interface UserKnowledge {
+  run_stats: {
+    run_count: number
+    skipped_count: number
+    last_run_at: string | null
+    last_run_outcome: string | null
+  }
+  batch: {
+    total: number
+    applied: number
+    skipped: number
+    failed: number
+    avg_latency_ms: number | null
+    token_total: number | null
+  }
+  knowledge: { background: string | null; domains: string[]; focus_areas: string[] }
+  buckets: { bucket_key: string; version: number; style: string[] }[]
+}
+
+const KB_BUCKET_LABELS: Record<string, string> = {
+  coding: 'Coding',
+  messaging: 'Messaging',
+  work_tracker: 'Work & Tasks',
+  formal_writing: 'Formal Writing',
+  default: 'General',
+}
+
 function AuthBadge({ source, lark }: { source: string; lark: boolean }) {
   const isLark = lark || source === 'lark'
   return (
@@ -163,16 +190,26 @@ export function TelemetryUserPage() {
   const modeFilter = searchParams.get('mode') || 'all'
   const tabParam = searchParams.get('tab')
   const initialTab =
-    tabParam === 'memory' ? 'memory' : tabParam === 'dictation' ? 'dictation' : 'telemetry'
+    tabParam === 'memory'
+      ? 'memory'
+      : tabParam === 'dictation'
+        ? 'dictation'
+        : tabParam === 'knowledge'
+          ? 'knowledge'
+          : 'telemetry'
 
   const [profile, setProfile] = useState<TelemetryUserProfile | null>(null)
   const [runs, setRuns] = useState<TelemetryRun[]>([])
   const [runsTotal, setRunsTotal] = useState(0)
   const [runsOffset, setRunsOffset] = useState(0)
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
-  const [innerTab, setInnerTab] = useState<'telemetry' | 'memory' | 'dictation'>(initialTab)
+  const [innerTab, setInnerTab] = useState<'telemetry' | 'memory' | 'dictation' | 'knowledge'>(
+    initialTab,
+  )
   const [memory, setMemory] = useState<TelemetryUserMemory | null>(null)
   const [memoryLoading, setMemoryLoading] = useState(false)
+  const [kb, setKb] = useState<UserKnowledge | null>(null)
+  const [kbLoading, setKbLoading] = useState(false)
   const [dictationFocusKey, setDictationFocusKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [runsLoading, setRunsLoading] = useState(false)
@@ -225,7 +262,16 @@ export function TelemetryUserPage() {
       .finally(() => setMemoryLoading(false))
   }, [orgId, accountId, innerTab])
 
-  const switchTab = (tab: 'telemetry' | 'memory' | 'dictation') => {
+  useEffect(() => {
+    if (!orgId || !accountId || innerTab !== 'knowledge') return
+    setKbLoading(true)
+    apiJson<UserKnowledge>(`/v1/orgs/${orgId}/telemetry/users/${accountId}/knowledge`)
+      .then(setKb)
+      .catch(() => setKb(null))
+      .finally(() => setKbLoading(false))
+  }, [orgId, accountId, innerTab])
+
+  const switchTab = (tab: 'telemetry' | 'memory' | 'dictation' | 'knowledge') => {
     setInnerTab(tab)
     const p = new URLSearchParams(searchParams)
     if (tab === 'telemetry') p.delete('tab')
@@ -323,6 +369,7 @@ export function TelemetryUserPage() {
         {(
           [
             ['telemetry', 'Telemetry'],
+            ['knowledge', 'Knowledge base'],
             ['memory', 'Vocab & memory'],
             ['dictation', 'Dictation'],
           ] as const
@@ -525,6 +572,93 @@ export function TelemetryUserPage() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </>
+        )
+      ) : innerTab === 'knowledge' ? (
+        kbLoading ? (
+          <Loading />
+        ) : !kb ? (
+          <div className="card p-6 text-[13px] text-fg-3">
+            No knowledge base learned for this user yet.
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              <TelemetryStatCard
+                label="Learn runs"
+                value={String(kb.run_stats.run_count)}
+                sub={`${kb.run_stats.skipped_count} skipped`}
+              />
+              <TelemetryStatCard
+                label="Applied"
+                value={String(kb.batch.applied)}
+                sub={`${kb.batch.skipped} skipped · ${kb.batch.failed} failed`}
+              />
+              <TelemetryStatCard
+                label="Avg run"
+                value={kb.batch.avg_latency_ms != null ? ms(kb.batch.avg_latency_ms) : '—'}
+                sub="deepseek latency"
+              />
+              <TelemetryStatCard
+                label="Tokens"
+                value={kb.batch.token_total != null ? kb.batch.token_total.toLocaleString() : '—'}
+                sub="deepseek total"
+              />
+            </div>
+
+            <div className="card p-4 mb-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-3 mb-2">
+                Knowledge base
+              </div>
+              {kb.knowledge.background ? (
+                <p className="text-[13px] text-fg leading-relaxed mb-3">
+                  {kb.knowledge.background}
+                </p>
+              ) : (
+                <p className="text-[13px] text-fg-3 mb-3">No background learned yet.</p>
+              )}
+              {(kb.knowledge.domains.length > 0 || kb.knowledge.focus_areas.length > 0) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {[...kb.knowledge.domains, ...kb.knowledge.focus_areas].map((t, i) => (
+                    <span
+                      key={`${t}-${i}`}
+                      className="text-[11px] px-2 py-0.5 rounded-md bg-surface-4 text-fg-3"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="card p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-3 mb-3">
+                Style by context
+              </div>
+              {kb.buckets.filter(b => b.style.length > 0).length === 0 ? (
+                <p className="text-[13px] text-fg-3">No per-app style learned yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {kb.buckets
+                    .filter(b => b.style.length > 0)
+                    .map(b => (
+                      <div key={b.bucket_key} className="rounded-lg p-3 bg-surface-2">
+                        <div className="text-[13px] font-medium text-fg mb-1.5">
+                          {KB_BUCKET_LABELS[b.bucket_key] ?? b.bucket_key}{' '}
+                          <span className="text-[11px] text-fg-3">v{b.version}</span>
+                        </div>
+                        <ul className="space-y-1">
+                          {b.style.map((s, i) => (
+                            <li key={i} className="text-[12px] text-fg-3">
+                              · {s}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                </div>
+              )}
             </div>
           </>
         )

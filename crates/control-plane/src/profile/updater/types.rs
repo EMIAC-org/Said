@@ -293,6 +293,42 @@ pub struct AppBucketSuggestion {
 }
 
 /// DeepSeek's structured output for one bucket window: per-bucket style + global KB
+/// Fixed per-bucket style knobs. DeepSeek only PICKS a value from each knob's
+/// allowed set (see `PROFILE_BATCH_SYSTEM_PROMPT`); the human-authored prompt text
+/// lives in `bucket::render_bucket_knob_lines`. Unknown/omitted knobs render nothing.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct BucketStyleKnobs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<String>, // casual | neutral | formal
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub greeting: Option<String>, // avoid | ok | expected
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub casing: Option<String>, // preserve | sentence | lower
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<String>, // terse | normal | expansive
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>, // avoid | ok
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technical_terms: Option<String>, // preserve | normal
+}
+
+impl BucketStyleKnobs {
+    /// How many knobs the model actually set (for logging/telemetry).
+    pub fn set_count(&self) -> usize {
+        [
+            self.tone.is_some(),
+            self.greeting.is_some(),
+            self.casing.is_some(),
+            self.length.is_some(),
+            self.emoji.is_some(),
+            self.technical_terms.is_some(),
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count()
+    }
+}
+
 /// deltas + app-bucket classifications. Reuses the per-edit patch sub-structs.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct BatchProfileResponse {
@@ -301,11 +337,11 @@ pub struct BatchProfileResponse {
     pub apply: bool,
     #[serde(default)]
     pub confidence: f64,
-    /// Per-bucket style (-> the bucket overlay).
+    /// Per-bucket style, as FIXED knobs (-> the bucket overlay). DeepSeek may only
+    /// pick from each knob's allowed values; the prompt text is rendered by us in
+    /// `bucket::render_bucket_knob_lines`, so no model-written prose reaches polish.
     #[serde(default)]
-    pub style_updates: Vec<PatchStyleUpdate>,
-    #[serde(default)]
-    pub speech_patterns: Vec<PatchSpeechPattern>,
+    pub style_knobs: BucketStyleKnobs,
     /// Global identity / KB (-> runtime_user_profiles, bucket-invariant).
     #[serde(default)]
     pub user_background: Option<PatchUserBackground>,

@@ -328,8 +328,9 @@ pub async fn get_profile_insights(
         .map_err(internal_error)?
         .into_iter()
         .map(|r| BucketInsight {
-            style: json_array_field(&r.profile_json, "style", "preference"),
-            speech_patterns: json_array_field(&r.profile_json, "speech_patterns", "pattern"),
+            // Rendered from the fixed knobs (our wording) — same lines injected into polish.
+            style: profile::bucket::render_bucket_knob_lines(&r.profile_json),
+            speech_patterns: Vec::new(),
             bucket_key: r.bucket_key,
             version: r.version,
             updated_at: r.last_rebuilt_at,
@@ -381,7 +382,8 @@ pub async fn get_app_buckets(
 
     let mut apps = Vec::with_capacity(rows.len());
     for (app_key, count) in rows {
-        let (bucket, source) = profile::bucket::resolve_bucket_with_source(&state.db, &app_key).await;
+        let (bucket, source) =
+            profile::bucket::resolve_bucket_with_source(&state.db, &app_key).await;
         apps.push(AppBucketRow {
             app_key,
             bucket_key: bucket.as_key().to_string(),

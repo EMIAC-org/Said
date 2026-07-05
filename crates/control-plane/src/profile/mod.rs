@@ -95,8 +95,15 @@ pub struct CachedBucketProfile {
 
 impl CachedBucketProfile {
     pub fn from_row(row: &bucket::BucketProfileRow) -> Self {
+        let profile_markdown = bucket::Bucket::from_key(&row.bucket_key)
+            .map(|bucket| bucket::render_bucket_overlay_markdown(bucket, &row.profile_json))
+            .filter(|markdown| !markdown.trim().is_empty())
+            .unwrap_or_default();
         Self {
-            profile_markdown: row.profile_markdown.clone(),
+            // Runtime never trusts stale DB free-text bucket prose. The DB row
+            // stores the knob JSON; prompt text is always rendered by our
+            // deterministic renderer so old model-authored overlays become empty.
+            profile_markdown,
             version: row.version,
             status: row.status.clone(),
         }
@@ -190,11 +197,13 @@ pub fn invalidate_bucket_profile_cache(
     bucket: bucket::Bucket,
 ) {
     let bucket_key = bucket.as_key().to_string();
-    state.bucket_profile_cache.invalidate(&BucketProfileCacheKey {
-        account_id,
-        org_scope,
-        bucket_key: bucket_key.clone(),
-    });
+    state
+        .bucket_profile_cache
+        .invalidate(&BucketProfileCacheKey {
+            account_id,
+            org_scope,
+            bucket_key: bucket_key.clone(),
+        });
     state
         .prompt_profile_context_cache
         .invalidate_where(|key| key.account_id == account_id && key.org_scope == org_scope);
@@ -204,9 +213,9 @@ pub fn invalidate_app_bucket_cache(state: &AppState, app_key: &str) {
     let Some(app_key) = normalize_app_key(app_key) else {
         return;
     };
-    state
-        .app_bucket_cache
-        .invalidate(&AppBucketCacheKey { app_key: app_key.clone() });
+    state.app_bucket_cache.invalidate(&AppBucketCacheKey {
+        app_key: app_key.clone(),
+    });
     state
         .prompt_profile_context_cache
         .invalidate_where(|key| key.app_key.as_deref() == Some(app_key.as_str()));
@@ -281,7 +290,9 @@ pub async fn resolve_bucket_cached(state: &AppState, app_key: &str) -> (CachedAp
             false,
         );
     };
-    let key = AppBucketCacheKey { app_key: app_key.clone() };
+    let key = AppBucketCacheKey {
+        app_key: app_key.clone(),
+    };
     if let Some(hit) = state.app_bucket_cache.get(&key) {
         return (hit, true);
     }

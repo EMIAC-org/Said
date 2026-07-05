@@ -355,12 +355,12 @@ pub async fn call_deepseek_batch_profile(
                 }
                 let parsed = parse_batch_profile_response(&raw)?;
                 info!(
-                    "[profile-batch] deepseek batch complete attempt={} latency_ms={} apply={} confidence={:.2} style_updates={} domains={} app_suggestions={}",
+                    "[profile-batch] deepseek batch complete attempt={} latency_ms={} apply={} confidence={:.2} style_knobs_set={} domains={} app_suggestions={}",
                     attempt + 1,
                     started.elapsed().as_millis(),
                     parsed.apply,
                     parsed.confidence,
-                    parsed.style_updates.len(),
+                    parsed.style_knobs.set_count(),
                     parsed.add_domains.len(),
                     parsed.app_bucket_suggestions.len(),
                 );

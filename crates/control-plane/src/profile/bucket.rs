@@ -334,6 +334,114 @@ pub async fn upsert_bucket_profile(
     .await
 }
 
+// -------------------------------------------------------------------------------------
+// Deterministic knob -> prompt-text rendering.
+//
+// DeepSeek only PICKS a value for each style knob (see PROFILE_BATCH_SYSTEM_PROMPT).
+// The prompt wording below is authored by US — no model-written prose ever reaches the
+// polish prompt. Unknown / neutral / omitted values render nothing.
+// -------------------------------------------------------------------------------------
+
+/// Human-authored prompt lines for a bucket's style knobs.
+pub fn render_bucket_knob_lines(knobs: &Value) -> Vec<String> {
+    let get = |k: &str| knobs.get(k).and_then(|v| v.as_str());
+    let mut lines: Vec<String> = Vec::new();
+    match get("tone") {
+        Some("casual") => lines.push(
+            "Keep a natural casual chat tone; do not convert it into formal business writing."
+                .to_string(),
+        ),
+        Some("formal") => lines.push(
+            "Use professional Roman Hinglish: smooth casual wording into office-suitable prose without translating the whole message to English. Allowed surface conversions: bol do -> inform kar do, nahi aaya -> receive nahi hua, bhej dena -> send kar dena. Do not use Sanskritized Hindi like kripya, samay uplabdh, or karen unless the speaker used that style."
+                .to_string(),
+        ),
+        _ => {}
+    }
+    match get("greeting") {
+        Some("avoid") if get("tone") == Some("formal") => lines.push(
+            "Do not add greetings or sign-offs; if the speaker names a recipient, preserve the name while removing only casual filler like hey, bhai, or yaar."
+                .to_string(),
+        ),
+        Some("avoid") => lines.push(
+            "Do not add greetings or sign-offs. Preserve spoken casual address words like bhai or yaar when they carry the user's tone."
+                .to_string(),
+        ),
+        Some("expected") => {
+            lines.push(
+                "A brief greeting or sign-off is appropriate only when the transcript clearly sounds like a message or email."
+                    .to_string(),
+            )
+        }
+        _ => {}
+    }
+    match get("casing") {
+        Some("preserve") => {
+            lines.push(
+                "Exact VOCAB spellings and casing are canonical for names, file paths, identifiers, env vars, model slugs, table names, and event names; copy them exactly when the transcript is phonetically close."
+                    .to_string(),
+            )
+        }
+        Some("lower") => lines.push(
+            "Lowercase normal prose is acceptable, but full email addresses must always be fully lowercase."
+                .to_string(),
+        ),
+        _ => {}
+    }
+    match get("length") {
+        Some("terse") => lines.push(
+            "Keep it concise and action-oriented; remove padding and filler while preserving every requirement."
+                .to_string(),
+        ),
+        Some("expansive") => lines.push(
+            "Use complete sentences with clean punctuation, but do not add facts or extra explanation."
+                .to_string(),
+        ),
+        _ => {}
+    }
+    if get("emoji") == Some("avoid") {
+        lines.push("Do not add emoji.".to_string());
+    }
+    if get("tone") == Some("formal") {
+        lines.push(
+            "In formal writing, compact clear business tokens: invoice inv two zero four five -> invoice INV 2045; one lakh twenty five thousand rupees -> Rs 1,25,000; three thirty pm -> 3:30 pm."
+                .to_string(),
+        );
+    }
+    if get("technical_terms") == Some("preserve") {
+        lines.push(
+            "For technical content, preserve or normalize only from transcript plus VOCAB: file paths, commands, flags, env vars, model slugs, table/field names, function names, and event names must not be guessed."
+                .to_string(),
+        );
+        lines.push(
+            "For VOCAB entries with aliases, the left-side term is canonical and aliases are only STT-heard forms; when an alias matches, copy the left-side term exactly."
+                .to_string(),
+        );
+        lines.push(
+            "When a spoken technical phrase clearly names a VOCAB item, output the exact VOCAB item: env var cerebras api key -> CEREBRAS_API_KEY; said control plane -> said-control-plane; voice done -> voice-done."
+                .to_string(),
+        );
+    }
+    lines
+}
+
+/// Render a bucket's knobs into the injected "When dictating in <bucket> apps:" block.
+/// Empty (no knobs with signal) -> empty string (nothing injected).
+pub fn render_bucket_overlay_markdown(bucket: Bucket, knobs: &Value) -> String {
+    let lines = render_bucket_knob_lines(knobs);
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "ACTIVE BUCKET POLICY for {} apps (human-authored deterministic rules):",
+        bucket.as_key()
+    );
+    for l in &lines {
+        out.push_str("\n- ");
+        out.push_str(l);
+    }
+    said_core::text::truncate_utf8(&out, 1200).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

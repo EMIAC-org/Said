@@ -8290,9 +8290,7 @@ async fn get_profile_insights(
 
 /// Apps the user dictates into, grouped by bucket (for the Buckets kanban).
 #[tauri::command]
-async fn get_app_buckets(
-    backend: State<'_, BackendState>,
-) -> Result<serde_json::Value, String> {
+async fn get_app_buckets(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
     let ep = get_endpoint(&backend)?;
     let status = api::get_enterprise_status(&ep).await?;
     let token = status

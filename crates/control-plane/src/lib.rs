@@ -118,7 +118,10 @@ pub struct AppState {
         ttl_cache::TtlCache<profile::BucketProfileCacheKey, Option<profile::CachedBucketProfile>>,
     >,
     pub prompt_profile_context_cache: Arc<
-        ttl_cache::TtlCache<profile::PromptProfileContextCacheKey, profile::CachedPromptProfileContext>,
+        ttl_cache::TtlCache<
+            profile::PromptProfileContextCacheKey,
+            profile::CachedPromptProfileContext,
+        >,
     >,
     pub runtime_credential_cache: Arc<
         ttl_cache::TtlCache<
@@ -145,7 +148,10 @@ pub struct SetupCaches {
         ttl_cache::TtlCache<profile::BucketProfileCacheKey, Option<profile::CachedBucketProfile>>,
     >,
     pub prompt_profile_context_cache: Arc<
-        ttl_cache::TtlCache<profile::PromptProfileContextCacheKey, profile::CachedPromptProfileContext>,
+        ttl_cache::TtlCache<
+            profile::PromptProfileContextCacheKey,
+            profile::CachedPromptProfileContext,
+        >,
     >,
     pub runtime_credential_cache: Arc<
         ttl_cache::TtlCache<
@@ -351,6 +357,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/orgs/:org_id/telemetry/users/:account_id/memory",
             get(routes::telemetry::user_memory),
+        )
+        .route(
+            "/v1/orgs/:org_id/telemetry/users/:account_id/knowledge",
+            get(routes::telemetry::user_knowledge),
         )
         .route(
             "/v1/orgs/:org_id/observability/summary",

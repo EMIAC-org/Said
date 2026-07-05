@@ -177,7 +177,10 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
         "[profile-batch] account={} analyzing {} runs across buckets {:?}",
         account_id,
         run_count,
-        signal_buckets.iter().map(|b| b.as_key()).collect::<Vec<_>>()
+        signal_buckets
+            .iter()
+            .map(|b| b.as_key())
+            .collect::<Vec<_>>()
     );
 
     let global_summary = load_global_summary(state, account_id, org_scope).await;
@@ -257,12 +260,10 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
             continue;
         }
 
-        // Per-bucket style -> overlay.
-        let overlay_json = json!({
-            "style": resp.style_updates,
-            "speech_patterns": resp.speech_patterns,
-        });
-        let overlay_markdown = render_bucket_overlay_markdown(bucket, &overlay_json);
+        // Per-bucket style -> overlay. Stored as the fixed knob set; the injected
+        // markdown is rendered deterministically from those knobs (our wording).
+        let overlay_json = serde_json::to_value(&resp.style_knobs).unwrap_or_else(|_| json!({}));
+        let overlay_markdown = bucket::render_bucket_overlay_markdown(bucket, &overlay_json);
         if let Err(e) = bucket::upsert_bucket_profile(
             &state.db,
             account_id,
@@ -436,43 +437,22 @@ fn merge_named(
     }
 }
 
-/// Render a bucket overlay's style json into the injected conditional block.
-fn render_bucket_overlay_markdown(bucket: Bucket, overlay_json: &Value) -> String {
-    let mut lines = vec![format!("When dictating in {} apps:", bucket.as_key())];
-    if let Some(style) = overlay_json.get("style").and_then(|v| v.as_array()) {
-        for s in style.iter().take(8) {
-            if let Some(pref) = s.get("preference").and_then(|v| v.as_str()) {
-                lines.push(format!("- {pref}"));
-            }
-        }
-    }
-    if let Some(sp) = overlay_json
-        .get("speech_patterns")
-        .and_then(|v| v.as_array())
-    {
-        for s in sp.iter().take(4) {
-            if let Some(p) = s.get("pattern").and_then(|v| v.as_str()) {
-                lines.push(format!("- {p}"));
-            }
-        }
-    }
-    said_core::text::truncate_utf8(&lines.join("\n"), 1200).to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn overlay_markdown_names_the_bucket_and_prefs() {
-        let json = json!({
-            "style": [{"category": "greeting", "preference": "always add a greeting", "evidence": "x"}],
-            "speech_patterns": [{"pattern": "full sentences", "evidence": "y"}],
-        });
-        let md = render_bucket_overlay_markdown(Bucket::Messaging, &json);
+    fn overlay_markdown_renders_from_knobs() {
+        // DeepSeek only picks knob values; the wording is ours (deterministic).
+        let knobs = json!({ "greeting": "expected", "tone": "formal" });
+        let md = bucket::render_bucket_overlay_markdown(Bucket::Messaging, &knobs);
         assert!(md.contains("messaging"));
-        assert!(md.contains("always add a greeting"));
-        assert!(md.contains("full sentences"));
+        assert!(md.contains("ACTIVE BUCKET POLICY"));
+        assert!(md.contains("brief greeting or sign-off is appropriate"));
+        assert!(md.contains("professional Roman Hinglish"));
+        // A bad/unknown knob value renders nothing (bounded blast radius).
+        let bad = json!({ "tone": "haiku" });
+        assert!(bucket::render_bucket_overlay_markdown(Bucket::Messaging, &bad).is_empty());
     }
 
     #[test]

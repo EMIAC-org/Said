@@ -3952,11 +3952,10 @@ async fn execute_voice_polish(
     // Build the prompt now that the persona has resolved (pure CPU).
     let build_start = Instant::now();
     let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_server(profile_md);
-    let prompt_built_meta =
-        crate::prompt_profile_telemetry::prompt_built_metadata(
-            &profile_snapshot,
-            profile_context.profile_version,
-        );
+    let prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
+        &profile_snapshot,
+        profile_context.profile_version,
+    );
 
     let (system_prompt, user_message) = if is_rewrite {
         (
