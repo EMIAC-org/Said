@@ -2842,6 +2842,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             low_conf_ref,
         );
 
+        let server_runtime_forced = crate::store::prefs::server_runtime_forced();
         let prompt_body = default_voice_prompt_template();
         let relevant_corrections = crate::store::corrections::filter_relevant(
             &word_corrections, &resolved_transcript, 2, 10,
@@ -2855,14 +2856,24 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             client_profile_markdown,
         );
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "prompt.build",
+            stage: if server_runtime_forced {
+                "fallback_prompt.build"
+            } else {
+                "prompt.build"
+            },
             component: "backend",
             function: "render_voice_system_prompt_template_with_profile",
             input: Some(&resolved_transcript),
             output: Some(&base_system_prompt),
-            reason: Some("system prompt rendered with profile, memory, and examples"),
+            reason: Some(if server_runtime_forced {
+                "local fallback prompt prepared; primary server-runtime prompt is built in control-plane"
+            } else {
+                "system prompt rendered with profile, memory, and examples"
+            }),
             risk: Some("prompt_context_bias"),
             metadata: json!({
+                "active_polish_path": if server_runtime_forced { "server_runtime" } else { "local_backend" },
+                "fallback_only": server_runtime_forced,
                 "profile_version": client_profile_version,
                 "profile_chars": client_profile_markdown.map(|p| p.chars().count()).unwrap_or(0),
                 "rag_examples": rag_examples.len(),
@@ -2951,14 +2962,24 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             base_system_prompt
         };
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "prompt.final",
+            stage: if server_runtime_forced {
+                "fallback_prompt.final"
+            } else {
+                "prompt.final"
+            },
             component: "backend",
             function: "routes::voice::system_prompt",
             input: Some(&resolved_transcript),
             output: Some(&system_prompt),
-            reason: Some("final system prompt sent to polish model"),
+            reason: Some(if server_runtime_forced {
+                "local fallback prompt prepared; primary server-runtime prompt is built and sent by control-plane"
+            } else {
+                "final system prompt sent to polish model"
+            }),
             risk: Some("prompt_context_bias"),
             metadata: json!({
+                "active_polish_path": if server_runtime_forced { "server_runtime" } else { "local_backend" },
+                "fallback_only": server_runtime_forced,
                 "prompt_chars": system_prompt.chars().count(),
                 "screen_context": screen_context.as_ref().is_some_and(|s| !s.trim().is_empty()),
                 "repair_mode": repair_mode.as_deref(),
@@ -2971,7 +2992,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let groq_key_for_recovery = groq_key.clone();
         let llm_start = Instant::now();
         let mut saw_script_rewrite = false;
-        let (mut llm_result, actual_model_used, stream_filter) = if crate::store::prefs::server_runtime_forced() {
+        let (mut llm_result, actual_model_used, stream_filter) = if server_runtime_forced {
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "server_polishing", "transcript": &resolved_transcript}).to_string()));
             info!("[timing] LLM start — provider=server_runtime selected_model={:?}", prefs.selected_model);

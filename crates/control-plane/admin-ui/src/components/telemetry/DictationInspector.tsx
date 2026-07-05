@@ -63,6 +63,28 @@ function compactMeta(meta?: Record<string, unknown>): string {
     .join(' · ')
 }
 
+function isPrimaryServerRuntimeModel(model?: string | null): boolean {
+  return !!model && (model === 'server-runtime' || model.startsWith('server-runtime:'))
+}
+
+function isServerRuntimeFallbackModel(model?: string | null): boolean {
+  return !!model && model.startsWith('server-runtime-fallback:')
+}
+
+function isBackendPromptStage(stage: DictationTraceStage): boolean {
+  return (
+    stage.component === 'backend' &&
+    ['prompt.build', 'prompt.final', 'fallback_prompt.build', 'fallback_prompt.final'].includes(stage.stage)
+  )
+}
+
+function isFallbackOnlyPromptStage(stage: DictationTraceStage, modelUsed?: string | null): boolean {
+  return (
+    (stage.metadata?.fallback_only === true && !isServerRuntimeFallbackModel(modelUsed)) ||
+    (isPrimaryServerRuntimeModel(modelUsed) && isBackendPromptStage(stage))
+  )
+}
+
 function cappedWords(text: string, maxWords: number): { text: string; truncated: boolean } {
   const words = text.trim().split(/\s+/).filter(Boolean)
   if (words.length <= maxWords) return { text, truncated: false }
@@ -129,12 +151,26 @@ function suspectStages(trace: DictationTrace): DictationTraceStage[] {
   )
 }
 
-function TraceStageCard({ trace, stage }: { trace: DictationTrace; stage: DictationTraceStage }) {
+function TraceStageCard({
+  trace,
+  stage,
+  modelUsed,
+}: {
+  trace: DictationTrace
+  stage: DictationTraceStage
+  modelUsed?: string | null
+}) {
   const inputMeta = traceTextMeta(trace, stage.input_ref)
   const outputMeta = traceTextMeta(trace, stage.output_ref)
   const input = inputMeta?.text || null
   const output = outputMeta?.text || null
   const meta = compactMeta(stage.metadata)
+  const fallbackOnly = isFallbackOnlyPromptStage(stage, modelUsed)
+  const stageName =
+    fallbackOnly && stage.stage.startsWith('prompt.') ? `legacy_fallback_${stage.stage}` : stage.stage
+  const reason = fallbackOnly
+    ? 'Local backend fallback prompt only. For server-runtime runs, the active model prompt is built in control-plane.'
+    : stage.reason
 
   return (
     <div
@@ -145,13 +181,16 @@ function TraceStageCard({ trace, stage }: { trace: DictationTrace; stage: Dictat
       <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
           <div className="text-[12px] font-mono text-fg break-words">
-            {stage.index + 1}. {stage.stage}
+            {stage.index + 1}. {stageName}
           </div>
           <div className="text-[11px] text-fg-4 break-words">
             {stage.component} · {stage.function}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+          {fallbackOnly && (
+            <span className="text-[10px] rounded bg-warn-bg px-2 py-0.5 text-warn">fallback only</span>
+          )}
           {stage.risk && <span className="text-[10px] rounded bg-surface-4 px-2 py-0.5 text-fg-4">{stage.risk}</span>}
           {stage.changed && <span className="text-[10px] rounded bg-live/10 px-2 py-0.5 text-live">changed</span>}
           {stage.duration_ms != null && (
@@ -161,7 +200,7 @@ function TraceStageCard({ trace, stage }: { trace: DictationTrace; stage: Dictat
           )}
         </div>
       </div>
-      {stage.reason && <div className="text-[11px] text-fg-4 mb-3">{stage.reason}</div>}
+      {reason && <div className="text-[11px] text-fg-4 mb-3">{reason}</div>}
       {(input || output) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <TraceTextBlock
@@ -189,9 +228,11 @@ function TraceStageCard({ trace, stage }: { trace: DictationTrace; stage: Dictat
 
 function TraceModal({
   trace,
+  modelUsed,
   onClose,
 }: {
   trace: DictationTrace
+  modelUsed?: string | null
   onClose: () => void
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -254,7 +295,12 @@ function TraceModal({
           )}
           <div className="space-y-3">
             {trace.stages.map(stage => (
-              <TraceStageCard key={`${stage.index}-${stage.stage}`} trace={trace} stage={stage} />
+              <TraceStageCard
+                key={`${stage.index}-${stage.stage}`}
+                trace={trace}
+                stage={stage}
+                modelUsed={modelUsed}
+              />
             ))}
           </div>
         </div>
@@ -278,6 +324,7 @@ interface ContextAppliedData {
   bucket_source: string | null
   style: string[]
   global_kb: boolean
+  context_source?: string | null
 }
 
 /** "Context applied" — which app-bucket this run's app resolved to, and the exact
@@ -300,6 +347,11 @@ function ContextApplied({ context }: { context?: ContextAppliedData | null }) {
         <span className="text-[11px] px-2 py-0.5 rounded-md bg-surface-3 text-fg-3">
           KB: {context.global_kb ? 'injected' : 'not injected'}
         </span>
+        {context.context_source && (
+          <span className="text-[11px] px-2 py-0.5 rounded-md bg-surface-3 text-fg-3">
+            trace: {context.context_source === 'runtime_trace' ? 'actual run' : 'current DB fallback'}
+          </span>
+        )}
       </div>
       {context.style.length > 0 ? (
         <ul className="space-y-1">
@@ -316,7 +368,13 @@ function ContextApplied({ context }: { context?: ContextAppliedData | null }) {
   )
 }
 
-function TraceTimeline({ trace }: { trace?: DictationTrace | Record<string, never> }) {
+function TraceTimeline({
+  trace,
+  modelUsed,
+}: {
+  trace?: DictationTrace | Record<string, never>
+  modelUsed?: string | null
+}) {
   const [modalOpen, setModalOpen] = useState(false)
 
   if (!isTrace(trace) || !trace.stages.length) {
@@ -331,6 +389,7 @@ function TraceTimeline({ trace }: { trace?: DictationTrace | Record<string, neve
   const suspect = suspectStages(trace)
   const changedCount = trace.stages.filter(stage => stage.changed).length
   const postMutationCount = trace.stages.filter(stage => stage.risk === 'post_model_mutation').length
+  const hasFallbackOnlyPrompt = trace.stages.some(stage => isFallbackOnlyPromptStage(stage, modelUsed))
 
   return (
     <div className="mb-4">
@@ -351,6 +410,11 @@ function TraceTimeline({ trace }: { trace?: DictationTrace | Record<string, neve
             Show me the trace, detailed trace
           </button>
         </div>
+        {hasFallbackOnlyPrompt && (
+          <div className="mt-3 rounded-lg border border-warn/30 bg-warn-bg p-3 text-[11px] text-warn">
+            Backend prompt stages in this trace are local fallback prompts. The active server-runtime context is shown in Context applied.
+          </div>
+        )}
         {suspect.length > 0 && (
           <div className="mt-3 rounded-lg border border-live/30 bg-live/5 p-3">
             <div className="text-[10px] font-semibold text-live uppercase tracking-wider mb-2">Suspect stages</div>
@@ -364,7 +428,7 @@ function TraceTimeline({ trace }: { trace?: DictationTrace | Record<string, neve
           </div>
         )}
       </div>
-      {modalOpen && <TraceModal trace={trace} onClose={() => setModalOpen(false)} />}
+      {modalOpen && <TraceModal trace={trace} modelUsed={modelUsed} onClose={() => setModalOpen(false)} />}
     </div>
   )
 }
@@ -597,7 +661,10 @@ export function DictationInspector({
                     <DiffColumn label="User kept" text={detail.item.final_text} tone="kept" />
                   </div>
                   <ContextApplied context={detail.context_applied} />
-                  <TraceTimeline trace={detail.item.dictation_trace_json} />
+                  <TraceTimeline
+                    trace={detail.item.dictation_trace_json}
+                    modelUsed={detail.item.model_used}
+                  />
                   {detail.item.edit_feedback_json &&
                   Object.keys(detail.item.edit_feedback_json).length > 0 ? (
                     <div className="mb-4">

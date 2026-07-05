@@ -141,6 +141,43 @@ pub struct AliasLearnEvent {
     pub created_at: DateTime<Utc>,
 }
 
+fn bucket_style_lines_from_profile(profile_markdown: Option<&str>) -> Vec<String> {
+    let Some(profile) = profile_markdown else {
+        return Vec::new();
+    };
+    let Some(start) = profile.find("ACTIVE BUCKET POLICY") else {
+        return Vec::new();
+    };
+    profile[start..]
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .take_while(|line| line.starts_with("- "))
+        .map(|line| line.trim_start_matches("- ").trim().to_string())
+        .filter(|line| !line.is_empty())
+        .take(20)
+        .collect()
+}
+
+fn context_applied_from_prompt_meta(meta: &Value) -> Option<Value> {
+    let bucket_key = meta.get("bucket_key")?.as_str()?;
+    let bucket_source = meta.get("bucket_source").and_then(Value::as_str);
+    let profile_chars = meta
+        .get("profile_chars")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let style = bucket_style_lines_from_profile(
+        meta.get("profile_markdown").and_then(Value::as_str),
+    );
+    Some(json!({
+        "bucket_key": bucket_key,
+        "bucket_source": bucket_source,
+        "style": style,
+        "global_kb": profile_chars > 0,
+        "context_source": "runtime_trace",
+    }))
+}
+
 pub async fn list_org_dictation(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -338,10 +375,38 @@ pub async fn get_org_dictation_detail(
             vec![]
         };
 
-    // "Context applied" — resolve this run's app to its bucket + the style lines that
-    // bucket injects (our authored knob text). Uses the run's stored target_app, so it
-    // reflects the app→bucket routing this dictation went through.
-    let context_applied = if let Some(app) =
+    let runtime_prompt_meta: Option<Value> = sqlx::query_scalar(
+        "SELECT s.metadata_json
+           FROM runtime_sessions rs
+           JOIN runtime_stage_events s ON s.run_id = rs.id
+          WHERE s.stage = 'prompt_built'
+            AND (
+              ($1::uuid IS NOT NULL AND rs.id = $1)
+              OR ($2::text IS NOT NULL AND rs.client_run_id = $2)
+            )
+          ORDER BY s.created_at DESC
+          LIMIT 1",
+    )
+    .bind(row.run_id)
+    .bind(row.client_run_id.as_deref())
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(
+            "[observability] failed to load runtime prompt metadata key={lookup_key}: {e}"
+        );
+        None
+    });
+
+    // "Context applied" should reflect the actual run. Prefer the server-runtime
+    // prompt_built stage metadata; only fall back to current DB state for older rows
+    // that do not have runtime stage telemetry.
+    let context_applied = if let Some(context) = runtime_prompt_meta
+        .as_ref()
+        .and_then(context_applied_from_prompt_meta)
+    {
+        Some(context)
+    } else if let Some(app) =
         row.target_app.as_deref().map(str::trim).filter(|s| !s.is_empty())
     {
         let org_scope = crate::profile::store::resolve_org_scope(row.org_id);
@@ -368,6 +433,7 @@ pub async fn get_org_dictation_detail(
             "bucket_source": bucket_source,
             "style": style,
             "global_kb": global_kb,
+            "context_source": "current_db_fallback",
         }))
     } else {
         None
