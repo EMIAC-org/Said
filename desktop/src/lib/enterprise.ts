@@ -57,15 +57,25 @@ function persistServerUrlConfig(mode: ServerUrlMode, customUrl?: string): void {
   }
 }
 
-function shouldRewriteToBuildDefaultServerUrl(url: string): boolean {
-  return (
-    getServerUrlMode() === "default" &&
-    normalizeServerUrl(DEFAULT_CLOUD_SERVER_URL) !== normalizeServerUrl(url)
-  );
-}
-
 function currentBuildDefaultServerUrl(): string {
   return normalizeServerUrl(DEFAULT_CLOUD_SERVER_URL);
+}
+
+function getSavedActiveServerUrl(conn?: EnterpriseConnection | null): string {
+  const override = getServerUrlOverride();
+  if (getServerUrlMode() === "custom" && override) return normalizeServerUrl(override);
+  if (conn?.serverUrl) return normalizeServerUrl(conn.serverUrl);
+  return currentBuildDefaultServerUrl();
+}
+
+function resetServerUrlConfigToBuildDefault(): void {
+  try {
+    localStorage.setItem(SERVER_URL_MODE_KEY, "default");
+    localStorage.removeItem(SERVER_URL_OVERRIDE_KEY);
+    localStorage.removeItem(PENDING_SERVER_URL_KEY);
+  } catch {
+    // ignore quota errors
+  }
 }
 
 async function writeEnterpriseAuthToLocalBackend(conn: EnterpriseConnection): Promise<void> {
@@ -102,13 +112,15 @@ export async function applyServerUrlConfig(
   return active;
 }
 
-/** Dev/tester builds can intentionally force a default server. In default mode,
- *  any previously saved server is rewritten to the current build/env default.
- *  Runtime custom mode remains untouched. */
+/** Dev/tester builds can intentionally force one server. On startup, any saved
+ *  default/custom/pending URL that differs from this build/env default is reset. */
 export async function reconcileBuildDefaultServerUrl(): Promise<EnterpriseConnection | null> {
   const conn = getConnection();
-  if (!conn || !shouldRewriteToBuildDefaultServerUrl(conn.serverUrl)) return conn;
-  const rewritten = { ...conn, serverUrl: currentBuildDefaultServerUrl() };
+  const buildDefault = currentBuildDefaultServerUrl();
+  if (getSavedActiveServerUrl(conn) === buildDefault) return conn;
+  resetServerUrlConfigToBuildDefault();
+  if (!conn) return null;
+  const rewritten = { ...conn, serverUrl: buildDefault };
   saveConnection(rewritten);
   await writeEnterpriseAuthToLocalBackend(rewritten);
   return rewritten;
@@ -548,11 +560,16 @@ export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseCon
       return null;
     }
     const existing = getConnection();
-    const restoredServerUrl = shouldRewriteToBuildDefaultServerUrl(status.server_url)
-      ? currentBuildDefaultServerUrl()
-      : normalizeServerUrl(status.server_url);
-    if (existing?.jwt === status.token && existing.serverUrl === restoredServerUrl) {
+    const buildDefault = currentBuildDefaultServerUrl();
+    const restoredServerUrl = buildDefault;
+    if (
+      existing?.jwt === status.token &&
+      normalizeServerUrl(existing.serverUrl) === restoredServerUrl
+    ) {
       return repairEnterpriseConnection(existing).catch(() => existing);
+    }
+    if (getSavedActiveServerUrl(existing) !== buildDefault) {
+      resetServerUrlConfigToBuildDefault();
     }
     const conn: EnterpriseConnection = {
       serverUrl: restoredServerUrl,
