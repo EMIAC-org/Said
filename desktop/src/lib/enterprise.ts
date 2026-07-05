@@ -17,6 +17,8 @@ export const DEFAULT_CLOUD_SERVER_URL =
   (import.meta.env.VITE_AIRNOTE_SERVER_URL as string | undefined)?.trim() ||
   AIRNOTE_DEFAULT_CONTROL_PLANE_URL;
 
+const LEGACY_DEFAULT_CONTROL_PLANE_URLS = ["https://airnote.emiactech.com"];
+
 export type ServerUrlMode = "default" | "custom";
 
 /** Override mode — "default" (prod AirNote) or "custom" (user-pasted URL). */
@@ -57,6 +59,39 @@ function persistServerUrlConfig(mode: ServerUrlMode, customUrl?: string): void {
   }
 }
 
+function isLegacyDefaultServerUrl(url: string): boolean {
+  const normalized = normalizeServerUrl(url);
+  return LEGACY_DEFAULT_CONTROL_PLANE_URLS.some(
+    (legacy) => normalizeServerUrl(legacy) === normalized,
+  );
+}
+
+function shouldRewriteLegacyDefaultServerUrl(url: string): boolean {
+  return (
+    getServerUrlMode() === "default" &&
+    isLegacyDefaultServerUrl(url) &&
+    normalizeServerUrl(DEFAULT_CLOUD_SERVER_URL) !== normalizeServerUrl(url)
+  );
+}
+
+function currentBuildDefaultServerUrl(): string {
+  return normalizeServerUrl(DEFAULT_CLOUD_SERVER_URL);
+}
+
+async function writeEnterpriseAuthToLocalBackend(conn: EnterpriseConnection): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("store_enterprise_auth", {
+      token: conn.jwt,
+      email: conn.email,
+      serverUrl: conn.serverUrl,
+      orgName: conn.orgName ?? null,
+    });
+  } catch {
+    // Non-fatal for UI; startup validation will still force reconnect if needed.
+  }
+}
+
 /** Apply a new server-URL config and repoint the existing connection + the local
  *  backend's polish forwarding at it. Returns the resolved active URL; the caller
  *  reloads the app so every cached endpoint picks up the change. If the current
@@ -69,21 +104,24 @@ export async function applyServerUrlConfig(
   persistServerUrlConfig(mode, customUrl);
   const active = getActiveServerUrl();
   const conn = getConnection();
-  if (conn && normalizeServerUrl(conn.serverUrl) !== normalizeServerUrl(active)) {
-    saveConnection({ ...conn, serverUrl: active });
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("store_enterprise_auth", {
-        token: conn.jwt,
-        email: conn.email,
-        serverUrl: active,
-        orgName: conn.orgName ?? null,
-      });
-    } catch {
-      // non-fatal — the UI reload still reroutes frontend calls
-    }
+  if (conn) {
+    const rewritten = { ...conn, serverUrl: normalizeServerUrl(active) };
+    saveConnection(rewritten);
+    await writeEnterpriseAuthToLocalBackend(rewritten);
   }
   return active;
+}
+
+/** Dev/tester builds can intentionally change the built-in default server.
+ *  Existing installs may still store the old default URL locally. Rewrite only
+ *  known old defaults, never user-provided custom servers. */
+export async function reconcileBuildDefaultServerUrl(): Promise<EnterpriseConnection | null> {
+  const conn = getConnection();
+  if (!conn || !shouldRewriteLegacyDefaultServerUrl(conn.serverUrl)) return conn;
+  const rewritten = { ...conn, serverUrl: currentBuildDefaultServerUrl() };
+  saveConnection(rewritten);
+  await writeEnterpriseAuthToLocalBackend(rewritten);
+  return rewritten;
 }
 
 export type OnboardingAuthMode = "personal" | "workspace";
@@ -503,6 +541,15 @@ function emitEnterpriseConnectionChanged(): void {
   }
 }
 
+async function clearEnterpriseAuthFromLocalBackend(): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("clear_enterprise_auth");
+  } catch {
+    // ignore outside Tauri or when backend is unavailable
+  }
+}
+
 export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseConnection | null> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -511,11 +558,14 @@ export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseCon
       return null;
     }
     const existing = getConnection();
-    if (existing?.jwt === status.token && existing.serverUrl === status.server_url) {
+    const restoredServerUrl = shouldRewriteLegacyDefaultServerUrl(status.server_url)
+      ? currentBuildDefaultServerUrl()
+      : normalizeServerUrl(status.server_url);
+    if (existing?.jwt === status.token && existing.serverUrl === restoredServerUrl) {
       return repairEnterpriseConnection(existing).catch(() => existing);
     }
     const conn: EnterpriseConnection = {
-      serverUrl: normalizeServerUrl(status.server_url),
+      serverUrl: restoredServerUrl,
       jwt: status.token,
       accountId: existing?.accountId ?? "local-backend",
       email: status.email,
@@ -524,6 +574,9 @@ export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseCon
       larkAvatarUrl: existing?.larkAvatarUrl,
       authSource: existing?.authSource ?? "email",
     };
+    if (normalizeServerUrl(status.server_url) !== restoredServerUrl) {
+      await writeEnterpriseAuthToLocalBackend(conn);
+    }
     return repairEnterpriseConnection(conn).catch(() => {
       saveConnection(conn);
       return conn;
@@ -564,6 +617,7 @@ export async function checkConnection(): Promise<ConnectionStatus> {
     if (res.ok) return "connected";
     if (res.status === 401 || res.status === 403) {
       disconnect();
+      await clearEnterpriseAuthFromLocalBackend();
       return "expired";
     }
     // Network/server errors — trust local cache for offline grace
@@ -802,12 +856,7 @@ async function persistEnterpriseConnection(
 /** Full disconnect — local storage + backend token. */
 export async function disconnectEnterprise(): Promise<void> {
   disconnect();
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("clear_enterprise_auth");
-  } catch {
-    // ignore
-  }
+  await clearEnterpriseAuthFromLocalBackend();
 }
 
 /** Get user's org info */

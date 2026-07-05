@@ -219,7 +219,7 @@ function Show({ when, children }: { when: boolean; children: React.ReactNode }) 
 
 // ── Enterprise section ────────────────────────────────────────────────────────
 
-/** Server URL override — toggle between the default (prod AirNote) backend and a
+/** Server URL override — toggle between the build default backend and a
  *  custom URL. The active URL governs the control-plane AND the local backend's
  *  polish forwarding. Applying reloads the app so every endpoint re-resolves. */
 function ServerOverrideCard() {
@@ -258,11 +258,11 @@ function ServerOverrideCard() {
           <button
             type="button"
             disabled={busy}
-            onClick={() => { setMode("default"); if (mode !== "default") void apply("default"); }}
+            onClick={() => { setMode("default"); void apply("default"); }}
             className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
             style={segStyle(mode === "default")}
           >
-            Default (prod AirNote)
+            Default
           </button>
           <button
             type="button"

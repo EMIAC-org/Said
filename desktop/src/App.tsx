@@ -54,6 +54,7 @@ import {
   isConnected,
   ensureDesktopRegistered,
   restoreConnectionFromLocalBackend,
+  reconcileBuildDefaultServerUrl,
   syncCompanyVocab,
   uploadUserVocabSummary,
   type EnterpriseConnection,
@@ -302,6 +303,7 @@ export default function App() {
     let alive = true;
     (async () => {
       let restored: EnterpriseConnection | null = null;
+      await reconcileBuildDefaultServerUrl();
       if (!isConnected()) {
         restored = await restoreConnectionFromLocalBackend();
       }
