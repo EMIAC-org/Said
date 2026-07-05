@@ -338,9 +338,45 @@ pub async fn get_org_dictation_detail(
             vec![]
         };
 
+    // "Context applied" — resolve this run's app to its bucket + the style lines that
+    // bucket injects (our authored knob text). Uses the run's stored target_app, so it
+    // reflects the app→bucket routing this dictation went through.
+    let context_applied = if let Some(app) =
+        row.target_app.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    {
+        let org_scope = crate::profile::store::resolve_org_scope(row.org_id);
+        let (bucket, bucket_source) =
+            crate::profile::bucket::resolve_bucket_with_source(&state.db, app).await;
+        let style = match crate::profile::bucket::get_bucket_profile(
+            &state.db,
+            row.account_id,
+            org_scope,
+            bucket,
+        )
+        .await
+        {
+            Ok(Some(o)) => crate::profile::bucket::render_bucket_knob_lines(&o.profile_json),
+            _ => Vec::new(),
+        };
+        let global_kb = matches!(
+            crate::profile::store::get_profile_with_fallback(&state.db, row.account_id, org_scope)
+                .await,
+            Ok(Some(ref r)) if !r.profile_markdown.trim().is_empty()
+        );
+        Some(json!({
+            "bucket_key": bucket.as_key(),
+            "bucket_source": bucket_source,
+            "style": style,
+            "global_kb": global_kb,
+        }))
+    } else {
+        None
+    };
+
     Ok(Json(json!({
         "item": row,
         "alias_events": aliases,
+        "context_applied": context_applied,
     })))
 }
 

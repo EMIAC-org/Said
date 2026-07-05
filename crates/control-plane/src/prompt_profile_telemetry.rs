@@ -59,6 +59,8 @@ pub fn hash_profile(markdown: &str) -> String {
 pub fn prompt_built_metadata(
     snapshot: &PromptProfileSnapshot,
     client_profile_version: Option<i64>,
+    bucket_key: Option<&str>,
+    bucket_source: Option<&str>,
 ) -> Value {
     json!({
         "prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION,
@@ -67,6 +69,10 @@ pub fn prompt_built_metadata(
         "profile_hash": snapshot.profile_hash,
         "profile_markdown": snapshot.profile_markdown,
         "client_profile_version": client_profile_version,
+        // Which app-bucket resolved for this run + where the mapping came from
+        // (user override / static / agent). Powers the "Context applied" section.
+        "bucket_key": bucket_key,
+        "bucket_source": bucket_source,
     })
 }
 

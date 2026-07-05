@@ -3955,6 +3955,8 @@ async fn execute_voice_polish(
     let prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
         &profile_snapshot,
         profile_context.profile_version,
+        profile_context.bucket_key.as_deref(),
+        profile_context.bucket_source,
     );
 
     let (system_prompt, user_message) = if is_rewrite {

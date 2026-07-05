@@ -265,6 +265,57 @@ function TraceModal({
   return createPortal(modal, document.body)
 }
 
+const CONTEXT_BUCKET_LABELS: Record<string, string> = {
+  coding: 'Coding',
+  messaging: 'Messaging',
+  work_tracker: 'Work & Tasks',
+  formal_writing: 'Formal Writing',
+  default: 'General',
+}
+
+interface ContextAppliedData {
+  bucket_key: string
+  bucket_source: string | null
+  style: string[]
+  global_kb: boolean
+}
+
+/** "Context applied" — which app-bucket this run's app resolved to, and the exact
+ * (human-authored) style lines that bucket injects into the polish prompt. */
+function ContextApplied({ context }: { context?: ContextAppliedData | null }) {
+  if (!context) return null
+  const label = CONTEXT_BUCKET_LABELS[context.bucket_key] ?? context.bucket_key
+  return (
+    <div className="mb-4">
+      <SectionLabel>Context applied</SectionLabel>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <span className="text-[11px] px-2 py-0.5 rounded-md bg-surface-4 text-fg">
+          Bucket: {label}
+        </span>
+        {context.bucket_source && (
+          <span className="text-[11px] px-2 py-0.5 rounded-md bg-surface-3 text-fg-3">
+            source: {context.bucket_source}
+          </span>
+        )}
+        <span className="text-[11px] px-2 py-0.5 rounded-md bg-surface-3 text-fg-3">
+          KB: {context.global_kb ? 'injected' : 'not injected'}
+        </span>
+      </div>
+      {context.style.length > 0 ? (
+        <ul className="space-y-1">
+          {context.style.map((l, i) => (
+            <li key={i} className="text-[12px] text-fg-3">
+              · {l}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-[12px] text-fg-4">No per-app style learned for this bucket yet.</p>
+      )}
+    </div>
+  )
+}
+
 function TraceTimeline({ trace }: { trace?: DictationTrace | Record<string, never> }) {
   const [modalOpen, setModalOpen] = useState(false)
 
@@ -345,7 +396,7 @@ export function DictationInspector({
   const [query, setQuery] = useState('')
 
   const [selectedKey, setSelectedKey] = useState<string | null>(focusKey ?? null)
-  const [detail, setDetail] = useState<{ item: DictationDetailItem; alias_events: AliasLearnEvent[] } | null>(null)
+  const [detail, setDetail] = useState<{ item: DictationDetailItem; alias_events: AliasLearnEvent[]; context_applied?: ContextAppliedData | null } | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
 
@@ -386,7 +437,7 @@ export function DictationInspector({
     setDetailLoading(true)
     setDetailError(null)
     const suffix = accountId ? `?account_id=${accountId}` : ''
-    apiJson<{ item: DictationDetailItem; alias_events: AliasLearnEvent[] }>(
+    apiJson<{ item: DictationDetailItem; alias_events: AliasLearnEvent[]; context_applied?: ContextAppliedData | null }>(
       `/v1/orgs/${orgId}/observability/dictation/${encodeURIComponent(selectedKey)}${suffix}`,
     )
       .then(setDetail)
@@ -545,6 +596,7 @@ export function DictationInspector({
                     <DiffColumn label="Polished" text={detail.item.polished_output} tone="polished" />
                     <DiffColumn label="User kept" text={detail.item.final_text} tone="kept" />
                   </div>
+                  <ContextApplied context={detail.context_applied} />
                   <TraceTimeline trace={detail.item.dictation_trace_json} />
                   {detail.item.edit_feedback_json &&
                   Object.keys(detail.item.edit_feedback_json).length > 0 ? (
