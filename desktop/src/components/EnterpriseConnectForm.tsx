@@ -3,14 +3,18 @@ import { Check, Clock, ExternalLink, Link, Loader2, RotateCcw, X } from "lucide-
 import { openExternal } from "@/lib/invoke";
 import { LarkLogo } from "@/components/LarkLogo";
 import {
+  applyServerUrlConfig,
   completeAuth,
+  DEFAULT_CLOUD_SERVER_URL,
   forgetWorkspaceUrl,
   getConnection,
   getPendingServerUrl,
   getRecentWorkspaceUrls,
+  getServerUrlMode,
   setPendingServerUrl,
   validateServer,
   type EnterpriseConnection,
+  type ServerUrlMode,
 } from "@/lib/enterprise";
 
 type OAuthPhase = "idle" | "waiting" | "submitting" | "error";
@@ -50,6 +54,9 @@ export function EnterpriseConnectForm({
   const [tokenError, setTokenError] = useState("");
   const [showManualToken, setShowManualToken] = useState(false);
   const [recentUrls, setRecentUrls] = useState<string[]>(() => getRecentWorkspaceUrls());
+  // Small custom-URL affordance on the locked (onboarding) connect card.
+  const [showUrlEditor, setShowUrlEditor] = useState(false);
+  const [draftUrl, setDraftUrl] = useState("");
   const serverUrlRef = useRef(serverUrl);
   serverUrlRef.current = serverUrl;
 
@@ -81,6 +88,26 @@ export function EnterpriseConnectForm({
     setValidationError("");
     void resetOAuth();
   }, [resetOAuth]);
+
+  // Default = env URL; choosing custom prioritizes + persists it, choosing
+  // default persists that. Either way the choice sticks across restarts (see
+  // enterprise.ts reconcile). Repoints the form + re-validates the chosen server.
+  const applyCustomServer = useCallback(
+    async (mode: ServerUrlMode, url?: string) => {
+      const active = await applyServerUrlConfig(mode, url);
+      setShowUrlEditor(false);
+      setServerUrl(active);
+      setValidated(false);
+      setValidationError("");
+      await resetOAuth();
+      setValidating(true);
+      const ok = await validateServer(active).catch(() => false);
+      setValidating(false);
+      if (ok) setValidated(true);
+      else setValidationError("Couldn't reach that server — check the URL.");
+    },
+    [resetOAuth],
+  );
 
   useEffect(() => {
     const conn = getConnection();
@@ -541,6 +568,79 @@ export function EnterpriseConnectForm({
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Small custom-URL escape hatch on the locked (onboarding) card. Default
+          is the env URL; picking custom prioritizes + persists it. */}
+      {lockedServerUrl && !waitingForBrowser && (
+        <div className="pt-1 text-center">
+          {!showUrlEditor ? (
+            <p className="text-[11px] text-muted-foreground">
+              Server:{" "}
+              <span className="font-mono text-foreground/70">
+                {serverUrl.replace(/^https?:\/\//, "")}
+              </span>
+              {" · "}
+              <button
+                type="button"
+                className="underline hover:text-foreground transition-colors"
+                onClick={() => {
+                  setDraftUrl(
+                    getServerUrlMode() === "custom" ? serverUrl : DEFAULT_CLOUD_SERVER_URL,
+                  );
+                  setShowUrlEditor(true);
+                }}
+              >
+                Use custom URL
+              </button>
+              {getServerUrlMode() === "custom" && (
+                <>
+                  {" · "}
+                  <button
+                    type="button"
+                    className="underline hover:text-foreground transition-colors"
+                    onClick={() => void applyCustomServer("default")}
+                  >
+                    Reset to default
+                  </button>
+                </>
+              )}
+            </p>
+          ) : (
+            <div className="flex items-center gap-2 text-left">
+              <input
+                type="url"
+                value={draftUrl}
+                placeholder={DEFAULT_CLOUD_SERVER_URL}
+                disabled={validating}
+                autoFocus
+                onChange={(e) => setDraftUrl(e.target.value)}
+                className="input flex-1 min-w-0 text-[12px] font-mono"
+              />
+              <button
+                type="button"
+                disabled={validating || !draftUrl.trim()}
+                onClick={() => void applyCustomServer("custom", draftUrl)}
+                className="btn-primary !py-1.5 !px-3 !text-[12px] flex items-center gap-1.5 flex-shrink-0"
+              >
+                {validating ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Check size={12} />
+                )}
+                Use
+              </button>
+              <button
+                type="button"
+                disabled={validating}
+                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                onClick={() => setShowUrlEditor(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

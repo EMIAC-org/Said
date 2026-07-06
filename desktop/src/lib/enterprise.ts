@@ -7,6 +7,9 @@ const MAX_RECENT_WORKSPACES = 5;
 
 const SERVER_URL_MODE_KEY = "said:server-url-mode";
 const SERVER_URL_OVERRIDE_KEY = "said:server-url-override";
+/** App version the server-URL choice was last stamped with. Every version bump
+ *  (update / fresh download) resets the choice back to the build/env default. */
+const SERVER_URL_VERSION_KEY = "said:server-url-version";
 
 /** Built-in default AirNote cloud server. Overridable at BUILD time via the
  *  VITE_AIRNOTE_SERVER_URL env var, and at RUNTIME via the Settings override. */
@@ -57,27 +60,6 @@ function persistServerUrlConfig(mode: ServerUrlMode, customUrl?: string): void {
   }
 }
 
-function currentBuildDefaultServerUrl(): string {
-  return normalizeServerUrl(DEFAULT_CLOUD_SERVER_URL);
-}
-
-function getSavedActiveServerUrl(conn?: EnterpriseConnection | null): string {
-  const override = getServerUrlOverride();
-  if (getServerUrlMode() === "custom" && override) return normalizeServerUrl(override);
-  if (conn?.serverUrl) return normalizeServerUrl(conn.serverUrl);
-  return currentBuildDefaultServerUrl();
-}
-
-function resetServerUrlConfigToBuildDefault(): void {
-  try {
-    localStorage.setItem(SERVER_URL_MODE_KEY, "default");
-    localStorage.removeItem(SERVER_URL_OVERRIDE_KEY);
-    localStorage.removeItem(PENDING_SERVER_URL_KEY);
-  } catch {
-    // ignore quota errors
-  }
-}
-
 async function writeEnterpriseAuthToLocalBackend(conn: EnterpriseConnection): Promise<void> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -112,15 +94,49 @@ export async function applyServerUrlConfig(
   return active;
 }
 
-/** Dev/tester builds can intentionally force one server. On startup, any saved
- *  default/custom/pending URL that differs from this build/env default is reset. */
+/** Every app update (or fresh download) resets the server URL back to the
+ *  build/env default — INCLUDING a user's custom override. A custom choice is
+ *  intentionally ephemeral: it holds only within the currently installed
+ *  version, and the next version's default takes over. Within one version the
+ *  custom choice survives app restarts. No-op in the web preview (no app
+ *  version) and when the version is unchanged. */
+async function resetServerUrlToDefaultOnUpdate(): Promise<void> {
+  let current: string;
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    current = (await getVersion())?.trim() || "unknown";
+  } catch {
+    return; // non-Tauri (web preview) — nothing to reset against
+  }
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(SERVER_URL_VERSION_KEY);
+  } catch {
+    return;
+  }
+  if (stored === current) return; // same version — keep the user's choice
+  try {
+    localStorage.setItem(SERVER_URL_MODE_KEY, "default");
+    localStorage.removeItem(SERVER_URL_OVERRIDE_KEY);
+    localStorage.setItem(SERVER_URL_VERSION_KEY, current);
+  } catch {
+    // ignore quota errors
+  }
+}
+
+/** On startup, keep the persisted connection pointed at the ACTIVE server URL —
+ *  the custom override when the user picked one (within the current version),
+ *  otherwise the build/env default. First forces a reset-to-default on any app
+ *  version change (see `resetServerUrlToDefaultOnUpdate`), then repoints a stale
+ *  connection so the local backend's polish forwarding matches what the UI
+ *  shows. A connection on `default` mode always follows the env default. */
 export async function reconcileBuildDefaultServerUrl(): Promise<EnterpriseConnection | null> {
+  await resetServerUrlToDefaultOnUpdate();
   const conn = getConnection();
-  const buildDefault = currentBuildDefaultServerUrl();
-  if (getSavedActiveServerUrl(conn) === buildDefault) return conn;
-  resetServerUrlConfigToBuildDefault();
   if (!conn) return null;
-  const rewritten = { ...conn, serverUrl: buildDefault };
+  const active = normalizeServerUrl(getActiveServerUrl());
+  if (normalizeServerUrl(conn.serverUrl) === active) return conn;
+  const rewritten = { ...conn, serverUrl: active };
   saveConnection(rewritten);
   await writeEnterpriseAuthToLocalBackend(rewritten);
   return rewritten;
@@ -560,16 +576,14 @@ export async function restoreConnectionFromLocalBackend(): Promise<EnterpriseCon
       return null;
     }
     const existing = getConnection();
-    const buildDefault = currentBuildDefaultServerUrl();
-    const restoredServerUrl = buildDefault;
+    // Honor the ACTIVE server (custom override if the user set one, else the
+    // env/build default) — never force-reset a custom choice on restore.
+    const restoredServerUrl = normalizeServerUrl(getActiveServerUrl());
     if (
       existing?.jwt === status.token &&
       normalizeServerUrl(existing.serverUrl) === restoredServerUrl
     ) {
       return repairEnterpriseConnection(existing).catch(() => existing);
-    }
-    if (getSavedActiveServerUrl(existing) !== buildDefault) {
-      resetServerUrlConfigToBuildDefault();
     }
     const conn: EnterpriseConnection = {
       serverUrl: restoredServerUrl,

@@ -16,29 +16,16 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   control-plane:
     image: ${CONTROL_PLANE_IMAGE:?set CONTROL_PLANE_IMAGE in .env or CI environment}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
       PORT: 8080
       RUST_LOG: ${RUST_LOG:-info}
       DATABASE_URL: postgres://${POSTGRES_USER:-said}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-said_control_plane}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       LARK_APP_ID: ${LARK_APP_ID:-}
       LARK_APP_SECRET: ${LARK_APP_SECRET:-}

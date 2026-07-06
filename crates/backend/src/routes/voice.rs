@@ -3024,27 +3024,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ..Default::default()
         });
 
-        // Inject dynamic few-shot correction examples from user's history.
-        // These teach the LLM by pattern — far more effective for small models
-        // than abstract rules (research: +7-12% F1 improvement).
-        {
-            let pool_fs = pool.clone();
-            let uid_fs = user_id.clone();
-            let transcript_fs = stt_transcript.clone();
-            let fewshot = tokio::task::spawn_blocking(move || {
-                crate::store::history::select_fewshot_examples(
-                    &pool_fs, &uid_fs, &transcript_fs, 8,
-                )
-            })
-            .await
-            .unwrap_or_default();
-            if !fewshot.is_empty() {
-                let block = crate::llm::prompt::format_fewshot_block(&fewshot);
-                base_system_prompt.push_str(&block);
-                info!("[voice] injected {} few-shot correction example(s)", fewshot.len());
-            }
-        }
-
         if llm_debug_enabled() {
             let debug_msg = format!(
                 "━━━ LLM INPUT ━━━\ntranscript: {:?}\nvocab_count: {}\ncorrections: {}\n{}{}━━━━━━━━━━━━━━━━━",
@@ -3992,11 +3971,35 @@ async fn maybe_rescue_transcript(
     bias: &BiasPackage,
     primary_ws: Option<TranscriptCandidate>,
 ) -> Result<(TranscriptCandidate, i64), String> {
+    if crate::stt::openrouter_qwen_asr::force_cloud_batch() {
+        if wav_data.is_empty() {
+            return Err("OpenRouter batch STT requires audio (wav is empty)".into());
+        }
+        let batch = run_batch_transcript(
+            client,
+            provider,
+            api_key,
+            wav_data,
+            bias.clone(),
+            "batch:openrouter_qwen".to_string(),
+        )
+        .await?;
+        info!(
+            "[stt] openrouter_qwen batch-only path words={} (ignored inbound local pre-transcript={})",
+            batch.meta.word_count,
+            primary_ws.is_some(),
+        );
+        let _ = audio_seconds;
+        return Ok((batch, 0));
+    }
+
     if let Some(primary) = primary_ws {
         // Local STT (Swift) is authoritative — never rescue it via cloud
         // Deepgram. Local stays local: if Swift produced this transcript, we
         // keep it as-is rather than silently round-tripping to the cloud.
-        if !said_core::stt::is_deepgram(provider) {
+        if !said_core::stt::is_deepgram(provider)
+            && !crate::stt::openrouter_qwen_asr::force_cloud_batch()
+        {
             info!(
                 "[stt] local provider={} pre-transcript accepted without cloud rescue",
                 provider
@@ -4105,14 +4108,25 @@ async fn run_batch_transcript(
 ) -> Result<TranscriptCandidate, String> {
     let start = Instant::now();
     info!(
-        "[stt] batch_http request source={} wav_bytes={} stt_mode={} keyterms={} replacements={}",
+        "[stt] batch_http request source={} wav_bytes={} stt_mode={} keyterms={} replacements={} backend={}",
         source,
         wav_data.len(),
         bias.stt_mode,
         bias.keyterms.len(),
         bias.replacements.len(),
+        if crate::stt::openrouter_qwen_asr::is_enabled() {
+            "openrouter_qwen"
+        } else {
+            "deepgram"
+        },
     );
-    let result = deepgram::transcribe(client, api_key, wav_data, &bias).await?;
+    let result = if crate::stt::openrouter_qwen_asr::is_enabled() {
+        let or_key = crate::stt::openrouter_qwen_asr::resolve_api_key()
+            .ok_or_else(|| "OPENROUTER_API_KEY is not set".to_string())?;
+        crate::stt::openrouter_qwen_asr::transcribe(client, &or_key, wav_data, &bias).await?
+    } else {
+        deepgram::transcribe(client, api_key, wav_data, &bias).await?
+    };
     let meta = result.meta();
     info!(
         "[stt] batch_http done source={} elapsed_ms={} words={} confidence={:.2}",

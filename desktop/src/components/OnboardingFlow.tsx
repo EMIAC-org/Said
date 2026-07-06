@@ -32,6 +32,7 @@ import {
 } from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 import { ReclaimOldModelsRow, type ReclaimResult } from "@/components/ReclaimOldModelsRow";
+import { CopyableError, describeError } from "@/components/CopyableError";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
@@ -515,8 +516,8 @@ export function OnboardingFlow({
       setPrefs(updated);
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setKeyError(message || "Couldn't save your choice. Try again.");
+      console.error("[onboarding] chooseCloudEngine (Use cloud) failed:", e);
+      setKeyError(describeError(e) || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
@@ -541,8 +542,12 @@ export function OnboardingFlow({
       onLocalModelReady?.();
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setKeyError(message || "Couldn't save your choice. Try again.");
+      const detail = describeError(e);
+      // Full detail to the console/log AND to the visible copyable box, so a
+      // failure on another user's Mac (e.g. the sidecar PATCH /v1/preferences
+      // being unreachable) is exactly diagnosable instead of a dead button.
+      console.error("[onboarding] chooseLocalEngine (Use AirNote Native) failed:", e);
+      setKeyError(detail || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
@@ -895,7 +900,7 @@ export function OnboardingFlow({
           <PermRow
             icon={<Mic size={15} />}
             title="Microphone"
-            desc="Capture audio while you hold the hotkey."
+            desc="Capture audio while you dictate with your hotkey."
             granted={micGranted}
             onAllow={onMicrophone}
             onOpenSettings={() => void invoke("open_microphone_settings")}
@@ -1059,9 +1064,10 @@ export function OnboardingFlow({
           </div>
 
           {keyError && (
-            <p className="text-[12px] text-center" style={{ color: "hsl(var(--destructive))" }}>
-              {keyError}
-            </p>
+            <CopyableError
+              title="Couldn't switch to AirNote Native — exact error:"
+              detail={keyError}
+            />
           )}
         </div>
       </OnboardingShell>
@@ -1130,8 +1136,8 @@ export function OnboardingFlow({
           <ErrorNotice error={testError} />
           {testNoAudio && !testError && (
             <p className="onb-try-warn">
-              Didn’t catch anything — click into the box above, then hold the key and speak a
-              little louder.
+              Didn’t catch anything — click into the box above, then {isToggle ? "tap" : "hold"} the
+              key and speak a little louder.
             </p>
           )}
         </div>
@@ -1165,7 +1171,11 @@ export function OnboardingFlow({
       totalSteps={totalSteps}
       eyebrow="Hotkey"
       title="Pick your dictation key."
-      subtitle="Press the key you want to hold — any modifier, Caps Lock, or Fn. You can change it any time."
+      subtitle={
+        selectedMode === "toggle"
+          ? `Tap ${selected.label} once to start dictating, tap again to stop — no holding. Pick a modifier or Fn instead to switch to hold-to-talk. Change it any time.`
+          : `Press and hold ${selected.label} while you speak, then release. Pick Caps Lock instead to tap on and off. Change it any time.`
+      }
       brandTagline="One key to dictate. Your thumb learns it in a day."
       brandKicker="Pro tip"
       brandQuote="Most users settle on Caps Lock — it’s right under your finger."

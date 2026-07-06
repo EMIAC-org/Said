@@ -4,7 +4,6 @@ This deploys the server-side stack only:
 
 - `control-plane`: Axum API, WebSocket meeting hub, and embedded React admin panel at `/admin`
 - `postgres`: production database
-- `redis`: compose-local ephemeral Redis for runtime cache/session infrastructure
 - optional `caddy`: HTTPS reverse proxy
 
 ## First Server Setup
@@ -27,7 +26,6 @@ Edit `.env` and set strong values for:
 - `CONTROL_PLANE_IMAGE`
 - `POSTGRES_PASSWORD` using URL-safe characters, for example alphanumeric plus `_` or `-`
 - `POSTGRES_VOLUME_NAME` when migrating an existing deployment volume
-- `REDIS_URL` only if using an external Redis; default compose-local value is `redis://redis:6379`
 - `JWT_SECRET`
 - `LARK_APP_ID`
 - `LARK_APP_SECRET`
@@ -93,7 +91,6 @@ docker image prune -f
 ```
 
 Database schema migrations run automatically on `control-plane` startup.
-Redis is started by Compose as a health-checked dependency of `control-plane`; no host port is exposed in production.
 
 ## Dev Environment
 
@@ -105,7 +102,6 @@ directory, database, and local ports:
 - Compose project: `airnote-control-plane-dev`
 - API bind: `127.0.0.1:3101`
 - Postgres bind: `127.0.0.1:5433`
-- Redis bind: `127.0.0.1:6380`
 - Database: `said_control_plane_dev`
 - Volume: `airnote-control-plane-dev_postgres-data`
 

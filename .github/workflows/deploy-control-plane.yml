@@ -167,7 +167,6 @@ jobs:
           updates = {
               "CONTROL_PLANE_IMAGE": os.environ["IMAGE_TAG"],
               "CONTROL_PLANE_BIND": "127.0.0.1",
-              "REDIS_URL": "redis://redis:6379",
           }
 
           for line in secret_path.read_text().splitlines():
@@ -197,16 +196,13 @@ jobs:
           PY
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-          docker compose pull control-plane redis
-          docker compose up -d --force-recreate redis control-plane
+          docker compose pull control-plane
+          docker compose up -d --force-recreate control-plane
           CID=$(docker compose ps -q control-plane)
           for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI RUNTIME_CREDENTIALS_KEY DEEPSEEK_API_KEY CEREBRAS_API_KEY OPENAI_API_KEY DEEPINFRA_API_KEY DEEPGRAM_API_KEY_1; do
             docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}' \
               | grep -q "^${key}=." || (echo "$key was not propagated into the control-plane container" && exit 1)
           done
-          docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}' \
-            | grep -q "^REDIS_URL=redis://redis:6379" \
-            || (echo "REDIS_URL was not propagated into the control-plane container" && exit 1)
           docker compose ps
           docker image prune -f
           REMOTE

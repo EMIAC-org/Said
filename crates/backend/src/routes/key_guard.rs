@@ -25,6 +25,9 @@ pub fn effective_stt_provider(prefs: &Preferences) -> String {
 }
 
 fn has_stt_key(prefs: &Preferences) -> bool {
+    if crate::stt::openrouter_qwen_asr::is_enabled() {
+        return crate::stt::openrouter_qwen_asr::resolve_api_key().is_some();
+    }
     let provider = effective_stt_provider(prefs);
     if said_core::stt::is_deepgram(&provider) {
         has_deepgram_key(prefs)

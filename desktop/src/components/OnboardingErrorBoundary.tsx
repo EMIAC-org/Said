@@ -1,5 +1,6 @@
 import React from "react";
 import { clearOnboardingProgress } from "@/lib/onboardingProgress";
+import { CopyableError, describeError } from "@/components/CopyableError";
 
 interface Props {
   children: React.ReactNode;
@@ -7,6 +8,7 @@ interface Props {
 
 interface State {
   error: Error | null;
+  componentStack: string;
 }
 
 /**
@@ -18,17 +20,18 @@ interface State {
 export class OnboardingErrorBoundary extends React.Component<Props, State> {
   constructor(props: Props) {
     super(props);
-    this.state = { error: null };
+    this.state = { error: null, componentStack: "" };
   }
 
   static getDerivedStateFromError(error: Error): State {
-    return { error };
+    return { error, componentStack: "" };
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     // Surface to the console/log; onboarding runs before telemetry consent so we
     // deliberately do not report this anywhere off-device.
     console.error("[onboarding] uncaught error", error, info.componentStack);
+    this.setState({ componentStack: info.componentStack ?? "" });
   }
 
   private restart = () => {
@@ -50,6 +53,14 @@ export class OnboardingErrorBoundary extends React.Component<Props, State> {
             Something went wrong while setting up AirNote. Your progress is saved — you can
             reload and pick up where you left off, or restart setup from the beginning.
           </p>
+          <div style={{ margin: "12px 0" }}>
+            <CopyableError
+              title="Exact error (copy and send this):"
+              detail={[describeError(this.state.error), this.state.componentStack]
+                .filter(Boolean)
+                .join("\n\nComponent stack:\n")}
+            />
+          </div>
           <div className="onb-error-actions">
             <button onClick={this.reload} className="btn-primary btn-lg w-full">
               Reload and continue

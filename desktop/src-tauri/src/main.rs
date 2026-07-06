@@ -10104,6 +10104,23 @@ fn main() {
                     // NSPanel, so we no longer switch the whole app to Accessory.
                     app.set_activation_policy(tauri::ActivationPolicy::Regular);
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
+
+                    // Make the main window the KEY window on launch. Tauri shows
+                    // it (visible:true), but macOS does not always make a
+                    // freshly-launched binary's window *key* — a cold Finder
+                    // double-click, or `tauri dev` from a terminal, leaves the
+                    // launching app frontmost. A non-key NSWindow does not deliver
+                    // the first click to its content (acceptsFirstMouse == NO by
+                    // default): the click is spent activating the window instead,
+                    // so every onboarding button feels dead until the window is
+                    // manually focused. Force activation now, then re-assert once
+                    // after the window has realized to win the presentation race.
+                    activate_airnote(app.handle(), "startup");
+                    let delayed = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        activate_airnote(&delayed, "startup-reassert");
+                    });
                 }
 
                 // Crash recovery: repair WAV headers for any meeting interrupted

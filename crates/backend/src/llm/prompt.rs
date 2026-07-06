@@ -25,7 +25,7 @@ pub use said_core::polish::prompt::{
     build_refine_last_transform_user_message, build_tray_format_user_message,
     build_tray_system_prompt, build_tray_user_message, build_user_message,
     build_user_message_with_hints, build_voice_repair_system_prompt,
-    build_voice_repair_user_message, default_voice_prompt_template, format_fewshot_block,
+    build_voice_repair_user_message, default_voice_prompt_template,
 };
 pub use said_core::polish::types::PolishPrefs;
 
