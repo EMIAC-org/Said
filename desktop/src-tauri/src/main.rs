@@ -8331,6 +8331,37 @@ async fn set_app_bucket(
     .await
 }
 
+/// Set (or clear, when `output_language` is None/empty) a bucket's output-language override.
+#[tauri::command]
+async fn set_bucket_language(
+    bucket_key: String,
+    output_language: Option<String>,
+    backend: State<'_, BackendState>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    let lang = output_language
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    api::set_bucket_language(
+        &server_url,
+        &token,
+        status.active_org_id.as_deref(),
+        &bucket_key,
+        lang,
+    )
+    .await
+}
+
 #[tauri::command]
 async fn activate_workspace(
     org_id: String,
@@ -11250,6 +11281,7 @@ fn main() {
             get_profile_insights,
             get_app_buckets,
             set_app_bucket,
+            set_bucket_language,
             activate_workspace,
             deactivate_workspace,
             get_device_id,

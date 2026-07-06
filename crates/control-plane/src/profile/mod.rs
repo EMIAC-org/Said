@@ -91,6 +91,8 @@ pub struct CachedBucketProfile {
     pub profile_markdown: String,
     pub version: i64,
     pub status: String,
+    /// User-chosen output-language override for this bucket (None = inherit).
+    pub output_language_override: Option<String>,
 }
 
 impl CachedBucketProfile {
@@ -106,6 +108,9 @@ impl CachedBucketProfile {
             profile_markdown,
             version: row.version,
             status: row.status.clone(),
+            output_language_override: bucket::normalize_output_language_override(
+                row.output_language_override.as_deref(),
+            ),
         }
     }
 }
@@ -130,6 +135,8 @@ pub struct CachedPromptProfileContext {
     /// How the domain line was derived: "classified" (learned domains present),
     /// "coding_bucket_seed" (no domains but a coding app), or "generic_default".
     pub domain_source: &'static str,
+    /// Per-bucket output-language override for the active app (None = inherit).
+    pub language_override: Option<String>,
 }
 
 impl CachedPromptProfileContext {
@@ -151,6 +158,7 @@ pub struct PromptProfileContext {
     pub domain_context: String,
     pub domains: Vec<String>,
     pub domain_source: &'static str,
+    pub language_override: Option<String>,
 }
 
 impl PromptProfileContext {
@@ -171,6 +179,7 @@ impl PromptProfileContext {
             domain_context: cached.domain_context,
             domains: cached.domains,
             domain_source: cached.domain_source,
+            language_override: cached.language_override,
         }
     }
 }
@@ -430,6 +439,7 @@ pub async fn load_prompt_profile_context_cached(
     let mut bucket_key = None;
     let mut bucket_source = None;
     let mut resolved_bucket = None;
+    let mut language_override = None;
     if let Some(app_key) = app_key.as_deref() {
         let (app_bucket, app_hit) = resolve_bucket_cached(state, app_key).await;
         app_bucket_cache_hit = app_hit;
@@ -440,6 +450,7 @@ pub async fn load_prompt_profile_context_cached(
             load_bucket_profile_cached(state, account_id, org_scope, app_bucket.bucket).await
         {
             bucket_profile_cache_hit = bucket_hit;
+            language_override = overlay.output_language_override.clone();
             if !overlay.profile_markdown.trim().is_empty() {
                 parts.push(overlay.profile_markdown);
             }
@@ -457,6 +468,7 @@ pub async fn load_prompt_profile_context_cached(
         domain_context,
         domains,
         domain_source,
+        language_override,
     };
     state
         .prompt_profile_context_cache
@@ -474,6 +486,7 @@ pub async fn load_prompt_profile_context_cached(
         domain_context: cached.domain_context,
         domains: cached.domains,
         domain_source: cached.domain_source,
+        language_override: cached.language_override,
     }
 }
 

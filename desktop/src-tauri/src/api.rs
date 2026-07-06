@@ -1511,6 +1511,40 @@ pub async fn set_app_bucket(
     Ok(())
 }
 
+/// POST /v1/runtime/profile/buckets/language — set (or clear, with `None`) the
+/// per-bucket output-language override.
+pub async fn set_bucket_language(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+    bucket_key: &str,
+    output_language: Option<&str>,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/v1/runtime/profile/buckets/language",
+        server_url.trim_end_matches('/')
+    );
+    let mut req = Client::new()
+        .post(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10))
+        .json(&serde_json::json!({
+            "bucket_key": bucket_key,
+            "output_language": output_language,
+        }));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("set bucket language failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("set bucket language failed: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
 pub async fn activate_workspace_on_server(
     server_url: &str,
     token: &str,

@@ -1902,7 +1902,7 @@ async fn handle_voice_ws(
                             )
                             .await
                             {
-                                Ok(polished) => {
+                                Ok((polished, _effective_language)) => {
                                     let polish_ms = polish_start.elapsed().as_millis() as i64;
                                     let total_ms = stt_ms + polish_ms;
                                     let _ = update_runtime_session_result(
@@ -2374,7 +2374,7 @@ async fn polish_runtime_transcript(
     safe_vocab_terms: &[String],
     vocab_hints: &[RuntimeVocabHint],
     target_app: Option<&str>,
-) -> Result<String, (StatusCode, Json<Value>)> {
+) -> Result<(String, String), (StatusCode, Json<Value>)> {
     let formatted_transcript = crate::number_format::apply(transcript);
     if formatted_transcript != transcript {
         insert_stage_event(
@@ -2412,9 +2412,20 @@ async fn polish_runtime_transcript(
         Some(profile_block.as_str())
     };
 
+    // Per-bucket output-language override wins over the request/account language.
+    let language_source = if profile_context.language_override.is_some() {
+        "bucket_override"
+    } else {
+        "request"
+    };
+    let effective_output_language: String = profile_context
+        .language_override
+        .clone()
+        .unwrap_or_else(|| output_language.to_string());
+
     let prompt_start = Instant::now();
     let system_prompt = build_voice_system_prompt_with_vocab_hints(
-        output_language,
+        &effective_output_language,
         &tone_preset,
         custom_prompt.as_deref(),
         screen_context,
@@ -2423,7 +2434,7 @@ async fn polish_runtime_transcript(
         profile_md,
         Some(profile_context.domain_context.as_str()),
     );
-    let user_message = build_voice_user_message(&formatted_transcript, output_language);
+    let user_message = build_voice_user_message(&formatted_transcript, &effective_output_language);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
     insert_stage_event(
         state,
@@ -2439,6 +2450,9 @@ async fn polish_runtime_transcript(
             "domains": profile_context.domains,
             "domain_context": profile_context.domain_context,
             "domain_source": profile_context.domain_source,
+            "output_language": effective_output_language,
+            "language_source": language_source,
+            "request_output_language": output_language,
         }),
     )
     .await?;
@@ -2454,7 +2468,7 @@ async fn polish_runtime_transcript(
         provider: provider_label,
         model: &model,
         selected_model: &selected_model,
-        output_language,
+        output_language: &effective_output_language,
         tone_preset: &tone_preset,
         prompt_kind: "voice_polish",
         profile_version: None,
@@ -2518,7 +2532,7 @@ async fn polish_runtime_transcript(
             )
             .await?;
             let output =
-                crate::voice_polish_standalone::enforce_output_script(&raw_output, output_language);
+                crate::voice_polish_standalone::enforce_output_script(&raw_output, &effective_output_language);
             let restored = restore_literal_tokens(&formatted_transcript, &output, safe_vocab_terms);
             let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
             if restored != output {
@@ -2572,7 +2586,7 @@ async fn polish_runtime_transcript(
             }
             let output = tidy_casing(&email_output);
             let (output, guard_reason) =
-                guard_voice_polish_output(&output, &formatted_transcript, output_language);
+                guard_voice_polish_output(&output, &formatted_transcript, &effective_output_language);
             if let Some(reason) = guard_reason {
                 insert_stage_event(
                     state,
@@ -2588,7 +2602,7 @@ async fn polish_runtime_transcript(
                 )
                 .await?;
             }
-            Ok(output)
+            Ok((output, effective_output_language))
         }
         Err(err) => {
             if let Some(ref credential) = polish_credential {
@@ -2910,7 +2924,7 @@ pub async fn voice_wav(
     .await?;
 
     let polish_start = Instant::now();
-    let (output, model, prompt_version, history_source) = if message_polish_mode {
+    let (output, model, prompt_version, history_source, effective_output_language) = if message_polish_mode {
         if state.deepseek_api_key.trim().is_empty() {
             let _ = mark_runtime_session(
                 &state,
@@ -2964,6 +2978,7 @@ pub async fn voice_wav(
             model,
             "message-polish-audio-openai-transcribe-deepseek-v4-flash-2026-06-20".to_string(),
             "server_message_polish_audio",
+            "english".to_string(),
         )
     } else {
         let request_vocab_hints = normalize_runtime_vocab_hints(&req.vocab_hints);
@@ -2982,7 +2997,7 @@ pub async fn voice_wav(
         } else {
             vocab_hints_from_flat_terms(&merged_vocab)
         };
-        let output = match polish_runtime_transcript(
+        let (output, effective_output_language) = match polish_runtime_transcript(
             &state,
             user.account_id,
             run_id,
@@ -2996,7 +3011,7 @@ pub async fn voice_wav(
         )
         .await
         {
-            Ok(output) => output,
+            Ok(pair) => pair,
             Err(err) => {
                 let _ = mark_runtime_session(&state, run_id, "failed", Some("polish_failed")).await;
                 return Err(err);
@@ -3032,6 +3047,7 @@ pub async fn voice_wav(
             polish_model_label(&req.selected_model),
             "server-runtime-wav-probe-2026-06-07".to_string(),
             "server_wav",
+            effective_output_language,
         )
     };
 
@@ -3061,6 +3077,7 @@ pub async fn voice_wav(
         history_source,
         Some(stt_ms),
         Some(polish_ms),
+        Some(effective_output_language.as_str()),
     )
     .await;
 
@@ -4008,6 +4025,24 @@ async fn execute_voice_polish(
         Some(profile_context.markdown.as_str())
     };
 
+    // Per-bucket output-language override: a user can force e.g. English output
+    // when dictating into a coding/AI app while messaging apps preserve their
+    // spoken Hinglish. Applies to voice polish only, never the tray rewrite.
+    let language_override_active = !is_rewrite && profile_context.language_override.is_some();
+    let effective_output_language: String = if language_override_active {
+        profile_context
+            .language_override
+            .clone()
+            .unwrap_or_else(|| req.output_language.clone())
+    } else {
+        req.output_language.clone()
+    };
+    let language_source = if language_override_active {
+        "bucket_override"
+    } else {
+        "request"
+    };
+
     // Build the prompt now that the persona has resolved (pure CPU).
     let build_start = Instant::now();
     let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_server(profile_md);
@@ -4020,16 +4055,19 @@ async fn execute_voice_polish(
         Some(profile_context.domain_context.as_str()),
         Some(profile_context.domain_source),
     );
+    prompt_built_meta["output_language"] = json!(effective_output_language);
+    prompt_built_meta["language_source"] = json!(language_source);
+    prompt_built_meta["request_output_language"] = json!(req.output_language);
 
     let (system_prompt, user_message) = if is_rewrite {
         (
-            build_rewrite_system_prompt(&tone_preset, &req.output_language),
-            build_rewrite_user_message(&formatted_transcript, &req.output_language),
+            build_rewrite_system_prompt(&tone_preset, &effective_output_language),
+            build_rewrite_user_message(&formatted_transcript, &effective_output_language),
         )
     } else {
         (
             build_voice_system_prompt_with_vocab_hints(
-                &req.output_language,
+                &effective_output_language,
                 &tone_preset,
                 custom_prompt.as_deref(),
                 req.screen_context.as_deref(),
@@ -4038,7 +4076,7 @@ async fn execute_voice_polish(
                 profile_md,
                 Some(profile_context.domain_context.as_str()),
             ),
-            build_voice_user_message(&formatted_transcript, &req.output_language),
+            build_voice_user_message(&formatted_transcript, &effective_output_language),
         )
     };
     let prompt_ms = prompt_cpu_ms + profile_ms + build_start.elapsed().as_millis() as i64;
@@ -4078,7 +4116,7 @@ async fn execute_voice_polish(
         provider: provider_label,
         model: &model,
         selected_model: &selected_model,
-        output_language: &req.output_language,
+        output_language: &effective_output_language,
         tone_preset: &tone_preset,
         prompt_kind: if is_rewrite {
             "rewrite"
@@ -4182,7 +4220,7 @@ async fn execute_voice_polish(
     let mut deferred_events: Vec<(&'static str, Option<i64>, Value)> = Vec::new();
 
     let output =
-        crate::voice_polish_standalone::enforce_output_script(&output, &req.output_language);
+        crate::voice_polish_standalone::enforce_output_script(&output, &effective_output_language);
     let restored = restore_literal_tokens(&formatted_transcript, &output, &merged_vocab);
     let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
     if restored != output {
@@ -4239,7 +4277,7 @@ async fn execute_voice_polish(
     // re-triggering LLM over-editing.
     let output = tidy_casing(&output);
     let (output, guard_reason) =
-        guard_voice_polish_output(&output, &formatted_transcript, &req.output_language);
+        guard_voice_polish_output(&output, &formatted_transcript, &effective_output_language);
     if let Some(reason) = guard_reason {
         deferred_events.push((
             "output_guard",
@@ -4281,6 +4319,7 @@ async fn execute_voice_polish(
         let bg_client_run_id = req.client_run_id.clone();
         let bg_account_id = user.account_id;
         let bg_model = model.to_string();
+        let bg_output_language = effective_output_language.clone();
         let org_id_for_history = tenant_ctx.active_org_id;
         let org_scope_for_profile = crate::profile::resolve_org_scope(&tenant_ctx);
         let bg_profile_snapshot = profile_snapshot;
@@ -4335,6 +4374,7 @@ async fn execute_voice_polish(
                 "server_polish",
                 None,
                 Some(model_ms),
+                Some(bg_output_language.as_str()),
             )
             .await;
         });
@@ -8090,16 +8130,20 @@ mod tests {
 
     #[test]
     fn selected_polish_model_respects_fast_and_smart() {
-        use said_core::polish::model::{GROQ_POLISH_MODEL_FAST, GROQ_POLISH_MODEL_SMART_DEFAULT};
+        // Adapter routing (POLISH_MODEL_CATALOG): fast/deepseek -> Groq 8B instant;
+        // smart/cerebras -> Cerebras gpt-oss-120b; scout -> Groq Llama-4 Scout.
+        // NOTE: this asserts stored-pref routing, so it only holds when the global
+        // POLISH_MODEL_OVERRIDE env is unset.
+        use said_core::polish::model::{CEREBRAS_POLISH_MODEL_GPT_OSS, GROQ_POLISH_MODEL_FAST};
+        if std::env::var("POLISH_MODEL_OVERRIDE").is_ok() {
+            return;
+        }
         assert_eq!(selected_polish_model("fast"), GROQ_POLISH_MODEL_FAST);
         assert_eq!(selected_polish_model("deepseek"), GROQ_POLISH_MODEL_FAST);
-        assert_eq!(
-            selected_polish_model("smart"),
-            GROQ_POLISH_MODEL_SMART_DEFAULT
-        );
+        assert_eq!(selected_polish_model("smart"), CEREBRAS_POLISH_MODEL_GPT_OSS);
         assert_eq!(
             selected_polish_model("scout"),
-            GROQ_POLISH_MODEL_SMART_DEFAULT
+            "meta-llama/llama-4-scout-17b-16e-instruct"
         );
     }
 
@@ -8190,7 +8234,7 @@ mod tests {
         );
         let user = build_voice_user_message("hello भाई कैसे हो", "hinglish");
 
-        assert!(prompt.contains("Never translate"));
+        assert!(prompt.contains("reply in the input language and never translate"));
         assert!(prompt.contains("Hinglish stays Roman Hinglish"));
         assert!(prompt.contains("Hindi words in Latin script, English words in English"));
         assert!(prompt.contains("\"hello bhai kaise ho\" must not become \"Namaste bhai kaise ho\""));

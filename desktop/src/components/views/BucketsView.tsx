@@ -8,6 +8,7 @@ import {
   getBucketsSnapshot,
   moveAppBucketCached,
   refreshBuckets,
+  setBucketLanguageCached,
   subscribeBuckets,
   type BucketsCacheSnapshot,
 } from "@/lib/profileUiCache";
@@ -19,6 +20,18 @@ const BUCKET_LABELS: Record<string, string> = {
   formal_writing: "Formal Writing",
   default: "General",
 };
+
+/** Per-bucket output-language override options. `null` = inherit the app default. */
+const LANGUAGE_OPTIONS: { value: string | null; label: string }[] = [
+  { value: null, label: "Inherit" },
+  { value: "english", label: "English" },
+  { value: "hinglish", label: "Hinglish" },
+  { value: "hindi", label: "Hindi" },
+];
+
+function languageLabel(value: string | null | undefined): string {
+  return LANGUAGE_OPTIONS.find((o) => o.value === (value ?? null))?.label ?? "Inherit";
+}
 
 function bucketLabel(key: string): string {
   return BUCKET_LABELS[key] ?? key.replace(/_/g, " ");
@@ -41,6 +54,7 @@ export function BucketsView() {
   const [dragging, setDragging] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<string | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [langMenuFor, setLangMenuFor] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeBuckets(() => setSnapshot(getBucketsSnapshot()));
@@ -51,6 +65,16 @@ export function BucketsView() {
   const buckets = snapshot.buckets;
   const apps = snapshot.apps;
   const meta = snapshot.meta;
+  const bucketLanguages = snapshot.bucketLanguages;
+
+  async function setLang(bucketKey: string, value: string | null) {
+    setLangMenuFor(null);
+    try {
+      await setBucketLanguageCached(bucketKey, value);
+    } catch {
+      // Shared cache rolls back and revalidates. Keep the UI stable.
+    }
+  }
 
   const byBucket = useMemo(() => {
     const m: Record<string, AppBucketRow[]> = {};
@@ -141,7 +165,7 @@ export function BucketsView() {
                     transition: "outline-color 120ms",
                   }}
                 >
-                  <div className="flex items-center justify-between mb-3 px-1">
+                  <div className="flex items-center justify-between mb-2 px-1">
                     <h2 className="text-[14px] font-semibold text-foreground">
                       {bucketLabel(bk)}
                     </h2>
@@ -154,6 +178,69 @@ export function BucketsView() {
                     >
                       {cards.length}
                     </span>
+                  </div>
+
+                  {/* Per-bucket output language: force e.g. English in AI/coding
+                      apps while messaging keeps the spoken Hinglish tone. */}
+                  <div className="relative mb-3 px-1">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setLangMenuFor((cur) => (cur === bk ? null : bk));
+                      }}
+                      className="w-full flex items-center justify-between rounded-lg px-2 py-1.5 text-[11.5px] transition-colors hover:bg-white/5"
+                      style={{
+                        background: "hsl(var(--surface-4))",
+                        color: "hsl(var(--muted-foreground))",
+                      }}
+                    >
+                      <span>
+                        Output language:{" "}
+                        <span
+                          className="font-medium"
+                          style={{
+                            color: bucketLanguages[bk]
+                              ? "hsl(var(--accent-violet))"
+                              : "hsl(var(--foreground))",
+                          }}
+                        >
+                          {languageLabel(bucketLanguages[bk])}
+                        </span>
+                      </span>
+                      <span className="opacity-60">▾</span>
+                    </button>
+
+                    {langMenuFor === bk && (
+                      <div
+                        className="absolute z-20 left-1 right-1 top-9 rounded-xl py-1 shadow-xl overflow-hidden"
+                        style={{
+                          background: "hsl(var(--surface-2))",
+                          border: "1px solid hsl(var(--surface-4))",
+                        }}
+                      >
+                        {LANGUAGE_OPTIONS.map((opt) => {
+                          const active = (bucketLanguages[bk] ?? null) === opt.value;
+                          return (
+                            <button
+                              key={opt.label}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void setLang(bk, opt.value);
+                              }}
+                              className="w-full text-left px-3 py-1.5 text-[12.5px] hover:bg-white/5 transition-colors flex items-center justify-between"
+                              style={{
+                                color: active
+                                  ? "hsl(var(--accent-violet))"
+                                  : "hsl(var(--foreground))",
+                              }}
+                            >
+                              {opt.label}
+                              {active && <span className="text-[11px]">✓</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-2 flex-1">
@@ -270,9 +357,15 @@ export function BucketsView() {
         )}
       </div>
 
-      {/* Click-away layer to dismiss the open menu. */}
-      {menuFor && (
-        <div className="fixed inset-0 z-10" onClick={() => setMenuFor(null)} />
+      {/* Click-away layer to dismiss any open menu. */}
+      {(menuFor || langMenuFor) && (
+        <div
+          className="fixed inset-0 z-10"
+          onClick={() => {
+            setMenuFor(null);
+            setLangMenuFor(null);
+          }}
+        />
       )}
     </ScrollArea>
   );

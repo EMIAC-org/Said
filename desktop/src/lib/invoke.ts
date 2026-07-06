@@ -458,6 +458,8 @@ export interface AppBuckets {
   /** Canonical bucket keys in display order (the kanban columns). */
   buckets: string[];
   apps: AppBucketRow[];
+  /** bucket_key -> output-language override, only for buckets that have one set. */
+  bucket_languages?: Record<string, string>;
 }
 
 /** Apps grouped by bucket. `null` when signed out / offline. */
@@ -474,6 +476,15 @@ export async function getAppBuckets(): Promise<AppBuckets | null> {
 export async function setAppBucket(appKey: string, bucketKey: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await tauriInvoke("set_app_bucket", { appKey, bucketKey });
+}
+
+/** Set (or clear, with `null`) the per-bucket output-language override. */
+export async function setBucketLanguage(
+  bucketKey: string,
+  outputLanguage: string | null,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("set_bucket_language", { bucketKey, outputLanguage });
 }
 
 /** Diagnostic — try all 5 AX field-reading methods on whatever is focused. */

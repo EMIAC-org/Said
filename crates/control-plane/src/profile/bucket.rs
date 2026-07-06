@@ -243,10 +243,48 @@ pub struct BucketProfileRow {
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// User-chosen output-language override for this bucket. `None` = inherit the
+    /// request/account default. Never written by the batch profiling worker.
+    pub output_language_override: Option<String>,
 }
 
 const BUCKET_PROFILE_COLS: &str = "account_id, org_scope, bucket_key, profile_json, profile_markdown, \
-     version, schema_version, status, dirty_at, last_rebuilt_at, last_error, created_at, updated_at";
+     version, schema_version, status, dirty_at, last_rebuilt_at, last_error, created_at, updated_at, \
+     output_language_override";
+
+/// Allowed output-language override values (mirrors the runtime language enum and
+/// the DB CHECK in migration 035). `None`/empty clears the override (inherit).
+pub fn normalize_output_language_override(value: Option<&str>) -> Option<String> {
+    match value.map(|v| v.trim().to_lowercase()) {
+        Some(v) if v == "english" || v == "hinglish" || v == "hindi" => Some(v),
+        _ => None,
+    }
+}
+
+/// Set (or clear, when `language` normalizes to `None`) a bucket's output-language
+/// override. Ensures the row exists first; touches only the override column so the
+/// worker-owned `profile_json` is never disturbed.
+pub async fn set_bucket_language_override(
+    db: &PgPool,
+    account_id: Uuid,
+    org_scope: Uuid,
+    bucket: Bucket,
+    language: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    ensure_bucket_profile_row(db, account_id, org_scope, bucket).await?;
+    sqlx::query(
+        "UPDATE runtime_user_bucket_profiles
+            SET output_language_override = $4, updated_at = now()
+          WHERE account_id = $1 AND org_scope = $2 AND bucket_key = $3",
+    )
+    .bind(account_id)
+    .bind(org_scope)
+    .bind(bucket.as_key())
+    .bind(normalize_output_language_override(language))
+    .execute(db)
+    .await?;
+    Ok(())
+}
 
 pub async fn get_bucket_profile(
     db: &PgPool,

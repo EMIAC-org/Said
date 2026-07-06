@@ -9,6 +9,7 @@ import {
   onVocabularyChanged,
   onVoiceDone,
   setAppBucket,
+  setBucketLanguage,
   type AppBucketRow,
   type AppBuckets,
   type ProfileInsights,
@@ -36,6 +37,8 @@ export interface LearningsCacheSnapshot {
 export interface BucketsCacheSnapshot {
   buckets: string[] | null | undefined;
   apps: AppBucketRow[] | null | undefined;
+  /** bucket_key -> output-language override (only buckets with one set). */
+  bucketLanguages: Record<string, string>;
   meta: Record<string, AppMeta>;
   refreshing: boolean;
   stale: boolean;
@@ -92,6 +95,7 @@ export function getBucketsSnapshot(): BucketsCacheSnapshot {
   return {
     buckets: bucketsData?.buckets ?? (bucketsData === null ? null : undefined),
     apps: bucketsData?.apps ?? (bucketsData === null ? null : undefined),
+    bucketLanguages: bucketsData?.bucket_languages ?? {},
     meta: { ...appMetaCache },
     refreshing: bucketsRefreshing,
     stale: bucketsStale,
@@ -202,6 +206,33 @@ export async function moveAppBucketCached(appKey: string, bucketKey: string): Pr
     await setAppBucket(appKey, bucketKey);
     markBucketsStale();
     markLearningsStale();
+    await refreshBuckets({ force: true });
+  } catch (err) {
+    bucketsData = previous;
+    bucketsStale = true;
+    notifyBuckets();
+    void refreshBuckets({ force: true });
+    throw err;
+  }
+}
+
+export async function setBucketLanguageCached(
+  bucketKey: string,
+  outputLanguage: string | null,
+): Promise<void> {
+  const previous = bucketsData ? { ...bucketsData } : bucketsData;
+  if (bucketsData) {
+    const next = { ...(bucketsData.bucket_languages ?? {}) };
+    if (outputLanguage) next[bucketKey] = outputLanguage;
+    else delete next[bucketKey];
+    bucketsData = { ...bucketsData, bucket_languages: next };
+    bucketsStale = true;
+    notifyBuckets();
+  }
+
+  try {
+    await setBucketLanguage(bucketKey, outputLanguage);
+    markBucketsStale();
     await refreshBuckets({ force: true });
   } catch (err) {
     bucketsData = previous;

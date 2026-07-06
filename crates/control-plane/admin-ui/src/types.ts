@@ -443,6 +443,7 @@ export interface DictationListItem {
   edit_bucket?: string | null
   edit_detected?: boolean | null
   total_ms?: number | null
+  output_language?: string | null
   has_edit_feedback: boolean
 }
 
@@ -492,6 +493,7 @@ export interface DictationDetailItem {
   created_at: string
   edit_bucket?: string | null
   total_ms?: number | null
+  output_language?: string | null
 }
 
 export interface AliasLearnEvent {

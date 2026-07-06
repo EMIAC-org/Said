@@ -341,6 +341,12 @@ const DOMAIN_SOURCE_LABELS: Record<string, string> = {
   generic_default: 'generic',
 }
 
+const LANGUAGE_LABELS: Record<string, string> = {
+  english: 'English',
+  hinglish: 'Hinglish',
+  hindi: 'Hindi',
+}
+
 /** "Context applied" — which app-bucket this run's app resolved to, and the exact
  * (human-authored) style lines that bucket injects into the polish prompt. */
 function ContextApplied({ context }: { context?: ContextAppliedData | null }) {
@@ -841,7 +847,7 @@ export function DictationInspector({
                 <table className="w-full">
                   <thead className="sticky top-0 bg-surface-2 z-10">
                     <tr>
-                      {[...(orgWide ? ['Who'] : []), 'When', 'recording_id', 'App', 'Words', 'Edit', ''].map(h => (
+                      {[...(orgWide ? ['Who'] : []), 'When', 'recording_id', 'App', 'Lang', 'Words', 'Edit', ''].map(h => (
                         <th
                           key={h}
                           className="text-[10px] font-medium text-fg-4 text-left px-4 py-2 border-b border-border uppercase"
@@ -874,6 +880,9 @@ export function DictationInspector({
                           </td>
                           <td className="text-[11px] px-4 py-2 border-b border-border-light truncate max-w-[6rem]">
                             {row.target_app || '—'}
+                          </td>
+                          <td className="text-[11px] px-4 py-2 border-b border-border-light whitespace-nowrap">
+                            {row.output_language ? LANGUAGE_LABELS[row.output_language] ?? row.output_language : '—'}
                           </td>
                           <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">
                             {row.word_count ?? '—'}
@@ -915,6 +924,16 @@ export function DictationInspector({
                 <>
                   <div className="flex flex-wrap items-center gap-2 mb-3">
                     <span className="text-[11px] text-fg-4 font-mono">{selectedKey}</span>
+                    {detail.item.target_app && (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3">
+                        {detail.item.target_app}
+                      </span>
+                    )}
+                    {detail.item.output_language && (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-2">
+                        lang: {LANGUAGE_LABELS[detail.item.output_language] ?? detail.item.output_language}
+                      </span>
+                    )}
                     {detail.item.model_used && (
                       <span className="text-[10px] px-2 py-0.5 rounded bg-surface-4 text-fg-3 font-mono">
                         {detail.item.model_used}

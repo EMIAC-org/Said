@@ -93,6 +93,7 @@ pub struct DictationListItem {
     pub edit_bucket: Option<String>,
     pub edit_detected: Option<bool>,
     pub total_ms: Option<i32>,
+    pub output_language: Option<String>,
     pub has_edit_feedback: bool,
 }
 
@@ -127,6 +128,7 @@ pub struct DictationDetailItem {
     pub edit_bucket: Option<String>,
     pub edit_detected: Option<bool>,
     pub total_ms: Option<i32>,
+    pub output_language: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -302,6 +304,7 @@ pub async fn list_org_dictation(
             r.edit_bucket,
             r.edit_detected,
             r.total_ms,
+            h.output_language,
             (h.edit_feedback_json IS NOT NULL AND h.edit_feedback_json != '{}'::jsonb) AS has_edit_feedback
          FROM runtime_history_items h
          LEFT JOIN runtime_telemetry_runs r
@@ -384,7 +387,8 @@ pub async fn get_org_dictation_detail(
             h.updated_at,
             r.edit_bucket,
             r.edit_detected,
-            r.total_ms
+            r.total_ms,
+            h.output_language
          FROM runtime_history_items h
          LEFT JOIN runtime_telemetry_runs r
            ON r.account_id = h.account_id
@@ -675,6 +679,10 @@ pub struct DictationUpsertRequest {
     pub platform: Option<String>,
     pub app_version: Option<String>,
     pub dictation_trace_json: Option<Value>,
+    /// Output language actually used for this dictation (local/offline path). The
+    /// server polish path writes this authoritatively; here it is COALESCE-bound so
+    /// a client sync never clobbers a server-set value.
+    pub output_language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -743,6 +751,7 @@ async fn apply_dictation_update(
             platform = COALESCE($19, platform),
             app_version = COALESCE($20, app_version),
             dictation_trace_json = COALESCE($21, dictation_trace_json),
+            output_language = COALESCE(output_language, $22),
             updated_at = now()
          {DICTATION_UPDATE_WHERE}"
     ))
@@ -767,6 +776,7 @@ async fn apply_dictation_update(
     .bind(req.platform.as_deref())
     .bind(req.app_version.as_deref())
     .bind(req.dictation_trace_json.as_ref())
+    .bind(req.output_language.as_deref())
     .execute(db)
     .await?
     .rows_affected();
@@ -822,8 +832,9 @@ async fn upsert_dictation_row(
              raw_transcript, transcript, local_corrected_transcript,
              polished_output, final_text, model_used,
              word_count, recording_seconds,
-             transcribe_ms, embed_ms, polish_ms, target_app, dictation_trace_json)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+             transcribe_ms, embed_ms, polish_ms, target_app, dictation_trace_json,
+             output_language)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
          ON CONFLICT DO NOTHING",
     )
     .bind(account_id)
@@ -847,6 +858,7 @@ async fn upsert_dictation_row(
     .bind(req.polish_ms)
     .bind(req.target_app.as_deref())
     .bind(req.dictation_trace_json.as_ref())
+    .bind(req.output_language.as_deref())
     .execute(db)
     .await?
     .rows_affected();

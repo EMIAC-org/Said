@@ -263,6 +263,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/runtime/profile/buckets/override",
             post(routes::runtime_profile::set_app_bucket),
         )
+        .route(
+            "/v1/runtime/profile/buckets/language",
+            post(routes::runtime_profile::set_bucket_language),
+        )
         .route("/v1/runtime/runs", get(routes::runtime::list_runs))
         .route("/v1/runtime/runs/:id", get(routes::runtime::run_detail))
         .route(

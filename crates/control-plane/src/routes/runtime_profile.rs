@@ -27,7 +27,7 @@ use crate::{
     },
     profile::{
         self, CachedRuntimeProfile, ProfileCacheKey, invalidate_app_bucket_cache,
-        invalidate_profile_scope_caches, resolve_org_scope,
+        invalidate_bucket_profile_cache, invalidate_profile_scope_caches, resolve_org_scope,
     },
     routes::runtime::compute_user_edit_spans,
     tenant,
@@ -254,6 +254,8 @@ pub struct BucketInsight {
     pub speech_patterns: Vec<String>,
     pub version: i64,
     pub updated_at: Option<DateTime<Utc>>,
+    /// User-chosen output-language override for this bucket (None = inherit).
+    pub output_language_override: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -331,6 +333,9 @@ pub async fn get_profile_insights(
             // Rendered from the fixed knobs (our wording) — same lines injected into polish.
             style: profile::bucket::render_bucket_knob_lines(&r.profile_json),
             speech_patterns: Vec::new(),
+            output_language_override: profile::bucket::normalize_output_language_override(
+                r.output_language_override.as_deref(),
+            ),
             bucket_key: r.bucket_key,
             version: r.version,
             updated_at: r.last_rebuilt_at,
@@ -358,6 +363,8 @@ pub struct AppBucketsResponse {
     /// Canonical bucket keys, in display order (the kanban columns).
     pub buckets: Vec<String>,
     pub apps: Vec<AppBucketRow>,
+    /// bucket_key -> user-chosen output-language override (only buckets with one set).
+    pub bucket_languages: std::collections::BTreeMap<String, String>,
 }
 
 /// GET /v1/runtime/profile/buckets — every app the user has dictated into, each
@@ -365,8 +372,10 @@ pub struct AppBucketsResponse {
 pub async fn get_app_buckets(
     State(state): State<AppState>,
     user: AuthUser,
+    headers: HeaderMap,
 ) -> Result<Json<AppBucketsResponse>, (StatusCode, Json<Value>)> {
     let account_id = user.account_id;
+    let org_scope = resolve_scope(&state, &user, &headers).await?;
     let rows: Vec<(String, i64)> = sqlx::query_as(
         "SELECT target_app, count(*)::bigint
            FROM runtime_history_items
@@ -392,12 +401,24 @@ pub async fn get_app_buckets(
         });
     }
 
+    let mut bucket_languages = std::collections::BTreeMap::new();
+    if let Ok(rows) = profile::bucket::list_bucket_profiles(&state.db, account_id, org_scope).await {
+        for r in rows {
+            if let Some(lang) =
+                profile::bucket::normalize_output_language_override(r.output_language_override.as_deref())
+            {
+                bucket_languages.insert(r.bucket_key, lang);
+            }
+        }
+    }
+
     Ok(Json(AppBucketsResponse {
         buckets: profile::bucket::Bucket::ALL
             .iter()
             .map(|b| b.as_key().to_string())
             .collect(),
         apps,
+        bucket_languages,
     }))
 }
 
@@ -434,6 +455,57 @@ pub async fn set_app_bucket(
     Ok(Json(
         json!({ "ok": true, "app_key": app_key, "bucket_key": bucket.as_key() }),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetBucketLanguageRequest {
+    pub bucket_key: String,
+    /// One of english | hinglish | hindi, or null/empty to clear (inherit).
+    #[serde(default)]
+    pub output_language: Option<String>,
+}
+
+/// POST /v1/runtime/profile/buckets/language — set (or clear) the per-bucket
+/// output-language override. Lets a user force English output in AI/coding apps
+/// while messaging apps keep their spoken Hinglish tone.
+pub async fn set_bucket_language(
+    State(state): State<AppState>,
+    user: AuthUser,
+    headers: HeaderMap,
+    Json(req): Json<SetBucketLanguageRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Some(bucket) = profile::bucket::Bucket::from_key(&req.bucket_key) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid bucket_key" })),
+        ));
+    };
+    // Reject a non-empty value that is not an allowed language (empty/None clears).
+    let raw = req.output_language.as_deref().map(str::trim).unwrap_or("");
+    let normalized = profile::bucket::normalize_output_language_override(Some(raw));
+    if !raw.is_empty() && normalized.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid output_language" })),
+        ));
+    }
+
+    let org_scope = resolve_scope(&state, &user, &headers).await?;
+    profile::bucket::set_bucket_language_override(
+        &state.db,
+        user.account_id,
+        org_scope,
+        bucket,
+        normalized.as_deref(),
+    )
+    .await
+    .map_err(internal_error)?;
+    invalidate_bucket_profile_cache(&state, user.account_id, org_scope, bucket);
+    Ok(Json(json!({
+        "ok": true,
+        "bucket_key": bucket.as_key(),
+        "output_language_override": normalized,
+    })))
 }
 
 pub async fn get_profile_memory(
