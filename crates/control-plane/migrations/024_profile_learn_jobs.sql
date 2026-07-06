@@ -41,9 +41,15 @@ ALTER TABLE runtime_profile_audit_log
 ALTER TABLE runtime_profile_audit_log
     DROP CONSTRAINT IF EXISTS runtime_profile_audit_log_source_check;
 
+-- NOTE: keep this source list a SUPERSET that also covers every value any
+-- LATER migration allows. All migrations re-run (idempotently) on every boot in
+-- order, and this ADD runs BEFORE migration 037's widening — so if this list is
+-- narrower than what the running app already wrote (e.g. 'batch'), this ADD
+-- fails with "check constraint ... is violated by some row" and the process
+-- crash-loops on startup. 'batch' added here to match migration 037.
 ALTER TABLE runtime_profile_audit_log
     ADD CONSTRAINT runtime_profile_audit_log_source_check
     CHECK (source IN (
         'api', 'rebuild_worker', 'migration', 'admin',
-        'deepseek_edit', 'validator'
+        'deepseek_edit', 'validator', 'batch'
     ));
