@@ -11,7 +11,6 @@ import {
   Wifi,
   LogOut,
   Loader2,
-  Sparkles,
   ExternalLink,
   X,
 } from "lucide-react";
@@ -962,47 +961,38 @@ export function OnboardingFlow({
         step={stepIndex}
         totalSteps={totalSteps}
         eyebrow="Speech recognition"
-        title="How should AirNote hear you?"
-        subtitle={`Run speech recognition on this ${deviceName}, or in the cloud. You can switch any time in Settings.`}
-        brandTagline={`On-device keeps your voice on this ${deviceName}. Cloud is instant with nothing to download.`}
-        brandKicker="Recommended · on-device"
-        brandQuote={`The local model transcribes Hinglish right on your ${deviceName} — private, works offline, no per-use cost.`}
+        title="Choose how AirNote hears you"
+        subtitle="Two ways to transcribe your voice. Pick either — you can switch any time in Settings."
+        brandTagline="On-device for accuracy, or cloud for speed. Your call."
+        brandKicker="Your choice"
+        brandQuote={`Local runs entirely on this ${deviceName} and works offline. Cloud is instant, with nothing to download.`}
         topRight={<span>{stepLabel(step)}</span>}
         onBack={goBack}
         {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
-          {/* New on-device model — the glorified default */}
+          {/* Option A — On-device. Neutral, equal weight with cloud. */}
           <div
             className="rounded-xl p-4"
-            style={{
-              border: "1px solid hsl(var(--primary) / 0.45)",
-              background: "hsl(var(--primary) / 0.06)",
-            }}
+            style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
           >
             <div className="flex items-center justify-between mb-1.5 gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <span
                   className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
-                  style={{ background: "hsl(var(--primary))", color: "white" }}
+                  style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
                 >
-                  <Sparkles size={13} />
+                  <Cpu size={13} />
                 </span>
                 <p className="text-[13.5px] font-semibold text-foreground truncate">
-                  Meet {NEW_MODEL_NAME}
+                  {NEW_MODEL_NAME}
                 </p>
               </div>
-              <span
-                className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
-                style={{ background: "hsl(var(--primary) / 0.18)", color: "hsl(var(--primary))" }}
-              >
-                New · Recommended
-              </span>
+              <span className="text-[11px] text-muted-foreground shrink-0">On-device · better accuracy</span>
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Our best Hinglish speech model, running entirely on this {deviceName}. Sharper on
-              Hindi-English code-switching — and your voice never leaves the device. Private,
-              offline, no per-use cost.
+              Best Hinglish accuracy. One-time {NEW_MODEL_SIZE_HINT} download, then runs fully
+              offline on this {deviceName} — private, no per-use cost.
             </p>
             <DictationModelCard
               modelName={NEW_MODEL_NAME}
@@ -1025,32 +1015,48 @@ export function OnboardingFlow({
               />
             )}
 
-            <button
-              onClick={() => void chooseLocalEngine()}
-              disabled={keySaving || !dictationModelInstalled}
-              className="btn-primary btn-lg w-full mt-3"
-            >
-              {keySaving
-                ? "Saving…"
-                : dictationModelInstalled
-                  ? `Use ${NEW_MODEL_NAME}`
-                  : `Download ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
-              {!keySaving && dictationModelInstalled && <ArrowRight size={14} />}
-            </button>
+            {dictationModelInstalled && (
+              <button
+                onClick={() => void chooseLocalEngine()}
+                disabled={keySaving}
+                className="btn-primary btn-lg w-full mt-3"
+              >
+                {keySaving ? "Saving…" : `Use ${NEW_MODEL_NAME}`}
+                {!keySaving && <ArrowRight size={14} />}
+              </button>
+            )}
           </div>
 
-          {/* Cloud (Deepgram) — a clean alternative, never forced */}
-          <div className="flex items-center justify-between gap-3 mt-2">
-            <span className="text-[11.5px] text-muted-foreground">
-              Prefer the cloud? Whisper Large V3 Turbo — instant, needs internet.
-            </span>
+          {/* Option B — Cloud. Neutral, equal weight with on-device. */}
+          <div
+            className="rounded-xl p-4"
+            style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
+          >
+            <div className="flex items-center justify-between mb-1.5 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
+                  style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
+                >
+                  <Wifi size={13} />
+                </span>
+                <p className="text-[13.5px] font-semibold text-foreground truncate">
+                  Cloud Whisper
+                </p>
+              </div>
+              <span className="text-[11px] text-muted-foreground shrink-0">Fast · lightweight</span>
+            </div>
+            <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
+              Whisper Large V3 Turbo, streamed from the cloud. Lightweight with decent quality for
+              most tasks. Nothing to download; needs internet while you dictate.
+            </p>
             <button
               onClick={() => void chooseCloudEngine()}
               disabled={keySaving}
-              className="shrink-0 text-[12px] font-medium underline underline-offset-2 transition-colors disabled:opacity-50 hover:text-foreground"
-              style={{ color: "hsl(var(--muted-foreground))" }}
+              className="btn-primary btn-lg w-full"
             >
-              {keySaving ? "Saving…" : "Use cloud instead"}
+              {keySaving ? "Saving…" : "Use Cloud Whisper"}
+              {!keySaving && <ArrowRight size={14} />}
             </button>
           </div>
 

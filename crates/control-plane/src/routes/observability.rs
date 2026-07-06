@@ -93,6 +93,11 @@ pub struct DictationListItem {
     pub edit_bucket: Option<String>,
     pub edit_detected: Option<bool>,
     pub total_ms: Option<i32>,
+    // STT engine used for this dictation, from the already-joined telemetry run.
+    // stt_provider is the internal id ("deepgram" for cloud Whisper, "whisper_local"
+    // / "swift_local" for on-device); NULL when no telemetry run matched.
+    pub stt_provider: Option<String>,
+    pub stt_model: Option<String>,
     pub output_language: Option<String>,
     pub has_edit_feedback: bool,
 }
@@ -304,6 +309,8 @@ pub async fn list_org_dictation(
             r.edit_bucket,
             r.edit_detected,
             r.total_ms,
+            r.stt_provider,
+            r.stt_model,
             h.output_language,
             (h.edit_feedback_json IS NOT NULL AND h.edit_feedback_json != '{}'::jsonb) AS has_edit_feedback
          FROM runtime_history_items h

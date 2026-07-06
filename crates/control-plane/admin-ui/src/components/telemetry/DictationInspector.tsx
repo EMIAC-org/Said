@@ -46,6 +46,29 @@ function rowLabel(row: DictationListItem): string {
   return `${row.id.slice(0, 8)}…`
 }
 
+// Map the telemetry STT provider/model to a cloud-vs-local badge. provider is the
+// internal id ("deepgram" for cloud Whisper, "whisper_local"/"swift_local" on
+// device); fall back to the model string when provider is missing.
+function sttBadge(
+  provider?: string | null,
+  model?: string | null,
+): { text: string; cloud: boolean } | null {
+  const p = (provider || '').toLowerCase()
+  const m = (model || '').toLowerCase()
+  if (p.includes('whisper_local') || p.includes('swift') || m.includes('apex') || m.includes('oriserve'))
+    return { text: 'Local Native', cloud: false }
+  if (
+    p.includes('deepgram') ||
+    p.includes('groq') ||
+    p.includes('openrouter') ||
+    p.includes('nova') ||
+    m.includes('whisper')
+  )
+    return { text: 'Cloud Whisper', cloud: true }
+  if (p) return { text: provider as string, cloud: true }
+  return null
+}
+
 function isTrace(value: DictationDetailItem['dictation_trace_json']): value is DictationTrace {
   return !!value && Array.isArray((value as DictationTrace).stages)
 }
@@ -847,7 +870,7 @@ export function DictationInspector({
                 <table className="w-full">
                   <thead className="sticky top-0 bg-surface-2 z-10">
                     <tr>
-                      {[...(orgWide ? ['Who'] : []), 'When', 'recording_id', 'App', 'Lang', 'Words', 'Edit', ''].map(h => (
+                      {[...(orgWide ? ['Who'] : []), 'When', 'recording_id', 'App', 'Lang', 'STT', 'Words', 'Edit', ''].map(h => (
                         <th
                           key={h}
                           className="text-[10px] font-medium text-fg-4 text-left px-4 py-2 border-b border-border uppercase"
@@ -883,6 +906,24 @@ export function DictationInspector({
                           </td>
                           <td className="text-[11px] px-4 py-2 border-b border-border-light whitespace-nowrap">
                             {row.output_language ? LANGUAGE_LABELS[row.output_language] ?? row.output_language : '—'}
+                          </td>
+                          <td className="text-[11px] px-4 py-2 border-b border-border-light whitespace-nowrap">
+                            {(() => {
+                              const s = sttBadge(row.stt_provider, row.stt_model)
+                              if (!s) return <span className="text-fg-5">—</span>
+                              return (
+                                <span
+                                  className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+                                  style={
+                                    s.cloud
+                                      ? { background: 'hsl(210 90% 60% / 0.15)', color: 'hsl(210 90% 74%)' }
+                                      : { background: 'hsl(150 60% 45% / 0.16)', color: 'hsl(150 55% 64%)' }
+                                  }
+                                >
+                                  {s.text}
+                                </span>
+                              )
+                            })()}
                           </td>
                           <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">
                             {row.word_count ?? '—'}

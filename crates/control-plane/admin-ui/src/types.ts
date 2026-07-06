@@ -443,6 +443,8 @@ export interface DictationListItem {
   edit_bucket?: string | null
   edit_detected?: boolean | null
   total_ms?: number | null
+  stt_provider?: string | null
+  stt_model?: string | null
   output_language?: string | null
   has_edit_feedback: boolean
 }

@@ -13,4 +13,4 @@
 export const NEW_MODEL_FILE = "ggml-apex-hinglish-q8_0.bin";
 // TODO(naming): final product name is TBD — swap this one constant when decided.
 export const NEW_MODEL_NAME = "AirNote Native";
-export const NEW_MODEL_SIZE_HINT = "~830 MB";
+export const NEW_MODEL_SIZE_HINT = "~880 MB";
