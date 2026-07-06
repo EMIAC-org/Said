@@ -91,6 +91,10 @@ struct Cli {
     #[arg(long, env = "DEEPINFRA_API_KEY", default_value = "")]
     deepinfra_api_key: String,
 
+    /// OpenRouter API key for the production Gemma polish model
+    #[arg(long, env = "OPENROUTER_API_KEY", default_value = "")]
+    openrouter_api_key: String,
+
     /// Legacy gateway key fallback for server-runtime polish latency probes
     #[arg(long, env = "GATEWAY_API_KEY", default_value = "")]
     gateway_api_key: String,
@@ -218,6 +222,7 @@ async fn main() {
         groq_api_key,
         cerebras_api_key: cli.cerebras_api_key,
         deepinfra_api_key: cli.deepinfra_api_key,
+        openrouter_api_key: cli.openrouter_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
         runtime_credentials_key: cli.runtime_credentials_key,
@@ -311,6 +316,7 @@ mod tests {
             groq_api_key: String::new(),
             cerebras_api_key: String::new(),
             deepinfra_api_key: String::new(),
+            openrouter_api_key: String::new(),
             gateway_api_key: String::new(),
             divo_base_url: String::new(),
             runtime_credentials_key: String::new(),

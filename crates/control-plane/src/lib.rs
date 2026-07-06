@@ -91,6 +91,8 @@ pub struct AppState {
     pub cerebras_api_key: String,
     /// DeepInfra API key for server-runtime beta polish (DEEPINFRA_API_KEY).
     pub deepinfra_api_key: String,
+    /// OpenRouter API key for the production Gemma polish model (OPENROUTER_API_KEY).
+    pub openrouter_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
     pub divo_base_url: String,

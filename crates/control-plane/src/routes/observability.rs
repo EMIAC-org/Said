@@ -169,11 +169,23 @@ fn context_applied_from_prompt_meta(meta: &Value) -> Option<Value> {
     let style = bucket_style_lines_from_profile(
         meta.get("profile_markdown").and_then(Value::as_str),
     );
+    let domains: Vec<String> = meta
+        .get("domains")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|d| d.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     Some(json!({
         "bucket_key": bucket_key,
         "bucket_source": bucket_source,
         "style": style,
         "global_kb": profile_chars > 0,
+        "domains": domains,
+        "domain_context": meta.get("domain_context").and_then(Value::as_str),
+        "domain_source": meta.get("domain_source").and_then(Value::as_str),
         "context_source": "runtime_trace",
     }))
 }
@@ -488,16 +500,37 @@ pub async fn get_org_dictation_detail(
             Ok(Some(o)) => crate::profile::bucket::render_bucket_knob_lines(&o.profile_json),
             _ => Vec::new(),
         };
-        let global_kb = matches!(
+        let profile_row =
             crate::profile::store::get_profile_with_fallback(&state.db, row.account_id, org_scope)
-                .await,
-            Ok(Some(ref r)) if !r.profile_markdown.trim().is_empty()
-        );
+                .await
+                .ok()
+                .flatten();
+        let global_kb = profile_row
+            .as_ref()
+            .is_some_and(|r| !r.profile_markdown.trim().is_empty());
+        let domains = profile_row
+            .as_ref()
+            .map(|r| crate::profile::top_domains(&r.profile_json, 3))
+            .unwrap_or_default();
+        let domain_refs: Vec<&str> = domains.iter().map(String::as_str).collect();
+        let bucket_coding = bucket == crate::profile::bucket::Bucket::Coding;
+        let domain_context =
+            said_core::polish::prompt::render_domain_context(&domain_refs, bucket_coding);
+        let domain_source = if !domains.is_empty() {
+            "classified"
+        } else if bucket_coding {
+            "coding_bucket_seed"
+        } else {
+            "generic_default"
+        };
         Some(json!({
             "bucket_key": bucket.as_key(),
             "bucket_source": bucket_source,
             "style": style,
             "global_kb": global_kb,
+            "domains": domains,
+            "domain_context": domain_context,
+            "domain_source": domain_source,
             "context_source": "current_db_fallback",
         }))
     } else {

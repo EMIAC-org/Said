@@ -2363,20 +2363,6 @@ async fn account_polish_persona(state: &AppState, account_id: Uuid) -> (String, 
     (tone_preset, custom_prompt)
 }
 
-/// Additive learned-profile block for polish: global profile markdown plus, when the
-/// focused app is known, the current app-bucket's style overlay. Empty when nothing has
-/// been learned yet (caller then injects nothing).
-async fn load_injected_profile(
-    state: &AppState,
-    account_id: Uuid,
-    org_scope: Uuid,
-    target_app: Option<&str>,
-) -> String {
-    crate::profile::load_prompt_profile_context_cached(state, account_id, org_scope, target_app)
-        .await
-        .markdown
-}
-
 async fn polish_runtime_transcript(
     state: &AppState,
     account_id: Uuid,
@@ -2412,7 +2398,14 @@ async fn polish_runtime_transcript(
     // the current bucket's style overlay. Never replaces the base prompt or its hard rules.
     let active_org_id = primary_org_id(state, account_id).await?;
     let org_scope = crate::profile::store::resolve_org_scope(active_org_id);
-    let profile_block = load_injected_profile(state, account_id, org_scope, target_app).await;
+    let profile_context = crate::profile::load_prompt_profile_context_cached(
+        state,
+        account_id,
+        org_scope,
+        target_app,
+    )
+    .await;
+    let profile_block = profile_context.markdown.clone();
     let profile_md: Option<&str> = if profile_block.is_empty() {
         None
     } else {
@@ -2428,6 +2421,7 @@ async fn polish_runtime_transcript(
         safe_vocab_terms,
         vocab_hints,
         profile_md,
+        Some(profile_context.domain_context.as_str()),
     );
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
@@ -2438,7 +2432,14 @@ async fn polish_runtime_transcript(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION}),
+        json!({
+            "prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION,
+            "bucket_key": profile_context.bucket_key,
+            "bucket_source": profile_context.bucket_source,
+            "domains": profile_context.domains,
+            "domain_context": profile_context.domain_context,
+            "domain_source": profile_context.domain_source,
+        }),
     )
     .await?;
 
@@ -2481,6 +2482,8 @@ async fn polish_runtime_transcript(
         provider_label,
         &secret,
         &model,
+        route.endpoint,
+        route.providers,
         &system_prompt,
         &user_message,
         None,
@@ -3631,6 +3634,8 @@ pub async fn problem_solve(
         provider_label,
         &credential.secret,
         &model,
+        route.endpoint,
+        route.providers,
         &system_prompt,
         &user_message,
         None,
@@ -4011,6 +4016,9 @@ async fn execute_voice_polish(
         profile_context.profile_version,
         profile_context.bucket_key.as_deref(),
         profile_context.bucket_source,
+        &profile_context.domains,
+        Some(profile_context.domain_context.as_str()),
+        Some(profile_context.domain_source),
     );
 
     let (system_prompt, user_message) = if is_rewrite {
@@ -4028,6 +4036,7 @@ async fn execute_voice_polish(
                 &merged_vocab,
                 &merged_vocab_hints,
                 profile_md,
+                Some(profile_context.domain_context.as_str()),
             ),
             build_voice_user_message(&formatted_transcript, &req.output_language),
         )
@@ -4116,6 +4125,8 @@ async fn execute_voice_polish(
         provider_label,
         &api_secret,
         &model,
+        route.endpoint,
+        route.providers,
         &system_prompt,
         &user_message,
         token_tx,
@@ -4956,6 +4967,7 @@ async fn runtime_provider_secret(
         "groq" => !state.groq_api_key.trim().is_empty(),
         "cerebras" => !state.cerebras_api_key.trim().is_empty(),
         "deepinfra" => !state.deepinfra_api_key.trim().is_empty(),
+        "openrouter" => !state.openrouter_api_key.trim().is_empty(),
         _ => false,
     };
 
@@ -4985,6 +4997,7 @@ async fn runtime_provider_secret(
         "groq" => state.groq_api_key.trim(),
         "cerebras" => state.cerebras_api_key.trim(),
         "deepinfra" => state.deepinfra_api_key.trim(),
+        "openrouter" => state.openrouter_api_key.trim(),
         _ => "",
     };
     if tenant::allow_platform_credential_fallback() && !fallback.is_empty() {
@@ -5678,6 +5691,8 @@ async fn polish_llm(
     polish_provider: &str,
     api_secret: &str,
     polish_model: &str,
+    endpoint: &str,
+    providers: &[&str],
     system_prompt: &str,
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
@@ -5735,11 +5750,22 @@ async fn polish_llm(
             )
             .await
         }
+        // Everything else is OpenAI-compatible chat/completions — drive it purely
+        // from the route (endpoint + optional OpenRouter sub-provider order). A new
+        // model needs NO code here: just a catalog row. `providers` non-empty pins
+        // OpenRouter hosts (e.g. Gemma → WandB/ModelRun); empty = provider default.
         _ => {
+            let provider_order = if providers.is_empty() {
+                None
+            } else {
+                Some(providers)
+            };
             call_groq(
                 state,
                 api_secret,
                 polish_model,
+                endpoint,
+                provider_order,
                 system_prompt,
                 user_message,
                 token_tx,
@@ -5753,6 +5779,8 @@ async fn call_groq(
     _state: &AppState,
     api_key: &str,
     model: &str,
+    endpoint: &str,
+    provider_order: Option<&[&str]>,
     system_prompt: &str,
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
@@ -5787,13 +5815,20 @@ async fn call_groq(
         body["max_tokens"] = json!(max_tokens);
         body["reasoning_effort"] = json!("low");
     }
+    if let Some(order) = provider_order {
+        // OpenRouter sub-provider routing (pin fast hosts, keep fallbacks on).
+        body["provider"] = json!({ "order": order, "allow_fallbacks": true });
+        // Floor tokens so a long dictation is never truncated mid-sentence.
+        max_tokens = max_tokens.max(2048);
+        body["max_tokens"] = json!(max_tokens);
+    }
 
-    tracing::info!("[runtime] POST {GROQ_ENDPOINT} model={model}");
+    tracing::info!("[runtime] POST {endpoint} model={model}");
 
     let client = &*crate::HTTP_CLIENT;
     let request_started = Instant::now();
     let resp = client
-        .post(GROQ_ENDPOINT)
+        .post(endpoint)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .json(&body)
@@ -6197,6 +6232,8 @@ Return JSON only:
         state,
         &credential.secret,
         &learning_judge_model(),
+        GROQ_ENDPOINT,
+        None,
         system_prompt,
         &user_message,
         None,
@@ -6283,6 +6320,8 @@ Return JSON only:
         state,
         &credential.secret,
         &learning_judge_model(),
+        GROQ_ENDPOINT,
+        None,
         system_prompt,
         &user_message,
         None,

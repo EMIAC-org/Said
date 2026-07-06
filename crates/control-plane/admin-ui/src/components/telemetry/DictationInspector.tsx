@@ -329,7 +329,16 @@ interface ContextAppliedData {
   bucket_source: string | null
   style: string[]
   global_kb: boolean
+  domains?: string[]
+  domain_context?: string | null
+  domain_source?: string | null
   context_source?: string | null
+}
+
+const DOMAIN_SOURCE_LABELS: Record<string, string> = {
+  classified: 'learned',
+  coding_bucket_seed: 'coding app',
+  generic_default: 'generic',
 }
 
 /** "Context applied" — which app-bucket this run's app resolved to, and the exact
@@ -337,6 +346,10 @@ interface ContextAppliedData {
 function ContextApplied({ context }: { context?: ContextAppliedData | null }) {
   if (!context) return null
   const label = CONTEXT_BUCKET_LABELS[context.bucket_key] ?? context.bucket_key
+  const domains = context.domains ?? []
+  const domainSourceLabel = context.domain_source
+    ? DOMAIN_SOURCE_LABELS[context.domain_source] ?? context.domain_source
+    : null
   return (
     <div className="mb-4">
       <SectionLabel>Context applied</SectionLabel>
@@ -358,6 +371,25 @@ function ContextApplied({ context }: { context?: ContextAppliedData | null }) {
           </span>
         )}
       </div>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <span className="text-[11px] px-2 py-0.5 rounded-md bg-surface-4 text-fg">
+          Domain{domainSourceLabel ? ` · ${domainSourceLabel}` : ''}
+        </span>
+        {domains.length > 0 ? (
+          domains.map(d => (
+            <span key={d} className="text-[11px] px-2 py-0.5 rounded-md bg-surface-3 text-fg-2">
+              {d}
+            </span>
+          ))
+        ) : (
+          <span className="text-[11px] px-2 py-0.5 rounded-md bg-surface-3 text-fg-4">
+            unclassified (generic)
+          </span>
+        )}
+      </div>
+      {context.domain_context && (
+        <p className="text-[12px] text-fg-3 mb-2 leading-relaxed">{context.domain_context}</p>
+      )}
       {context.style.length > 0 ? (
         <ul className="space-y-1">
           {context.style.map((l, i) => (

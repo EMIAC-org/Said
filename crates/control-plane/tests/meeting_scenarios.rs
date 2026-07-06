@@ -54,6 +54,7 @@ impl TestServer {
             openai_transcribe_model: "whisper-1".to_string(),
             groq_api_key: String::new(),
             cerebras_api_key: String::new(),
+            openrouter_api_key: String::new(),
             deepinfra_api_key: String::new(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             divo_base_url: String::new(),
