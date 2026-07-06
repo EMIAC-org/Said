@@ -13884,6 +13884,71 @@ fn dictation_whisper_live_timeout(duration_ms: u64) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Env-gated RNNoise denoise applied in place to a dictation WAV before whisper.
+/// No-op unless `AIRNOTE_DENOISE=rnnoise`. Dictation-only — meetings never call
+/// this (they keep Silero VAD instead). Best-effort: on any open/decode/format
+/// mismatch it leaves the file untouched so STT still runs on the original audio.
+fn denoise_dictation_wav_in_place(path: &Path) {
+    if !said_core::preprocess::denoise_enabled() {
+        return;
+    }
+    let reader = match hound::WavReader::open(path) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("[meeting_engine] denoise skip — open {path:?}: {e}");
+            return;
+        }
+    };
+    let spec = reader.spec();
+    // RNNoise runs on 16 kHz mono i16 — exactly what dictation capture produces.
+    // Bail on anything unexpected rather than risk corrupting the audio.
+    if spec.channels != 1
+        || spec.sample_rate != SAMPLE_RATE
+        || spec.bits_per_sample != 16
+        || spec.sample_format != hound::SampleFormat::Int
+    {
+        tracing::debug!("[meeting_engine] denoise skip — unexpected WAV spec {spec:?}");
+        return;
+    }
+    let samples: Vec<i16> = match reader.into_samples::<i16>().collect::<Result<_, _>>() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("[meeting_engine] denoise skip — decode {path:?}: {e}");
+            return;
+        }
+    };
+    if samples.is_empty() {
+        return;
+    }
+
+    // i16 → f32 [-1, 1] → RNNoise (length-preserving) → back to i16, same spec.
+    let mut f32buf: Vec<f32> = samples.iter().map(|&s| s as f32 / 32_768.0).collect();
+    said_core::preprocess::denoise_16k(&mut f32buf);
+
+    let mut writer = match hound::WavWriter::create(path, spec) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("[meeting_engine] denoise skip — rewrite {path:?}: {e}");
+            return;
+        }
+    };
+    for &s in &f32buf {
+        let v = (s * 32_768.0).clamp(-32_768.0, 32_767.0) as i16;
+        if writer.write_sample(v).is_err() {
+            tracing::warn!("[meeting_engine] denoise abort — write sample failed for {path:?}");
+            return;
+        }
+    }
+    if let Err(e) = writer.finalize() {
+        tracing::warn!("[meeting_engine] denoise skip — finalize {path:?}: {e}");
+        return;
+    }
+    tracing::debug!(
+        "[meeting_engine] rnnoise denoised dictation WAV {path:?} ({} samples)",
+        f32buf.len(),
+    );
+}
+
 fn transcribe_dictation_summary(
     summary: &MicCaptureSummary,
     pref_language: &str,
@@ -13911,6 +13976,10 @@ fn transcribe_dictation_summary(
     if apex_model.is_file() && !force_oriserve {
         config.model = apex_model;
     }
+    // Dictation policy: noise-filter, not VAD. Clean steady background noise
+    // (fan/AC) from the WAV before whisper reads it. Meetings never reach here.
+    denoise_dictation_wav_in_place(&summary.path);
+
     let paths = transcript_paths_for_wav(&summary.path);
     let done = transcribe_with_whisper_cpp_for(
         summary,

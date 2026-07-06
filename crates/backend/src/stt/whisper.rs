@@ -36,9 +36,9 @@ pub fn ensure_model_loaded(model_path: &str) -> Result<(), String> {
 }
 
 pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptResult, String> {
-    // Whole-utterance conditioning: DC/high-pass + loudness normalize just before
-    // inference; whisper.cpp's Silero VAD then runs inside `full()`. Length is
-    // preserved, so downstream math is unchanged.
+    // Whole-utterance conditioning: DC/high-pass + optional RNNoise denoise +
+    // loudness normalize just before inference (VAD is off for dictation, below).
+    // Length is preserved, so downstream math is unchanged.
     let mut conditioned = audio_f32.to_vec();
     said_core::preprocess::condition_16k(&mut conditioned);
     let audio_f32: &[f32] = &conditioned;
@@ -90,20 +90,26 @@ pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptRes
     params.set_print_special(false);
     params.set_n_threads(4);
 
-    // Silero VAD gate: when the model is present, whisper.cpp runs voice-activity
-    // detection first and only transcribes detected speech. This kills the
-    // silence/noise hallucination seen on longer dictations (the "phantom"
-    // fluent text on pauses). Best-effort — skipped if the model isn't installed.
+    // Dictation policy: Silero VAD OFF by default. This path is the on-device
+    // dictation fallback (whisper_local); meetings run through the desktop
+    // whisper.cpp path and keep their own VAD. VAD trims short push-to-talk
+    // onsets/quiet speech; noise-driven hallucination is handled upstream by the
+    // RNNoise denoise in `condition_16k`, not VAD. This keeps the two dictation
+    // engines consistent (the desktop path already disables VAD). Re-enable with
+    // AIRNOTE_DICTATION_VAD=1 if a regression on long dictations shows up.
+    let vad_opt_in = std::env::var("AIRNOTE_DICTATION_VAD")
+        .map(|v| matches!(v.trim(), "1" | "true" | "on"))
+        .unwrap_or(false);
     let vad_path = said_core::paths::silero_vad_model_path();
-    if vad_path.is_file() {
+    if vad_opt_in && vad_path.is_file() {
         if let Some(p) = vad_path.to_str() {
             params.set_vad_model_path(Some(p));
             params.set_vad_params(WhisperVadParams::new());
             params.enable_vad(true);
-            debug!("[whisper] Silero VAD enabled ({p})");
+            debug!("[whisper] Silero VAD enabled for dictation ({p}) — AIRNOTE_DICTATION_VAD");
         }
     } else {
-        debug!("[whisper] Silero VAD model absent — running without VAD gate");
+        debug!("[whisper] Silero VAD off for dictation (RNNoise handles noise)");
     }
 
     let t0 = std::time::Instant::now();

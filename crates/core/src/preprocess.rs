@@ -8,16 +8,19 @@
 //! Pipeline order (matches the design note):
 //!   1. DC removal + high-pass  — kills rumble / handling noise / mains hum
 //!   2. anti-aliased resample to 16 kHz — band-limited, no fold-back hiss
-//!   3. [whisper.cpp Silero VAD runs here, inside `whisper.full`]
+//!   3. RNNoise denoise (optional; `AIRNOTE_DENOISE=rnnoise`) — steady fan/AC hum
 //!   4. loudness normalization — consistent level into the model
+//!   5. [whisper.cpp Silero VAD runs later, inside `whisper.full`]
 //!
-//! Steps 1 + 4 are `condition_16k`; step 2 is `resample_16k_hq`. All are cheap,
-//! deterministic DSP (a couple of biquads + one scalar pass). Timing is logged
-//! at debug so the added latency can be measured against real recordings.
+//! Steps 1, 3, 4 are `condition_16k`; step 2 is `resample_16k_hq`. Steps 1 + 4
+//! are cheap, deterministic DSP (a couple of biquads + one scalar pass); step 3
+//! is a small neural net, off by default. Timing is logged at debug so the added
+//! latency can be measured against real recordings.
 
 use std::f32::consts::PI;
 use std::time::Instant;
 
+use nnnoiseless::DenoiseState;
 use tracing::debug;
 
 /// Whisper's fixed input sample rate.
@@ -41,6 +44,12 @@ const NOISE_FLOOR_RMS: f32 = 1.0e-3;
 const PEAK_CEIL: f32 = 0.97;
 /// Butterworth per-stage Q factors for a 4th-order (two-biquad) low-pass.
 const BUTTER_4TH_Q: [f32; 2] = [0.541_20, 1.306_56];
+/// RNNoise runs at 48 kHz on fixed 480-sample (10 ms) frames.
+const DENOISE_RATE: usize = 48_000;
+const DENOISE_FRAME: usize = DenoiseState::FRAME_SIZE;
+/// RNNoise wants f32 samples in the i16 range, not `[-1, 1]`.
+const I16_FULL_SCALE: f32 = 32_768.0;
+const I16_MAX: f32 = 32_767.0;
 
 // ── Biquad ───────────────────────────────────────────────────────────────────
 
@@ -143,6 +152,11 @@ pub fn condition_16k(buf: &mut [f32]) -> f32 {
     )
     .run(buf);
 
+    // 3. Neural denoise (RNNoise) — env-gated, no-op unless AIRNOTE_DENOISE=rnnoise.
+    //    Runs after the high-pass and before gain, so we clean noise rather than
+    //    amplify it (never denoise after normalization).
+    denoise_16k(buf);
+
     // 4. Loudness normalization (silence-floor + peak guarded).
     let gain = normalize(buf);
 
@@ -176,6 +190,71 @@ fn normalize(buf: &mut [f32]) -> f32 {
         *s *= gain;
     }
     gain
+}
+
+// ── Neural denoise (RNNoise via nnnoiseless) ──────────────────────────────────
+
+/// Whether RNNoise denoising is enabled. Env `AIRNOTE_DENOISE`: `rnnoise` turns
+/// it on; unset or anything else leaves it off. Read at call time so the toggle
+/// works per process without a rebuild.
+pub fn denoise_enabled() -> bool {
+    std::env::var("AIRNOTE_DENOISE")
+        .map(|v| v.trim().eq_ignore_ascii_case("rnnoise"))
+        .unwrap_or(false)
+}
+
+/// In-place RNNoise denoise for a 16 kHz mono clip in `[-1, 1]`. No-op when
+/// disabled or empty. Assumes the high-pass has already run — call it from
+/// inside `condition_16k`, after HPF and before normalization.
+pub fn denoise_16k(buf: &mut [f32]) {
+    if !denoise_enabled() || buf.is_empty() {
+        return;
+    }
+    let t0 = Instant::now();
+    denoise_16k_inner(buf);
+    debug!(
+        "[preprocess] rnnoise denoised {} samples in {}µs",
+        buf.len(),
+        t0.elapsed().as_micros()
+    );
+}
+
+/// Unconditional denoise core (no env gate), split out so tests can exercise it
+/// directly without touching process-global env. RNNoise needs 48 kHz i16-range
+/// audio: scale up → resample to 48 k → frame-process → resample back → scale down.
+fn denoise_16k_inner(buf: &mut [f32]) {
+    // 16 k [-1, 1] → i16-range f32.
+    let scaled: Vec<f32> = buf
+        .iter()
+        .map(|s| (s * I16_FULL_SCALE).clamp(-I16_FULL_SCALE, I16_MAX))
+        .collect();
+
+    // Upsample to 48 kHz, then pad to whole 480-sample frames plus one extra
+    // trailing zero frame: RNNoise emits its output one frame late, so the flush
+    // frame pushes out the final real frame's denoised audio.
+    let mut up = linear_resample(&scaled, TARGET_RATE, DENOISE_RATE);
+    let pad = (DENOISE_FRAME - up.len() % DENOISE_FRAME) % DENOISE_FRAME;
+    up.resize(up.len() + pad + DENOISE_FRAME, 0.0);
+
+    let mut state = DenoiseState::new();
+    let mut out = vec![0.0f32; DENOISE_FRAME];
+    let mut denoised: Vec<f32> = Vec::with_capacity(up.len());
+    for (i, frame) in up.chunks_exact(DENOISE_FRAME).enumerate() {
+        state.process_frame(&mut out, frame);
+        // Drop the first output frame (model warm-up transient); dropping it plus
+        // the trailing flush frame realigns output with input (one-frame delay).
+        if i > 0 {
+            denoised.extend_from_slice(&out);
+        }
+    }
+
+    // Back to 16 k [-1, 1], written over the original samples. The slice length is
+    // fixed so length is preserved; any tail we can't fill keeps its HPF'd value.
+    let down = linear_resample(&denoised, DENOISE_RATE, TARGET_RATE);
+    let n = buf.len().min(down.len());
+    for (dst, src) in buf[..n].iter_mut().zip(&down[..n]) {
+        *dst = (src / I16_FULL_SCALE).clamp(-1.0, 1.0);
+    }
 }
 
 /// Linear-interpolation resample. Identical math to the previous inline
@@ -251,5 +330,46 @@ mod tests {
         condition_16k(&mut buf);
         let peak = buf.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
         assert!(peak <= PEAK_CEIL + 1.0e-4, "peak {peak} exceeded ceiling");
+    }
+
+    #[test]
+    fn denoise_disabled_is_noop() {
+        // AIRNOTE_DENOISE is unset in the test process, so denoise_16k must leave
+        // the buffer bit-identical (the default-off / acceptance guarantee).
+        let original: Vec<f32> = (0..16_000).map(|i| 0.2 * (i as f32 * 0.05).sin()).collect();
+        let mut buf = original.clone();
+        denoise_16k(&mut buf);
+        assert_eq!(buf, original, "denoise ran while disabled");
+    }
+
+    #[test]
+    fn denoise_inner_preserves_length_and_stays_finite() {
+        let mut buf: Vec<f32> = (0..16_000).map(|i| 0.3 * (i as f32 * 0.05).sin()).collect();
+        let len = buf.len();
+        denoise_16k_inner(&mut buf);
+        assert_eq!(buf.len(), len, "denoise changed sample count");
+        assert!(
+            buf.iter().all(|s| s.is_finite() && s.abs() <= 1.0),
+            "denoise produced out-of-range or non-finite samples",
+        );
+    }
+
+    #[test]
+    fn denoise_inner_does_not_add_energy() {
+        // Tone + steady low hum (no speech). RNNoise should attenuate, never
+        // amplify — assert output RMS doesn't rise. Loose so it won't flake.
+        let mut buf: Vec<f32> = (0..16_000)
+            .map(|i| {
+                let t = i as f32 / TARGET_RATE as f32;
+                0.2 * (2.0 * PI * 220.0 * t).sin() + 0.1 * (2.0 * PI * 60.0 * t).sin()
+            })
+            .collect();
+        let rms_in = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
+        denoise_16k_inner(&mut buf);
+        let rms_out = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
+        assert!(
+            rms_out <= rms_in * 1.05,
+            "denoise raised energy: {rms_in} -> {rms_out}",
+        );
     }
 }
