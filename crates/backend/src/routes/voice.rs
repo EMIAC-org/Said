@@ -380,7 +380,7 @@ use crate::{
         vectors::retrieve_similar,
         vocab_embeddings, vocabulary,
     },
-    stt::{bias as stt_bias, deepgram},
+    stt::bias as stt_bias,
 };
 
 fn invalidate_openai_session_on_auth_error(
@@ -3971,35 +3971,11 @@ async fn maybe_rescue_transcript(
     bias: &BiasPackage,
     primary_ws: Option<TranscriptCandidate>,
 ) -> Result<(TranscriptCandidate, i64), String> {
-    if crate::stt::openrouter_qwen_asr::force_cloud_batch() {
-        if wav_data.is_empty() {
-            return Err("OpenRouter batch STT requires audio (wav is empty)".into());
-        }
-        let batch = run_batch_transcript(
-            client,
-            provider,
-            api_key,
-            wav_data,
-            bias.clone(),
-            "batch:openrouter_qwen".to_string(),
-        )
-        .await?;
-        info!(
-            "[stt] openrouter_qwen batch-only path words={} (ignored inbound local pre-transcript={})",
-            batch.meta.word_count,
-            primary_ws.is_some(),
-        );
-        let _ = audio_seconds;
-        return Ok((batch, 0));
-    }
-
     if let Some(primary) = primary_ws {
-        // Local STT (Swift) is authoritative — never rescue it via cloud
-        // Deepgram. Local stays local: if Swift produced this transcript, we
-        // keep it as-is rather than silently round-tripping to the cloud.
-        if !said_core::stt::is_deepgram(provider)
-            && !crate::stt::openrouter_qwen_asr::force_cloud_batch()
-        {
+        // Local STT (Swift/whisper.cpp) is authoritative — never rescue it via the
+        // cloud. Local stays local: if a local engine produced this transcript, we
+        // keep it as-is rather than silently round-tripping to OpenRouter.
+        if !said_core::stt::is_deepgram(provider) {
             info!(
                 "[stt] local provider={} pre-transcript accepted without cloud rescue",
                 provider
@@ -4101,32 +4077,26 @@ fn with_mode(bias: &BiasPackage, stt_mode: &str) -> BiasPackage {
 async fn run_batch_transcript(
     client: &reqwest::Client,
     _provider: &str,
-    api_key: &str,
+    _api_key: &str,
     wav_data: Vec<u8>,
     bias: BiasPackage,
     source: String,
 ) -> Result<TranscriptCandidate, String> {
     let start = Instant::now();
     info!(
-        "[stt] batch_http request source={} wav_bytes={} stt_mode={} keyterms={} replacements={} backend={}",
+        "[stt] batch_http request source={} wav_bytes={} stt_mode={} keyterms={} replacements={} backend=openrouter_whisper",
         source,
         wav_data.len(),
         bias.stt_mode,
         bias.keyterms.len(),
         bias.replacements.len(),
-        if crate::stt::openrouter_qwen_asr::is_enabled() {
-            "openrouter_qwen"
-        } else {
-            "deepgram"
-        },
     );
-    let result = if crate::stt::openrouter_qwen_asr::is_enabled() {
-        let or_key = crate::stt::openrouter_qwen_asr::resolve_api_key()
-            .ok_or_else(|| "OPENROUTER_API_KEY is not set".to_string())?;
-        crate::stt::openrouter_qwen_asr::transcribe(client, &or_key, wav_data, &bias).await?
-    } else {
-        deepgram::transcribe(client, api_key, wav_data, &bias).await?
-    };
+    // Cloud dictation = OpenRouter Whisper Large V3 Turbo (batch). This is the
+    // only cloud STT for dictation; Deepgram is no longer used here.
+    let or_key = crate::stt::openrouter_qwen_asr::resolve_api_key()
+        .ok_or_else(|| "OPENROUTER_API_KEY is not set".to_string())?;
+    let result =
+        crate::stt::openrouter_qwen_asr::transcribe(client, &or_key, wav_data, &bias).await?;
     let meta = result.meta();
     info!(
         "[stt] batch_http done source={} elapsed_ms={} words={} confidence={:.2}",

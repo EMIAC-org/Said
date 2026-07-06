@@ -1277,7 +1277,7 @@ export function SettingsView({
                     {polishHotkeyLabel} polish runs on {DEFAULT_CLOUD_SERVER_URL.replace(/^https?:\/\//, "")} using Cerebras GPT OSS 120B.
                     {prefs?.stt_provider === "swift_local"
                       ? " Speech recognition stays on this Mac (Swift)."
-                      : " Speech recognition uses Deepgram in the cloud."}
+                      : " Speech recognition uses Whisper Large V3 Turbo in the cloud."}
                   </p>
                 </div>
               </div>

@@ -258,9 +258,12 @@ pub fn effective_dictation_provider(
     }
 }
 
-/// Providers that skip live WS pre-transcript and batch-STT the full WAV on release.
+/// Providers that skip live WS pre-transcript and batch-STT the full WAV on
+/// release. Cloud dictation ("deepgram" id) is now batch-only too: it no longer
+/// streams to Deepgram — the backend batches the WAV through OpenRouter Whisper
+/// Large V3 Turbo on release.
 pub fn use_batch_stt_only(provider: &str) -> bool {
-    provider == "groq_whisper" || provider == "whisper_local"
+    provider == "groq_whisper" || provider == "whisper_local" || is_deepgram(provider)
 }
 
 /// Model id recorded in per-run telemetry.

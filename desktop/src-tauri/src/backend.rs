@@ -120,6 +120,11 @@ pub fn spawn() -> Result<BackendHandle, String> {
             "DEEPGRAM_API_KEY",
             std::env::var("DEEPGRAM_API_KEY").unwrap_or_default(),
         )
+        // Cloud dictation STT = OpenRouter Whisper Large V3 Turbo (batch).
+        .env(
+            "OPENROUTER_API_KEY",
+            std::env::var("OPENROUTER_API_KEY").unwrap_or_default(),
+        )
         .env(
             "GEMINI_API_KEY",
             std::env::var("GEMINI_API_KEY").unwrap_or_default(),

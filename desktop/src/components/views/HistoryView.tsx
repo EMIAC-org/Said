@@ -58,7 +58,10 @@ function formatModel(model: string | null | undefined): string {
   const m = model.toLowerCase();
   if (m.includes("apex")) return "AirNote Native";
   if (m.includes("oriserve")) return "Hinglish (Oriserve)";
-  if (m.includes("nova") || m.includes("deepgram")) return "Deepgram";
+  // Cloud dictation = OpenRouter Whisper Large V3 Turbo. Legacy nova/deepgram
+  // entries also surface under the current cloud label.
+  if (m.includes("openrouter") || m.includes("nova") || m.includes("deepgram"))
+    return "Cloud Whisper";
   if (m.includes("whisper")) return "Whisper";
   if (m.includes("groq") || m.includes("llama")) return "Groq";
   if (m.includes("sarvam")) return "Sarvam";

@@ -1,10 +1,11 @@
-//! Experimental batch STT via OpenRouter → Qwen3-ASR-Flash.
+//! Cloud dictation STT via OpenRouter → OpenAI Whisper Large V3 Turbo (batch).
 //!
-//! Opt-in only (`AIRNOTE_BATCH_STT_BACKEND=openrouter_qwen`). Delete this file
-//! and the two call sites in `routes/voice.rs` + `mod.rs` to remove entirely.
+//! This is the ONLY cloud dictation transcriber. The old Deepgram cloud path is
+//! gone from dictation; cloud dictation now batch-transcribes the whole WAV on
+//! release through OpenRouter. Meetings + control-plane keep their own STT.
 //!
 //! Docs: https://openrouter.ai/docs/guides/overview/multimodal/stt
-//! Model: https://openrouter.ai/qwen/qwen3-asr-flash-2026-02-10
+//! Model: https://openrouter.ai/openai/whisper-large-v3-turbo (Groq-hosted)
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use reqwest::Client;
@@ -15,22 +16,15 @@ use tracing::{debug, info};
 use super::deepgram::TranscriptResult;
 
 const TRANSCRIPTIONS_URL: &str = "https://openrouter.ai/api/v1/audio/transcriptions";
-const DEFAULT_MODEL: &str = "qwen/qwen3-asr-flash-2026-02-10";
+/// OpenAI Whisper Large V3 Turbo — overridable with `OPENROUTER_STT_MODEL`.
+const DEFAULT_MODEL: &str = "openai/whisper-large-v3-turbo";
 
-/// `openrouter_qwen` → route batch STT through OpenRouter. Anything else → Deepgram.
-pub fn is_enabled() -> bool {
-    std::env::var("AIRNOTE_BATCH_STT_BACKEND")
-        .map(|v| v.trim().eq_ignore_ascii_case("openrouter_qwen"))
-        .unwrap_or(false)
-}
-
-/// When true, ignore inbound local pre-transcripts so batch OpenRouter runs on the WAV.
-pub fn force_cloud_batch() -> bool {
-    is_enabled()
-}
-
+/// Resolve the OpenRouter key: runtime env (dev/server) → build-time bundled key
+/// (shipped app, baked from the build env like the old Deepgram key). End users
+/// never enter a key; cloud dictation is server-managed.
 pub fn resolve_api_key() -> Option<String> {
     non_empty(std::env::var("OPENROUTER_API_KEY").ok())
+        .or_else(|| non_empty(option_env!("OPENROUTER_API_KEY").map(str::to_string)))
 }
 
 fn model_id() -> String {
@@ -44,73 +38,18 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|s| !s.trim().is_empty())
 }
 
-fn language_hint(stt_mode: &str) -> Option<&'static str> {
-    match stt_mode.trim().to_ascii_lowercase().as_str() {
-        "en" | "english" => Some("en"),
-        "hi" | "hindi" | "hinglish" | "multi" => Some("hi"),
-        // Omit for auto-detect on code-mixed audio.
-        _ => None,
-    }
-}
-
-fn context_from_bias(bias: &BiasPackage) -> Option<String> {
-    if bias.keyterms.is_empty() && bias.replacements.is_empty() {
-        return None;
-    }
-    let mut parts = Vec::new();
-    if !bias.keyterms.is_empty() {
-        parts.push(format!(
-            "Prefer these terms when heard: {}.",
-            bias.keyterms.join(", ")
-        ));
-    }
-    if !bias.replacements.is_empty() {
-        let rules: Vec<String> = bias
-            .replacements
-            .iter()
-            .map(|r| {
-                if let Some(rep) = r.replace.as_deref().filter(|s| !s.is_empty()) {
-                    format!("{} → {}", r.find, rep)
-                } else {
-                    r.find.clone()
-                }
-            })
-            .collect();
-        parts.push(format!("Vocabulary hints: {}.", rules.join("; ")));
-    }
-    Some(parts.join(" "))
-}
-
 #[derive(Serialize)]
 struct SttRequest<'a> {
     model: &'a str,
     input_audio: InputAudio<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<ProviderPassthrough<'a>>,
 }
 
 #[derive(Serialize)]
 struct InputAudio<'a> {
     data: String,
     format: &'a str,
-}
-
-#[derive(Serialize)]
-struct ProviderPassthrough<'a> {
-    options: ProviderOptions<'a>,
-}
-
-#[derive(Serialize)]
-struct ProviderOptions<'a> {
-    qwen: QwenOptions<'a>,
-}
-
-#[derive(Serialize)]
-struct QwenOptions<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    context: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -142,16 +81,17 @@ pub async fn transcribe(
     }
 
     let model = model_id();
-    let lang = language_hint(&bias.stt_mode);
-    let context = context_from_bias(bias);
+    // Auto-detect language: let Whisper code-switch (Hindi/English) per segment.
+    // Forcing "hi" biased code-mixed Hinglish toward Devanagari and mangled the
+    // embedded English words.
+    let lang: Option<&str> = None;
     let audio_b64 = B64.encode(&wav_data);
 
     debug!(
-        "[openrouter-stt] sending {} bytes model={} lang={:?} keyterms={}",
+        "[openrouter-stt] sending {} bytes model={} lang=auto requested_mode={}",
         wav_data.len(),
         model,
-        lang,
-        bias.keyterms.len(),
+        bias.stt_mode,
     );
 
     let body = SttRequest {
@@ -161,11 +101,6 @@ pub async fn transcribe(
             format: "wav",
         },
         language: lang,
-        provider: context.as_deref().map(|ctx| ProviderPassthrough {
-            options: ProviderOptions {
-                qwen: QwenOptions { context: Some(ctx) },
-            },
-        }),
     };
 
     let resp = client
@@ -215,26 +150,6 @@ pub async fn transcribe(
         mean_word_confidence: 0.9,
         word_count,
         languages: vec![lang_label.to_string()],
-        stt_mode: format!("openrouter_qwen:{lang_label}"),
+        stt_mode: format!("openrouter_whisper:{lang_label}"),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn enabled_when_env_set() {
-        let enabled = std::env::var("AIRNOTE_BATCH_STT_BACKEND")
-            .map(|v| v.trim().eq_ignore_ascii_case("openrouter_qwen"))
-            .unwrap_or(false);
-        assert_eq!(is_enabled(), enabled);
-    }
-
-    #[test]
-    fn language_hint_maps_hinglish_to_hi() {
-        assert_eq!(language_hint("hinglish"), Some("hi"));
-        assert_eq!(language_hint("multi"), Some("hi"));
-        assert_eq!(language_hint("en"), Some("en"));
-    }
 }

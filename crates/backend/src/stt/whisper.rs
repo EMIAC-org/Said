@@ -36,13 +36,12 @@ pub fn ensure_model_loaded(model_path: &str) -> Result<(), String> {
 }
 
 pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptResult, String> {
-    // Whole-utterance conditioning: DC/high-pass + optional RNNoise denoise +
-    // loudness normalize just before inference (VAD is off for dictation, below).
-    // Length is preserved, so downstream math is unchanged.
-    let mut conditioned = audio_f32.to_vec();
-    said_core::preprocess::condition_16k(&mut conditioned);
-    let audio_f32: &[f32] = &conditioned;
-
+    // Dictation feeds raw 16 kHz audio straight to whisper — matching the
+    // known-good 2.4.1 / Jun-27 baseline (which had no conditioning at all).
+    // The old `condition_16k` loudness normalization (up to 8× gain, noise floor
+    // 0.001) amplified the noise floor on quiet/noisy clips and — with VAD also
+    // off — drove whisper to mis-transcribe ("hears something else"). Silence/noise
+    // hallucination is handled by re-enabled Silero VAD below, not by pre-gain.
     let ctx_mutex = WHISPER_CTX
         .get()
         .ok_or("whisper model not loaded — call ensure_model_loaded first")?;
@@ -90,26 +89,25 @@ pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptRes
     params.set_print_special(false);
     params.set_n_threads(4);
 
-    // Dictation policy: Silero VAD OFF by default. This path is the on-device
-    // dictation fallback (whisper_local); meetings run through the desktop
-    // whisper.cpp path and keep their own VAD. VAD trims short push-to-talk
-    // onsets/quiet speech; noise-driven hallucination is handled upstream by the
-    // RNNoise denoise in `condition_16k`, not VAD. This keeps the two dictation
-    // engines consistent (the desktop path already disables VAD). Re-enable with
-    // AIRNOTE_DICTATION_VAD=1 if a regression on long dictations shows up.
-    let vad_opt_in = std::env::var("AIRNOTE_DICTATION_VAD")
-        .map(|v| matches!(v.trim(), "1" | "true" | "on"))
-        .unwrap_or(false);
+    // Dictation policy: Silero VAD ON by default — restored to the 2.4.1 / Jun-27
+    // baseline. whisper.cpp runs voice-activity detection first and only transcribes
+    // detected speech, which kills the silence/noise "phantom fluent text on pauses"
+    // hallucination (dropped onset + invented prefix + drift to unrelated text).
+    // Disabling it (the `condition_16k` + no-VAD experiment) regressed dictation.
+    // Force it off with AIRNOTE_DICTATION_VAD=0 if ever needed.
+    let vad_on = std::env::var("AIRNOTE_DICTATION_VAD")
+        .map(|v| !matches!(v.trim(), "0" | "false" | "off"))
+        .unwrap_or(true);
     let vad_path = said_core::paths::silero_vad_model_path();
-    if vad_opt_in && vad_path.is_file() {
+    if vad_on && vad_path.is_file() {
         if let Some(p) = vad_path.to_str() {
             params.set_vad_model_path(Some(p));
             params.set_vad_params(WhisperVadParams::new());
             params.enable_vad(true);
-            debug!("[whisper] Silero VAD enabled for dictation ({p}) — AIRNOTE_DICTATION_VAD");
+            debug!("[whisper] Silero VAD enabled for dictation ({p})");
         }
     } else {
-        debug!("[whisper] Silero VAD off for dictation (RNNoise handles noise)");
+        debug!("[whisper] Silero VAD off for dictation (AIRNOTE_DICTATION_VAD=0 or model absent)");
     }
 
     let t0 = std::time::Instant::now();

@@ -1040,26 +1040,17 @@ export function OnboardingFlow({
           </div>
 
           {/* Cloud (Deepgram) — a clean alternative, never forced */}
-          <div
-            className="rounded-xl p-4"
-            style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
-          >
-            <p className="text-[13px] font-semibold text-foreground mb-1.5">Prefer the cloud?</p>
-            <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Deepgram runs in the cloud — instant, nothing to download. Needs an internet
-              connection while you dictate. You can switch either way any time in Settings.
-            </p>
+          <div className="flex items-center justify-between gap-3 mt-2">
+            <span className="text-[11.5px] text-muted-foreground">
+              Prefer the cloud? Whisper Large V3 Turbo — instant, needs internet.
+            </span>
             <button
               onClick={() => void chooseCloudEngine()}
               disabled={keySaving}
-              className="w-full rounded-xl px-4 py-2.5 text-[13px] font-medium border transition-colors disabled:opacity-50"
-              style={{
-                borderColor: "hsl(var(--surface-3))",
-                background: "hsl(var(--surface-3))",
-                color: "hsl(var(--foreground))",
-              }}
+              className="shrink-0 text-[12px] font-medium underline underline-offset-2 transition-colors disabled:opacity-50 hover:text-foreground"
+              style={{ color: "hsl(var(--muted-foreground))" }}
             >
-              {keySaving ? "Saving…" : "Use cloud (Deepgram) instead"}
+              {keySaving ? "Saving…" : "Use cloud instead"}
             </button>
           </div>
 

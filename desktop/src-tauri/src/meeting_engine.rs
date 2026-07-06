@@ -13959,10 +13959,16 @@ fn transcribe_dictation_summary(
     }
     let mut config = resolve_whisper_cpp_config()?;
     config.language = dictation_whisper_language(pref_language);
-    if config.vad_model.is_some() {
-        tracing::info!(
-            "[meeting_engine] dictation local STT disabling VAD; meetings still use VAD"
-        );
+    // Dictation keeps Silero VAD ON (same as meetings). VAD trims the silent/noisy
+    // lead-in so whisper doesn't hallucinate a phantom prefix, swallow the real
+    // onset, or drift to unrelated text on short push-to-talk clips — the exact
+    // regression from the "dictation = no VAD" experiment. Silero is auto-fetched
+    // on first run; if it's absent whisper simply runs without the gate. Force it
+    // off with AIRNOTE_DICTATION_VAD=0 only if a long-dictation regression shows up.
+    let vad_force_off = std::env::var("AIRNOTE_DICTATION_VAD")
+        .map(|v| matches!(v.trim(), "0" | "false" | "off"))
+        .unwrap_or(false);
+    if vad_force_off {
         config.vad_model = None;
     }
     // Parallel on-device model: prefer Apex (large-v3-turbo Hinglish, q8_0) for

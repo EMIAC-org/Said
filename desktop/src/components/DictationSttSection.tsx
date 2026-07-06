@@ -232,7 +232,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
       <div className="px-5 py-4 border-b" style={{ borderColor: "hsl(var(--surface-3))" }}>
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
-          Use cloud Deepgram or download the on-device model for local speech recognition.
+          Use cloud Whisper (Large V3 Turbo) or download the on-device model for local speech recognition.
         </p>
       </div>
 
@@ -257,8 +257,8 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
               {runtime?.deepgram_configured
-                ? "Deepgram ready"
-                : "Deepgram cloud speech recognition"}
+                ? "Cloud Whisper ready"
+                : "Cloud Whisper · Large V3 Turbo"}
             </p>
           </button>
 
