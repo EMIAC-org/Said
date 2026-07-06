@@ -189,7 +189,7 @@ pub fn build_system_prompt_with_vocab(
 
 pub const VOICE_PROMPT_KIND: &str = "voice_system";
 pub const VOICE_PROMPT_TITLE: &str = "AirNote dictation formatter prompt";
-pub const VOICE_PROMPT_BASE_VERSION: &str = "2026-07-04.airnote-formatter-v2";
+pub const VOICE_PROMPT_BASE_VERSION: &str = "2026-07-06.airnote-formatter-v3";
 
 /// Maximum bytes of server-generated profile markdown injected into the system prompt.
 pub const PROFILE_MARKDOWN_MAX_BYTES: usize = 2048;
@@ -251,7 +251,7 @@ GUARD: change a word's SPELLING, never swap it for a different word with a diffe
 6. Preserve explicit personal names and named addressees. Removing casual filler like hey, bhai, or yaar must not delete the recipient name.
 7. Context spellings (VOCAB, names, files, technical terms) override transcription when phonetically close. Do not invent a brand, name, or term from context alone. When confidence is low, keep the closest spoken form.
 8. Email addresses are always fully lowercase, including the domain and the part after the final dot. "VAB.Varma2678@Gmail.Com" becomes "vab.varma2678@gmail.com". This overrides preserving dictated casing.
-9. Compact clearly intended structured tokens: emails, URLs, file paths, commands, env vars, IDs, invoice numbers, amounts, percentages, dates, and times. Do this only when the syntax is clear.
+9. Compact clearly intended structured tokens: emails, URLs, file paths, commands, env vars, IDs, invoice numbers, amounts, percentages, dates, and times. Do this only when the syntax is clear. Keep every digit exactly as spoken: never change the numeric value of an OTP, PIN, phone, account, GSTIN, invoice, or amount, only its spacing and format.
 10. Keep polite and meaningful discourse words: please, kindly, thanks, yaar, bhai, zara, thoda, toh, bhi, ek baar, unless the ACTIVE BUCKET POLICY explicitly treats them as removable surface filler.
 
 ## CLEANING (run in order)
@@ -276,6 +276,16 @@ GUARD: emphasis is not redundancy. "bahut zaroori hai bhai" stays.
 "hello bhai kaise ho kal ke deploy ke baad webhook reconnect fail ho raha hai" -> Hello bhai, kaise ho? Kal ke deploy ke baad webhook reconnect fail ho raha hai.
 
 "send it to VAB dot Varma twenty six seventy eight at gmail dot com" -> Send it to vab.varma2678@gmail.com.
+
+Structured tokens (compact only when the shape is clear; keep every spoken digit exactly, never re-guess a number):
+"client ko pachattar hazaar ka invoice bhejo GST solah percent alag se" -> Client ko Rs 75,000 ka invoice bhejo, GST 16% alag se.
+"OTP nine two seven four one bhej diya, paanch minute mein expire ho jayega" -> OTP 92741 bhej diya, 5 minute mein expire ho jayega.
+"call kar lena plus nine one nine zero one two three four five six seven eight pe" -> Call kar lena +91 90123 45678 pe.
+"demo chautha June ko subah saade das baje rakh do" -> Demo 4 June ko subah 10:30 baje rakh do.
+"mail bhej do neha dot kapoor at the rate outlook dot com pe" -> Mail bhej do neha.kapoor@outlook.com pe.
+"config slash prod dot yaml update karo aur API underscore BASE underscore URL set karo" -> config/prod.yaml update karo aur API_BASE_URL set karo.
+"invoice I N V dash four four seven one pe do lakh ka amount pending hai" -> Invoice INV-4471 pe Rs 2 lakh ka amount pending hai.
+"latency terah sau milliseconds hai, target do sau ke neeche laana hai" -> Latency 1300 milliseconds hai, target 200 ke neeche laana hai.
 
 ## RUNTIME CONTEXT
 {{language_rule}}
