@@ -114,3 +114,70 @@ Requires `GROQ_API_KEY` (or `GATEWAY_API_KEY`).
 ## STT
 
 Local Oriserve Swift via `tools/stt-compare/transcribe_swift.py`. First run may download HF weights.
+
+## Learning corpus export
+
+Export replay-safe `raw_stt/transcript -> polished_output -> user_kept` rows into
+`lab/corpus/` for offline learning-loop experiments. `lab/corpus/` is gitignored.
+
+```bash
+# Local AirNote SQLite: recordings + permanent edit_events.
+python lab/export_learning_corpus.py --source local
+
+# Dev control-plane Postgres over SSH. Password is read from env, never hardcoded.
+AIRNOTE_DEV_SSH_PASSWORD='...' python lab/export_learning_corpus.py --source remote-dev --days 90 --limit 1000
+
+# Only Shivam Bhateja's dev data.
+AIRNOTE_DEV_SSH_PASSWORD='...' python lab/export_learning_corpus.py --source remote-dev --remote-email-like shivam --days 90
+```
+
+The exporter is read-only and does not mutate local SQLite, dev Postgres, or
+production learning memory.
+
+## Learning-loop replay
+
+Run offline memory-policy simulations against an exported corpus:
+
+```bash
+python lab/learning_loop.py --policy shadow
+python lab/learning_loop.py --policy repeat2
+python lab/learning_loop.py --policy conservative
+python lab/learning_loop.py --policy aggressive
+```
+
+Reports are written under `lab/corpus/learning_loop_runs/`, also gitignored.
+Use this to compare strategies before changing the production learning pipeline.
+
+## Model-backed learning replay
+
+Test the real product shape: learned memory is passed to the polish model, and
+the model output is compared with `user_kept`.
+
+```bash
+# Dry-run selection/report without API calls.
+python lab/model_backed_learning_replay.py --dry-run --limit 10
+
+# Prompt variants against Cerebras GPT-OSS 120B.
+python lab/model_backed_learning_replay.py --variant production --slug cerebras-gpt-oss --limit 20
+python lab/model_backed_learning_replay.py --variant intent_v1 --slug cerebras-gpt-oss --limit 20
+python lab/model_backed_learning_replay.py --variant literal_guard --slug cerebras-gpt-oss --limit 20
+```
+
+This is the benchmark for the under-correction vs over-correction problem:
+whether the polish model understands intended text from evidence without
+inventing unsupported meaning.
+
+## Memory candidate judge
+
+Classify extracted edit candidates before they become directive memory:
+
+```bash
+python lab/memory_candidate_judge.py --corpus lab/corpus/learning_corpus_full_20260703T0931Z.jsonl
+```
+
+Labels:
+
+- `safe_directive`: strong enough to become explicit repair memory.
+- `soft_hint_only`: usable as weak context, not as a directive.
+- `needs_more_evidence`: plausible, wait for more matching corrections.
+- `reject`: unsafe or not a memory candidate.

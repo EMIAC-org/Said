@@ -734,7 +734,7 @@ fn sanitize_profile_body(raw: &str) -> String {
     kept.join("\n")
 }
 
-fn regenerate_markdown_from_json(profile: &Value) -> String {
+pub(crate) fn regenerate_markdown_from_json(profile: &Value) -> String {
     let mut lines = Vec::new();
 
     if let Some(summary) = profile

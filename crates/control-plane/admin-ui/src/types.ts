@@ -443,7 +443,39 @@ export interface DictationListItem {
   edit_bucket?: string | null
   edit_detected?: boolean | null
   total_ms?: number | null
+  stt_provider?: string | null
+  stt_model?: string | null
+  output_language?: string | null
   has_edit_feedback: boolean
+}
+
+export interface DictationTraceText {
+  hash: string
+  chars: number
+  words: number
+  redacted: boolean
+  text: string
+}
+
+export interface DictationTraceStage {
+  index: number
+  stage: string
+  component: string
+  function: string
+  input_ref?: string | null
+  output_ref?: string | null
+  changed: boolean
+  duration_ms?: number | null
+  reason?: string | null
+  risk?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export interface DictationTrace {
+  version: number
+  texts: Record<string, DictationTraceText>
+  stages: DictationTraceStage[]
+  summary?: Record<string, unknown>
 }
 
 export interface DictationDetailItem {
@@ -459,9 +491,11 @@ export interface DictationDetailItem {
   model_used?: string | null
   word_count?: number | null
   edit_feedback_json?: Record<string, unknown>
+  dictation_trace_json?: DictationTrace | Record<string, never>
   created_at: string
   edit_bucket?: string | null
   total_ms?: number | null
+  output_language?: string | null
 }
 
 export interface AliasLearnEvent {

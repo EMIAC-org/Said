@@ -33,6 +33,7 @@ import {
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { exportMeetingToLark } from "@/lib/enterprise";
 import { openExternal } from "@/lib/invoke";
+import { NEW_MODEL_FILE } from "@/lib/onDeviceModel";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
 import { DigestView } from "@/components/views/DigestView";
 import {
@@ -1178,9 +1179,10 @@ interface MeetingsViewProps {
   onOpenWorkspaces?: () => void;
 }
 
-// The one and only meeting transcription model — Oriserve Hindi2Hinglish (GGML).
-// There is no model picker; first run downloads this and nothing else.
-const MEETING_MODEL_NAME = "ggml-oriserve-hinglish-fp16.bin";
+// The one and only meeting transcription model — the new on-device model (Apex),
+// shared with dictation. There is no model picker; first run downloads this and
+// nothing else. Renamed in one place via `@/lib/onDeviceModel`.
+const MEETING_MODEL_NAME = NEW_MODEL_FILE;
 
 export function MeetingsView({
   onJoinMeeting,

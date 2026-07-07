@@ -16,7 +16,7 @@ fn base_url(user: &crate::store::users::LocalUser) -> String {
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string())
+        .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string())
 }
 
 async fn post_json(

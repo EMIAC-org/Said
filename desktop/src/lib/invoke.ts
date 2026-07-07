@@ -1,6 +1,9 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AppIdentity,
+  AppUsageRow,
+  SiteUsageRow,
   AppSnapshot,
   BackendEndpoint,
   CloudAuthResponse,
@@ -13,8 +16,6 @@ import type {
   Preferences,
   PrefsUpdate,
   SttRuntimeInfo,
-  PromptTemplateResponse,
-  PromptTestResponse,
   Recording,
 } from "../types";
 
@@ -346,98 +347,144 @@ export async function openaiDisconnect(): Promise<boolean> {
   }
 }
 
-export async function getVoicePrompt(): Promise<PromptTemplateResponse | null> {
-  if (!isTauriRuntime()) {
-    const defaultBody = [
-      "CLEANING RULES:",
-      "- Remove English fillers and stutters.",
-      "- Politeness words are spoken content: keep please, kindly, thanks, can you, could you.",
-      "- Do NOT summarize, answer, add, or remove content words.",
-      "",
-      "STYLE PREFERENCE:",
-      "{{persona}}",
-      "{{tone}}",
-    ].join("\n");
-    return {
-      kind: "voice_system",
-      title: "Voice cleaning system prompt",
-      base_version: "mock",
-      active_body: defaultBody,
-      draft_body: null,
-      default_body: defaultBody,
-      updated_at: Date.now(),
-      applied_at: Date.now(),
-      has_draft: false,
-      active_is_default: true,
-    };
-  }
-  try {
-    return await tauriInvoke<PromptTemplateResponse>("get_voice_prompt");
-  } catch {
-    return null;
-  }
-}
-
-export async function saveVoicePromptDraft(
-  draftBody: string
-): Promise<PromptTemplateResponse | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<PromptTemplateResponse>("save_voice_prompt_draft", {
-      draftBody,
-    });
-  } catch {
-    return null;
-  }
-}
-
-export async function applyVoicePromptDraft(): Promise<PromptTemplateResponse | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<PromptTemplateResponse>("apply_voice_prompt_draft");
-  } catch {
-    return null;
-  }
-}
-
-export async function resetVoicePrompt(): Promise<PromptTemplateResponse | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<PromptTemplateResponse>("reset_voice_prompt");
-  } catch {
-    return null;
-  }
-}
-
-export async function testVoicePrompt(
-  transcript: string,
-  draftBody: string
-): Promise<PromptTestResponse | null> {
-  if (!isTauriRuntime()) {
-    return {
-      output: transcript.replace(/\s+please[.!?]?$/i, ", please."),
-      model_used: "mock",
-      latency_ms: 240,
-    };
-  }
-  try {
-    return await tauriInvoke<PromptTestResponse>("test_voice_prompt", {
-      transcript,
-      draftBody,
-    });
-  } catch {
-    return null;
-  }
-}
-
 /** Fetch recording history from the backend (newest first). */
-export async function listHistory(limit = 50): Promise<Recording[]> {
+export async function listHistory(limit = 50, before?: number): Promise<Recording[]> {
   if (!isTauriRuntime()) return [];
   try {
-    return await tauriInvoke<Recording[]>("get_history", { limit });
+    return await tauriInvoke<Recording[]>("get_history", { limit, before: before ?? null });
   } catch {
     return [];
   }
+}
+
+/** Resolve a stored `target_app` (bundle-id on macOS / exe path on Windows) to a
+ *  `data:image/png;base64,…` icon URL. Cached in the backend; `null` if unknown. */
+export async function getAppIcon(appKey: string | null | undefined): Promise<string | null> {
+  if (!isTauriRuntime() || !appKey || !appKey.trim()) return null;
+  try {
+    return await tauriInvoke<string | null>("get_app_icon", { appKey });
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve a `target_app` key to its full identity (name + category + icon). */
+export async function getAppIdentity(appKey: string | null | undefined): Promise<AppIdentity | null> {
+  if (!isTauriRuntime() || !appKey || !appKey.trim()) return null;
+  try {
+    return await tauriInvoke<AppIdentity | null>("get_app_identity", { appKey });
+  } catch {
+    return null;
+  }
+}
+
+/** Per-app dictation usage (grouped by target_app, most-used first). */
+export async function listAppUsage(): Promise<AppUsageRow[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await tauriInvoke<AppUsageRow[]>("get_app_usage");
+  } catch {
+    return [];
+  }
+}
+
+/** Per-site dictation usage (grouped by host, most-used first). On-device only. */
+export async function listSiteUsage(): Promise<SiteUsageRow[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await tauriInvoke<SiteUsageRow[]>("get_site_usage");
+  } catch {
+    return [];
+  }
+}
+
+/** Favicon for a site host as a data: URL (direct fetch, cached). `null` → fallback. */
+export async function getFavicon(host: string | null | undefined): Promise<string | null> {
+  if (!isTauriRuntime() || !host || !host.trim()) return null;
+  try {
+    return await tauriInvoke<string | null>("get_favicon", { host });
+  } catch {
+    return null;
+  }
+}
+
+export interface ProfileRunStats {
+  run_count: number;
+  skipped_count: number;
+  last_run_at: string | null;
+  last_run_outcome: string | null;
+}
+
+export interface KnowledgeBase {
+  background: string | null;
+  domains: string[];
+  focus_areas: string[];
+}
+
+export interface BucketInsight {
+  bucket_key: string;
+  style: string[];
+  speech_patterns: string[];
+  version: number;
+  updated_at: string | null;
+}
+
+export interface ProfileInsights {
+  run_stats: ProfileRunStats;
+  knowledge: KnowledgeBase;
+  buckets: BucketInsight[];
+}
+
+/** What the cloud profiling brain has learned. `null` when signed out / offline. */
+export async function getProfileInsights(): Promise<ProfileInsights | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<ProfileInsights>("get_profile_insights");
+  } catch {
+    return null;
+  }
+}
+
+/** One app resolved to its bucket, for the Buckets kanban. */
+export interface AppBucketRow {
+  app_key: string;
+  bucket_key: string;
+  /** "user" | "static" | "agent" | "default" */
+  source: string;
+  count: number;
+}
+
+export interface AppBuckets {
+  /** Canonical bucket keys in display order (the kanban columns). */
+  buckets: string[];
+  apps: AppBucketRow[];
+  /** bucket_key -> output-language override, only for buckets that have one set. */
+  bucket_languages?: Record<string, string>;
+}
+
+/** Apps grouped by bucket. `null` when signed out / offline. */
+export async function getAppBuckets(): Promise<AppBuckets | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await tauriInvoke<AppBuckets>("get_app_buckets");
+  } catch {
+    return null;
+  }
+}
+
+/** Re-file an app into a bucket (user override; wins over static + agent). */
+export async function setAppBucket(appKey: string, bucketKey: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("set_app_bucket", { appKey, bucketKey });
+}
+
+/** Set (or clear, with `null`) the per-bucket output-language override. */
+export async function setBucketLanguage(
+  bucketKey: string,
+  outputLanguage: string | null,
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await tauriInvoke("set_bucket_language", { bucketKey, outputLanguage });
 }
 
 /** Diagnostic — try all 5 AX field-reading methods on whatever is focused. */
@@ -625,6 +672,13 @@ export async function downloadRecordingAudio(
   }
 }
 
+/** Export History transcripts to a file. Native save dialog; returns the saved
+ *  path, or null if cancelled / not in Tauri. Throws on write failure. */
+export async function exportHistory(content: string, filename: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  return await tauriInvoke<string | null>("export_history", { content, filename });
+}
+
 export async function revealDownloadedFile(path: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await tauriInvoke("reveal_downloaded_file", { path });
@@ -666,12 +720,12 @@ export function onVoiceToken(
 
 /** Listen for status updates (transcribing / polishing). */
 export function onVoiceStatus(
-  handler: (phase: string, transcript?: string) => void
+  handler: (phase: string, transcript?: string, runId?: string | null) => void
 ): Unsubscribe {
   if (!isTauriRuntime()) return () => {};
   let unsub: Unsubscribe = () => {};
-  listen<{ phase: string; transcript?: string }>("voice-status", (e) =>
-    handler(e.payload.phase, e.payload.transcript)
+  listen<{ phase: string; transcript?: string; run_id?: string | null; recording_id?: string | null }>("voice-status", (e) =>
+    handler(e.payload.phase, e.payload.transcript, e.payload.run_id ?? e.payload.recording_id ?? null)
   ).then((fn) => { unsub = fn; });
   return () => unsub();
 }
@@ -914,6 +968,28 @@ export async function listVocabulary(): Promise<VocabListResponse> {
   }
 }
 
+/** A learned mishearing→canonical correction that rewrites dictation output. */
+export interface VocabAlias {
+  correct_form:    string;   // the canonical spelling (matches a vocab term)
+  transcript_form: string;   // the mis-heard form STT produced
+  use_count:       number;
+  active:          boolean;  // fires at runtime (approved + not blocked)
+}
+
+export interface VocabAliasesResponse {
+  aliases: VocabAlias[];
+}
+
+/** The real learned corrections behind vocab terms (stt_replacements). */
+export async function listVocabularyAliases(): Promise<VocabAliasesResponse> {
+  if (!isTauriRuntime()) return { aliases: [] };
+  try {
+    return await tauriInvoke<VocabAliasesResponse>("list_vocabulary_aliases");
+  } catch {
+    return { aliases: [] };
+  }
+}
+
 export async function addVocabularyTerm(term: string): Promise<void> {
   if (!isTauriRuntime()) return;
   await tauriInvoke("add_vocabulary_term", { term });
@@ -1033,6 +1109,7 @@ export interface DesktopPrefs {
   message_polish_mode: boolean;
   launch_at_login: boolean;
   beta_mode: boolean;
+  browser_context_enabled: boolean;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -1043,6 +1120,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       message_polish_mode: false,
       launch_at_login: false,
       beta_mode: false,
+      browser_context_enabled: false,
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
@@ -1051,6 +1129,46 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
 export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("set_desktop_prefs", { prefs });
+}
+
+/** Prompt macOS Automation consent for running browsers (upfront, on Enable).
+ *  Returns the browser names prompted. */
+export async function requestBrowserAutomation(): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await tauriInvoke<string[]>("request_browser_automation");
+  } catch {
+    return [];
+  }
+}
+
+export interface BrowserAutomation {
+  app_key: string;
+  name: string;
+  running: boolean;
+  status: "granted" | "denied" | "unknown";
+}
+
+/** Live macOS Automation consent state for every known browser currently
+ *  running. Empty when no known browser is open (Apple Events need a live
+ *  target), so the UI should tell the user to open their browser. */
+export async function browserAutomationStatus(): Promise<BrowserAutomation[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    return await tauriInvoke<BrowserAutomation[]>("browser_automation_status");
+  } catch {
+    return [];
+  }
+}
+
+/** Fire the Automation consent dialog for one specific browser (by bundle-id). */
+export async function triggerBrowserAutomation(appKey: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    return await tauriInvoke<boolean>("trigger_browser_automation", { appKey });
+  } catch {
+    return false;
+  }
 }
 
 // ── Developer Problem Command ────────────────────────────────────────────────

@@ -36,6 +36,12 @@ pub fn ensure_model_loaded(model_path: &str) -> Result<(), String> {
 }
 
 pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptResult, String> {
+    // Dictation feeds raw 16 kHz audio straight to whisper — matching the
+    // known-good 2.4.1 / Jun-27 baseline (which had no conditioning at all).
+    // The old `condition_16k` loudness normalization (up to 8× gain, noise floor
+    // 0.001) amplified the noise floor on quiet/noisy clips and — with VAD also
+    // off — drove whisper to mis-transcribe ("hears something else"). Silence/noise
+    // hallucination is handled by re-enabled Silero VAD below, not by pre-gain.
     let ctx_mutex = WHISPER_CTX
         .get()
         .ok_or("whisper model not loaded — call ensure_model_loaded first")?;
@@ -83,20 +89,25 @@ pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptRes
     params.set_print_special(false);
     params.set_n_threads(4);
 
-    // Silero VAD gate: when the model is present, whisper.cpp runs voice-activity
-    // detection first and only transcribes detected speech. This kills the
-    // silence/noise hallucination seen on longer dictations (the "phantom"
-    // fluent text on pauses). Best-effort — skipped if the model isn't installed.
+    // Dictation policy: Silero VAD ON by default — restored to the 2.4.1 / Jun-27
+    // baseline. whisper.cpp runs voice-activity detection first and only transcribes
+    // detected speech, which kills the silence/noise "phantom fluent text on pauses"
+    // hallucination (dropped onset + invented prefix + drift to unrelated text).
+    // Disabling it (the `condition_16k` + no-VAD experiment) regressed dictation.
+    // Force it off with AIRNOTE_DICTATION_VAD=0 if ever needed.
+    let vad_on = std::env::var("AIRNOTE_DICTATION_VAD")
+        .map(|v| !matches!(v.trim(), "0" | "false" | "off"))
+        .unwrap_or(true);
     let vad_path = said_core::paths::silero_vad_model_path();
-    if vad_path.is_file() {
+    if vad_on && vad_path.is_file() {
         if let Some(p) = vad_path.to_str() {
             params.set_vad_model_path(Some(p));
             params.set_vad_params(WhisperVadParams::new());
             params.enable_vad(true);
-            debug!("[whisper] Silero VAD enabled ({p})");
+            debug!("[whisper] Silero VAD enabled for dictation ({p})");
         }
     } else {
-        debug!("[whisper] Silero VAD model absent — running without VAD gate");
+        debug!("[whisper] Silero VAD off for dictation (AIRNOTE_DICTATION_VAD=0 or model absent)");
     }
 
     let t0 = std::time::Instant::now();
@@ -152,7 +163,7 @@ pub fn transcribe_wav(wav_data: &[u8], language: &str) -> Result<TranscriptResul
     // never load until the backend restarts. `WHISPER_CTX` is a OnceCell that only
     // stores on success, so a prior failed/absent load is safely retried here.
     if WHISPER_CTX.get().is_none() {
-        let model = crate::paths::whisper_model_path();
+        let model = crate::paths::active_dictation_model_path();
         let model_str = model
             .to_str()
             .ok_or_else(|| "whisper model path is not valid UTF-8".to_string())?;
@@ -211,7 +222,11 @@ fn decode_wav_to_f32(wav_data: &[u8]) -> Result<Vec<f32>, String> {
             "[whisper] WAV sample rate {}Hz != expected {}Hz — resampling",
             sample_rate, WHISPER_SAMPLE_RATE
         );
-        Ok(resample(&mono, sample_rate as usize, WHISPER_SAMPLE_RATE))
+        // Band-limited (anti-aliased) resample — batch path, whole utterance.
+        Ok(said_core::preprocess::resample_16k_hq(
+            &mono,
+            sample_rate as usize,
+        ))
     } else {
         Ok(mono)
     }
@@ -234,24 +249,6 @@ fn find_data_chunk(wav: &[u8]) -> Option<usize> {
     None
 }
 
-fn resample(input: &[f32], from_rate: usize, to_rate: usize) -> Vec<f32> {
-    if from_rate == to_rate || input.is_empty() {
-        return input.to_vec();
-    }
-    let ratio = from_rate as f64 / to_rate as f64;
-    let out_len = (input.len() as f64 / ratio).ceil() as usize;
-    (0..out_len)
-        .map(|i| {
-            let src = i as f64 * ratio;
-            let idx = src as usize;
-            let frac = (src - idx as f64) as f32;
-            let a = input[idx.min(input.len() - 1)];
-            let b = input[(idx + 1).min(input.len() - 1)];
-            a + frac * (b - a)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,19 +257,5 @@ mod tests {
     fn decode_wav_rejects_invalid() {
         assert!(decode_wav_to_f32(b"not a wav").is_err());
         assert!(decode_wav_to_f32(&[0; 10]).is_err());
-    }
-
-    #[test]
-    fn resample_identity() {
-        let input = vec![0.1, 0.2, 0.3, 0.4];
-        let out = resample(&input, 16000, 16000);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn resample_downsample() {
-        let input: Vec<f32> = (0..32000).map(|i| (i as f32 / 32000.0).sin()).collect();
-        let out = resample(&input, 32000, 16000);
-        assert!((out.len() as f64 - 16000.0).abs() < 2.0);
     }
 }

@@ -40,6 +40,7 @@ impl SimVocabTerm {
             meaning: self.meaning.clone(),
             context: self.example_context.clone(),
             resolution,
+            evidence: None,
             stt_aliases: self.stt_aliases.clone(),
         }
     }

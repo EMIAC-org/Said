@@ -297,6 +297,7 @@ async fn run_case(
             raw_transcript: Some(case.raw_transcript),
             local_corrected_transcript: Some(case.airnote_output),
             polished_output: Some(case.airnote_output),
+            trace_json: None,
         },
     );
 

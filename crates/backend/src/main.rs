@@ -70,10 +70,9 @@ async fn main() {
     // ── Load env vars ─────────────────────────────────────────────────────────
     said_core::load_env();
 
-    const DEFAULT_DIAGNOSTICS_BASE: &str = "https://airnote.emiactech.com";
     let diagnostics_base = std::env::var("AIRNOTE_DIAGNOSTICS_URL")
         .or_else(|_| std::env::var("AIRNOTE_CONTROL_PLANE_URL"))
-        .unwrap_or_else(|_| DEFAULT_DIAGNOSTICS_BASE.to_string());
+        .unwrap_or_else(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
     said_core::reporter::configure(&diagnostics_base);
     said_core::reporter::set_phase("backend_starting");
 
@@ -200,7 +199,7 @@ async fn main() {
     // finishes simply blocks on the same one-time init.
     #[cfg(feature = "local-stt")]
     {
-        let whisper_model = said_backend::paths::whisper_model_path();
+        let whisper_model = said_backend::paths::active_dictation_model_path();
         tokio::task::spawn_blocking(move || {
             if whisper_model.is_file() {
                 match said_backend::stt::whisper::ensure_model_loaded(
@@ -218,7 +217,10 @@ async fn main() {
         });
     }
 
-    // ── 7-day recording + 24h audio file cleanup (every 6 hours) ─────────────
+    // ── Retention sweep (every 6 h): delete recordings + audio older than 1 day
+    // (failed-retryable audio is protected up to 7 days — see cleanup_old_audio).
+    // NOTE: the 6 h interval RESETS on every backend restart, so this only fires
+    // after 6 h of continuous uptime; short-lived sessions rarely trigger it.
     {
         let pool2 = pool.clone();
         tokio::spawn(async move {
@@ -228,7 +230,7 @@ async fn main() {
                 interval.tick().await;
                 said_backend::store::history::cleanup_old_recordings(&pool2);
                 said_backend::routes::voice::cleanup_old_audio(&pool2);
-                info!("[cleanup] 7-day recording + 24h audio sweep complete");
+                info!("[cleanup] 1-day recording + audio retention sweep complete");
             }
         });
     }
@@ -404,7 +406,9 @@ async fn send_metering_report(
         .map(|s| s.to_string())
         .unwrap_or_else(|| cloud_url.to_string());
 
-    // Aggregate from recordings over the last 7 days (matches history retention)
+    // Aggregate recordings from the last 7 days for the metering report. (The
+    // retention sweep targets 1 day but rarely fires — see the cleanup task —
+    // so up to a week of rows is typically present.)
     let events: Vec<serde_json::Value> = {
         let conn = match pool.get() {
             Ok(c) => c,

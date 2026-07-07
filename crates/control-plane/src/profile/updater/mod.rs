@@ -7,6 +7,8 @@
 //! polish without an environment gate.
 //! Model override: `DEEPSEEK_PROFILE_UPDATE_MODEL` (default `deepseek-v4-flash`).
 
+pub mod batch;
+pub mod batch_run;
 pub mod deepseek;
 pub mod jobs;
 pub mod prompt;

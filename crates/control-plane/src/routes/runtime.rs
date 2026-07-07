@@ -6,7 +6,15 @@
 //! - transcript-only polish probe retained for latency testing
 //! - WebSocket audio runtime MVP: client audio -> Deepgram -> server polish
 //!
-//! This module intentionally does not persist raw transcript/audio by default.
+//! Persistence, stated precisely (this exact wording matters — a vague version
+//! of it previously read as "the server keeps no transcripts", which is FALSE):
+//!   - Raw AUDIO is never persisted server-side.
+//!   - Transcript / polished / edited TEXT for signed-in users IS persisted, in
+//!     table `runtime_history_items`, via the history-sync path in the sibling
+//!     module `runtime_history.rs` (POST /v1/runtime/history/sync) and via
+//!     `routes/observability.rs`. It is NOT written inline in the polish
+//!     handlers below — so do not conclude from the absence of an INSERT here
+//!     that transcripts aren't stored. They are. Grep `runtime_history_items`.
 
 use std::{
     convert::Infallible,
@@ -41,8 +49,8 @@ use uuid::Uuid;
 use crate::notification_hub::DesktopNotification;
 use crate::stt::{self, runtime_stt_credential_provider};
 use crate::voice_polish_standalone::{
-    build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
-    build_voice_user_message,
+    RuntimeVocabHint, build_rewrite_system_prompt, build_rewrite_user_message,
+    build_voice_system_prompt_with_vocab_hints, build_voice_user_message,
 };
 use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
 
@@ -288,11 +296,13 @@ pub struct VoicePolishRequest {
     #[serde(default)]
     pub safe_vocab_terms: Vec<String>,
     #[serde(default)]
+    pub vocab_hints: Vec<RuntimeVocabHint>,
+    #[serde(default)]
     pub client_run_id: Option<String>,
+    /// Bundle-id / exe app_key of the focused app, forwarded from the desktop so the
+    /// server can inject the matching per-app profile bucket. Absent → global KB only.
     #[serde(default)]
-    pub client_profile_markdown: Option<String>,
-    #[serde(default)]
-    pub client_profile_version: Option<i64>,
+    pub target_app: Option<String>,
     /// Optional per-request tone override (e.g. the iOS keyboard "rewrite selection"
     /// picks a tone per tap). When present it wins over the account's saved tone_preset;
     /// when absent — every existing caller — behavior is byte-for-byte unchanged.
@@ -314,6 +324,8 @@ pub struct VoiceWavRequest {
     #[serde(default)]
     pub safe_vocab_terms: Vec<String>,
     #[serde(default)]
+    pub vocab_hints: Vec<RuntimeVocabHint>,
+    #[serde(default)]
     pub client_run_id: Option<String>,
     #[serde(default)]
     pub recording_id: Option<String>,
@@ -325,6 +337,10 @@ pub struct VoiceWavRequest {
     pub app_version: Option<String>,
     #[serde(default)]
     pub stt_provider: Option<String>,
+    /// Focused app (macOS bundle id / Windows exe path). When present, the polish prompt
+    /// gets that app-bucket's learned style overlay; absent = global profile only.
+    #[serde(default)]
+    pub target_app: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -746,6 +762,7 @@ pub async fn save_credential(
         provider,
         row.id
     );
+    invalidate_runtime_credential_cache_for_row(&state, &row, user.account_id);
 
     Ok(Json(row.into()))
 }
@@ -805,6 +822,7 @@ pub async fn validate_credential(
         .execute(&state.db)
         .await
         .map_err(db_err)?;
+        invalidate_runtime_credential_cache_for_secret_row(&state, &row, user.account_id);
         return Err(err.into_response());
     }
 
@@ -819,6 +837,7 @@ pub async fn validate_credential(
     .fetch_one(&state.db)
     .await
     .map_err(db_err)?;
+    invalidate_runtime_credential_cache_for_row(&state, &row, user.account_id);
 
     Ok(Json(row.into()))
 }
@@ -842,6 +861,7 @@ pub async fn revoke_credential(
     .execute(&state.db)
     .await
     .map_err(db_err)?;
+    invalidate_runtime_credential_cache_for_secret_row(&state, &row, user.account_id);
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1501,7 +1521,9 @@ async fn handle_voice_ws(
     let mut selected_model = default_selected_model();
     let mut output_language = default_output_language();
     let mut safe_vocab_terms: Vec<String> = Vec::new();
+    let mut vocab_hints: Vec<RuntimeVocabHint> = Vec::new();
     let mut screen_context: Option<String> = None;
+    let mut target_app: Option<String> = None;
     let mut client_run_id: Option<String> = None;
     let mut saw_first_transcript_event = false;
 
@@ -1548,6 +1570,12 @@ async fn handle_voice_ws(
                             .get("screen_context")
                             .and_then(Value::as_str)
                             .map(|s| s.chars().take(500).collect::<String>());
+                        target_app = value
+                            .get("target_app")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
                         safe_vocab_terms = value
                             .get("safe_vocab_terms")
                             .and_then(Value::as_array)
@@ -1561,6 +1589,28 @@ async fn handle_voice_ws(
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default();
+                        vocab_hints = value
+                            .get("vocab_hints")
+                            .and_then(Value::as_array)
+                            .map(|items| {
+                                items
+                                    .iter()
+                                    .filter_map(|item| {
+                                        serde_json::from_value::<RuntimeVocabHint>(item.clone()).ok()
+                                    })
+                                    .map(|mut hint| {
+                                        hint.term = hint.term.trim().to_string();
+                                        hint.tier = hint.tier.trim().to_ascii_lowercase();
+                                        hint
+                                    })
+                                    .filter(|hint| !hint.term.is_empty())
+                                    .take(30)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        if !vocab_hints.is_empty() {
+                            safe_vocab_terms = apply_terms_from_vocab_hints(&vocab_hints);
+                        }
                         let sample_rate = value
                             .get("audio")
                             .and_then(|a| a.get("sample_rate"))
@@ -1847,10 +1897,12 @@ async fn handle_voice_ws(
                                 &selected_model,
                                 screen_context.as_deref(),
                                 &safe_vocab_terms,
+                                &vocab_hints,
+                                target_app.as_deref(),
                             )
                             .await
                             {
-                                Ok(polished) => {
+                                Ok((polished, _effective_language)) => {
                                     let polish_ms = polish_start.elapsed().as_millis() as i64;
                                     let total_ms = stt_ms + polish_ms;
                                     let _ = update_runtime_session_result(
@@ -2320,7 +2372,9 @@ async fn polish_runtime_transcript(
     selected_model: &str,
     screen_context: Option<&str>,
     safe_vocab_terms: &[String],
-) -> Result<String, (StatusCode, Json<Value>)> {
+    vocab_hints: &[RuntimeVocabHint],
+    target_app: Option<&str>,
+) -> Result<(String, String), (StatusCode, Json<Value>)> {
     let formatted_transcript = crate::number_format::apply(transcript);
     if formatted_transcript != transcript {
         insert_stage_event(
@@ -2339,18 +2393,45 @@ async fn polish_runtime_transcript(
     }
 
     let (tone_preset, custom_prompt) = account_polish_persona(state, account_id).await;
-    let profile_md: Option<&str> = None;
+
+    // Additive learned-profile injection: global profile + (when the focused app is known)
+    // the current bucket's style overlay. Never replaces the base prompt or its hard rules.
+    let active_org_id = primary_org_id(state, account_id).await?;
+    let org_scope = crate::profile::store::resolve_org_scope(active_org_id);
+    let profile_context = crate::profile::load_prompt_profile_context_cached(
+        state, account_id, org_scope, target_app,
+    )
+    .await;
+    let profile_block = profile_context.markdown.clone();
+    let profile_md: Option<&str> = if profile_block.is_empty() {
+        None
+    } else {
+        Some(profile_block.as_str())
+    };
+
+    // Per-bucket output-language override wins over the request/account language.
+    let language_source = if profile_context.language_override.is_some() {
+        "bucket_override"
+    } else {
+        "request"
+    };
+    let effective_output_language: String = profile_context
+        .language_override
+        .clone()
+        .unwrap_or_else(|| output_language.to_string());
 
     let prompt_start = Instant::now();
-    let system_prompt = build_voice_system_prompt(
-        output_language,
+    let system_prompt = build_voice_system_prompt_with_vocab_hints(
+        &effective_output_language,
         &tone_preset,
         custom_prompt.as_deref(),
         screen_context,
         safe_vocab_terms,
+        vocab_hints,
         profile_md,
+        Some(profile_context.domain_context.as_str()),
     );
-    let user_message = build_voice_user_message(&formatted_transcript, output_language);
+    let user_message = build_voice_user_message(&formatted_transcript, &effective_output_language);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
     insert_stage_event(
         state,
@@ -2359,7 +2440,17 @@ async fn polish_runtime_transcript(
         "ok",
         Some(prompt_ms),
         None,
-        json!({"prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION}),
+        json!({
+            "prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION,
+            "bucket_key": profile_context.bucket_key,
+            "bucket_source": profile_context.bucket_source,
+            "domains": profile_context.domains,
+            "domain_context": profile_context.domain_context,
+            "domain_source": profile_context.domain_source,
+            "output_language": effective_output_language,
+            "language_source": language_source,
+            "request_output_language": output_language,
+        }),
     )
     .await?;
 
@@ -2374,11 +2465,15 @@ async fn polish_runtime_transcript(
         provider: provider_label,
         model: &model,
         selected_model: &selected_model,
-        output_language,
+        output_language: &effective_output_language,
         tone_preset: &tone_preset,
         prompt_kind: "voice_polish",
         profile_version: None,
-        profile_status: "missing",
+        profile_status: if profile_md.is_some() {
+            "injected"
+        } else {
+            "missing"
+        },
         profile_cache_hit: false,
         profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
         profile_injected: profile_md.is_some(),
@@ -2388,7 +2483,6 @@ async fn polish_runtime_transcript(
     })
     .await;
     let model_start = Instant::now();
-    let active_org_id = primary_org_id(state, account_id).await?;
     let credential =
         runtime_provider_secret(state, account_id, active_org_id, provider_label).await?;
     let secret = credential.secret.clone();
@@ -2399,6 +2493,8 @@ async fn polish_runtime_transcript(
         provider_label,
         &secret,
         &model,
+        route.endpoint,
+        route.providers,
         &system_prompt,
         &user_message,
         None,
@@ -2432,8 +2528,10 @@ async fn polish_runtime_transcript(
                 json!({"model": model, "provider": provider_label}),
             )
             .await?;
-            let output =
-                crate::voice_polish_standalone::enforce_output_script(&raw_output, output_language);
+            let output = crate::voice_polish_standalone::enforce_output_script(
+                &raw_output,
+                &effective_output_language,
+            );
             let restored = restore_literal_tokens(&formatted_transcript, &output, safe_vocab_terms);
             let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
             if restored != output {
@@ -2486,8 +2584,11 @@ async fn polish_runtime_transcript(
                 .await?;
             }
             let output = tidy_casing(&email_output);
-            let (output, guard_reason) =
-                guard_voice_polish_output(&output, &formatted_transcript, output_language);
+            let (output, guard_reason) = guard_voice_polish_output(
+                &output,
+                &formatted_transcript,
+                &effective_output_language,
+            );
             if let Some(reason) = guard_reason {
                 insert_stage_event(
                     state,
@@ -2503,7 +2604,7 @@ async fn polish_runtime_transcript(
                 )
                 .await?;
             }
-            Ok(output)
+            Ok((output, effective_output_language))
         }
         Err(err) => {
             if let Some(ref credential) = polish_credential {
@@ -2825,117 +2926,138 @@ pub async fn voice_wav(
     .await?;
 
     let polish_start = Instant::now();
-    let (output, model, prompt_version, history_source) = if message_polish_mode {
-        if state.deepseek_api_key.trim().is_empty() {
-            let _ = mark_runtime_session(
+    let (output, model, prompt_version, history_source, effective_output_language) =
+        if message_polish_mode {
+            if state.deepseek_api_key.trim().is_empty() {
+                let _ = mark_runtime_session(
+                    &state,
+                    run_id,
+                    "failed",
+                    Some("message_polish_unconfigured"),
+                )
+                .await;
+                return Err(json_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "DEEPSEEK_API_KEY is not configured on the server",
+                ));
+            }
+            let system_prompt = build_message_polish_system_prompt();
+            let user_message = build_message_polish_user_message(&transcript);
+            let raw_output = match call_deepseek_message_polish(
                 &state,
-                run_id,
-                "failed",
-                Some("message_polish_unconfigured"),
+                &state.deepseek_api_key,
+                &system_prompt,
+                &user_message,
             )
-            .await;
-            return Err(json_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "DEEPSEEK_API_KEY is not configured on the server",
-            ));
-        }
-        let system_prompt = build_message_polish_system_prompt();
-        let user_message = build_message_polish_user_message(&transcript);
-        let raw_output = match call_deepseek_message_polish(
-            &state,
-            &state.deepseek_api_key,
-            &system_prompt,
-            &user_message,
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(err) => {
-                let _ =
-                    mark_runtime_session(&state, run_id, "failed", Some("message_polish_failed"))
-                        .await;
-                return Err(err);
-            }
-        };
-        let output = scrub_message_polish_output(&raw_output);
-        let model = deepseek_message_polish_model(&state);
-        insert_stage_event(
-            &state,
-            run_id,
-            "message_polish_model",
-            "ok",
-            None,
-            None,
-            json!({
-                "model": model,
-                "input_chars": transcript.chars().count(),
-                "output_chars": output.chars().count(),
-                "source": "audio"
-            }),
-        )
-        .await?;
-        (
-            output,
-            model,
-            "message-polish-audio-openai-transcribe-deepseek-v4-flash-2026-06-20".to_string(),
-            "server_message_polish_audio",
-        )
-    } else {
-        let merged_vocab = merge_vocab_terms(
-            &req.safe_vocab_terms,
-            &server_memory.vocab_terms,
-            &transcript,
-        );
-        let output = match polish_runtime_transcript(
-            &state,
-            user.account_id,
-            run_id,
-            &transcript,
-            &req.output_language,
-            &req.selected_model,
-            req.screen_context.as_deref(),
-            &merged_vocab,
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(err) => {
-                let _ = mark_runtime_session(&state, run_id, "failed", Some("polish_failed")).await;
-                return Err(err);
-            }
-        };
-
-        // Stable 2.3.4 parity: final runtime mutation is approved/safe exact STT
-        // aliases only. Edit-policy rules remain memory/status data for now; they
-        // must not broaden the server output until parity against the shipped
-        // local pipeline is proven.
-        let formatted_for_resolver = crate::number_format::apply(&transcript);
-        let (output, resolver_applied, resolver_skipped) =
-            apply_exact_resolver(&output, &formatted_for_resolver, &server_memory);
-        if resolver_applied > 0 {
-            let _ = insert_stage_event(
+            .await
+            {
+                Ok(output) => output,
+                Err(err) => {
+                    let _ = mark_runtime_session(
+                        &state,
+                        run_id,
+                        "failed",
+                        Some("message_polish_failed"),
+                    )
+                    .await;
+                    return Err(err);
+                }
+            };
+            let output = scrub_message_polish_output(&raw_output);
+            let model = deepseek_message_polish_model(&state);
+            insert_stage_event(
                 &state,
                 run_id,
-                "exact_resolver",
+                "message_polish_model",
                 "ok",
                 None,
                 None,
                 json!({
-                    "evidence_count": server_memory.replacements.len(),
-                    "applied_count": resolver_applied,
-                    "skipped_count": resolver_skipped,
+                    "model": model,
+                    "input_chars": transcript.chars().count(),
+                    "output_chars": output.chars().count(),
+                    "source": "audio"
                 }),
             )
-            .await;
-        }
+            .await?;
+            (
+                output,
+                model,
+                "message-polish-audio-openai-transcribe-deepseek-v4-flash-2026-06-20".to_string(),
+                "server_message_polish_audio",
+                "english".to_string(),
+            )
+        } else {
+            let request_vocab_hints = normalize_runtime_vocab_hints(&req.vocab_hints);
+            let has_rich_vocab_hints = !request_vocab_hints.is_empty();
+            let merged_vocab = if has_rich_vocab_hints {
+                apply_terms_from_vocab_hints(&request_vocab_hints)
+            } else {
+                merge_vocab_terms(
+                    &req.safe_vocab_terms,
+                    &server_memory.vocab_terms,
+                    &transcript,
+                )
+            };
+            let merged_vocab_hints = if has_rich_vocab_hints {
+                request_vocab_hints
+            } else {
+                vocab_hints_from_flat_terms(&merged_vocab)
+            };
+            let (output, effective_output_language) = match polish_runtime_transcript(
+                &state,
+                user.account_id,
+                run_id,
+                &transcript,
+                &req.output_language,
+                &req.selected_model,
+                req.screen_context.as_deref(),
+                &merged_vocab,
+                &merged_vocab_hints,
+                req.target_app.as_deref(),
+            )
+            .await
+            {
+                Ok(pair) => pair,
+                Err(err) => {
+                    let _ =
+                        mark_runtime_session(&state, run_id, "failed", Some("polish_failed")).await;
+                    return Err(err);
+                }
+            };
 
-        (
-            output,
-            polish_model_label(&req.selected_model),
-            "server-runtime-wav-probe-2026-06-07".to_string(),
-            "server_wav",
-        )
-    };
+            // Stable 2.3.4 parity: final runtime mutation is approved/safe exact STT
+            // aliases only. Edit-policy rules remain memory/status data for now; they
+            // must not broaden the server output until parity against the shipped
+            // local pipeline is proven.
+            let formatted_for_resolver = crate::number_format::apply(&transcript);
+            let (output, resolver_applied, resolver_skipped) =
+                apply_exact_resolver(&output, &formatted_for_resolver, &server_memory);
+            if resolver_applied > 0 {
+                let _ = insert_stage_event(
+                    &state,
+                    run_id,
+                    "exact_resolver",
+                    "ok",
+                    None,
+                    None,
+                    json!({
+                        "evidence_count": server_memory.replacements.len(),
+                        "applied_count": resolver_applied,
+                        "skipped_count": resolver_skipped,
+                    }),
+                )
+                .await;
+            }
+
+            (
+                output,
+                polish_model_label(&req.selected_model),
+                "server-runtime-wav-probe-2026-06-07".to_string(),
+                "server_wav",
+                effective_output_language,
+            )
+        };
 
     let polish_ms = polish_start.elapsed().as_millis() as i64;
     let total_ms = total_start.elapsed().as_millis() as i64;
@@ -2963,6 +3085,7 @@ pub async fn voice_wav(
         history_source,
         Some(stt_ms),
         Some(polish_ms),
+        Some(effective_output_language.as_str()),
     )
     .await;
 
@@ -3536,6 +3659,8 @@ pub async fn problem_solve(
         provider_label,
         &credential.secret,
         &model,
+        route.endpoint,
+        route.providers,
         &system_prompt,
         &user_message,
         None,
@@ -3763,11 +3888,22 @@ async fn execute_voice_polish(
     let server_memory = load_runtime_memory_cached(&state, user.account_id)
         .await
         .unwrap_or_default();
-    let merged_vocab = merge_vocab_terms(
-        &req.safe_vocab_terms,
-        &server_memory.vocab_terms,
-        transcript,
-    );
+    let request_vocab_hints = normalize_runtime_vocab_hints(&req.vocab_hints);
+    let has_rich_vocab_hints = !request_vocab_hints.is_empty();
+    let merged_vocab = if has_rich_vocab_hints {
+        apply_terms_from_vocab_hints(&request_vocab_hints)
+    } else {
+        merge_vocab_terms(
+            &req.safe_vocab_terms,
+            &server_memory.vocab_terms,
+            transcript,
+        )
+    };
+    let merged_vocab_hints = if has_rich_vocab_hints {
+        request_vocab_hints
+    } else {
+        vocab_hints_from_flat_terms(&merged_vocab)
+    };
     let memory_ms = memory_start.elapsed().as_millis() as i64;
 
     let session_start = Instant::now();
@@ -3785,6 +3921,7 @@ async fn execute_voice_polish(
             "endpoint": "voice_polish_probe",
             "transcript_chars": transcript.chars().count(),
             "safe_vocab_terms": merged_vocab.len(),
+            "vocab_hints": merged_vocab_hints.len(),
             "server_vocab_count": server_memory.vocab_terms.len(),
         }),
     )
@@ -3877,41 +4014,88 @@ async fn execute_voice_polish(
         }
     };
 
+    // Additive server-learned profile injection: unified global KB + (when the focused
+    // app is known) the matching per-app bucket overlay. Replaces the legacy
+    // client-shipped `client_profile_markdown`; never overrides the base prompt/hard rules.
+    let org_scope = crate::profile::resolve_org_scope(&tenant_ctx);
+    let profile_start = Instant::now();
+    let profile_context = crate::profile::load_prompt_profile_context_cached(
+        &state,
+        user.account_id,
+        org_scope,
+        req.target_app.as_deref(),
+    )
+    .await;
+    let profile_ms = profile_start.elapsed().as_millis() as i64;
+    let profile_md: Option<&str> = if profile_context.markdown.trim().is_empty() {
+        None
+    } else {
+        Some(profile_context.markdown.as_str())
+    };
+
+    // Per-bucket output-language override: a user can force e.g. English output
+    // when dictating into a coding/AI app while messaging apps preserve their
+    // spoken Hinglish. Applies to voice polish only, never the tray rewrite.
+    let language_override_active = !is_rewrite && profile_context.language_override.is_some();
+    let effective_output_language: String = if language_override_active {
+        profile_context
+            .language_override
+            .clone()
+            .unwrap_or_else(|| req.output_language.clone())
+    } else {
+        req.output_language.clone()
+    };
+    let language_source = if language_override_active {
+        "bucket_override"
+    } else {
+        "request"
+    };
+
     // Build the prompt now that the persona has resolved (pure CPU).
     let build_start = Instant::now();
-    let profile_md = req
-        .client_profile_markdown
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_raw(profile_md);
-    let prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
+    let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_server(profile_md);
+    let mut prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
         &profile_snapshot,
-        req.client_profile_version,
+        profile_context.profile_version,
+        profile_context.bucket_key.as_deref(),
+        profile_context.bucket_source,
+        &profile_context.domains,
+        Some(profile_context.domain_context.as_str()),
+        Some(profile_context.domain_source),
     );
+    prompt_built_meta["output_language"] = json!(effective_output_language);
+    prompt_built_meta["language_source"] = json!(language_source);
+    prompt_built_meta["request_output_language"] = json!(req.output_language);
 
     let (system_prompt, user_message) = if is_rewrite {
         (
-            build_rewrite_system_prompt(&tone_preset, &req.output_language),
-            build_rewrite_user_message(&formatted_transcript, &req.output_language),
+            build_rewrite_system_prompt(&tone_preset, &effective_output_language),
+            build_rewrite_user_message(&formatted_transcript, &effective_output_language),
         )
     } else {
         (
-            build_voice_system_prompt(
-                &req.output_language,
+            build_voice_system_prompt_with_vocab_hints(
+                &effective_output_language,
                 &tone_preset,
                 custom_prompt.as_deref(),
                 req.screen_context.as_deref(),
                 &merged_vocab,
+                &merged_vocab_hints,
                 profile_md,
+                Some(profile_context.domain_context.as_str()),
             ),
-            build_voice_user_message(&formatted_transcript, &req.output_language),
+            build_voice_user_message(&formatted_transcript, &effective_output_language),
         )
     };
-    let prompt_ms = prompt_cpu_ms + build_start.elapsed().as_millis() as i64;
+    let prompt_ms = prompt_cpu_ms + profile_ms + build_start.elapsed().as_millis() as i64;
+    prompt_built_meta["system_prompt"] = json!(system_prompt);
+    prompt_built_meta["system_prompt_chars"] = json!(system_prompt.chars().count());
+    prompt_built_meta["user_message_chars"] = json!(user_message.chars().count());
+    prompt_built_meta["vocab_hints"] = json!(merged_vocab_hints.len());
+    prompt_built_meta["apply_vocab_terms"] = json!(merged_vocab.len());
 
     tracing::info!(
-        "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, credential:{}}}",
+        "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, profile:{}, credential:{}}} cache={{profile_context:{}, global_profile:{}, app_bucket:{}, bucket_profile:{}}} bucket={:?} bucket_source={:?}",
         user.account_id,
         run_id,
         model,
@@ -3919,12 +4103,19 @@ async fn execute_voice_polish(
         selected_model,
         credential_scope,
         transcript.len(),
-        merged_vocab.len(),
+        merged_vocab_hints.len(),
         tenant_ms,
         memory_ms,
         session_ms,
         prompt_ms,
+        profile_ms,
         credential_ms,
+        profile_context.cache_hit,
+        profile_context.global_profile_cache_hit,
+        profile_context.app_bucket_cache_hit,
+        profile_context.bucket_profile_cache_hit,
+        profile_context.bucket_key.as_deref(),
+        profile_context.bucket_source,
     );
     write_runtime_prompt_debug_log(RuntimePromptDebug {
         route: "execute_voice_polish",
@@ -3933,20 +4124,20 @@ async fn execute_voice_polish(
         provider: provider_label,
         model: &model,
         selected_model: &selected_model,
-        output_language: &req.output_language,
+        output_language: &effective_output_language,
         tone_preset: &tone_preset,
         prompt_kind: if is_rewrite {
             "rewrite"
         } else {
             "voice_polish"
         },
-        profile_version: req.client_profile_version,
+        profile_version: profile_context.profile_version,
         profile_status: if profile_snapshot.profile_chars > 0 {
-            "client_local"
+            "server_db"
         } else {
             "missing"
         },
-        profile_cache_hit: false,
+        profile_cache_hit: profile_context.cache_hit,
         profile_chars: profile_snapshot.profile_chars,
         profile_injected: !is_rewrite && profile_snapshot.profile_chars > 0,
         transcript_chars: transcript.chars().count(),
@@ -3980,6 +4171,8 @@ async fn execute_voice_polish(
         provider_label,
         &api_secret,
         &model,
+        route.endpoint,
+        route.providers,
         &system_prompt,
         &user_message,
         token_tx,
@@ -4035,7 +4228,7 @@ async fn execute_voice_polish(
     let mut deferred_events: Vec<(&'static str, Option<i64>, Value)> = Vec::new();
 
     let output =
-        crate::voice_polish_standalone::enforce_output_script(&output, &req.output_language);
+        crate::voice_polish_standalone::enforce_output_script(&output, &effective_output_language);
     let restored = restore_literal_tokens(&formatted_transcript, &output, &merged_vocab);
     let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
     if restored != output {
@@ -4092,7 +4285,7 @@ async fn execute_voice_polish(
     // re-triggering LLM over-editing.
     let output = tidy_casing(&output);
     let (output, guard_reason) =
-        guard_voice_polish_output(&output, &formatted_transcript, &req.output_language);
+        guard_voice_polish_output(&output, &formatted_transcript, &effective_output_language);
     if let Some(reason) = guard_reason {
         deferred_events.push((
             "output_guard",
@@ -4134,10 +4327,11 @@ async fn execute_voice_polish(
         let bg_client_run_id = req.client_run_id.clone();
         let bg_account_id = user.account_id;
         let bg_model = model.to_string();
+        let bg_output_language = effective_output_language.clone();
         let org_id_for_history = tenant_ctx.active_org_id;
         let org_scope_for_profile = crate::profile::resolve_org_scope(&tenant_ctx);
         let bg_profile_snapshot = profile_snapshot;
-        let bg_client_profile_version = req.client_profile_version;
+        let bg_profile_version = profile_context.profile_version;
         tokio::spawn(async move {
             if let Some(ref credential) = bg_credential {
                 let _ = update_credential_used(&bg_state, credential.credential_id).await;
@@ -4164,7 +4358,7 @@ async fn execute_voice_polish(
                 org_scope_for_profile,
                 run_id,
                 &bg_profile_snapshot,
-                bg_client_profile_version,
+                bg_profile_version,
             )
             .await
             {
@@ -4188,6 +4382,7 @@ async fn execute_voice_polish(
                 "server_polish",
                 None,
                 Some(model_ms),
+                Some(bg_output_language.as_str()),
             )
             .await;
         });
@@ -4607,11 +4802,72 @@ async fn load_owned_credential_secret(
     Ok(row)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct RuntimeCredentialCacheKey {
+    pub account_id: Uuid,
+    pub active_org_id: Option<Uuid>,
+    pub provider: String,
+}
+
 #[derive(Clone)]
-struct RuntimeProviderSecret {
-    credential_id: Option<Uuid>,
-    scope: String,
-    secret: String,
+pub struct RuntimeProviderSecret {
+    pub(crate) credential_id: Option<Uuid>,
+    pub(crate) scope: String,
+    pub(crate) secret: String,
+}
+
+fn credential_cache_key(
+    account_id: Uuid,
+    active_org_id: Option<Uuid>,
+    provider: &str,
+) -> RuntimeCredentialCacheKey {
+    RuntimeCredentialCacheKey {
+        account_id,
+        active_org_id,
+        provider: provider.trim().to_ascii_lowercase(),
+    }
+}
+
+fn invalidate_runtime_credential_cache_for_provider(
+    state: &AppState,
+    account_id: Option<Uuid>,
+    org_id: Option<Uuid>,
+    provider: &str,
+) {
+    let provider = provider.trim().to_ascii_lowercase();
+    state.runtime_credential_cache.invalidate_where(|key| {
+        key.provider == provider
+            && (account_id.map(|id| key.account_id == id).unwrap_or(false)
+                || org_id
+                    .map(|id| key.active_org_id == Some(id))
+                    .unwrap_or(false))
+    });
+}
+
+fn invalidate_runtime_credential_cache_for_row(
+    state: &AppState,
+    row: &CredentialRow,
+    fallback_account_id: Uuid,
+) {
+    invalidate_runtime_credential_cache_for_provider(
+        state,
+        row.account_id.or(Some(fallback_account_id)),
+        row.org_id,
+        &row.provider,
+    );
+}
+
+fn invalidate_runtime_credential_cache_for_secret_row(
+    state: &AppState,
+    row: &CredentialSecretRow,
+    fallback_account_id: Uuid,
+) {
+    invalidate_runtime_credential_cache_for_provider(
+        state,
+        row.account_id.or(Some(fallback_account_id)),
+        row.org_id,
+        &row.provider,
+    );
 }
 
 fn managed_deepgram_secrets(state: &AppState, run_id: Uuid) -> Vec<RuntimeProviderSecret> {
@@ -4687,6 +4943,19 @@ async fn runtime_provider_secret(
     active_org_id: Option<Uuid>,
     provider: &str,
 ) -> Result<RuntimeProviderSecret, (StatusCode, Json<Value>)> {
+    let provider = provider.trim().to_ascii_lowercase();
+    let cache_key = credential_cache_key(account_id, active_org_id, &provider);
+    if let Some(hit) = state.runtime_credential_cache.get(&cache_key) {
+        tracing::debug!(
+            "[runtime] credential cache hit provider={} account_id={} active_org_id={:?} scope={}",
+            provider,
+            account_id,
+            active_org_id,
+            hit.scope,
+        );
+        return Ok(hit);
+    }
+
     let row = if let Some(org_id) = active_org_id {
         sqlx::query_as::<_, CredentialSecretWithScopeRow>(
             "SELECT id, scope, secret_ciphertext, secret_nonce
@@ -4709,7 +4978,7 @@ async fn runtime_provider_secret(
               LIMIT 1",
         )
         .bind(account_id)
-        .bind(provider)
+        .bind(&provider)
         .bind(org_id)
         .fetch_optional(&state.db)
         .await
@@ -4734,18 +5003,19 @@ async fn runtime_provider_secret(
               LIMIT 1",
         )
         .bind(account_id)
-        .bind(provider)
+        .bind(&provider)
         .fetch_optional(&state.db)
         .await
         .map_err(db_err)?
     };
 
-    let env_fallback_present = match provider {
+    let env_fallback_present = match provider.as_str() {
         "deepgram" => !state.deepgram_api_keys.is_empty(),
         "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
         "cerebras" => !state.cerebras_api_key.trim().is_empty(),
         "deepinfra" => !state.deepinfra_api_key.trim().is_empty(),
+        "openrouter" => !state.openrouter_api_key.trim().is_empty(),
         _ => false,
     };
 
@@ -4758,19 +5028,24 @@ async fn runtime_provider_secret(
             env_fallback_present,
             row.scope,
         );
-        return Ok(RuntimeProviderSecret {
+        let resolved = RuntimeProviderSecret {
             credential_id: Some(row.id),
             scope: row.scope,
             secret,
-        });
+        };
+        state
+            .runtime_credential_cache
+            .insert(cache_key, resolved.clone());
+        return Ok(resolved);
     }
 
-    let fallback = match provider {
+    let fallback = match provider.as_str() {
         "deepgram" => state.deepgram_api_key.trim(),
         "openai" => state.openai_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
         "cerebras" => state.cerebras_api_key.trim(),
         "deepinfra" => state.deepinfra_api_key.trim(),
+        "openrouter" => state.openrouter_api_key.trim(),
         _ => "",
     };
     if tenant::allow_platform_credential_fallback() && !fallback.is_empty() {
@@ -4779,11 +5054,15 @@ async fn runtime_provider_secret(
             provider,
             account_id,
         );
-        return Ok(RuntimeProviderSecret {
+        let resolved = RuntimeProviderSecret {
             credential_id: None,
             scope: "airnote_env".to_string(),
             secret: fallback.to_string(),
-        });
+        };
+        state
+            .runtime_credential_cache
+            .insert(cache_key, resolved.clone());
+        return Ok(resolved);
     }
 
     tracing::warn!(
@@ -5460,6 +5739,8 @@ async fn polish_llm(
     polish_provider: &str,
     api_secret: &str,
     polish_model: &str,
+    endpoint: &str,
+    providers: &[&str],
     system_prompt: &str,
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
@@ -5517,11 +5798,22 @@ async fn polish_llm(
             )
             .await
         }
+        // Everything else is OpenAI-compatible chat/completions — drive it purely
+        // from the route (endpoint + optional OpenRouter sub-provider order). A new
+        // model needs NO code here: just a catalog row. `providers` non-empty pins
+        // OpenRouter hosts (e.g. Gemma → WandB/ModelRun); empty = provider default.
         _ => {
+            let provider_order = if providers.is_empty() {
+                None
+            } else {
+                Some(providers)
+            };
             call_groq(
                 state,
                 api_secret,
                 polish_model,
+                endpoint,
+                provider_order,
                 system_prompt,
                 user_message,
                 token_tx,
@@ -5535,6 +5827,8 @@ async fn call_groq(
     _state: &AppState,
     api_key: &str,
     model: &str,
+    endpoint: &str,
+    provider_order: Option<&[&str]>,
     system_prompt: &str,
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
@@ -5569,13 +5863,20 @@ async fn call_groq(
         body["max_tokens"] = json!(max_tokens);
         body["reasoning_effort"] = json!("low");
     }
+    if let Some(order) = provider_order {
+        // OpenRouter sub-provider routing (pin fast hosts, keep fallbacks on).
+        body["provider"] = json!({ "order": order, "allow_fallbacks": true });
+        // Floor tokens so a long dictation is never truncated mid-sentence.
+        max_tokens = max_tokens.max(2048);
+        body["max_tokens"] = json!(max_tokens);
+    }
 
-    tracing::info!("[runtime] POST {GROQ_ENDPOINT} model={model}");
+    tracing::info!("[runtime] POST {endpoint} model={model}");
 
     let client = &*crate::HTTP_CLIENT;
     let request_started = Instant::now();
     let resp = client
-        .post(GROQ_ENDPOINT)
+        .post(endpoint)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .json(&body)
@@ -5979,6 +6280,8 @@ Return JSON only:
         state,
         &credential.secret,
         &learning_judge_model(),
+        GROQ_ENDPOINT,
+        None,
         system_prompt,
         &user_message,
         None,
@@ -6065,6 +6368,8 @@ Return JSON only:
         state,
         &credential.secret,
         &learning_judge_model(),
+        GROQ_ENDPOINT,
+        None,
         system_prompt,
         &user_message,
         None,
@@ -7082,6 +7387,57 @@ fn merge_vocab_terms(request: &[String], server: &[String], transcript: &str) ->
     merged
 }
 
+fn normalize_runtime_vocab_hints(hints: &[RuntimeVocabHint]) -> Vec<RuntimeVocabHint> {
+    hints
+        .iter()
+        .filter_map(|hint| {
+            let term = hint.term.trim();
+            if term.is_empty() {
+                return None;
+            }
+            let mut normalized = hint.clone();
+            normalized.term = term.to_string();
+            normalized.tier = match hint.tier.trim().to_ascii_lowercase().as_str() {
+                "suggest" => "suggest".to_string(),
+                _ => "apply".to_string(),
+            };
+            Some(normalized)
+        })
+        .take(30)
+        .collect()
+}
+
+fn apply_terms_from_vocab_hints(hints: &[RuntimeVocabHint]) -> Vec<String> {
+    hints
+        .iter()
+        .filter(|hint| !hint.tier.eq_ignore_ascii_case("suggest"))
+        .map(|hint| hint.term.trim())
+        .filter(|term| !term.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn vocab_hints_from_flat_terms(terms: &[String]) -> Vec<RuntimeVocabHint> {
+    terms
+        .iter()
+        .filter_map(|term| {
+            let trimmed = term.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(RuntimeVocabHint {
+                    term: trimmed.to_string(),
+                    tier: "apply".to_string(),
+                    evidence: None,
+                    meaning: None,
+                    context: None,
+                    term_type: None,
+                })
+            }
+        })
+        .collect()
+}
+
 fn is_vocab_term_relevant_to_transcript(term: &str, transcript: &str) -> bool {
     let term_norm = normalize_learning_text(term);
     if term_norm.is_empty() {
@@ -7782,16 +8138,23 @@ mod tests {
 
     #[test]
     fn selected_polish_model_respects_fast_and_smart() {
-        use said_core::polish::model::{GROQ_POLISH_MODEL_FAST, GROQ_POLISH_MODEL_SMART_DEFAULT};
+        // Adapter routing (POLISH_MODEL_CATALOG): fast/deepseek -> Groq 8B instant;
+        // smart/cerebras -> Cerebras gpt-oss-120b; scout -> Groq Llama-4 Scout.
+        // NOTE: this asserts stored-pref routing, so it only holds when the global
+        // POLISH_MODEL_OVERRIDE env is unset.
+        use said_core::polish::model::{CEREBRAS_POLISH_MODEL_GPT_OSS, GROQ_POLISH_MODEL_FAST};
+        if std::env::var("POLISH_MODEL_OVERRIDE").is_ok() {
+            return;
+        }
         assert_eq!(selected_polish_model("fast"), GROQ_POLISH_MODEL_FAST);
         assert_eq!(selected_polish_model("deepseek"), GROQ_POLISH_MODEL_FAST);
         assert_eq!(
             selected_polish_model("smart"),
-            GROQ_POLISH_MODEL_SMART_DEFAULT
+            CEREBRAS_POLISH_MODEL_GPT_OSS
         );
         assert_eq!(
             selected_polish_model("scout"),
-            GROQ_POLISH_MODEL_SMART_DEFAULT
+            "meta-llama/llama-4-scout-17b-16e-instruct"
         );
     }
 
@@ -7877,15 +8240,22 @@ mod tests {
 
     #[test]
     fn server_voice_prompt_forbids_normal_word_translation() {
-        let prompt = build_voice_system_prompt("hinglish", "neutral", None, None, &[], None);
+        let prompt = crate::voice_polish_standalone::build_voice_system_prompt(
+            "hinglish",
+            "neutral",
+            None,
+            None,
+            &[],
+            None,
+        );
         let user = build_voice_user_message("hello भाई कैसे हो", "hinglish");
 
-        assert!(prompt.contains("intentful dictation polisher"));
-        assert!(prompt.contains("STT as noisy evidence, not ground truth"));
-        assert!(prompt.contains("\"hello\" stays \"hello\""));
-        assert!(prompt.contains("\"time\" stays \"time\""));
-        assert!(prompt.contains("\"kaam\" stays \"kaam\""));
-        assert!(prompt.contains("\"deep gram API key\" -> \"Deepgram API key\""));
+        assert!(prompt.contains("reply in the input language and never translate"));
+        assert!(prompt.contains("Hinglish stays Roman Hinglish"));
+        assert!(prompt.contains("Hindi words in Latin script, English words in English"));
+        assert!(
+            prompt.contains("\"hello bhai kaise ho\" must not become \"Namaste bhai kaise ho\"")
+        );
         assert!(user.contains("BEGIN TRANSCRIPT"));
     }
 

@@ -415,6 +415,7 @@ pub async fn polish(
                     raw_transcript: Some(&t2),
                     local_corrected_transcript: Some(&t2),
                     polished_output: Some(&p2),
+                    trace_json: None,
                 });
             });
         }
@@ -515,6 +516,7 @@ async fn polish_message_polish_server(
                         raw_transcript: None,
                         local_corrected_transcript: None,
                         polished_output: Some(&p2),
+                        trace_json: None,
                     });
                 });
 
@@ -691,6 +693,7 @@ pub async fn refine_last(
                     raw_transcript: Some(&t2),
                     local_corrected_transcript: Some(&t2),
                     polished_output: Some(&p2),
+                    trace_json: None,
                 });
             });
         }
@@ -725,10 +728,7 @@ pub async fn refine_last(
 
 #[cfg(test)]
 mod tests {
-    use crate::llm::{
-        prompt::{resolved_vocab_terms_to_entries, vocab_terms_to_entries},
-        vocab_resolver,
-    };
+    use crate::llm::{prompt::resolved_vocab_terms_to_entries, vocab_resolver};
     use crate::store::vocab_embeddings::upsert_embedding;
     use crate::store::{DbPool, now_ms, stt_replacements, vocab_embeddings};
     use r2d2_sqlite::SqliteConnectionManager;
@@ -836,8 +836,7 @@ mod tests {
             &selected,
             &alias_result,
         );
-        let mut chosen = resolved_vocab_terms_to_entries(resolved.resolved_terms);
-        chosen.extend(vocab_terms_to_entries(resolved.candidate_terms));
+        let chosen = resolved_vocab_terms_to_entries(resolved.resolved_terms);
         assert!(
             chosen.is_empty(),
             "text polish should not inject unrelated top-weight vocab"

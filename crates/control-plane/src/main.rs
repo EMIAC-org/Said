@@ -91,6 +91,10 @@ struct Cli {
     #[arg(long, env = "DEEPINFRA_API_KEY", default_value = "")]
     deepinfra_api_key: String,
 
+    /// OpenRouter API key for the production Gemma polish model
+    #[arg(long, env = "OPENROUTER_API_KEY", default_value = "")]
+    openrouter_api_key: String,
+
     /// Legacy gateway key fallback for server-runtime polish latency probes
     #[arg(long, env = "GATEWAY_API_KEY", default_value = "")]
     gateway_api_key: String,
@@ -202,8 +206,7 @@ async fn main() {
     let deepseek_message_polish_model = std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
         .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
 
-    let (tenant_cache, runtime_memory_cache, profile_cache) =
-        said_control_plane::new_setup_caches();
+    let setup_caches = said_control_plane::new_setup_caches();
 
     let state = AppState {
         db: db.clone(),
@@ -219,6 +222,7 @@ async fn main() {
         groq_api_key,
         cerebras_api_key: cli.cerebras_api_key,
         deepinfra_api_key: cli.deepinfra_api_key,
+        openrouter_api_key: cli.openrouter_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
         runtime_credentials_key: cli.runtime_credentials_key,
@@ -226,10 +230,17 @@ async fn main() {
         deepseek_api_key,
         deepseek_base_url,
         deepseek_message_polish_model,
-        tenant_cache,
-        runtime_memory_cache,
-        profile_cache,
+        tenant_cache: setup_caches.tenant_cache,
+        runtime_memory_cache: setup_caches.runtime_memory_cache,
+        profile_cache: setup_caches.profile_cache,
+        app_bucket_cache: setup_caches.app_bucket_cache,
+        bucket_profile_cache: setup_caches.bucket_profile_cache,
+        prompt_profile_context_cache: setup_caches.prompt_profile_context_cache,
+        runtime_credential_cache: setup_caches.runtime_credential_cache,
     };
+
+    // Per-user batched profiling + KB worker (deepseek-v4-flash, one run per ~10 dictations).
+    said_control_plane::profile::updater::batch_run::start_batch_worker(state.clone());
 
     let app = build_router(state);
 
@@ -305,6 +316,7 @@ mod tests {
             groq_api_key: String::new(),
             cerebras_api_key: String::new(),
             deepinfra_api_key: String::new(),
+            openrouter_api_key: String::new(),
             gateway_api_key: String::new(),
             divo_base_url: String::new(),
             runtime_credentials_key: String::new(),

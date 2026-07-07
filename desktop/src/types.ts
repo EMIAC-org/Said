@@ -32,6 +32,7 @@ export interface HistoryItem {
 
 export interface AppSnapshot {
   state: AppState;
+  recording_id?: string | null;
   platform: string;
   current_mode: string;
   current_mode_label: string;
@@ -135,25 +136,6 @@ export interface ListPolishModelsResponse {
   selected_model: string;
 }
 
-export interface PromptTemplateResponse {
-  kind: string;
-  title: string;
-  base_version: string;
-  active_body: string;
-  draft_body: string | null;
-  default_body: string;
-  updated_at: number;
-  applied_at: number | null;
-  has_draft: boolean;
-  active_is_default: boolean;
-}
-
-export interface PromptTestResponse {
-  output: string;
-  model_used: string;
-  latency_ms: number;
-}
-
 export interface ProcessPerf {
   pid: number;
   name: string;
@@ -207,6 +189,30 @@ export interface Recording {
   polished_output: string | null;
 }
 
+/** Resolved identity of an app the user dictated into (name + category + icon). */
+export interface AppIdentity {
+  key:      string;
+  name:     string | null;
+  category: string | null;
+  icon:     string | null; // data:image/png;base64,…
+}
+
+/** Per-app dictation usage row (Insights "apps you dictate in"). */
+export interface AppUsageRow {
+  app:          string; // the target_app key (bundle-id / exe path)
+  count:        number;
+  total_words:  number;
+  last_used_ms: number;
+}
+
+/** Per-site dictation usage row (Insights "sites you dictate in"). Host only. */
+export interface SiteUsageRow {
+  host:         string; // domain only, e.g. mail.google.com
+  target_app:   string; // the browser bundle-id it was seen in
+  count:        number;
+  last_used_ms: number;
+}
+
 /** Backend endpoint info (url + shared secret) */
 export interface BackendEndpoint {
   url:    string;
@@ -216,6 +222,7 @@ export interface BackendEndpoint {
 /** Streaming result from a polish operation */
 export interface PolishDone {
   recording_id:  string;
+  run_id?:       string | null;
   transcript:    string;
   polished:      string;
   model_used:    string;
@@ -267,75 +274,4 @@ export interface PendingEdit {
 export interface PendingEditsResponse {
   edits: PendingEdit[];
   total: number;
-}
-
-// ── Display helpers ──────────────────────────────────────────────────────────
-
-export interface TimelineItem {
-  time: string;
-  text: string;
-  word_count?: number;
-  model?: string;
-  timestamp_ms: number;
-}
-
-export interface TimelineGroup {
-  label: string;
-  items: TimelineItem[];
-}
-
-/** Group HistoryItem[] (newest-first) into display groups by calendar day */
-export function groupHistory(history: HistoryItem[]): TimelineGroup[] {
-  if (history.length === 0) return [];
-
-  const now = Date.now();
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-  const todayMs = startOfToday.getTime();
-  const yesterdayMs = todayMs - 86_400_000;
-
-  const buckets = new Map<string, TimelineItem[]>();
-
-  for (const item of history) {
-    const d = new Date(item.timestamp_ms);
-
-    const startOfItemDay = new Date(item.timestamp_ms);
-    startOfItemDay.setHours(0, 0, 0, 0);
-    const itemDayMs = startOfItemDay.getTime();
-
-    let label: string;
-    if (itemDayMs >= todayMs) {
-      label = "TODAY";
-    } else if (itemDayMs >= yesterdayMs) {
-      label = "YESTERDAY";
-    } else {
-      label = d
-        .toLocaleDateString("en-US", {
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        })
-        .toUpperCase();
-    }
-
-    const time = d.toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-
-    const existing = buckets.get(label) ?? [];
-    existing.push({
-      time,
-      text: item.polished,
-      word_count: item.word_count,
-      model: item.model,
-      timestamp_ms: item.timestamp_ms,
-    });
-    buckets.set(label, existing);
-  }
-
-  return Array.from(buckets.entries()).map(([label, items]) => ({
-    label,
-    items,
-  }));
 }

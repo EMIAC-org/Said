@@ -17,6 +17,93 @@ pub enum RecordHotkey {
     CapsLock,
     RightOption,
     Function,
+    /// An arbitrary sided modifier held to record (Left/Right of ⌘⌥⌃⇧). Detected
+    /// exactly like `RightOption`: a flags-changed event whose keycode matches and
+    /// whose device-flag mask is set. `mac_keycode`/`mac_mask` drive the macOS
+    /// CGEventTap; `win_vk` drives the Windows WH_KEYBOARD_LL hook. Only the
+    /// fields for the running platform are read, but all are always present so the
+    /// enum stays platform-agnostic. Bare typing keys are intentionally NOT
+    /// supported — a held letter would have to be globally suppressed, breaking
+    /// normal typing of that key.
+    Modifier {
+        mac_keycode: i64,
+        mac_mask: u64,
+        win_vk: u32,
+    },
+}
+
+impl RecordHotkey {
+    /// Map a stable string id (persisted in `record_hotkey` prefs) to a hotkey.
+    /// Returns `None` for an unknown id so the caller can fall back to a default.
+    /// The keycodes/masks/VKs live here so the picker only ever passes an id.
+    pub fn from_id(id: &str) -> Option<RecordHotkey> {
+        // macOS virtual keycodes for the sided modifiers.
+        const KC_L_CMD: i64 = 55;
+        const KC_R_CMD: i64 = 54;
+        const KC_L_SHIFT: i64 = 56;
+        const KC_R_SHIFT: i64 = 60;
+        const KC_L_CTRL: i64 = 59;
+        const KC_R_CTRL: i64 = 62;
+        const KC_L_OPT: i64 = 58;
+        // Device-dependent modifier bits (IOLLEvent.h NX_DEVICE*KEYMASK).
+        const M_L_CTRL: u64 = 0x0000_0001;
+        const M_L_SHIFT: u64 = 0x0000_0002;
+        const M_R_SHIFT: u64 = 0x0000_0004;
+        const M_L_CMD: u64 = 0x0000_0008;
+        const M_R_CMD: u64 = 0x0000_0010;
+        const M_L_ALT: u64 = 0x0000_0020;
+        const M_R_CTRL: u64 = 0x0000_2000;
+        // Windows virtual-key codes.
+        const VK_LWIN: u32 = 0x5B;
+        const VK_RWIN: u32 = 0x5C;
+        const VK_LSHIFT: u32 = 0xA0;
+        const VK_RSHIFT: u32 = 0xA1;
+        const VK_LCONTROL: u32 = 0xA2;
+        const VK_RCONTROL: u32 = 0xA3;
+        const VK_LMENU: u32 = 0xA4;
+
+        Some(match id {
+            "caps_lock" => RecordHotkey::CapsLock,
+            "right_option" => RecordHotkey::RightOption,
+            "fn" => RecordHotkey::Function,
+            "left_command" => RecordHotkey::Modifier {
+                mac_keycode: KC_L_CMD,
+                mac_mask: M_L_CMD,
+                win_vk: VK_LWIN,
+            },
+            "right_command" => RecordHotkey::Modifier {
+                mac_keycode: KC_R_CMD,
+                mac_mask: M_R_CMD,
+                win_vk: VK_RWIN,
+            },
+            "left_control" => RecordHotkey::Modifier {
+                mac_keycode: KC_L_CTRL,
+                mac_mask: M_L_CTRL,
+                win_vk: VK_LCONTROL,
+            },
+            "right_control" => RecordHotkey::Modifier {
+                mac_keycode: KC_R_CTRL,
+                mac_mask: M_R_CTRL,
+                win_vk: VK_RCONTROL,
+            },
+            "left_option" => RecordHotkey::Modifier {
+                mac_keycode: KC_L_OPT,
+                mac_mask: M_L_ALT,
+                win_vk: VK_LMENU,
+            },
+            "left_shift" => RecordHotkey::Modifier {
+                mac_keycode: KC_L_SHIFT,
+                mac_mask: M_L_SHIFT,
+                win_vk: VK_LSHIFT,
+            },
+            "right_shift" => RecordHotkey::Modifier {
+                mac_keycode: KC_R_SHIFT,
+                mac_mask: M_R_SHIFT,
+                win_vk: VK_RSHIFT,
+            },
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,11 +300,21 @@ mod imp {
     static HUD_SHORTCUT_CB: OnceLock<Arc<dyn Fn(HudShortcutAction) + Send + Sync>> =
         OnceLock::new();
     static RECORD_HOTKEY: AtomicU8 = AtomicU8::new(0);
+    // Backing store for the `Modifier { .. }` variant (kind == 3). Written by
+    // `set_record_hotkey`, read O(1) with Relaxed in the tap — no lock on the hot
+    // path, so a live hotkey change never blocks event processing.
+    static RECORD_MOD_KEYCODE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static RECORD_MOD_MASK: AtomicU64 = AtomicU64::new(0);
 
     fn current_record_hotkey() -> RecordHotkey {
         match RECORD_HOTKEY.load(Ordering::Relaxed) {
             1 => RecordHotkey::RightOption,
             2 => RecordHotkey::Function,
+            3 => RecordHotkey::Modifier {
+                mac_keycode: RECORD_MOD_KEYCODE.load(Ordering::Relaxed),
+                mac_mask: RECORD_MOD_MASK.load(Ordering::Relaxed),
+                win_vk: 0,
+            },
             _ => RecordHotkey::CapsLock,
         }
     }
@@ -227,6 +324,15 @@ mod imp {
             RecordHotkey::CapsLock => 0,
             RecordHotkey::RightOption => 1,
             RecordHotkey::Function => 2,
+            RecordHotkey::Modifier {
+                mac_keycode,
+                mac_mask,
+                ..
+            } => {
+                RECORD_MOD_KEYCODE.store(mac_keycode, Ordering::Relaxed);
+                RECORD_MOD_MASK.store(mac_mask, Ordering::Relaxed);
+                3
+            }
         };
         RECORD_HOTKEY.store(encoded, Ordering::Relaxed);
         tracing::info!("[hotkey] record hotkey set to {:?}", hotkey);
@@ -780,6 +886,27 @@ mod imp {
                             } else if !fn_on && s.is_down {
                                 s.is_down = false;
                                 tracing::info!("[hotkey] Fn released → process");
+                                (s.on_release)();
+                            }
+                        }
+                    }
+                    RecordHotkey::Modifier {
+                        mac_keycode,
+                        mac_mask,
+                        ..
+                    } => {
+                        // Same mechanism as Right Option: this modifier's own
+                        // keycode arrives on a flags-changed event, and its
+                        // device-specific mask says whether it's currently held.
+                        let mod_on = (flags & mac_mask) != 0;
+                        if keycode == mac_keycode {
+                            if mod_on && !s.is_down {
+                                s.is_down = true;
+                                tracing::info!("[hotkey] modifier held → start recording");
+                                (s.on_press)();
+                            } else if !mod_on && s.is_down {
+                                s.is_down = false;
+                                tracing::info!("[hotkey] modifier released → process");
                                 (s.on_release)();
                             }
                         }

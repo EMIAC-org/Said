@@ -28,8 +28,7 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
             .await;
             match lock {
                 Ok(true) => {
-                    let (tenant_cache, runtime_memory_cache, profile_cache) =
-                        crate::new_setup_caches();
+                    let setup_caches = crate::new_setup_caches();
                     let state = AppState {
                         db: db.clone(),
                         started_at: std::sync::Arc::new(std::time::Instant::now()),
@@ -49,6 +48,7 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         groq_api_key: String::new(),
                         cerebras_api_key: String::new(),
                         deepinfra_api_key: String::new(),
+                        openrouter_api_key: String::new(),
                         diagnostics_rate_limit:
                             routes::diagnostics::DiagnosticsRateLimiter::default(),
                         divo_base_url: String::new(),
@@ -57,9 +57,13 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         deepseek_api_key: String::new(),
                         deepseek_base_url: String::new(),
                         deepseek_message_polish_model: String::new(),
-                        tenant_cache,
-                        runtime_memory_cache,
-                        profile_cache,
+                        tenant_cache: setup_caches.tenant_cache,
+                        runtime_memory_cache: setup_caches.runtime_memory_cache,
+                        profile_cache: setup_caches.profile_cache,
+                        app_bucket_cache: setup_caches.app_bucket_cache,
+                        bucket_profile_cache: setup_caches.bucket_profile_cache,
+                        prompt_profile_context_cache: setup_caches.prompt_profile_context_cache,
+                        runtime_credential_cache: setup_caches.runtime_credential_cache,
                     };
                     match routes::vocab::aggregate_all_orgs(&state).await {
                         Ok((terms, aliases)) => {

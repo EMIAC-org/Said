@@ -667,6 +667,7 @@ pub async fn mark_memory_dirty_route(
 
 // ── Called by voice_polish / voice_wav after successful completion ────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn write_history_from_runtime(
     state: &AppState,
     account_id: Uuid,
@@ -680,14 +681,15 @@ pub async fn write_history_from_runtime(
     source: &str,
     transcribe_ms: Option<i64>,
     polish_ms: Option<i64>,
+    output_language: Option<&str>,
 ) {
     let word_count = output.split_whitespace().count() as i32;
     let r = sqlx::query(
         "INSERT INTO runtime_history_items
              (account_id, org_id, run_id, client_run_id, recording_id, source,
               transcript, polished_output, final_text, model_used,
-              word_count, transcribe_ms, polish_ms)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12)
+              word_count, transcribe_ms, polish_ms, output_language)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13)
          ON CONFLICT DO NOTHING",
     )
     .bind(account_id)
@@ -702,11 +704,34 @@ pub async fn write_history_from_runtime(
     .bind(word_count)
     .bind(transcribe_ms)
     .bind(polish_ms)
+    .bind(output_language)
     .execute(&state.db)
     .await;
 
     if let Err(e) = r {
         tracing::warn!("[history] write_history_from_runtime failed: {e}");
+    }
+
+    // The server-computed language is authoritative for this run (it reflects any
+    // per-bucket override). If the client's /history/sync raced us and inserted
+    // the row first, the ON CONFLICT above skipped it, so set it explicitly here.
+    if let Some(lang) = output_language {
+        let u = sqlx::query(
+            "UPDATE runtime_history_items
+                SET output_language = $4, updated_at = now()
+              WHERE account_id = $1
+                AND deleted_at IS NULL
+                AND (run_id = $2 OR ($3::text IS NOT NULL AND client_run_id = $3))",
+        )
+        .bind(account_id)
+        .bind(run_id)
+        .bind(client_run_id)
+        .bind(lang)
+        .execute(&state.db)
+        .await;
+        if let Err(e) = u {
+            tracing::warn!("[history] output_language backfill failed run_id={run_id}: {e}");
+        }
     }
 }
 

@@ -21,6 +21,51 @@ pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Remove stray leading/trailing ellipsis runs (`...`, `…`) that some STT
+/// engines emit on continuation, e.g. `"...And jo speed hai"`.
+///
+/// Deliberately light: it only touches the very start and end, and only when
+/// the run is a genuine ellipsis — the Unicode `…` or **two or more** ASCII
+/// dots. A single sentence-final period is preserved (`"hai."` stays `"hai."`),
+/// interior dots are never touched (`"a...b"`, URLs, `n.n`), and everything
+/// else — words, casing, other punctuation — is left exactly as-is. The
+/// whitespace the ellipsis was hiding is trimmed so `"... And"` becomes `"And"`.
+pub fn strip_edge_ellipses(text: &str) -> String {
+    fn is_dotish(c: char) -> bool {
+        c == '.' || c == '…'
+    }
+    fn is_ellipsis_run(run: &str) -> bool {
+        run.contains('…') || run.chars().filter(|c| *c == '.').count() >= 2
+    }
+
+    let mut s = text.trim_start_matches(char::is_whitespace);
+
+    // Leading run.
+    let lead_len: usize = s
+        .chars()
+        .take_while(|c| is_dotish(*c))
+        .map(char::len_utf8)
+        .sum();
+    if lead_len > 0 && is_ellipsis_run(&s[..lead_len]) {
+        s = s[lead_len..].trim_start();
+    }
+
+    s = s.trim_end_matches(char::is_whitespace);
+
+    // Trailing run.
+    let trail_len: usize = s
+        .chars()
+        .rev()
+        .take_while(|c| is_dotish(*c))
+        .map(char::len_utf8)
+        .sum();
+    if trail_len > 0 && is_ellipsis_run(&s[s.len() - trail_len..]) {
+        s = s[..s.len() - trail_len].trim_end();
+    }
+
+    s.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::truncate_utf8;
@@ -56,5 +101,49 @@ mod tests {
             let out = truncate_utf8(s, n);
             assert!(s.starts_with(out));
         }
+    }
+
+    use super::strip_edge_ellipses;
+
+    #[test]
+    fn strips_leading_ellipsis_from_stt() {
+        // The screenshot case: Deepgram continuation artifact.
+        assert_eq!(
+            strip_edge_ellipses(
+                "...And jo speed hai, latency sab decent hai. Koi dikkat nahin aati hai abhi."
+            ),
+            "And jo speed hai, latency sab decent hai. Koi dikkat nahin aati hai abhi."
+        );
+        assert_eq!(strip_edge_ellipses("… and then"), "and then");
+        assert_eq!(strip_edge_ellipses(".. hello"), "hello");
+    }
+
+    #[test]
+    fn strips_trailing_ellipsis_but_keeps_sentence_period() {
+        assert_eq!(strip_edge_ellipses("theek hai..."), "theek hai");
+        assert_eq!(strip_edge_ellipses("theek hai …"), "theek hai");
+        // A normal sentence-final period must survive.
+        assert_eq!(strip_edge_ellipses("theek hai."), "theek hai.");
+    }
+
+    #[test]
+    fn leaves_interior_and_non_ellipsis_untouched() {
+        // Interior dots, URLs, decimals, initials — never touched.
+        assert_eq!(
+            strip_edge_ellipses("go to acme.app/login"),
+            "go to acme.app/login"
+        );
+        assert_eq!(
+            strip_edge_ellipses("version 2.4.3 ready"),
+            "version 2.4.3 ready"
+        );
+        assert_eq!(strip_edge_ellipses("a...b"), "a...b");
+        // A lone leading period (rare) is not an ellipsis — preserved.
+        assert_eq!(strip_edge_ellipses(".env file"), ".env file");
+        // Both edges at once.
+        assert_eq!(strip_edge_ellipses("...hello..."), "hello");
+        // All-dots collapses to empty.
+        assert_eq!(strip_edge_ellipses("..."), "");
+        assert_eq!(strip_edge_ellipses("normal text"), "normal text");
     }
 }

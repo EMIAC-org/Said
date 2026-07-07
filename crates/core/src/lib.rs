@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 pub mod deepgram;
+pub mod dictation_trace;
 pub mod paths;
 pub mod polish;
 pub mod prefs;
+pub mod preprocess;
 pub mod redecode_flagging;
 pub mod reporter;
 pub mod script;
@@ -16,6 +18,10 @@ pub mod text;
 
 pub const GATEWAY_BASE: &str = "https://gateway.outreachdeal.com";
 pub const VOICE_URL: &str = "https://gateway.outreachdeal.com/v1/voice/polish";
+
+// One build-time switch for the AirNote control-plane used by desktop/server
+// runtime defaults. For this dev-connected desktop build, point at dev.
+pub const AIRNOTE_DEFAULT_CONTROL_PLANE_URL: &str = "https://airnote-dev.103.180.163.41.sslip.io";
 
 // ── Mode registry ─────────────────────────────────────────────────────────────
 
@@ -110,9 +116,11 @@ pub struct ProcessSummary {
 }
 
 /// Full state snapshot sent to the Tauri frontend on every command.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct AppSnapshot {
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_id: Option<String>,
     pub platform: String,
     pub current_mode: &'static str,
     pub current_mode_label: &'static str,

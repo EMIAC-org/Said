@@ -6,6 +6,13 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
+use serde::Deserialize;
+use serde_json::Value;
+
+#[derive(Debug, Deserialize)]
+pub struct DictationTracePatch {
+    pub dictation_trace_json: Value,
+}
 
 pub async fn patch_run(
     State(state): State<AppState>,
@@ -39,6 +46,40 @@ pub async fn flush(State(state): State<AppState>) -> StatusCode {
 
     tokio::spawn(async move {
         uploader::upload_pending(&pool, &user_id, &http, &version, &device_id).await;
+    });
+
+    StatusCode::ACCEPTED
+}
+
+pub async fn patch_dictation_trace(
+    State(state): State<AppState>,
+    Path(recording_id): Path<String>,
+    Json(patch): Json<DictationTracePatch>,
+) -> StatusCode {
+    let pool = state.pool.clone();
+    let user_id = state.default_user_id.clone();
+    let http = state.http_client.clone();
+    let trace = patch.dictation_trace_json;
+
+    tokio::spawn(async move {
+        if let Err(e) = crate::store::history::merge_recording_trace(&pool, &recording_id, &trace) {
+            tracing::warn!(
+                "[observability] local trace merge failed recording_id={recording_id}: {e}"
+            );
+        }
+        if crate::observability::should_enqueue(&pool, &user_id) {
+            let payload = crate::observability::DictationPatchPayload {
+                recording_id: recording_id.clone(),
+                final_text: None,
+                edit_feedback_json: None,
+                dictation_trace_json: Some(trace),
+            };
+            if let Err(e) = crate::observability::enqueue_dictation_patch(&pool, &user_id, payload)
+            {
+                tracing::warn!("[observability] trace patch enqueue failed: {e}");
+            }
+            crate::observability::uploader::maybe_upload_after_enqueue(&pool, &user_id, &http);
+        }
     });
 
     StatusCode::ACCEPTED

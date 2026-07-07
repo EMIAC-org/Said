@@ -31,19 +31,8 @@ if [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -z "${APPLE_PASSWORD:-}" ]; th
 fi
 export APPLE_PASSWORD="${APPLE_PASSWORD:-${APPLE_APP_SPECIFIC_PASSWORD:-}}"
 
-if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -f "$HOME/.tauri/said-updater.key" ]; then
-  export TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/said-updater.key")"
-fi
-
-if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
-  TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(
-    security find-generic-password -a airnote -s airnote-tauri-updater-private-key-password -w 2>/dev/null \
-      || sed -n '589p' "$REPO_ROOT/.context/attachments/Summary of Debug EmiaC Learning.md" 2>/dev/null
-  )"
-  if [ -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
-    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-  fi
-fi
+# Local test DMGs disable Tauri updater artifacts in build-dmg.sh, so updater
+# signing keys are intentionally not required here.
 export NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-45m}"
 
 # Fail before the expensive build if neither supported notarization credential

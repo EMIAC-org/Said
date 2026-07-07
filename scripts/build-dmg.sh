@@ -55,21 +55,31 @@ fail()  { echo -e "\n  ${red}✗ $*${nc}\n"; exit 1; }
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# ── Bundle the Deepgram STT key into the build ───────────────────────────────
-# This must happen BEFORE any Rust build. said-core captures the value with
-# option_env!("DEEPGRAM_API_KEY"), so loading it after `cargo build` produces an
+# ── Bundle the cloud STT key(s) into the build ───────────────────────────────
+# This must happen BEFORE any Rust build. said-core/said-backend capture the
+# values with option_env!(...), so loading them after `cargo build` produces an
 # app whose backend sidecar has an empty/stale bundled key.
+#
+# OPENROUTER_API_KEY powers cloud DICTATION (Whisper Large V3 Turbo). DEEPGRAM_API_KEY
+# still powers meetings/control-plane STT and stays bundled.
 if [ -f "$REPO_ROOT/.env" ]; then
-  if [ -z "${DEEPGRAM_API_KEY:-}" ]; then
-    _bundle_val="$(grep -E "^DEEPGRAM_API_KEY=" "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
-    [ -n "$_bundle_val" ] && export DEEPGRAM_API_KEY="$_bundle_val"
-  fi
-  unset _bundle_val
+  for _k in OPENROUTER_API_KEY DEEPGRAM_API_KEY; do
+    if [ -z "$(eval echo "\${$_k:-}")" ]; then
+      _bundle_val="$(grep -E "^${_k}=" "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
+      [ -n "$_bundle_val" ] && export "$_k=$_bundle_val"
+    fi
+  done
+  unset _bundle_val _k
+fi
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+  ok "OpenRouter (cloud dictation Whisper) key will be bundled into the build"
+else
+  warn "OPENROUTER_API_KEY not set — Cloud dictation will fail until a key is bundled"
 fi
 if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
-  ok "Deepgram STT key will be bundled into the build"
+  ok "Deepgram (meetings) STT key will be bundled into the build"
 else
-  warn "DEEPGRAM_API_KEY not set — Cloud dictation will fail until a key is bundled"
+  warn "DEEPGRAM_API_KEY not set — meeting STT will fail until a key is bundled"
 fi
 
 # ── Pre-clean: undo whatever Tauri's bundle_dmg.sh left attached ─────────────

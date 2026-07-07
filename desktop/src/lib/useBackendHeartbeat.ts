@@ -77,6 +77,12 @@ export function useBackendHeartbeat(): HeartbeatState {
         clearTimeout(timeout);
         failCount.current += 1;
 
+        // The cached endpoint may be stale — the backend can respawn on a new
+        // port after a dev rebuild or a watchdog restart. Drop it so the next
+        // ping re-resolves the current port instead of pinging a dead one
+        // forever (otherwise the overlay is stuck until a manual window reload).
+        endpointUrl = null;
+
         if (failCount.current >= UNREACHABLE_THRESHOLD) {
           setLevel("unreachable");
           setShowOverlay(true);

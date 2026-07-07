@@ -63,6 +63,27 @@ pub fn whisper_model_path() -> PathBuf {
         .join("ggml-oriserve-hinglish-fp16.bin")
 }
 
+/// Path to the Apex (Whisper-Hindi2Hinglish-Apex, large-v3-turbo) whisper.cpp
+/// ggml model, q8_0 quant (~834 MB). A parallel on-device dictation model to the
+/// Oriserve Swift model — also emits Roman-script Hinglish directly.
+/// `<data_dir>/models/ggml-apex-hinglish-q8_0.bin`
+pub fn apex_model_path() -> PathBuf {
+    data_dir()
+        .join("models")
+        .join("ggml-apex-hinglish-q8_0.bin")
+}
+
+/// Active local dictation model path. Apex is the current preferred model; the
+/// old Oriserve file remains a fallback for users who have not migrated yet.
+pub fn active_dictation_model_path() -> PathBuf {
+    let apex = apex_model_path();
+    if apex.is_file() {
+        apex
+    } else {
+        whisper_model_path()
+    }
+}
+
 /// Silero VAD ggml model for whisper.cpp built-in voice-activity detection.
 /// Shared with the Meetings pipeline. When present, the live dictation path
 /// gates whisper on detected speech to suppress silence/noise hallucination.

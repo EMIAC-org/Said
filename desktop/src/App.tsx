@@ -4,11 +4,15 @@ import { Sidebar } from "@/components/Sidebar";
 import { InviteTeamModal } from "@/components/InviteTeamModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { OnboardingFlow } from "@/components/OnboardingFlow";
+import { OnboardingErrorBoundary } from "@/components/OnboardingErrorBoundary";
+import { ModelMigrationGate } from "@/components/ModelMigrationGate";
+import { MIGRATION_VERSION, loadMigrationDone, markMigrationDone } from "@/lib/migration";
 import { loadOnboardingProgress } from "@/lib/onboardingProgress";
 import { Topbar } from "@/components/Topbar";
 import { DashboardView } from "@/components/views/DashboardView";
 import { HistoryView } from "@/components/views/HistoryView";
-import { InsightsView } from "@/components/views/InsightsView";
+import { LearningsView } from "@/components/views/LearningsView";
+import { BucketsView } from "@/components/views/BucketsView";
 import { VocabularyView } from "@/components/views/VocabularyView";
 import { MeetingsView } from "@/components/views/MeetingsView";
 import { DivoView } from "@/components/views/DivoView";
@@ -50,6 +54,7 @@ import {
   isConnected,
   ensureDesktopRegistered,
   restoreConnectionFromLocalBackend,
+  reconcileBuildDefaultServerUrl,
   syncCompanyVocab,
   uploadUserVocabSummary,
   type EnterpriseConnection,
@@ -61,8 +66,8 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "history" | "vocabulary" | "insights" | "meetings" | "divo" | "settings" | "live-meeting";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "insights", "meetings", "divo", "settings", "live-meeting"];
+export type ActiveView = "dashboard" | "history" | "vocabulary" | "learnings" | "buckets" | "meetings" | "divo" | "settings" | "live-meeting";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "learnings", "buckets", "meetings", "divo", "settings", "live-meeting"];
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -206,6 +211,10 @@ export default function App() {
       return false;
     }
   });
+  // Post-update migration gate — forces already-onboarded users through newly
+  // required steps (e.g. the new on-device model) that they'd otherwise miss by
+  // updating straight past onboarding. See lib/migration.ts.
+  const [migrationDone, setMigrationDone] = useState<number>(() => loadMigrationDone());
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -240,7 +249,7 @@ export default function App() {
   const [setupStatus, setSetupStatus] = useState<ServerMigrationStatus | null>(null);
 
   // Theme (light/dark) — persisted in localStorage, applied to <html>
-  const { theme, toggle: toggleTheme } = useTheme();
+  const { theme, preference: themePreference, toggle: toggleTheme, setTheme, setPreference: setThemePreference } = useTheme();
 
   // Backend watchdog heartbeat — detects unresponsive backend and shows recovery overlay
   const heartbeat = useBackendHeartbeat();
@@ -288,12 +297,13 @@ export default function App() {
         setErrorBanner(err instanceof Error ? err.message : String(err));
       });
     refreshHistory();
-  }, [refreshHistory]);
+  }, []);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       let restored: EnterpriseConnection | null = null;
+      await reconcileBuildDefaultServerUrl();
       if (!isConnected()) {
         restored = await restoreConnectionFromLocalBackend();
       }
@@ -662,6 +672,15 @@ export default function App() {
     try {
       localStorage.setItem("said:onboarding-complete", "true");
     } catch { /* ignore */ }
+    // A fresh onboarded user already saw the new model in onboarding — stamp the
+    // migration version so the post-update gate never shows them the same page.
+    markMigrationDone();
+    setMigrationDone(MIGRATION_VERSION);
+  }, []);
+
+  const handleMigrationDone = useCallback(() => {
+    markMigrationDone();
+    setMigrationDone(MIGRATION_VERSION);
   }, []);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
@@ -674,8 +693,6 @@ export default function App() {
     }
     if (VALID_VIEWS.includes(view as ActiveView)) {
       setActiveView(view as ActiveView);
-      // Refresh history when user opens the history tab
-      if (view === "history") refreshHistory();
     }
   }, [refreshHistory]);
 
@@ -710,23 +727,39 @@ export default function App() {
 
   if (needsEnterprise || needsSetup) {
     return (
-      <OnboardingFlow
-        snapshot={snapshotWithHistory}
-        workspaceOnly={workspaceOnly}
-        enterpriseRequired={needsEnterprise}
-        initialProgress={loadOnboardingProgress()}
-        requireLocalModelSetup={localModelSetupRequired}
-        onEnterpriseConnected={handleEnterpriseConnected}
-        onMicrophone={handleMicrophone}
-        onAccessibility={handleAccessibility}
-        onInputMonitoring={handleInputMonitoring}
-        onFinish={handleOnboardingFinish}
-      />
+      <OnboardingErrorBoundary>
+        <OnboardingFlow
+          snapshot={snapshotWithHistory}
+          workspaceOnly={workspaceOnly}
+          enterpriseRequired={needsEnterprise}
+          initialProgress={loadOnboardingProgress()}
+          requireLocalModelSetup={localModelSetupRequired}
+          onEnterpriseConnected={handleEnterpriseConnected}
+          onMicrophone={handleMicrophone}
+          onAccessibility={handleAccessibility}
+          onInputMonitoring={handleInputMonitoring}
+          onRefreshPermissions={() => void refreshSnapshot().catch(() => {})}
+          onFinish={handleOnboardingFinish}
+        />
+      </OnboardingErrorBoundary>
     );
   }
 
   if (setupLoader === "running") {
     return <SetupLoader status={setupStatus} />;
+  }
+
+  // Post-update required-step gate: an already-onboarded user who updated past
+  // onboarding is forced through outstanding new steps once (backend is up by
+  // now, so the model download works). They install the new model or explicitly
+  // keep their current setup — either way it stamps the version and never repeats.
+  if (migrationDone < MIGRATION_VERSION) {
+    return (
+      <ModelMigrationGate
+        onDone={handleMigrationDone}
+        platform={(snapshot?.platform ?? "macos") as "macos" | "windows" | "linux"}
+      />
+    );
   }
 
   const liveMeetingActive = activeView === "live-meeting" && !!liveMeetingId;
@@ -794,7 +827,8 @@ export default function App() {
                 )}
                 {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
                 {activeView === "vocabulary" && <VocabularyView />}
-                {activeView === "insights"   && <InsightsView snapshot={snapshotWithHistory} />}
+                {activeView === "learnings"  && <LearningsView />}
+                {activeView === "buckets"    && <BucketsView />}
                 {activeView === "meetings"   && (
                   <MeetingsView
                     focusMeetingId={focusMeetingId}
@@ -833,6 +867,10 @@ export default function App() {
         onPerformanceMonitorChange={setPerformanceMonitor}
         onEnterpriseDisconnect={handleEnterpriseDisconnect}
         initialSection={settingsSection}
+        theme={theme}
+        onThemeChange={setTheme}
+        themePreference={themePreference}
+        onThemePreferenceChange={setThemePreference}
       />
 
       {/* ── Retry toast (bottom-center) ──────────────── */}
@@ -874,7 +912,10 @@ export default function App() {
       )}
 
       {/* ── Vocabulary toast (bottom-center) ─────────── */}
-      {vocabToast && !retryToast && !editToast && (
+      {/* Suppressed on the Vocabulary page — that view owns its own toasts
+          (with Undo) for explicit edits; this global surface is for background
+          auto-learning feedback while you're dictating elsewhere. */}
+      {vocabToast && activeView !== "vocabulary" && !retryToast && !editToast && (
         <VocabularyToast
           kind={vocabToast.kind}
           term={vocabToast.term}

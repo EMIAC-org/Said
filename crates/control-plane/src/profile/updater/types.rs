@@ -271,6 +271,91 @@ pub struct AliasChangeRecord {
     pub to_status: String,
 }
 
+// --- Batched per-user profiling + KB run (deepseek-v4-flash over a bucket window) ---
+
+/// One dictation in the analyzed window, as sent to DeepSeek.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchRunInput {
+    pub was_edited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_transcript: Option<String>,
+    pub polished_output: String,
+    pub final_text: String,
+}
+
+/// DeepSeek's per-run classification of an unknown app into the fixed bucket enum.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AppBucketSuggestion {
+    pub app_key: String,
+    pub bucket: String,
+    #[serde(default)]
+    pub confidence: f64,
+}
+
+/// DeepSeek's structured output for one bucket window: per-bucket style + global KB
+/// Fixed per-bucket style knobs. DeepSeek only PICKS a value from each knob's
+/// allowed set (see `PROFILE_BATCH_SYSTEM_PROMPT`); the human-authored prompt text
+/// lives in `bucket::render_bucket_knob_lines`. Unknown/omitted knobs render nothing.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct BucketStyleKnobs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<String>, // casual | neutral | formal
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub greeting: Option<String>, // avoid | ok | expected
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub casing: Option<String>, // preserve | sentence | lower
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<String>, // terse | normal | expansive
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>, // avoid | ok
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technical_terms: Option<String>, // preserve | normal
+}
+
+impl BucketStyleKnobs {
+    /// How many knobs the model actually set (for logging/telemetry).
+    pub fn set_count(&self) -> usize {
+        [
+            self.tone.is_some(),
+            self.greeting.is_some(),
+            self.casing.is_some(),
+            self.length.is_some(),
+            self.emoji.is_some(),
+            self.technical_terms.is_some(),
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count()
+    }
+}
+
+/// deltas + app-bucket classifications. Reuses the per-edit patch sub-structs.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct BatchProfileResponse {
+    /// The model's own recommendation to apply (gated further by `confidence`).
+    #[serde(default)]
+    pub apply: bool,
+    #[serde(default)]
+    pub confidence: f64,
+    /// Per-bucket style, as FIXED knobs (-> the bucket overlay). DeepSeek may only
+    /// pick from each knob's allowed values; the prompt text is rendered by us in
+    /// `bucket::render_bucket_knob_lines`, so no model-written prose reaches polish.
+    #[serde(default)]
+    pub style_knobs: BucketStyleKnobs,
+    /// Global identity / KB (-> runtime_user_profiles, bucket-invariant).
+    #[serde(default)]
+    pub user_background: Option<PatchUserBackground>,
+    #[serde(default)]
+    pub add_domains: Vec<PatchDomain>,
+    #[serde(default)]
+    pub add_focus_areas: Vec<PatchFocusArea>,
+    /// Classifications for apps not yet in the static/agent bucket map.
+    #[serde(default)]
+    pub app_bucket_suggestions: Vec<AppBucketSuggestion>,
+    #[serde(default)]
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct LearnJobRow {
     pub id: Uuid,

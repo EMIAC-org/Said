@@ -42,6 +42,13 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/028_profile_hitl_review.sql"),
     include_str!("../migrations/029_runtime_alias_learn_events.sql"),
     include_str!("../migrations/030_runtime_prompt_profile_latest.sql"),
+    include_str!("../migrations/031_dictation_trace.sql"),
+    include_str!("../migrations/032_app_buckets.sql"),
+    include_str!("../migrations/033_profile_batch_jobs.sql"),
+    include_str!("../migrations/034_app_bucket_user_source.sql"),
+    include_str!("../migrations/035_bucket_output_language.sql"),
+    include_str!("../migrations/036_history_output_language.sql"),
+    include_str!("../migrations/037_profile_audit_batch_source.sql"),
 ];
 
 /// Connect to Postgres and apply the schema.

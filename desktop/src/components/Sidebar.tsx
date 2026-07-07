@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import {
   LayoutDashboard,
   History,
-  BarChart2,
+  Columns3,
   BookOpen,
   Settings,
   UserPlus,
@@ -38,7 +38,8 @@ const GENERAL_NAV: NavItem[] = [
   { id: "dashboard",  label: "Dashboard",  icon: <LayoutDashboard size={15} /> },
   { id: "history",    label: "History",    icon: <History         size={15} /> },
   { id: "vocabulary", label: "Vocabulary", icon: <BookOpen        size={15} /> },
-  { id: "insights",   label: "Insights",   icon: <BarChart2       size={15} />, badge: "New" },
+  { id: "learnings",  label: "Learnings",  icon: <Sparkles        size={15} />, badge: "New" },
+  { id: "buckets",    label: "Buckets",    icon: <Columns3        size={15} /> },
 ];
 
 // Divo is gated to approved EMIAC accounts. This only controls nav visibility —

@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod app_identity; // resolve target_app pid → bundle-id/exe + app icon (App Identity Service)
 mod backend;
 mod backend_guard;
+mod browser_context; // opt-in: active browser tab → site host (AppleScript, macOS)
 mod chaos; // env-gated fault injection for torture-testing the resilience paths
 mod desktop;
 mod developer_context;
@@ -11,9 +13,10 @@ mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostic
 mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
 mod enterprise_oauth;
+mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
 mod meeting_engine;
 mod notch_sidecar;
-mod whisper_dictation_stream; // Turbo Q5 live partials during dictation // native Swift notch-HUD sidecar (append-only, AIRNOTE_NOTCH_SIDECAR)
+mod whisper_dictation_stream; // crash-recovery PCM tap during on-device dictation (batch-only STT)
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
@@ -1064,12 +1067,11 @@ fn spawn_dictation_live_partial_listener(
                 );
                 last_logged = transcript.clone();
             }
-            let _ = app.emit(
-                "voice-status",
-                serde_json::json!({
-                    "phase": "live_stt",
-                    "transcript": transcript,
-                }),
+            emit_voice_status(
+                &app,
+                "live_stt",
+                Some(transcript.as_str()),
+                Some(&recording_id),
             );
         }
     });
@@ -1448,6 +1450,7 @@ struct StatusBarInteractive(AtomicBool);
 struct RecordingSessionState {
     generation: AtomicU64,
     active_id: Mutex<Option<String>>,
+    processing_id: Mutex<Option<String>>,
 }
 
 impl RecordingSessionState {
@@ -1457,6 +1460,9 @@ impl RecordingSessionState {
         if let Ok(mut guard) = self.active_id.lock() {
             *guard = Some(id.clone());
         }
+        if let Ok(mut guard) = self.processing_id.lock() {
+            *guard = None;
+        }
         tracing::info!("[record] session begin id={id} generation={generation}");
         (generation, id)
     }
@@ -1464,6 +1470,9 @@ impl RecordingSessionState {
     fn end(&self) -> Option<(u64, String)> {
         let generation = self.generation.load(Ordering::SeqCst);
         let id = self.active_id.lock().ok()?.take()?;
+        if let Ok(mut guard) = self.processing_id.lock() {
+            *guard = Some(id.clone());
+        }
         tracing::info!("[record] session end id={id} generation={generation}");
         Some((generation, id))
     }
@@ -1473,6 +1482,19 @@ impl RecordingSessionState {
         let id = self.active_id.lock().ok()?.clone()?;
         Some((generation, id))
     }
+
+    fn id_for_snapshot_state(&self, state: &str) -> Option<String> {
+        match state {
+            "recording" => self.active_id.lock().ok()?.clone(),
+            "processing" => self
+                .processing_id
+                .lock()
+                .ok()
+                .and_then(|id| id.clone())
+                .or_else(|| self.active_id.lock().ok()?.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl Default for RecordingSessionState {
@@ -1480,8 +1502,47 @@ impl Default for RecordingSessionState {
         Self {
             generation: AtomicU64::new(0),
             active_id: Mutex::new(None),
+            processing_id: Mutex::new(None),
         }
     }
+}
+
+fn snapshot_for_ui(app: &tauri::AppHandle, snap: &AppSnapshot) -> AppSnapshot {
+    let mut snap = snap.clone();
+    snap.recording_id = app
+        .try_state::<RecordingSessionState>()
+        .and_then(|session| session.id_for_snapshot_state(&snap.state));
+    snap
+}
+
+fn emit_app_state(app: &tauri::AppHandle, snap: &AppSnapshot) {
+    let ui_snap = snapshot_for_ui(app, snap);
+    let _ = app.emit("app-state", &ui_snap);
+}
+
+fn emit_voice_status(
+    app: &tauri::AppHandle,
+    phase: &str,
+    transcript: Option<&str>,
+    run_id: Option<&str>,
+) {
+    let _ = app.emit(
+        "voice-status",
+        serde_json::json!({
+            "phase": phase,
+            "transcript": transcript,
+            "run_id": run_id,
+            "recording_id": run_id,
+        }),
+    );
+}
+
+fn emit_voice_done(app: &tauri::AppHandle, done: &api::PolishDone, run_id: Option<&str>) {
+    let mut payload = serde_json::to_value(done).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("run_id".to_string(), serde_json::json!(run_id));
+    }
+    let _ = app.emit("voice-done", payload);
 }
 
 fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
@@ -1642,18 +1703,18 @@ fn latest_saved_voice_audio_id() -> Option<String> {
 }
 
 fn parse_record_hotkey(raw: &str) -> hotkey::RecordHotkey {
-    match raw {
-        "right_option" => hotkey::RecordHotkey::RightOption,
-        // Fn/Globe is macOS-only; on Windows the win_hotkey backend has no VK for
-        // it (target_vk(Function)=None) so hold-to-record would be silently dead.
-        // A "fn" pref can still arrive via account sync from a Mac profile — degrade
-        // gracefully to Caps Lock on non-macOS instead of leaving recording broken.
-        #[cfg(target_os = "macos")]
-        "fn" => hotkey::RecordHotkey::Function,
-        #[cfg(not(target_os = "macos"))]
-        "fn" => hotkey::RecordHotkey::CapsLock,
-        _ => hotkey::RecordHotkey::CapsLock,
+    // Fn/Globe is macOS-only; on Windows the win_hotkey backend has no VK for it
+    // (target_vk(Function)=None) so hold-to-record would be silently dead. A "fn"
+    // pref can still arrive via account sync from a Mac profile — degrade to Caps
+    // Lock on non-macOS instead of leaving recording broken.
+    #[cfg(not(target_os = "macos"))]
+    if raw == "fn" {
+        return hotkey::RecordHotkey::CapsLock;
     }
+    // Preset keys + any sided modifier are resolved from their stable string id in
+    // the hotkey crate (which owns the platform keycodes/masks/VKs). Unknown ids
+    // fall back to Caps Lock.
+    hotkey::RecordHotkey::from_id(raw).unwrap_or(hotkey::RecordHotkey::CapsLock)
 }
 
 fn cache_last_voice_action(
@@ -2599,7 +2660,7 @@ fn tray_polish_message(app: &tauri::AppHandle, tone: &str) {
                     done.polished.split_whitespace().count()
                 );
                 // Emit tokens to the UI for live preview if the window is visible
-                let _ = app_clone.emit("voice-done", &done);
+                emit_voice_done(&app_clone, &done, None);
                 // Selected-text transform must reliably replace the active
                 // selection. Direct Unicode typing has no success signal from
                 // macOS, so this explicit command keeps the proven paste path.
@@ -2859,7 +2920,7 @@ fn tray_set_output_language(app: &tauri::AppHandle, lang: &str) {
 fn bootstrap(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<AppSnapshot, String> {
     let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
     sync_tray(&app, &snap);
-    Ok(snap)
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 // SYNC (deliberately): a sync Tauri command returns its response synchronously in
@@ -2869,8 +2930,9 @@ fn bootstrap(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<AppSn
 // requests saturated the ~6-connection pool so NO new invoke (incl. End-meeting's
 // stop_session) could dispatch. Keep this sync; it's a quick mutex read.
 #[tauri::command]
-fn get_snapshot(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+fn get_snapshot(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<AppSnapshot, String> {
+    let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 /// Fault injection for resilience testing. Inert unless `AIRNOTE_CHAOS=1` is set
@@ -3210,49 +3272,6 @@ async fn list_polish_models(
     api::list_polish_models(&ep, beta).await
 }
 
-#[tauri::command]
-async fn get_voice_prompt(
-    backend: State<'_, BackendState>,
-) -> Result<api::PromptTemplateResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::get_voice_prompt(&ep).await
-}
-
-#[tauri::command]
-async fn save_voice_prompt_draft(
-    backend: State<'_, BackendState>,
-    draft_body: String,
-) -> Result<api::PromptTemplateResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::save_voice_prompt_draft(&ep, draft_body).await
-}
-
-#[tauri::command]
-async fn apply_voice_prompt_draft(
-    backend: State<'_, BackendState>,
-) -> Result<api::PromptTemplateResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::apply_voice_prompt_draft(&ep).await
-}
-
-#[tauri::command]
-async fn reset_voice_prompt(
-    backend: State<'_, BackendState>,
-) -> Result<api::PromptTemplateResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::reset_voice_prompt(&ep).await
-}
-
-#[tauri::command]
-async fn test_voice_prompt(
-    backend: State<'_, BackendState>,
-    transcript: String,
-    draft_body: Option<String>,
-) -> Result<api::PromptTestResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::test_voice_prompt(&ep, transcript, draft_body).await
-}
-
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
     provider: String,
@@ -3489,9 +3508,91 @@ async fn patch_preferences(
 async fn get_history(
     backend: State<'_, BackendState>,
     limit: Option<i64>,
+    // Pagination cursor: return only recordings older than this timestamp (ms).
+    // Lets History load one page at a time instead of the whole table at once.
+    before: Option<i64>,
 ) -> Result<Vec<api::Recording>, String> {
     let ep = get_endpoint(&backend)?;
-    api::get_history(&ep, limit.unwrap_or(50)).await
+    api::get_history(&ep, limit.unwrap_or(50), before).await
+}
+
+/// Resolve a stored `target_app` key (bundle-id on macOS / exe path on Windows)
+/// to a `data:image/png;base64,…` icon URL for the History page. Results are
+/// cached in-process, so calling this per row for repeated apps is cheap.
+/// Returns `None` when the app can't be found or has no icon (row falls back to
+/// the generic placeholder).
+#[tauri::command]
+async fn get_app_icon(app_key: String) -> Option<String> {
+    if app_key.trim().is_empty() {
+        return None;
+    }
+    app_identity::icon_data_url(&app_key)
+}
+
+/// Full identity (name + category + icon) for a stored `target_app` key. Used by
+/// the Insights "apps you dictate in" section. Cached in-process.
+#[tauri::command]
+async fn get_app_identity(app_key: String) -> Option<app_identity::AppIdentity> {
+    if app_key.trim().is_empty() {
+        return None;
+    }
+    Some(app_identity::describe(&app_key))
+}
+
+/// Per-app dictation usage (grouped by target_app) for the Insights section.
+#[tauri::command]
+async fn get_app_usage(backend: State<'_, BackendState>) -> Result<Vec<api::AppUsage>, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_app_usage(&ep).await
+}
+
+/// Fire the macOS Automation consent prompt for a browser bundle-id (used by the
+/// opt-in "Enable browser context" affordances so the prompt shows up front
+/// rather than mid-dictation). Returns true if the event went through (already
+/// granted). No-op / false for non-browsers and non-macOS.
+#[tauri::command]
+async fn trigger_browser_automation(app_key: String) -> bool {
+    // Blocks on the native consent dialog — keep it off the async executor.
+    tauri::async_runtime::spawn_blocking(move || {
+        browser_context::trigger_automation_prompt(&app_key)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Prompt macOS Automation consent for all currently-running known browsers, so
+/// the user grants it upfront when they enable the feature. Returns the browser
+/// names prompted (empty on non-macOS / no browsers running).
+#[tauri::command]
+async fn request_browser_automation() -> Vec<String> {
+    // Prompts each running browser in turn — blocking on user consent.
+    tauri::async_runtime::spawn_blocking(browser_context::request_automation_upfront)
+        .await
+        .unwrap_or_default()
+}
+
+/// Live Automation consent state for every known browser currently running, so
+/// Settings can show real per-browser status + a working "Grant" button. Empty on
+/// non-macOS or when no known browser is running.
+#[tauri::command]
+async fn browser_automation_status() -> Vec<browser_context::BrowserAutomation> {
+    tauri::async_runtime::spawn_blocking(browser_context::running_browser_automation)
+        .await
+        .unwrap_or_default()
+}
+
+/// Per-site dictation usage (grouped by host) for the Insights "Sites" section.
+#[tauri::command]
+async fn get_site_usage(backend: State<'_, BackendState>) -> Result<Vec<api::SiteUsage>, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_site_usage(&ep).await
+}
+
+/// Favicon for a site host as a `data:` URL (direct fetch, cached). `None` →
+/// the frontend draws a letter-tile fallback.
+#[tauri::command]
+async fn get_favicon(host: String) -> Option<String> {
+    favicon::favicon_data_url(&host).await
 }
 
 #[tauri::command]
@@ -3552,25 +3653,84 @@ fn set_mode(
     // Model switching removed — always uses gpt-5.4-mini.
     let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
     sync_tray(&app, &snap);
-    Ok(snap)
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 #[tauri::command]
-fn request_accessibility(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
+fn request_accessibility(
+    state: State<'_, SharedApp>,
+    app: tauri::AppHandle,
+) -> Result<AppSnapshot, String> {
     paster::request_permission();
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+    let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 #[tauri::command]
-fn request_input_monitoring(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
+fn request_input_monitoring(
+    state: State<'_, SharedApp>,
+    app: tauri::AppHandle,
+) -> Result<AppSnapshot, String> {
     paster::request_input_monitoring();
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+    let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+    Ok(snapshot_for_ui(&app, &snap))
 }
 
 #[tauri::command]
-fn request_microphone(state: State<'_, SharedApp>) -> Result<AppSnapshot, String> {
+fn request_microphone(
+    state: State<'_, SharedApp>,
+    app: tauri::AppHandle,
+) -> Result<AppSnapshot, String> {
     permissions::request_microphone();
-    Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+    let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+    Ok(snapshot_for_ui(&app, &snap))
+}
+
+/// Open the OS privacy pane for the microphone so the user can flip access on by
+/// hand — the recovery path when a grant prompt was dismissed/denied and the
+/// onboarding step is otherwise stuck "waiting for grants". macOS opens the
+/// System Settings anchor; Windows opens the microphone privacy page.
+#[tauri::command]
+fn open_microphone_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            .spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", "ms-settings:privacy-microphone"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+}
+
+/// Open the macOS Accessibility privacy pane (recovery path for a denied grant).
+/// No-op off macOS — Windows/Linux don't gate HID typing behind this permission.
+#[tauri::command]
+fn open_accessibility_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn();
+    }
+}
+
+/// Open the macOS Input Monitoring privacy pane (recovery path for a denied
+/// grant). No-op off macOS — Windows/Linux don't require this permission.
+#[tauri::command]
+fn open_input_monitoring_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+            .spawn();
+    }
 }
 
 /// Whether Screen Recording is already granted (no prompt). Used to gate meeting
@@ -3621,15 +3781,18 @@ fn toggle_recording(
     match current_state {
         desktop::AppState::Idle => {
             do_start_recording(&state.0, &app);
-            Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+            let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+            Ok(snapshot_for_ui(&app, &snap))
         }
         desktop::AppState::Recording => {
             do_finish_recording(Arc::clone(&state.0), app.clone(), Arc::clone(&backend.0));
-            Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+            let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+            Ok(snapshot_for_ui(&app, &snap))
         }
         desktop::AppState::Processing => {
             // Already in flight — return current snapshot, don't do anything
-            Ok(state.0.lock().map_err(|_| "lock failed")?.snapshot())
+            let snap = state.0.lock().map_err(|_| "lock failed")?.snapshot();
+            Ok(snapshot_for_ui(&app, &snap))
         }
     }
 }
@@ -3903,7 +4066,7 @@ fn cancel_processing_run(app: &tauri::AppHandle, reason: &'static str) {
     tracing::info!("[record] processing run abandoned, reset to idle (reason={reason})");
     diag::breadcrumb(format!("cancel_processing:{reason}"));
     sync_tray(app, &snap);
-    let _ = app.emit("app-state", &snap);
+    emit_app_state(app, &snap);
     sync_status_bar(app, "idle");
 }
 
@@ -3942,7 +4105,7 @@ fn heal_stuck_state(app: &tauri::AppHandle, reason: &'static str) {
     );
 
     sync_tray(app, &snap);
-    let _ = app.emit("app-state", &snap);
+    emit_app_state(app, &snap);
     sync_status_bar(app, "idle");
 
     // The dictation's audio is still on disk (the pipeline never reached cleanup).
@@ -4352,7 +4515,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             tracing::info!("[record] started — state={}", snap.state);
             diag::breadcrumb("start:recording");
             sync_tray(app, &snap);
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(app, &snap);
             if app
                 .try_state::<LongDictationState>()
                 .map(|s| s.pending_lock.swap(false, Ordering::SeqCst))
@@ -4568,11 +4731,6 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             .try_state::<RecordingSessionState>()
             .and_then(|s| s.current().map(|(_, id)| id))
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let stt_language = app
-            .try_state::<HotPathCache>()
-            .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
-            .filter(|lang| !lang.is_empty())
-            .unwrap_or_else(|| "hi".to_string());
 
         if use_whisper_local_stt(app) && !is_meeting_capture {
             if !meeting_engine::silero_vad_model_installed() {
@@ -4588,27 +4746,17 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                 });
             }
             tracing::info!(
-                "[stt] provider={stt_provider} — live whisper.cpp partials during recording"
+                "[stt] provider={stt_provider} — batch-only whisper.cpp on release (no live partials)"
             );
-            let (live_partial_tx, live_partial_rx) =
-                tokio::sync::mpsc::unbounded_channel::<String>();
+            // Clear any stale live partial so the status bar doesn't show one; the
+            // on-device whisper.cpp pass is batch-only (runs once, on release). We
+            // still tap the PCM into the crash-recovery session while recording.
             if let Some(state) = app.try_state::<SwiftLivePartialState>() {
                 if let Ok(mut latest) = state.0.lock() {
                     *latest = None;
                 }
             }
-            spawn_dictation_live_partial_listener(
-                app.clone(),
-                recording_id.clone(),
-                live_partial_rx,
-                "whisper_live",
-            );
-            whisper_dictation_stream::spawn_live_whisper_bridge(
-                recording_id,
-                chunk_recv,
-                stt_language,
-                live_partial_tx,
-            );
+            whisper_dictation_stream::spawn_dictation_recovery_drain(recording_id, chunk_recv);
             return;
         }
 
@@ -4670,6 +4818,12 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         let screen_context_for_server_runtime = app
             .try_state::<ScreenContextState>()
             .and_then(|ctx| ctx.0.lock().ok()?.clone());
+        // Focused app locked at record start (same PID the edit-watcher uses) → bundle-id /
+        // exe key, forwarded on voice.start so server polish can inject the app-bucket style.
+        let target_app_for_server_runtime = app
+            .try_state::<EditTargetState>()
+            .and_then(|s| *s.0.lock().ok()?)
+            .and_then(app_identity::app_key_for_pid);
         let echo_gate = app.try_state::<MeetingModeState>().and_then(|meeting| {
             if meeting.capture_enabled() {
                 Some(Arc::clone(&meeting.echo_gate))
@@ -4726,6 +4880,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                             recording_id.clone(),
                             ep,
                             screen_context_for_server_runtime,
+                            target_app_for_server_runtime,
                         )
                     });
                     let bridge_stop_handle = swift_stream::spawn_audio_bridge_with_echo_gate(
@@ -4763,6 +4918,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                         recording_id.clone(),
                         ep,
                         screen_context_for_server_runtime,
+                        target_app_for_server_runtime,
                     )
                 });
                 dg_stream::spawn_audio_bridge_with_echo_gate(
@@ -4838,7 +4994,7 @@ fn do_cancel_recording(
     // banner only on an idle app-state event, so this must reach the UI even if a
     // later call (tray/status) fails — a missed idle event is exactly what strands
     // the banner and the menu-bar mic indicator after a quick-tap cancel.
-    let _ = app.emit("app-state", &snap);
+    emit_app_state(&app, &snap);
     sync_tray(&app, &snap);
     emit_meeting_stt_status(&app);
 
@@ -4927,14 +5083,14 @@ fn do_finish_recording(
                 request_swift_bridge_stop(&app, client_run_id.as_deref(), "finish_begin_stop");
             }
             sync_tray(&app, &snap);
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(&app, &snap);
             (stop_rx, was_too_short)
         }
         Err(BeginStopError::Short(snap)) => {
             recovery::clear();
             sync_tray(&app, &snap);
             emit_short_recording_error(&app);
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(&app, &snap);
             return;
         }
         Err(BeginStopError::Failed(snap)) => {
@@ -4947,7 +5103,7 @@ fn do_finish_recording(
                     "audio_id": null,
                 }),
             );
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(&app, &snap);
             return;
         }
     };
@@ -4999,7 +5155,7 @@ fn do_finish_recording(
                     }),
                 );
             }
-            let _ = app.emit("app-state", &snap);
+            emit_app_state(&app, &snap);
             emit_meeting_stt_status(&app);
             return;
         }
@@ -5259,16 +5415,23 @@ fn do_finish_recording(
                 emit_voice_error_quiet(&app2, &e);
             }
             sync_tray(&app2, &snap);
-            let _ = app2.emit("app-state", &snap);
+            emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
             recovery::clear();
             return;
         }
 
+        // Resolve the locked target pid → app key (bundle-id on macOS, exe on
+        // Windows) so History can render which app this was dictated into.
+        // `Option<i32>` is Copy, so this doesn't disturb edit_target_pid's later use.
+        let target_app = edit_target_pid.and_then(app_identity::app_key_for_pid);
+        // Opt-in, on-device: if the target is a browser, capture the active
+        // tab's site (host only) for the Insights "Sites" section. Fire-and-forget.
+        maybe_capture_browser_site(&back_arc2, target_app.clone());
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
-            None,
+            target_app,
             client_run_id.clone(),
             pre_transcript,
             None,
@@ -5334,7 +5497,7 @@ fn do_finish_recording(
                 }
             };
             sync_tray(&app2, &snap);
-            let _ = app2.emit("app-state", &snap);
+            emit_app_state(&app2, &snap);
 
             // Default routing for the staged turn: Ctrl+N forces a new chat;
             // otherwise we continue the active thread if there is one (the HUD lets
@@ -5446,7 +5609,7 @@ fn do_finish_recording(
                 emit_voice_error_quiet(&app2, &e);
             }
             sync_tray(&app2, &snap);
-            let _ = app2.emit("app-state", &snap);
+            emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
 
             // Auto-restart recording for continuous meeting capture
@@ -5518,7 +5681,7 @@ fn do_finish_recording(
                 emit_voice_error_quiet(&app2, &e);
             }
             sync_tray(&app2, &snap);
-            let _ = app2.emit("app-state", &snap);
+            emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
         }
         // Dictation delivered (or surfaced as an error to the user) — the captured
@@ -5653,6 +5816,7 @@ async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::P
         None,
         None,
         None,
+        None,
         false,
         |_event: api::PolishEvent| {},
     )
@@ -5685,10 +5849,7 @@ async fn run_problem_command(
         lock.clone().ok_or("backend not started")?
     };
 
-    let _ = app.emit(
-        "voice-status",
-        serde_json::json!({"phase": "problem_transcribing"}),
-    );
+    emit_voice_status(app, "problem_transcribing", None, client_run_id.as_deref());
     let pre_text = pre_transcript.as_ref().map(|t| t.transcript.clone());
     let pre_meta = pre_transcript.as_ref().map(|t| t.meta.clone());
     let transcribed =
@@ -5713,6 +5874,7 @@ async fn run_problem_command(
 
     match context_match.outcome.as_str() {
         "ambiguous" => {
+            let event_run_id = client_run_id.clone();
             if let Some(pending) = app.try_state::<PendingProblemState>() {
                 if let Ok(mut slot) = pending.0.lock() {
                     *slot = Some(PendingProblemCommand {
@@ -5730,6 +5892,7 @@ async fn run_problem_command(
                 serde_json::json!({
                     "status": "manual_paste",
                     "message": "Ambiguous Project Match",
+                    "run_id": event_run_id.as_deref(),
                 }),
             );
             Ok(ProblemCommandOutcome::Ambiguous { transcript })
@@ -5787,9 +5950,11 @@ async fn solve_problem_with_project(
         lock.clone().ok_or("backend not started")?
     };
 
-    let _ = app.emit(
-        "voice-status",
-        serde_json::json!({"phase": "problem_solving", "transcript": &transcript}),
+    emit_voice_status(
+        app,
+        "problem_solving",
+        Some(transcript.as_str()),
+        client_run_id.as_deref(),
     );
 
     let context_mode = if project.is_some() {
@@ -5809,6 +5974,7 @@ async fn solve_problem_with_project(
         app_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
     };
 
+    let event_run_id = req.client_run_id.clone();
     let response = api::solve_problem(&ep, req).await?;
     let pasted = paste_problem_output(app, &response.output, edit_target_pid).await;
     let _ = app.emit(
@@ -5816,6 +5982,7 @@ async fn solve_problem_with_project(
         serde_json::json!({
             "status": if pasted { "pasted" } else { "manual_paste" },
             "message": if pasted { "Pasted" } else { "Ready to Paste" },
+            "run_id": event_run_id.as_deref(),
         }),
     );
     Ok((response, pasted))
@@ -5899,6 +6066,41 @@ fn emit_problem_context_event(
 /// Async SSE consumer: streams tokens from backend, types them word-by-word,
 /// and stores the result for paste-latest re-paste.
 /// In meeting mode (`is_meeting`), skips word-by-word typing entirely.
+/// Opt-in browser-context capture. If `target_app` is a browser and the
+/// `browser_context_enabled` pref is set, read the active tab's site (host only)
+/// and record it to the LOCAL backend. Fully fire-and-forget and on-device — the
+/// host is never sent to the cloud runtime. No-op when disabled / not a browser.
+fn maybe_capture_browser_site(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    target_app: Option<String>,
+) {
+    let Some(app_key) = target_app else {
+        return;
+    };
+    if !browser_context::is_known_browser(&app_key) {
+        return;
+    }
+    if !said_core::prefs::load().browser_context_enabled {
+        return;
+    }
+    let back_arc = back_arc.clone();
+    tauri::async_runtime::spawn(async move {
+        // osascript is blocking — keep it off the async runtime thread.
+        let key = app_key.clone();
+        let site = tauri::async_runtime::spawn_blocking(move || browser_context::active_site(&key))
+            .await
+            .ok()
+            .flatten();
+        let Some(site) = site else {
+            return;
+        };
+        let ep = back_arc.lock().ok().and_then(|g| g.clone());
+        if let Some(ep) = ep {
+            let _ = api::record_site_context(&ep, &app_key, &site.host).await;
+        }
+    });
+}
+
 async fn run_voice_polish_sse(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
     wav: Vec<u8>,
@@ -5959,6 +6161,7 @@ async fn run_voice_polish_sse(
     };
     let error_target_app = target_app.clone();
     let error_client_run_id = client_run_id.clone();
+    let event_client_run_id = client_run_id.clone();
     let error_already_emitted = Arc::new(AtomicBool::new(false));
     let error_already_emitted_for_events = Arc::clone(&error_already_emitted);
 
@@ -6077,16 +6280,32 @@ async fn run_voice_polish_sse(
                 }
             }
             api::PolishEvent::Status { phase, transcript } => {
+                if app_clone
+                    .try_state::<RecordingSessionState>()
+                    .map(|s| s.generation.load(Ordering::SeqCst) != run_generation)
+                    .unwrap_or(false)
+                {
+                    return;
+                }
                 tracing::info!(
                     "[pipeline] status: phase={phase} transcript={}",
                     transcript.as_deref().unwrap_or("—")
                 );
-                let _ = app_clone.emit(
-                    "voice-status",
-                    serde_json::json!({ "phase": phase, "transcript": transcript }),
+                emit_voice_status(
+                    &app_clone,
+                    phase,
+                    transcript.as_deref(),
+                    event_client_run_id.as_deref(),
                 );
             }
             api::PolishEvent::Done(done) => {
+                if app_clone
+                    .try_state::<RecordingSessionState>()
+                    .map(|s| s.generation.load(Ordering::SeqCst) != run_generation)
+                    .unwrap_or(false)
+                {
+                    return;
+                }
                 tracing::info!(
                     "[pipeline] ✓ done: {} chars, model={}, latency: stt={}ms embed={}ms polish={}ms total={}ms",
                     done.polished.len(),
@@ -6109,7 +6328,7 @@ async fn run_voice_polish_sse(
                 tracing::info!("[pipeline] polished text: \"{preview}{suffix}\"");
                 // For Divo turns the Divo bridge drives the HUD — don't flash "Done".
                 if !is_divo {
-                    let _ = app_clone.emit("voice-done", done);
+                    emit_voice_done(&app_clone, done, event_client_run_id.as_deref());
                 }
             }
             api::PolishEvent::Error {
@@ -6154,6 +6373,41 @@ async fn run_voice_polish_sse(
     let had_ws_pretranscript = pre_transcript.is_some();
     let wav_len = wav.len();
     let target_app_for_telemetry = target_app.clone();
+    let mut initial_trace = said_core::dictation_trace::DictationTrace::default();
+    initial_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+        stage: "desktop.pipeline.handoff",
+        component: "desktop",
+        function: "run_voice_polish_sse",
+        output: pre_transcript.as_ref().map(|t| t.transcript.as_str()),
+        reason: Some("desktop handing audio/transcript candidate to backend"),
+        risk: Some("desktop_transcript_selection"),
+        metadata: serde_json::json!({
+            "run_id": client_run_id.as_deref(),
+            "path": pipeline_path,
+            "wav_bytes": wav_len,
+            "pre_transcript_present": pre_transcript.is_some(),
+            "pre_transcript_chars": pre_transcript_chars,
+            "pre_transcript_words": pre_transcript_words,
+            "message_polish": message_polish_mode,
+            "repair_mode": repair_mode.is_some(),
+            "screen_context_chars": screen_context.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+        }),
+        ..Default::default()
+    });
+    initial_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+        stage: "desktop.field.initial_snapshot",
+        component: "desktop",
+        function: "paster::read_focused_value_fast",
+        output: initial_field_text.as_deref(),
+        reason: Some("field text before live typing/reconcile"),
+        risk: Some("paste_context"),
+        metadata: serde_json::json!({
+            "readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
+            "suppress_local": suppress_local,
+        }),
+        ..Default::default()
+    });
+    let initial_trace_json = Some(initial_trace.into_value());
     let done_result = if let Some(transcript) = pre_transcript {
         tracing::info!(
             "[pipeline] fast path: sending WAV + WS transcript to backend (backend should skip HTTP STT unless rescue is triggered)"
@@ -6163,6 +6417,7 @@ async fn run_voice_polish_sse(
             wav,
             target_app,
             client_run_id.clone(),
+            initial_trace_json.clone(),
             Some(transcript.transcript),
             Some(transcript.meta),
             repair_mode,
@@ -6177,6 +6432,7 @@ async fn run_voice_polish_sse(
             wav,
             target_app,
             client_run_id.clone(),
+            initial_trace_json,
             None,
             None,
             repair_mode,
@@ -6400,8 +6656,66 @@ async fn run_voice_polish_sse(
             serde_json::json!({
                 "status": output_status,
                 "message": output_message,
+                "run_id": client_run_id.as_deref(),
             }),
         );
+    }
+
+    if !is_divo {
+        let typed_snapshot_for_trace = typed_text
+            .lock()
+            .map(|text| text.clone())
+            .unwrap_or_default();
+        let mut paste_trace = said_core::dictation_trace::DictationTrace::default();
+        paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "desktop.live_typed_snapshot",
+            component: "desktop",
+            function: "paster::type_text",
+            output: (!typed_snapshot_for_trace.is_empty())
+                .then_some(typed_snapshot_for_trace.as_str()),
+            reason: Some("tokens typed before final done reconciliation"),
+            risk: Some("live_typing"),
+            metadata: serde_json::json!({
+                "typed_tokens": n_typed,
+                "failed_tokens": n_failed,
+                "typed_any": !typed_snapshot_for_trace.is_empty(),
+                "message_polish": message_polish_mode,
+                "suppress_local": suppress_local,
+                "superseded": superseded,
+            }),
+            ..Default::default()
+        });
+        paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "desktop.final_reconcile",
+            component: "desktop",
+            function: "paster::reconcile_current_recording_or_insert",
+            input: (!typed_snapshot_for_trace.is_empty())
+                .then_some(typed_snapshot_for_trace.as_str()),
+            output: Some(done.polished.as_str()),
+            reason: Some("desktop ensured final polished text is in focused field"),
+            risk: Some("paste_reconcile"),
+            metadata: serde_json::json!({
+                "output_pasted": output_pasted,
+                "used_clipboard_fallback": used_clipboard_fallback,
+                "output_status": output_status,
+                "initial_field_readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
+            }),
+            ..Default::default()
+        });
+        paste_trace.set_summary_field("paste_success", serde_json::json!(output_pasted));
+        paste_trace.set_summary_field("output_status", serde_json::json!(output_status));
+        let trace_ep = ep.clone();
+        let trace_recording_id = done.recording_id.clone();
+        let trace_value = paste_trace.into_value();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) =
+                api::patch_dictation_trace(&trace_ep, &trace_recording_id, trace_value).await
+            {
+                tracing::warn!(
+                    "[observability] dictation paste trace patch failed recording_id={trace_recording_id}: {e}"
+                );
+            }
+        });
     }
 
     if let Some(run_id) = client_run_id.as_deref() {
@@ -6483,13 +6797,10 @@ async fn run_voice_repair_sse(
             let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
         }
         api::PolishEvent::Status { phase, transcript } => {
-            let _ = app_clone.emit(
-                "voice-status",
-                serde_json::json!({ "phase": phase, "transcript": transcript }),
-            );
+            emit_voice_status(&app_clone, phase, transcript.as_deref(), None);
         }
         api::PolishEvent::Done(done) => {
-            let _ = app_clone.emit("voice-done", done);
+            emit_voice_done(&app_clone, done, None);
         }
         api::PolishEvent::Error {
             message,
@@ -6551,13 +6862,10 @@ async fn run_text_refine_sse(
             let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
         }
         api::PolishEvent::Status { phase, transcript } => {
-            let _ = app_clone.emit(
-                "voice-status",
-                serde_json::json!({ "phase": phase, "transcript": transcript }),
-            );
+            emit_voice_status(&app_clone, phase, transcript.as_deref(), None);
         }
         api::PolishEvent::Done(done) => {
-            let _ = app_clone.emit("voice-done", done);
+            emit_voice_done(&app_clone, done, None);
         }
         api::PolishEvent::Error {
             message,
@@ -6718,7 +7026,7 @@ fn run_fast_voice_repair(app: tauri::AppHandle, action: LastVoiceAction) {
             }
         };
         sync_tray(&app2, &snap);
-        let _ = app2.emit("app-state", &snap);
+        emit_app_state(&app2, &snap);
     });
 }
 
@@ -6763,7 +7071,7 @@ fn run_refine_last_transform(app: tauri::AppHandle, action: LastTextTransformAct
             }
         };
         sync_tray(&app2, &snap);
-        let _ = app2.emit("app-state", &snap);
+        emit_app_state(&app2, &snap);
     });
 }
 
@@ -6927,6 +7235,23 @@ fn download_meeting_audio(audio_path: String, filename: String) -> Result<Option
     }
     std::fs::copy(&src, &dest).map_err(|e| format!("couldn't save audio: {e}"))?;
     Ok(Some(dest.display().to_string()))
+}
+
+/// Export the History transcripts to a user-chosen text/markdown file. The
+/// caller builds the full document (Markdown/plain text) in the webview; this
+/// just shows the native save dialog and writes it. Returns the saved path, or
+/// None if the user cancelled.
+#[tauri::command]
+fn export_history(content: String, filename: String) -> Result<Option<String>, String> {
+    let Some(path) = choose_recording_audio_save_path(&filename)? else {
+        return Ok(None);
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create export folder: {e}"))?;
+    }
+    std::fs::write(&path, content).map_err(|e| format!("couldn't save export: {e}"))?;
+    Ok(Some(path.display().to_string()))
 }
 
 #[tauri::command]
@@ -7218,7 +7543,7 @@ fn retry_recording_spawn(
             }
         };
         sync_tray(&app2, &snap);
-        let _ = app2.emit("app-state", &snap);
+        emit_app_state(&app2, &snap);
     });
 
     Ok(())
@@ -7295,6 +7620,14 @@ async fn list_vocabulary(
 ) -> Result<api::VocabListResponse, String> {
     let ep = get_endpoint(&backend)?;
     api::list_vocabulary(&ep).await
+}
+
+#[tauri::command]
+async fn list_vocabulary_aliases(
+    backend: State<'_, BackendState>,
+) -> Result<api::AliasesResponse, String> {
+    let ep = get_endpoint(&backend)?;
+    api::list_vocab_aliases(&ep).await
 }
 
 #[tauri::command]
@@ -7935,6 +8268,98 @@ async fn list_workspaces(
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| "workspace server URL not configured".to_string())?;
     api::list_workspaces(&server_url, &token, status.active_org_id.as_deref()).await
+}
+
+/// What the cloud profiling brain has learned (run stats + KB + per-bucket style).
+#[tauri::command]
+async fn get_profile_insights(
+    backend: State<'_, BackendState>,
+) -> Result<api::ProfileInsights, String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::get_profile_insights(&server_url, &token, status.active_org_id.as_deref()).await
+}
+
+/// Apps the user dictates into, grouped by bucket (for the Buckets kanban).
+#[tauri::command]
+async fn get_app_buckets(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::get_app_buckets(&server_url, &token, status.active_org_id.as_deref()).await
+}
+
+/// Re-file an app into a bucket (user override; wins over static + agent mappings).
+#[tauri::command]
+async fn set_app_bucket(
+    app_key: String,
+    bucket_key: String,
+    backend: State<'_, BackendState>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    api::set_app_bucket(
+        &server_url,
+        &token,
+        status.active_org_id.as_deref(),
+        &app_key,
+        &bucket_key,
+    )
+    .await
+}
+
+/// Set (or clear, when `output_language` is None/empty) a bucket's output-language override.
+#[tauri::command]
+async fn set_bucket_language(
+    bucket_key: String,
+    output_language: Option<String>,
+    backend: State<'_, BackendState>,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    let status = api::get_enterprise_status(&ep).await?;
+    let token = status
+        .token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "not signed in to a workspace".to_string())?;
+    let server_url = status
+        .server_url
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workspace server URL not configured".to_string())?;
+    let lang = output_language
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    api::set_bucket_language(
+        &server_url,
+        &token,
+        status.active_org_id.as_deref(),
+        &bucket_key,
+        lang,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -8890,6 +9315,27 @@ async fn watch_for_edit(
             app_switched: app_switched_during_capture,
             matches_clipboard: false,
         };
+        let mut edit_trace = said_core::dictation_trace::DictationTrace::default();
+        edit_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "edit_watch.capture",
+            component: "desktop",
+            function: "watch_for_edit",
+            input: Some(&polished),
+            output: Some(&user_kept),
+            reason: Some("focused-field value captured after paste"),
+            risk: Some("edit_capture"),
+            metadata: serde_json::json!({
+                "capture_method": capture_method,
+                "time_since_paste_ms": capture_meta.time_since_paste_ms,
+                "app_switched": capture_meta.app_switched,
+                "matches_clipboard": capture_meta.matches_clipboard,
+                "post_paste_readable": !post_paste.is_empty(),
+                "saw_user_edit": saw_user_edit,
+                "initial_pid": initial_pid,
+                "final_front_pid": final_front_pid,
+            }),
+            ..Default::default()
+        });
         match api::classify_edit(
             ep,
             &recording_id,
@@ -8899,6 +9345,7 @@ async fn watch_for_edit(
             capture_meta,
             client_run_id.as_deref(),
             pre_paste_text.as_deref(),
+            Some(edit_trace.into_value()),
         )
         .await
         {
@@ -9527,10 +9974,9 @@ fn main() {
     // 1. Load env vars from .env files
     said_core::load_env();
 
-    const DEFAULT_DIAGNOSTICS_BASE: &str = "https://airnote.emiactech.com";
     let diagnostics_base = std::env::var("AIRNOTE_DIAGNOSTICS_URL")
         .or_else(|_| std::env::var("AIRNOTE_CONTROL_PLANE_URL"))
-        .unwrap_or_else(|_| DEFAULT_DIAGNOSTICS_BASE.to_string());
+        .unwrap_or_else(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
     said_core::reporter::configure(&diagnostics_base);
     said_core::reporter::set_phase("starting");
 
@@ -9658,6 +10104,23 @@ fn main() {
                     // NSPanel, so we no longer switch the whole app to Accessory.
                     app.set_activation_policy(tauri::ActivationPolicy::Regular);
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
+
+                    // Make the main window the KEY window on launch. Tauri shows
+                    // it (visible:true), but macOS does not always make a
+                    // freshly-launched binary's window *key* — a cold Finder
+                    // double-click, or `tauri dev` from a terminal, leaves the
+                    // launching app frontmost. A non-key NSWindow does not deliver
+                    // the first click to its content (acceptsFirstMouse == NO by
+                    // default): the click is spent activating the window instead,
+                    // so every onboarding button feels dead until the window is
+                    // manually focused. Force activation now, then re-assert once
+                    // after the window has realized to win the presentation race.
+                    activate_airnote(app.handle(), "startup");
+                    let delayed = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        activate_airnote(&delayed, "startup-reassert");
+                    });
                 }
 
                 // Crash recovery: repair WAV headers for any meeting interrupted
@@ -10802,19 +11265,25 @@ fn main() {
             swift_model::swift_stt_download_model,
             swift_model::swift_stt_cancel_download,
             swift_model::swift_stt_delete_model,
-            get_voice_prompt,
-            save_voice_prompt_draft,
-            apply_voice_prompt_draft,
-            reset_voice_prompt,
-            test_voice_prompt,
             patch_preferences,
             get_history,
+            get_app_icon,
+            get_app_identity,
+            get_app_usage,
+            get_site_usage,
+            get_favicon,
+            trigger_browser_automation,
+            request_browser_automation,
+            browser_automation_status,
             submit_edit_feedback,
             toggle_recording,
             set_mode,
             request_accessibility,
             request_input_monitoring,
             request_microphone,
+            open_microphone_settings,
+            open_accessibility_settings,
+            open_input_monitoring_settings,
             screen_recording_granted,
             request_screen_recording,
             diagnose_ax,
@@ -10826,6 +11295,10 @@ fn main() {
             clear_enterprise_auth,
             get_enterprise_status,
             list_workspaces,
+            get_profile_insights,
+            get_app_buckets,
+            set_app_bucket,
+            set_bucket_language,
             activate_workspace,
             deactivate_workspace,
             get_device_id,
@@ -10845,6 +11318,7 @@ fn main() {
             get_recording_audio_url,
             get_recording_audio_bytes,
             download_recording_audio,
+            export_history,
             reveal_downloaded_file,
             reveal_saved_audio,
             download_meeting_audio,
@@ -10854,6 +11328,7 @@ fn main() {
             dismiss_pending_edit,
             // Vocabulary management
             list_vocabulary,
+            list_vocabulary_aliases,
             add_vocabulary_term,
             delete_vocabulary_term,
             confirm_term,
@@ -10898,6 +11373,9 @@ fn main() {
             meeting_engine::download_dictation_model,
             meeting_engine::dictation_model_status,
             meeting_engine::delete_dictation_model,
+            meeting_engine::apex_model_status,
+            meeting_engine::delete_apex_model,
+            meeting_engine::reclaim_old_models,
             meeting_engine::meeting_download_silero_vad_model,
             meeting_engine::meeting_delete_silero_vad_model,
             meeting_engine::silero_vad_model_status,

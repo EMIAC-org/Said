@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Copy, Play, Pause, Download, Check } from "lucide-react";
 import { downloadRecordingAudio, listHistory } from "@/lib/invoke";
+import { useAppMeta, prettyAppName } from "@/lib/appMeta";
 import { useAudioPlayer } from "@/lib/useAudioPlayer";
 import type { AppSnapshot, Recording } from "@/types";
 
@@ -168,7 +169,7 @@ function MiniTile({ label, value, unit, sub }: { label: string; value: string; u
   );
 }
 
-function AppsCard({ apps }: { apps: { name: string; count: number }[] }) {
+function AppsCard({ apps }: { apps: AppBreakdownRow[] }) {
   return (
     <div
       className="rounded-xl p-4 min-h-0 overflow-hidden"
@@ -185,31 +186,57 @@ function AppsCard({ apps }: { apps: { name: string; count: number }[] }) {
           We'll track which apps you dictate into the most.
         </p>
       ) : apps.map((a) => (
-        <div
-          key={a.name}
-          className="grid items-center"
-          style={{ gridTemplateColumns: "22px 1fr 44px", gap: 10, padding: "5px 0", fontSize: 11.5 }}
-        >
-          <span
-            className="grid place-items-center"
-            style={{
-              width: 22, height: 22, borderRadius: 6,
-              background: "linear-gradient(135deg, hsl(var(--secondary)), hsl(var(--surface-3)))",
-              color: "hsl(var(--foreground))", fontSize: 10, fontWeight: 700,
-            }}
-          >
-            {a.name.slice(0, 1).toUpperCase()}
-          </span>
-          <span className="truncate" style={{ color: "hsl(var(--foreground))" }}>{a.name}</span>
-          <span
-            className="text-right"
-            style={{ color: "hsl(var(--muted-foreground))", fontSize: 11, fontFamily: "ui-monospace, SF Mono, monospace" }}
-          >
-            {a.count.toLocaleString()}
-          </span>
-        </div>
+        <AppRow key={a.key ?? a.label} appKey={a.key} label={a.label} count={a.count} />
       ))}
     </div>
+  );
+}
+
+function AppRow({ appKey, label, count }: { appKey: string | null; label: string; count: number }) {
+  const meta = useAppMeta(appKey);
+  const name = meta.name ?? label;
+  return (
+    <div
+      className="grid items-center"
+      style={{ gridTemplateColumns: "22px 1fr 44px", gap: 10, padding: "5px 0", fontSize: 11.5 }}
+    >
+      <AppAvatar icon={meta.icon} name={name} size={22} radius={6} fontSize={10} />
+      <span className="truncate" style={{ color: "hsl(var(--foreground))" }} title={name}>{name}</span>
+      <span
+        className="text-right"
+        style={{ color: "hsl(var(--muted-foreground))", fontSize: 11, fontFamily: "ui-monospace, SF Mono, monospace" }}
+      >
+        {count.toLocaleString()}
+      </span>
+    </div>
+  );
+}
+
+/** Square app icon with a graceful letter-avatar fallback while/when unresolved. */
+function AppAvatar({
+  icon, name, size, radius, fontSize,
+}: { icon: string | null; name: string; size: number; radius: number; fontSize: number }) {
+  if (icon) {
+    return (
+      <img
+        src={icon}
+        alt={name}
+        draggable={false}
+        style={{ width: size, height: size, borderRadius: radius, objectFit: "contain" }}
+      />
+    );
+  }
+  return (
+    <span
+      className="grid place-items-center"
+      style={{
+        width: size, height: size, borderRadius: radius,
+        background: "linear-gradient(135deg, hsl(var(--secondary)), hsl(var(--surface-3)))",
+        color: "hsl(var(--foreground))", fontSize, fontWeight: 700,
+      }}
+    >
+      {(name.trim()[0] ?? "?").toUpperCase()}
+    </span>
   );
 }
 
@@ -363,23 +390,7 @@ function RecordingCard({
         >
           {timeOfDay(rec.timestamp_ms)}
         </span>
-        {rec.target_app && (
-          <span
-            className="px-1.5 py-0.5 rounded"
-            style={{
-              fontSize: 10,
-              color: "hsl(var(--muted-foreground))",
-              background: "hsl(0 0% 100% / 0.05)",
-              fontFamily: "ui-monospace, SF Mono, monospace",
-              maxWidth: 120,
-              overflow: "hidden",
-              whiteSpace: "nowrap",
-              textOverflow: "ellipsis",
-            }}
-          >
-            {rec.target_app}
-          </span>
-        )}
+        {rec.target_app && <AppTag appKey={rec.target_app} />}
 
         {/* Right slot — word count by default, actions on hover/active */}
         <div className="ml-auto flex items-center" style={{ position: "relative", minHeight: 22 }}>
@@ -445,6 +456,37 @@ function RecordingCard({
   );
 }
 
+/** Compact "which app" pill for a recording row — icon + resolved app name. */
+function AppTag({ appKey }: { appKey: string }) {
+  const meta = useAppMeta(appKey);
+  const name = meta.name ?? prettyAppName(appKey);
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
+      style={{
+        fontSize: 10,
+        color: "hsl(var(--muted-foreground))",
+        background: "hsl(0 0% 100% / 0.05)",
+        maxWidth: 140,
+        overflow: "hidden",
+      }}
+      title={name}
+    >
+      {meta.icon && (
+        <img
+          src={meta.icon}
+          alt=""
+          draggable={false}
+          style={{ width: 12, height: 12, borderRadius: 3, objectFit: "contain", flexShrink: 0 }}
+        />
+      )}
+      <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+        {name}
+      </span>
+    </span>
+  );
+}
+
 function ActionButton({
   title, onClick, children, active, disabled,
 }: {
@@ -485,16 +527,30 @@ function ActionButton({
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildAppBreakdown(recs: Recording[]): { name: string; count: number }[] {
+// `key` is the raw target_app (bundle-id / exe path) so the row can resolve a
+// real icon + display name; it is null for the synthetic Unknown / Other rows.
+interface AppBreakdownRow {
+  key:   string | null;
+  label: string;
+  count: number;
+}
+
+const UNKNOWN_KEY = "__unknown__";
+
+function buildAppBreakdown(recs: Recording[]): AppBreakdownRow[] {
   const counts = new Map<string, number>();
   for (const r of recs) {
-    const k = r.target_app && r.target_app.trim() ? r.target_app : "Unknown";
+    const k = r.target_app && r.target_app.trim() ? r.target_app : UNKNOWN_KEY;
     counts.set(k, (counts.get(k) ?? 0) + 1);
   }
   const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  const top = sorted.slice(0, 4).map(([name, count]) => ({ name, count }));
+  const top: AppBreakdownRow[] = sorted.slice(0, 4).map(([key, count]) => ({
+    key:   key === UNKNOWN_KEY ? null : key,
+    label: key === UNKNOWN_KEY ? "Unknown" : prettyAppName(key),
+    count,
+  }));
   const restCount = sorted.slice(4).reduce((s, [, c]) => s + c, 0);
-  if (restCount > 0) top.push({ name: "Other apps", count: restCount });
+  if (restCount > 0) top.push({ key: null, label: "Other apps", count: restCount });
   return top;
 }
 

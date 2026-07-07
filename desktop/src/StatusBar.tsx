@@ -175,6 +175,13 @@ type VoiceErrorPayload = {
   auto_hide_ms?: number;
 };
 
+type VoiceStatusPayload = {
+  phase: string;
+  transcript?: string | null;
+  run_id?: string | null;
+  recording_id?: string | null;
+};
+
 type PillKind = BarState["kind"];
 
 function isActionPromptKind(kind: PillKind): boolean {
@@ -195,9 +202,13 @@ function keepsHudOverIdle(kind: PillKind): boolean {
 }
 
 const HUD_CANVAS_MIN_WIDTH = 300;
-const VOICE_COMPACT_WIDTH = 150;
+// The compact voice pill hugs the waveform (15 bars ≈ 85px incl. padding), so it
+// stays a tight capsule. It widens only when the "Polish" badge rides alongside
+// the wave during recording.
+const VOICE_COMPACT_WIDTH = 108;
+const VOICE_COMPACT_POLISH_WIDTH = 150;
 const VOICE_INNER_WIDTH = 280;
-const VOICE_COMPACT_HEIGHT = 36;
+const VOICE_COMPACT_HEIGHT = 34;
 const VOICE_INNER_HEIGHT = 98;
 const VOICE_CANVAS_WIDTH = VOICE_INNER_WIDTH + 40;
 const VOICE_CANVAS_HEIGHT = VOICE_INNER_HEIGHT + 40;
@@ -208,8 +219,15 @@ const REVIEW_CARD_WIDTH = 352;
 const REVIEW_CARD_HEIGHT = 264;
 const REVIEW_EXPAND_MS = 160;
 
-const LEVEL_SHAPE = [0.28, 0.38, 0.52, 0.68, 0.82, 1.0, 0.78, 0.62, 0.78, 1.0, 0.82, 0.68, 0.52, 0.38, 0.28];
-const BAR_DECAY = [0.82, 0.84, 0.85, 0.86, 0.87, 0.88, 0.87, 0.86, 0.87, 0.88, 0.87, 0.86, 0.85, 0.84, 0.82];
+// Fluid waveform: a parabolic envelope (tall center, short edges). Bars animate
+// via scaleY around this envelope — a traveling wave that tracks the mic level
+// while recording, an indeterminate sweep while processing. See the waveform
+// driver effect + the visualizer JSX. WAVE_REST is the resting (silent) scale.
+const WAVE_ENVELOPE = Array.from({ length: 15 }, (_, i) => {
+  const d = Math.abs(i - 7) / 7;
+  return 0.35 + (1 - d * d) * 0.65;
+});
+const WAVE_REST = 0.14;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -302,11 +320,6 @@ function processingLabel(phase: string): string {
   return "Transcribing";
 }
 
-function barHeight(barLevel: number, active: boolean): number {
-  if (!active) return 4;
-  return 4 + barLevel * 24;
-}
-
 function CardHost({
   children,
   variant = "anchored",
@@ -347,8 +360,31 @@ export default function StatusBar() {
   const barTargets = useRef<number[]>(new Array(15).fill(0));
   const lastResizeRef = useRef<{ width: number; height: number } | null>(null);
   const barKindRef = useRef<BarState["kind"]>("idle");
+  const currentRunIdRef = useRef<string | null>(null);
   const [, forceFrame] = useState(0);
   const [win] = useState(() => getCurrentWindow());
+  const normalizeRunId = (value?: string | null): string | null => {
+    const trimmed = value?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : null;
+  };
+  const setCurrentRunId = (runId: string | null) => {
+    if (currentRunIdRef.current !== runId) {
+      currentRunIdRef.current = runId;
+      setLiveTranscript("");
+    }
+  };
+  const clearRunTranscript = () => {
+    currentRunIdRef.current = null;
+    setLiveTranscript("");
+  };
+  const isStaleTerminalRun = (runId: string | null): boolean => {
+    const current = currentRunIdRef.current;
+    if (runId) {
+      if (current && current !== runId) return true;
+      return !current && barKindRef.current === "idle";
+    }
+    return current !== null;
+  };
   const presentStatusBar = (reason: string) => {
     invoke("present_status_bar", { reason }).catch((err) => {
       console.warn("[status-bar] native present failed", err);
@@ -680,17 +716,38 @@ export default function StatusBar() {
   // Keep our native Tauri window at the largest HUD size so hover panels are never clipped.
   // No fixed mount sizing — the content-driven resize effect handles everything.
 
+  // Fluid waveform driver. Recording → a traveling wave whose peaks track the
+  // live mic level; processing → an indeterminate sweep sweeping left→right,
+  // brighter/faster for the AI-polish phase and dimmer/slower for transcription.
+  // Writes per-bar scaleY into barTargets and forces a frame; the visualizer
+  // reads barTargets.current[i]. sqrt compression tames peaks without clipping.
   useEffect(() => {
-    if (bar.kind !== "recording") return;
+    const isRecording = bar.kind === "recording";
+    const isProcessing = bar.kind === "processing";
+    if (!isRecording && !isProcessing) return;
+    const bright =
+      isProcessing && /polish|llm|enhanc/.test((bar.kind === "processing" ? bar.phase : "").toLowerCase());
+    const count = WAVE_ENVELOPE.length;
     let raf = 0;
-    const tick = () => {
-      // sqrt compression tames peaks — voice at 0.6 raw → 0.77 compressed,
-      // but full-scale 1.0 stays 1.0. Keeps bars proportional without clipping.
+    let start = 0;
+    const tick = (now: number) => {
+      if (!start) start = now;
+      const t = (now - start) / 1000;
       const raw = audioLevelRef.current;
-      const lvl = Math.sqrt(raw) * 0.7;
-      barTargets.current = barTargets.current.map((cur, i) => {
-        const target = lvl * LEVEL_SHAPE[i] * (0.90 + Math.random() * 0.20);
-        return Math.max(cur * BAR_DECAY[i], target);
+      const lvl = Math.min(1, Math.sqrt(raw) * 0.95);
+      barTargets.current = WAVE_ENVELOPE.map((env, i) => {
+        if (isRecording) {
+          const travel = 0.5 + 0.5 * Math.sin(t * 6 - i * 0.55);
+          const peak = WAVE_REST + lvl * env * (1 - WAVE_REST);
+          return WAVE_REST + (peak - WAVE_REST) * travel;
+        }
+        const speed = bright ? 1.9 : 1.2;
+        const span = bright ? 1.2 : 1.0;
+        const width = bright ? 3.5 : 6;
+        const amp = bright ? 0.85 : 0.5;
+        const pos = (t * speed) % span;
+        const d = Math.abs(i / (count - 1) - pos);
+        return WAVE_REST + Math.max(0, 1 - d * width) * env * amp;
       });
       forceFrame((n) => (n + 1) % 1000);
       raf = window.requestAnimationFrame(tick);
@@ -698,9 +755,9 @@ export default function StatusBar() {
     raf = window.requestAnimationFrame(tick);
     return () => {
       window.cancelAnimationFrame(raf);
-      barTargets.current = new Array(15).fill(0);
+      barTargets.current = new Array(count).fill(WAVE_REST);
     };
-  }, [bar.kind]);
+  }, [bar.kind, bar.kind === "processing" ? bar.phase : null]);
 
 
   // Auto-hide the native window when returning to idle.
@@ -716,19 +773,23 @@ export default function StatusBar() {
   const applyActiveSnapshot = (snap: AppSnapshot, source: string) => {
     console.info("[status-bar] snapshot resync", source, snap.state);
     setPolishModeEnabled(Boolean(snap.message_polish_mode));
+    const runId = normalizeRunId(snap.recording_id);
     if (snap.state === "recording") {
+      setCurrentRunId(runId);
       setBar((prev) =>
         prev.kind === "recording"
           ? prev
           : { kind: "recording", startMs: Date.now() },
       );
     } else if (snap.state === "processing") {
+      if (runId) setCurrentRunId(runId);
       setBar((prev) =>
         prev.kind === "processing"
           ? prev
           : { kind: "processing", phase: "stt" },
       );
     } else if (snap.state === "idle") {
+      clearRunTranscript();
       if (restorePinnedUpdate(`auto-update-ready-${source}-idle`)) return;
       setBar((prev) => {
         if (keepsHudOverIdle(prev.kind)) return prev;
@@ -789,10 +850,11 @@ export default function StatusBar() {
       const { state } = e.payload;
       console.info("[status-bar] app-state event", state);
       setPolishModeEnabled(Boolean(e.payload.message_polish_mode));
+      const runId = normalizeRunId(e.payload.recording_id);
       if (state === "recording") {
+        setCurrentRunId(runId);
         if (barKindRef.current !== "recording") {
           if (doneTimer.current) clearTimeout(doneTimer.current);
-          setLiveTranscript("");
           setAudioLevel(0);
           playSound("chimeUp");
           barKindRef.current = "recording";
@@ -803,6 +865,7 @@ export default function StatusBar() {
             : { kind: "recording", startMs: Date.now() }
         ));
       } else if (state === "processing") {
+        if (runId) setCurrentRunId(runId);
         setBar((prev) =>
           prev.kind === "recording"
             ? { kind: "processing", phase: "stt" }
@@ -812,9 +875,11 @@ export default function StatusBar() {
         if (doneTimer.current) clearTimeout(doneTimer.current);
         doneTimer.current = setTimeout(() => {
           if (restorePinnedUpdate("auto-update-ready-after-processing-timeout")) return;
+          clearRunTranscript();
           setBar((prev) => prev.kind === "processing" ? { kind: "idle" } : prev);
         }, 15000);
       } else if (state === "idle") {
+        clearRunTranscript();
         if (restorePinnedUpdate("auto-update-ready-idle")) return;
         setBar((prev) => {
           if (keepsHudOverIdle(prev.kind)) return prev;
@@ -827,9 +892,20 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] app-state subscribe failed", err));
 
     // ── Sub-phase label updates ────────────────────────────────────────────
-    listen<{ phase: string; transcript?: string }>("voice-status", (e) => {
+    listen<VoiceStatusPayload>("voice-status", (e) => {
       const { phase, transcript } = e.payload;
       console.info("[status-bar] voice-status event", phase);
+      const runId = normalizeRunId(e.payload.run_id ?? e.payload.recording_id);
+      const currentRunId = currentRunIdRef.current;
+      if (runId) {
+        if (currentRunId && currentRunId !== runId) return;
+        if (!currentRunId) {
+          if (barKindRef.current !== "recording" && barKindRef.current !== "processing") return;
+          currentRunIdRef.current = runId;
+        }
+      } else if (currentRunId || barKindRef.current === "idle") {
+        return;
+      }
       if (transcript?.trim()) setLiveTranscript(transcript.trim());
       setBar((prev) => {
         if (prev.kind === "recording" && phase === "live_stt") {
@@ -855,8 +931,11 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] voice-level subscribe failed", err));
 
     // ── Success: brief flash then hide ──────────────────────────────────────
-    listen("voice-done", () => {
+    listen<{ run_id?: string | null }>("voice-done", (e) => {
+      const runId = normalizeRunId(e.payload?.run_id);
+      if (isStaleTerminalRun(runId)) return;
       console.info("[status-bar] voice-done event");
+      clearRunTranscript();
       if (restorePinnedUpdate("auto-update-ready-after-done")) return;
       if (doneTimer.current) clearTimeout(doneTimer.current);
       setBar({ kind: "done" });
@@ -868,8 +947,11 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-done subscribe failed", err));
 
-    listen<{ status: "pasted" | "manual_paste"; message?: string }>("voice-output", (e) => {
+    listen<{ status: "pasted" | "manual_paste"; message?: string; run_id?: string | null }>("voice-output", (e) => {
+      const runId = normalizeRunId(e.payload.run_id);
+      if (isStaleTerminalRun(runId)) return;
       console.info("[status-bar] voice-output event", e.payload);
+      clearRunTranscript();
       if (restorePinnedUpdate("auto-update-ready-after-output")) return;
       if (doneTimer.current) clearTimeout(doneTimer.current);
       playSound("whoosh");
@@ -927,6 +1009,8 @@ export default function StatusBar() {
     // ── Error: show message + optional retry ──────────────────────────────
     listen<VoiceErrorPayload>("voice-error", (e) => {
       const { message, run_id, audio_id, auto_hide_ms, raw_error, error_code, diagnostic } = e.payload;
+      const runId = normalizeRunId(run_id);
+      if (runId && isStaleTerminalRun(runId)) return;
       console.error("[status-bar] voice-error event", {
         message,
         raw_error,
@@ -934,6 +1018,7 @@ export default function StatusBar() {
         diagnostic,
         hasAudioId: Boolean(audio_id),
       });
+      clearRunTranscript();
       if (doneTimer.current) clearTimeout(doneTimer.current);
       if (!notifEnabled("error")) return;
       presentStatusBar("voice-error");
@@ -2151,7 +2236,11 @@ export default function StatusBar() {
   }
 
   const usesVoiceCanvas = bar.kind === "recording" || bar.kind === "processing";
-  const voiceSurfaceWidth = hasTranscript ? VOICE_INNER_WIDTH : VOICE_COMPACT_WIDTH;
+  const voiceSurfaceWidth = hasTranscript
+    ? VOICE_INNER_WIDTH
+    : bar.kind === "recording" && polishModeEnabled
+      ? VOICE_COMPACT_POLISH_WIDTH
+      : VOICE_COMPACT_WIDTH;
   const voiceSurfaceHeight = hasTranscript ? VOICE_INNER_HEIGHT : VOICE_COMPACT_HEIGHT;
 
   return (
@@ -2168,21 +2257,7 @@ export default function StatusBar() {
         )}
 
         <div className={`sb-survey-controlbar${bar.kind === "error" ? " sb-survey-controlbar--actions" : ""}`}>
-          {bar.kind === "processing" ? (
-            <div className="sb-survey-processing">
-              <div className="sb-processing-line">
-                <span>{processingLabel(bar.phase)}</span>
-                {polishModeEnabled && <span className="sb-mode-badge">Polish</span>}
-              </div>
-              <span className="sb-progress-dots" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-              </span>
-            </div>
-          ) : bar.kind === "done" || bar.kind === "pasted" ? (
+          {bar.kind === "done" || bar.kind === "pasted" ? (
             <div className="sb-survey-success" aria-hidden="true">
               <span />
               <span />
@@ -2218,7 +2293,22 @@ export default function StatusBar() {
               <span>{bar.message}</span>
             </div>
           ) : (
-            <div className={`sb-survey-visualizer${bar.kind === "recording" ? " sb-survey-visualizer--active" : ""}`}>
+            <div
+              className={`sb-survey-visualizer sb-wave sb-wave--${
+                bar.kind === "recording"
+                  ? "listening"
+                  : bar.kind === "processing"
+                    ? /polish|llm|enhanc/.test(processingLabel(bar.phase).toLowerCase())
+                      ? "polishing"
+                      : "transcribing"
+                    : "idle"
+              }`}
+              // Phase is conveyed by motion + hue, not text — but keep the exact
+              // sub-phase (Server transcribing / Using local runtime / Enhancing…)
+              // reachable on hover + for a11y so the diagnostic isn't lost.
+              title={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? "Listening" : undefined}
+              aria-label={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? "Listening" : undefined}
+            >
               {bar.kind === "recording" && polishModeEnabled && (
                 <span className="sb-mode-badge sb-mode-badge--recording">Polish</span>
               )}
@@ -2226,8 +2316,8 @@ export default function StatusBar() {
                 <span
                   key={index}
                   style={{
-                    height: `${barHeight(barTargets.current[index], bar.kind === "recording")}px`,
-                    opacity: bar.kind === "recording" ? 0.54 + audioLevel * 0.46 : 0.5,
+                    transform: `scaleY(${Math.max(WAVE_REST, barTargets.current[index] || WAVE_REST).toFixed(3)})`,
+                    opacity: bar.kind === "recording" ? 0.62 + audioLevel * 0.38 : 0.9,
                   }}
                 />
               ))}

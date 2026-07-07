@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { listHistory, downloadRecordingAudio, getRecordingAudioBytes, openExternal } from "@/lib/invoke";
+import { downloadRecordingAudio, getRecordingAudioBytes, openExternal, getAppIcon } from "@/lib/invoke";
+import {
+  getHistorySnapshot,
+  subscribeHistory,
+  refreshHistoryCache,
+  type HistoryCacheSnapshot,
+} from "@/lib/historyUiCache";
 import { cn } from "@/lib/utils";
 import { Copy, Download, Check, Play, Square, BookOpen, ExternalLink } from "lucide-react";
 import type { AppSnapshot, Recording } from "@/types";
@@ -10,6 +16,9 @@ interface Props {
 }
 
 const GUIDE_URL = "https://airnote.emiactech.com/guide";
+
+// The dashboard needs enough recent recordings for the 14-day activity + today.
+const DASHBOARD_HISTORY_PAGE_SIZE = 300;
 
 // Persist that the user has opened the guide so the dashboard prompt is shown
 // only until they've read it once. Mirrors the localStorage pattern used by
@@ -40,15 +49,17 @@ function markGuideOpened(): void {
  * Calm reading mode rather than analytics console.
  */
 export function EditorialDashboard({ snapshot }: Props) {
-  const [recordings, setRecordings] = useState<Recording[]>([]);
   const [guideOpened, setGuideOpened] = useState(guideWasOpened);
-  const history = snapshot?.history ?? [];
 
+  // Shared, cached recordings (5-min fresh, dedup'd, auto-refreshed on dictation)
+  // — same cache the History page uses, so navigating here never re-fetches/flashes.
+  const [histSnap, setHistSnap] = useState<HistoryCacheSnapshot>(getHistorySnapshot);
   useEffect(() => {
-    let alive = true;
-    listHistory(300).then((r) => { if (alive) setRecordings(r); });
-    return () => { alive = false; };
-  }, [history.length]);
+    const unsub = subscribeHistory(() => setHistSnap(getHistorySnapshot()));
+    void refreshHistoryCache(DASHBOARD_HISTORY_PAGE_SIZE);
+    return unsub;
+  }, []);
+  const recordings = histSnap.data ?? [];
 
   // ── Derived: today's words + time saved ─────────────────────────────────
   const today = useMemo(() => {
@@ -66,12 +77,6 @@ export function EditorialDashboard({ snapshot }: Props) {
   const dictMinutesToday = wordsToday > 0 ? wordsToday / 120 : 0;
   const minutesSaved = Math.max(0, Math.round(typingMinutesToday - dictMinutesToday));
 
-  const avgPolishMs = useMemo(() => {
-    const sample = recordings.slice(0, 30).filter((r) => r.polish_ms != null && r.polish_ms > 0);
-    if (sample.length === 0) return 0;
-    return Math.round(sample.reduce((s, r) => s + (r.polish_ms ?? 0), 0) / sample.length);
-  }, [recordings]);
-
   const editsLearned = useMemo(
     () => recordings.reduce((s, r) => s + (r.edit_count ?? 0), 0),
     [recordings],
@@ -80,6 +85,33 @@ export function EditorialDashboard({ snapshot }: Props) {
   // ── Bars: last 14 days, height ∝ word count ─────────────────────────────
   const bars = useMemo(() => buildLast14Days(recordings), [recordings]);
   const maxBar = Math.max(1, ...bars.map((b) => b.words));
+
+  // ── Top apps: rank the apps you dictate in most (by count) ───────────────
+  const topApps = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of recordings) {
+      const app = r.target_app?.trim();
+      if (!app) continue;
+      counts.set(app, (counts.get(app) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([key, count]) => ({ key, count }));
+  }, [recordings]);
+
+  const [appIcons, setAppIcons] = useState<Record<string, string | null>>({});
+  const topKeys = topApps.map((a) => a.key).join(",");
+  useEffect(() => {
+    let alive = true;
+    Promise.all(
+      topApps.map(async (a) => [a.key, await getAppIcon(a.key)] as const),
+    ).then((pairs) => {
+      if (alive) setAppIcons(Object.fromEntries(pairs));
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topKeys]);
 
   // ── Today's recordings ──────────────────────────────────────────────────
   const latest = today;
@@ -150,8 +182,20 @@ export function EditorialDashboard({ snapshot }: Props) {
               borderBottom: "1px solid hsl(var(--border))",
             }}
           >
-            <Glance label="Avg pace" value={`${snapshot?.avg_wpm ?? 0}`} unit="wpm" />
-            <Glance label="Polish latency" value={`${avgPolishMs}`} unit="ms" border />
+            {topApps.length > 0 && (
+              <div style={{ padding: "0 14px", minWidth: 0 }}>
+                <div
+                  className="text-[10px] uppercase"
+                  style={{ color: "hsl(var(--muted-foreground))", letterSpacing: "0.12em" }}
+                >
+                  Top apps
+                </div>
+                <div className="mt-2">
+                  <TopAppsRow apps={topApps} icons={appIcons} />
+                </div>
+              </div>
+            )}
+            <Glance label="Avg pace" value={`${snapshot?.avg_wpm ?? 0}`} unit="wpm" border={topApps.length > 0} />
             <Glance label="Edits learned" value={`${editsLearned}`} unit="" border />
           </div>
         </Section>
@@ -276,6 +320,74 @@ function GuidePrompt({ onOpen }: { onOpen: () => void }) {
   );
 }
 
+/**
+ * Top apps — the apps you dictate in most, as a small, subtle fanned stack that
+ * sits inline beside the hero headline: #1 in front, each next one smaller and
+ * tucked behind to the right. Icons only (rank + count on hover).
+ */
+function TopAppsRow({
+  apps,
+  icons,
+}: {
+  apps: { key: string; count: number }[];
+  icons: Record<string, string | null>;
+}) {
+  const SIZES = [34, 27, 22, 19];
+  const items = apps.slice(0, 4);
+
+  // Left offset per icon — larger factor = more spacing / less overlap.
+  const lefts: number[] = [];
+  let cursor = 0;
+  items.forEach((_, i) => {
+    lefts.push(cursor);
+    cursor += Math.round(SIZES[i] * 0.85);
+  });
+
+  const height = SIZES[0];
+  const lastIdx = items.length - 1;
+  const width = (lefts[lastIdx] ?? 0) + (SIZES[lastIdx] ?? SIZES[0]);
+
+  return (
+    <div className="flex-shrink-0" style={{ position: "relative", height, width, minWidth: width }}>
+      {items.map((app, i) => {
+        const size = SIZES[i];
+        const icon = icons[app.key];
+        return (
+          <div
+            key={app.key}
+            title={`#${i + 1} · ${app.count} dictation${app.count === 1 ? "" : "s"}`}
+            style={{
+              position: "absolute",
+              left: lefts[i],
+              top: (height - size) / 2,
+              width: size,
+              height: size,
+              zIndex: 40 - i * 10,
+              borderRadius: Math.round(size * 0.28),
+              overflow: "hidden",
+              // thin ring in the page background colour separates the overlaps
+              border: "1.5px solid hsl(var(--background))",
+              boxShadow: "0 1px 4px hsl(0 0% 0% / 0.3)",
+              background: "hsl(var(--surface-3))",
+              opacity: i === 0 ? 1 : 0.9,
+            }}
+          >
+            {icon ? (
+              <img
+                src={icon}
+                alt=""
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            ) : (
+              <div style={{ width: "100%", height: "100%", background: "hsl(var(--surface-4))" }} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section className="mb-7">
@@ -358,6 +470,15 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
   const [downloading, setDownloading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [hasAudio, setHasAudio] = useState(Boolean(r.audio_id));
+  const [appIcon, setAppIcon] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    if (r.target_app) {
+      void getAppIcon(r.target_app).then((ic) => { if (alive) setAppIcon(ic); });
+    }
+    return () => { alive = false; };
+  }, [r.target_app]);
 
   useEffect(() => {
     let alive = true;
@@ -441,10 +562,14 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
               {r.word_count} words
             </span>
           )}
-          {r.target_app && (
-            <span className="text-[10px]" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
-              {r.target_app}
-            </span>
+          {r.target_app && appIcon && (
+            <img
+              src={appIcon}
+              alt=""
+              title={r.target_app}
+              className="w-4 h-4 rounded-[4px] flex-shrink-0"
+              style={{ opacity: 0.85 }}
+            />
           )}
         </div>
       </div>

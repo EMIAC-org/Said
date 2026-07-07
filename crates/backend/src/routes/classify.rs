@@ -69,6 +69,8 @@ pub struct ClassifyBody {
     /// edits to it. Empty/None → field was empty, `user_kept` is used as-is.
     #[serde(default)]
     pub prior_text: Option<String>,
+    #[serde(default)]
+    pub edit_trace_json: Option<serde_json::Value>,
 }
 
 /// Strip the pre-existing field text so the edit diff sees only our output.
@@ -123,7 +125,7 @@ fn post_runtime_memory_dirty(state: AppState) {
         let base_url = user
             .enterprise_server_url
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+            .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
         let url = format!("{}/v1/runtime/memory/dirty", base_url.trim_end_matches('/'));
         let _ = state
             .http_client
@@ -154,7 +156,7 @@ fn post_runtime_client_event(
         let base_url = user
             .enterprise_server_url
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+            .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
         let url = format!(
             "{}/v1/runtime/client-events",
             base_url.trim_end_matches('/')
@@ -1182,12 +1184,14 @@ async fn classify_inner(
         &state,
         crate::observability::ClassifyObservabilityInput {
             recording_id: &body.recording_id,
+            ai_output: &body.ai_output,
             user_kept: &body.user_kept,
             capture_method: &body.capture_method,
             overall_class: &analyzer_output.overall_class,
             changes: &analyzer_output.changes,
             review_candidates: &review_json,
             promoted_terms: &promoted_terms,
+            edit_trace_json: body.edit_trace_json.as_ref(),
         },
     );
 

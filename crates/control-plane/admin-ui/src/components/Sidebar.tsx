@@ -1,19 +1,46 @@
 import { NavLink } from 'react-router'
-import { Activity, BarChart3, BookOpenText, Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut, LogIn, Gauge } from 'lucide-react'
+import { Activity, AudioLines, BarChart3, BookOpenText, Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut, LogIn, Gauge } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from './Avatar'
 
-const nav = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/meetings', icon: Video, label: 'Meetings' },
-  { to: '/team', icon: Users, label: 'Team' },
-  { to: '/desktop', icon: Monitor, label: 'Desktop' },
-  { to: '/runtime', icon: Gauge, label: 'Runtime' },
-  { to: '/telemetry', icon: BarChart3, label: 'Telemetry' },
-  { to: '/vocabulary', icon: BookOpenText, label: 'Vocabulary' },
-  { to: '/bugs', icon: Bug, label: 'Bugs' },
-  { to: '/diagnostics', icon: Activity, label: 'Diagnostics' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
+const sections = [
+  {
+    label: null,
+    items: [{ to: '/', icon: LayoutDashboard, label: 'Dashboard' }],
+  },
+  {
+    label: 'Monitoring',
+    items: [
+      { to: '/dictations', icon: AudioLines, label: 'Dictations' },
+      { to: '/telemetry', icon: BarChart3, label: 'Analytics' },
+    ],
+  },
+  {
+    label: 'People',
+    items: [
+      { to: '/team', icon: Users, label: 'Team' },
+      { to: '/meetings', icon: Video, label: 'Meetings' },
+    ],
+  },
+  {
+    label: 'Fleet',
+    items: [
+      { to: '/desktop', icon: Monitor, label: 'Desktop' },
+      { to: '/runtime', icon: Gauge, label: 'Runtime' },
+      { to: '/diagnostics', icon: Activity, label: 'Diagnostics' },
+    ],
+  },
+  {
+    label: 'Learning',
+    items: [{ to: '/vocabulary', icon: BookOpenText, label: 'Vocabulary' }],
+  },
+  {
+    label: null,
+    items: [
+      { to: '/bugs', icon: Bug, label: 'Bugs' },
+      { to: '/settings', icon: Settings, label: 'Settings' },
+    ],
+  },
 ]
 
 export function Sidebar() {
@@ -50,23 +77,34 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex flex-col gap-px px-3 flex-1">
-        {nav.map(n => (
-          <NavLink
-            key={n.to}
-            to={n.to}
-            end={n.to === '/'}
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-2.5 h-[30px] rounded-md text-[12.5px] transition-colors ${
-                isActive
-                  ? 'text-fg font-medium bg-surface-4/60 shadow-[inset_0_0_0_1px_hsla(0,0%,100%,0.06)]'
-                  : 'text-fg-3 font-normal hover:text-fg hover:bg-[rgba(255,255,255,0.03)]'
-              }`
-            }
-          >
-            <n.icon size={15} strokeWidth={1.6} />
-            {n.label}
-          </NavLink>
+      <nav className="flex flex-col px-3 flex-1">
+        {sections.map((section, si) => (
+          <div key={section.label ?? `group-${si}`} className={si === 0 ? '' : 'mt-3'}>
+            {section.label && (
+              <div className="px-2.5 mb-1 text-[9px] font-semibold text-fg-5 uppercase tracking-[0.08em]">
+                {section.label}
+              </div>
+            )}
+            <div className="flex flex-col gap-px">
+              {section.items.map(n => (
+                <NavLink
+                  key={n.to}
+                  to={n.to}
+                  end={n.to === '/'}
+                  className={({ isActive }) =>
+                    `flex items-center gap-2.5 px-2.5 h-[30px] rounded-md text-[12.5px] transition-colors ${
+                      isActive
+                        ? 'text-fg font-medium bg-surface-4/60 shadow-[inset_0_0_0_1px_hsla(0,0%,100%,0.06)]'
+                        : 'text-fg-3 font-normal hover:text-fg hover:bg-[rgba(255,255,255,0.03)]'
+                    }`
+                  }
+                >
+                  <n.icon size={15} strokeWidth={1.6} />
+                  {n.label}
+                </NavLink>
+              ))}
+            </div>
+          </div>
         ))}
       </nav>
 

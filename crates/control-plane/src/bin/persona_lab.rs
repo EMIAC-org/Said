@@ -50,6 +50,7 @@ fn vocab() -> Vec<VocabEntry> {
         resolution: VocabResolution::Resolved,
         term_type: None,
         meaning: None,
+        evidence: None,
         stt_aliases: vec![],
     })
     .collect()

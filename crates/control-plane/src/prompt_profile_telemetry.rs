@@ -8,6 +8,7 @@ use uuid::Uuid;
 use said_core::polish::prompt::sanitize_profile_markdown;
 
 pub const PROFILE_SOURCE_CLIENT_LOCAL: &str = "client_local";
+pub const PROFILE_SOURCE_SERVER_DB: &str = "server_db";
 pub const PROFILE_SOURCE_NONE: &str = "none";
 
 pub struct PromptProfileSnapshot {
@@ -38,15 +39,32 @@ pub fn snapshot_from_raw(raw: Option<&str>) -> PromptProfileSnapshot {
     }
 }
 
+/// Same as [`snapshot_from_raw`] but tags the source as the server-learned KB
+/// (`server_db`) instead of the legacy client-shipped markdown. Used by the voice
+/// polish path now that the profile is injected from the server profile store.
+pub fn snapshot_from_server(raw: Option<&str>) -> PromptProfileSnapshot {
+    let mut snap = snapshot_from_raw(raw);
+    if snap.profile_chars > 0 {
+        snap.profile_source = PROFILE_SOURCE_SERVER_DB;
+    }
+    snap
+}
+
 pub fn hash_profile(markdown: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(markdown.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prompt_built_metadata(
     snapshot: &PromptProfileSnapshot,
     client_profile_version: Option<i64>,
+    bucket_key: Option<&str>,
+    bucket_source: Option<&str>,
+    domains: &[String],
+    domain_context: Option<&str>,
+    domain_source: Option<&str>,
 ) -> Value {
     json!({
         "prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION,
@@ -55,6 +73,16 @@ pub fn prompt_built_metadata(
         "profile_hash": snapshot.profile_hash,
         "profile_markdown": snapshot.profile_markdown,
         "client_profile_version": client_profile_version,
+        // Which app-bucket resolved for this run + where the mapping came from
+        // (user override / static / agent). Powers the "Context applied" section.
+        "bucket_key": bucket_key,
+        "bucket_source": bucket_source,
+        // The dynamic domain prior actually injected into the ## CONTEXT block:
+        // the top learned domains, the rendered line, and how it was derived
+        // ("classified" / "coding_bucket_seed" / "generic_default").
+        "domains": domains,
+        "domain_context": domain_context,
+        "domain_source": domain_source,
     })
 }
 

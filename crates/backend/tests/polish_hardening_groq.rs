@@ -426,6 +426,7 @@ async fn test_vocab_terms_preserved() {
         resolution: VocabResolution::Resolved,
         term_type: Some("code_identifier".into()),
         meaning: Some("Workflow automation tool.".into()),
+        evidence: None,
         stt_aliases: vec![],
     }];
     let transcript = "set up the n8n workflow for the new client today";

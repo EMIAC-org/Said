@@ -4,6 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import { Check, Cloud, Cpu, Download, Loader2, Trash2 } from "lucide-react";
 import type { Preferences, SttRuntimeInfo } from "../types";
 import { getSttRuntime } from "../lib/invoke";
+import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "../lib/onDeviceModel";
+import { ReclaimOldModelsRow, type ReclaimResult } from "./ReclaimOldModelsRow";
+import { friendlyError } from "../lib/friendlyError";
+import { ErrorNotice } from "./ErrorNotice";
 
 type SttProviderChoice = "deepgram" | "whisper_local";
 
@@ -20,8 +24,6 @@ interface MeetingModelProgress {
   status: "downloading" | "done" | "error" | string;
   error: string | null;
 }
-
-const DICTATION_MODEL_NAME = "ggml-oriserve-hinglish-fp16.bin";
 
 function formatSize(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
@@ -42,6 +44,10 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
   const [whisperDownload, setWhisperDownload] = useState<MeetingModelProgress | null>(null);
   const [confirmDeleteWhisper, setConfirmDeleteWhisper] = useState(false);
   const [deletingWhisper, setDeletingWhisper] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [reclaiming, setReclaiming] = useState(false);
+  const [reclaimResult, setReclaimResult] = useState<ReclaimResult | null>(null);
+  const [reclaimError, setReclaimError] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -81,7 +87,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     try {
       const [rt, wstatus] = await Promise.all([
         getSttRuntime(),
-        invoke<DictationModelStatus>("dictation_model_status").catch(() => null),
+        invoke<DictationModelStatus>("apex_model_status").catch(() => null),
       ]);
       if (!mounted.current) return;
       setRuntime(rt);
@@ -103,7 +109,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
   useEffect(() => {
     const unlisten = listen<MeetingModelProgress>("meeting-model-download", (event) => {
       const p = event.payload;
-      if (p.name !== DICTATION_MODEL_NAME) return;
+      if (p.name !== NEW_MODEL_FILE) return;
       if (p.status === "downloading") {
         setWhisperDownload(p);
         setError(null);
@@ -112,10 +118,10 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
         setWhisperDownload(null);
       }
       if (p.status === "done") {
-        showSuccess("On-device model downloaded");
+        showSuccess(`${NEW_MODEL_NAME} downloaded`);
         void refresh();
       }
-      if (p.status === "error" && p.error) setError(p.error);
+      if (p.status === "error" && p.error) setError(friendlyError(p.error));
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -126,9 +132,9 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     setError(null);
     setSuccessMsg(null);
     try {
-      await invoke("download_dictation_model");
+      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(friendlyError(e));
     }
   };
 
@@ -137,13 +143,49 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     setDeletingWhisper(true);
     setError(null);
     try {
-      await invoke("delete_dictation_model");
-      showSuccess("On-device model removed");
+      await invoke("delete_apex_model");
+      showSuccess(`${NEW_MODEL_NAME} removed`);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setDeletingWhisper(false);
+    }
+  };
+
+  // Repair: delete the model file and re-download it. The one-click recovery
+  // when a model is present but corrupt (e.g. the SHA-256 check would reject it,
+  // or whisper-cli fails to load it). Re-download re-verifies integrity.
+  const repairModel = async () => {
+    setRepairing(true);
+    setError(null);
+    setSuccessMsg(null);
+    setReclaimResult(null);
+    try {
+      await invoke("delete_apex_model");
+      setWhisperModel((m) => (m ? { ...m, installed: false } : m));
+      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
+      await refresh();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg !== "cancelled") setError(friendlyError(msg));
+    } finally {
+      setRepairing(false);
+    }
+  };
+
+  // Reclaim disk from the old (superseded) model. Backend refuses unless the new
+  // model is installed, so this is safe to expose whenever the new model is here.
+  const reclaimOldModels = async () => {
+    setReclaiming(true);
+    setReclaimError("");
+    try {
+      const result = await invoke<ReclaimResult>("reclaim_old_models");
+      setReclaimResult(result);
+    } catch (e) {
+      setReclaimError(friendlyError(e));
+    } finally {
+      setReclaiming(false);
     }
   };
 
@@ -190,7 +232,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
       <div className="px-5 py-4 border-b" style={{ borderColor: "hsl(var(--surface-3))" }}>
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
-          Use cloud Deepgram or download the on-device model for local speech recognition.
+          Use cloud Whisper (Large V3 Turbo) or download the on-device model for local speech recognition.
         </p>
       </div>
 
@@ -215,8 +257,8 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
               {runtime?.deepgram_configured
-                ? "Deepgram ready"
-                : "Deepgram cloud speech recognition"}
+                ? "Cloud Whisper ready"
+                : "Cloud Whisper · Large V3 Turbo"}
             </p>
           </button>
 
@@ -248,7 +290,15 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
         <div className="rounded-xl px-4 py-3" style={{ background: "hsl(var(--surface-2))" }}>
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[12px] font-medium text-foreground">On-device model</p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-[12px] font-medium text-foreground">{NEW_MODEL_NAME}</p>
+                <span
+                  className="text-[9px] px-1.5 py-px rounded-full font-semibold uppercase tracking-wide"
+                  style={{ background: "hsl(var(--primary) / 0.18)", color: "hsl(var(--primary))" }}
+                >
+                  New
+                </span>
+              </div>
               <p className="text-[11px] text-muted-foreground">
                 {deletingWhisper
                   ? "Removing…"
@@ -256,7 +306,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
                     ? `Installed · ${formatSize(whisperModel.size_bytes)}`
                     : whisperDownload
                       ? `Downloading… ${whisperDownloadPct ?? 0}%`
-                      : "Download once to use local speech recognition"}
+                      : `Our best on-device Hinglish model · ${NEW_MODEL_SIZE_HINT}`}
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -284,10 +334,19 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5">
                     <span className="flex items-center gap-1.5 text-[11px] text-primary">
                       <Check size={12} /> Ready
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => void repairModel()}
+                      disabled={repairing}
+                      className="text-[11px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                      title="Delete and re-download the model (fixes a corrupt file)"
+                    >
+                      {repairing ? "Repairing…" : "Repair"}
+                    </button>
                     <button
                       type="button"
                       onClick={() => setConfirmDeleteWhisper(true)}
@@ -328,14 +387,22 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
               />
             </div>
           )}
+
+          {/* Reclaim the old model's disk once the new one is installed. */}
+          {whisperModel?.installed && !repairing && (
+            <ReclaimOldModelsRow
+              reclaiming={reclaiming}
+              result={reclaimResult}
+              error={reclaimError}
+              onReclaim={() => void reclaimOldModels()}
+            />
+          )}
         </div>
 
         {successMsg && (
           <p className="text-[11px] text-emerald-600">{successMsg}</p>
         )}
-        {error && (
-          <p className="text-[11px] text-red-500">{error}</p>
-        )}
+        <ErrorNotice error={error} onRetry={() => void downloadWhisperModel()} />
       </div>
     </div>
   );

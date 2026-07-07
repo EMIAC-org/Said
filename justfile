@@ -98,8 +98,11 @@ release VERSION:
 
 # Reset local macOS onboarding/setup state for demo recording.
 # Keeps local recordings, meetings, vocabulary, audio, and downloaded STT models.
-reset-onboarding:
-    ./scripts/reset-local-onboarding.sh
+#   just reset-onboarding            # full: replay fresh onboarding
+#   just reset-onboarding update     # replay only the post-update gate (stays onboarded)
+#   just reset-onboarding update 1   # arm the gate as if migration v1 was already done
+reset-onboarding mode="full" from="0":
+    ./scripts/reset-local-onboarding.sh {{mode}} {{from}}
 
 # Wipe build outputs.
 clean:

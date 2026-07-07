@@ -115,27 +115,6 @@ pub struct PrefsUpdate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptTemplateResponse {
-    pub kind: String,
-    pub title: String,
-    pub base_version: String,
-    pub active_body: String,
-    pub draft_body: Option<String>,
-    pub default_body: String,
-    pub updated_at: i64,
-    pub applied_at: Option<i64>,
-    pub has_draft: bool,
-    pub active_is_default: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptTestResponse {
-    pub output: String,
-    pub model_used: String,
-    pub latency_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recording {
     pub id: String,
     pub timestamp_ms: i64,
@@ -154,6 +133,9 @@ pub struct Recording {
     pub source: String,
     pub audio_id: Option<String>,
     pub enriched_transcript: Option<String>,
+    pub raw_transcript: Option<String>,
+    pub local_corrected_transcript: Option<String>,
+    pub polished_output: Option<String>,
 }
 
 /// Result of a completed polish operation (from the `done` SSE event).
@@ -308,6 +290,7 @@ pub async fn stream_voice_polish<F>(
     wav_data: Vec<u8>,
     target_app: Option<String>,
     client_run_id: Option<String>,
+    client_trace_json: Option<Value>,
     pre_transcript: Option<String>,
     pre_transcript_meta: Option<TranscriptMeta>,
     repair_mode: Option<String>,
@@ -369,6 +352,9 @@ where
     }
     if let Some(client_run_id) = client_run_id {
         form = form.text("client_run_id", client_run_id);
+    }
+    if let Some(trace) = client_trace_json {
+        form = form.text("client_trace_json", trace.to_string());
     }
     // P5: forward pre-transcribed text so backend can skip Deepgram HTTP call
     if let Some(transcript) = pre_transcript {
@@ -444,6 +430,30 @@ where
     }
 
     consume_sse(resp.bytes_stream(), on_event).await
+}
+
+pub async fn patch_dictation_trace(
+    ep: &BackendEndpoint,
+    recording_id: &str,
+    dictation_trace_json: Value,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/v1/observability/dictation/{}/trace",
+        ep.url, recording_id
+    );
+    let resp = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "dictation_trace_json": dictation_trace_json }))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("patch dictation trace failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("patch dictation trace HTTP {}", resp.status()))
+    }
 }
 
 pub async fn transcribe_problem_audio(
@@ -937,97 +947,19 @@ pub async fn list_polish_models(
         .map_err(|e| format!("parse polish models failed: {e}"))
 }
 
-pub async fn get_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
-    let url = format!("{}/v1/prompts/voice", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("get voice prompt failed: {e}"))?
-        .json::<PromptTemplateResponse>()
-        .await
-        .map_err(|e| format!("parse voice prompt failed: {e}"))
-}
-
-pub async fn save_voice_prompt_draft(
-    ep: &BackendEndpoint,
-    draft_body: String,
-) -> Result<PromptTemplateResponse, String> {
-    let url = format!("{}/v1/prompts/voice/draft", ep.url);
-    Client::new()
-        .patch(&url)
-        .header("Authorization", ep.bearer())
-        .json(&serde_json::json!({ "draft_body": draft_body }))
-        .send()
-        .await
-        .map_err(|e| format!("save voice prompt draft failed: {e}"))?
-        .json::<PromptTemplateResponse>()
-        .await
-        .map_err(|e| format!("parse voice prompt failed: {e}"))
-}
-
-pub async fn apply_voice_prompt_draft(
-    ep: &BackendEndpoint,
-) -> Result<PromptTemplateResponse, String> {
-    let url = format!("{}/v1/prompts/voice/apply", ep.url);
-    Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("apply voice prompt failed: {e}"))?
-        .json::<PromptTemplateResponse>()
-        .await
-        .map_err(|e| format!("parse voice prompt failed: {e}"))
-}
-
-pub async fn reset_voice_prompt(ep: &BackendEndpoint) -> Result<PromptTemplateResponse, String> {
-    let url = format!("{}/v1/prompts/voice/reset", ep.url);
-    Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("reset voice prompt failed: {e}"))?
-        .json::<PromptTemplateResponse>()
-        .await
-        .map_err(|e| format!("parse voice prompt failed: {e}"))
-}
-
-pub async fn test_voice_prompt(
-    ep: &BackendEndpoint,
-    transcript: String,
-    draft_body: Option<String>,
-) -> Result<PromptTestResponse, String> {
-    let url = format!("{}/v1/prompts/voice/test", ep.url);
-    let resp = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&serde_json::json!({
-            "transcript": transcript,
-            "draft_body": draft_body,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("test voice prompt failed: {e}"))?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(extract_error(&text));
-    }
-    serde_json::from_str::<PromptTestResponse>(&text).map_err(|e| {
-        format!(
-            "parse voice prompt test failed: {e} — raw: {}",
-            said_core::text::truncate_utf8(&text, 200)
-        )
-    })
-}
-
 // ── History ───────────────────────────────────────────────────────────────────
 
-pub async fn get_history(ep: &BackendEndpoint, limit: i64) -> Result<Vec<Recording>, String> {
-    let url = format!("{}/v1/history?limit={limit}", ep.url);
+pub async fn get_history(
+    ep: &BackendEndpoint,
+    limit: i64,
+    before: Option<i64>,
+) -> Result<Vec<Recording>, String> {
+    // `before` (ms) paginates older pages; the backend `/v1/history` already
+    // supports it via list_recordings(pool, user, limit, before).
+    let url = match before {
+        Some(ms) => format!("{}/v1/history?limit={limit}&before={ms}", ep.url),
+        None => format!("{}/v1/history?limit={limit}", ep.url),
+    };
     Client::new()
         .get(&url)
         .header("Authorization", ep.bearer())
@@ -1037,6 +969,69 @@ pub async fn get_history(ep: &BackendEndpoint, limit: i64) -> Result<Vec<Recordi
         .json::<Vec<Recording>>()
         .await
         .map_err(|e| format!("parse history failed: {e}"))
+}
+
+/// Per-app dictation usage from the backend (`/v1/history/apps`). The `app` field
+/// is the raw target_app key; the desktop resolves its icon/name/category.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppUsage {
+    pub app: String,
+    pub count: i64,
+    pub total_words: i64,
+    pub last_used_ms: i64,
+}
+
+pub async fn get_app_usage(ep: &BackendEndpoint) -> Result<Vec<AppUsage>, String> {
+    let url = format!("{}/v1/history/apps", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("get app usage failed: {e}"))?
+        .json::<Vec<AppUsage>>()
+        .await
+        .map_err(|e| format!("parse app usage failed: {e}"))
+}
+
+/// Record a browser dictation's site to the LOCAL backend (`/v1/site-context`).
+/// On-device only — never reaches the cloud runtime.
+pub async fn record_site_context(
+    ep: &BackendEndpoint,
+    target_app: &str,
+    host: &str,
+) -> Result<(), String> {
+    let url = format!("{}/v1/site-context", ep.url);
+    Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "target_app": target_app, "host": host }))
+        .send()
+        .await
+        .map_err(|e| format!("record site failed: {e}"))?;
+    Ok(())
+}
+
+/// Per-site dictation usage (grouped by host) for the Insights "Sites" section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteUsage {
+    pub host: String,
+    pub target_app: String,
+    pub count: i64,
+    pub last_used_ms: i64,
+}
+
+pub async fn get_site_usage(ep: &BackendEndpoint) -> Result<Vec<SiteUsage>, String> {
+    let url = format!("{}/v1/history/sites", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("get site usage failed: {e}"))?
+        .json::<Vec<SiteUsage>>()
+        .await
+        .map_err(|e| format!("parse site usage failed: {e}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1400,6 +1395,159 @@ pub async fn list_workspaces(
         .map_err(|e| format!("parse org list: {e}"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileRunStats {
+    pub run_count: i64,
+    pub skipped_count: i64,
+    pub last_run_at: Option<String>,
+    pub last_run_outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KnowledgeBase {
+    pub background: Option<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default)]
+    pub focus_areas: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BucketInsight {
+    pub bucket_key: String,
+    #[serde(default)]
+    pub style: Vec<String>,
+    #[serde(default)]
+    pub speech_patterns: Vec<String>,
+    pub version: i64,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileInsights {
+    pub run_stats: ProfileRunStats,
+    pub knowledge: KnowledgeBase,
+    #[serde(default)]
+    pub buckets: Vec<BucketInsight>,
+}
+
+/// GET /v1/runtime/profile/insights — what the cloud profiling brain has learned.
+pub async fn get_profile_insights(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+) -> Result<ProfileInsights, String> {
+    let url = format!(
+        "{}/v1/runtime/profile/insights",
+        server_url.trim_end_matches('/')
+    );
+    let mut req = Client::new()
+        .get(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    req.send()
+        .await
+        .map_err(|e| format!("profile insights failed: {e}"))?
+        .json::<ProfileInsights>()
+        .await
+        .map_err(|e| format!("parse profile insights: {e}"))
+}
+
+/// GET /v1/runtime/profile/buckets — apps the user dictates into, grouped by bucket.
+pub async fn get_app_buckets(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let url = format!(
+        "{}/v1/runtime/profile/buckets",
+        server_url.trim_end_matches('/')
+    );
+    let mut req = Client::new()
+        .get(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    req.send()
+        .await
+        .map_err(|e| format!("app buckets failed: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("parse app buckets: {e}"))
+}
+
+/// POST /v1/runtime/profile/buckets/override — re-file an app into a bucket (user override).
+pub async fn set_app_bucket(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+    app_key: &str,
+    bucket_key: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/v1/runtime/profile/buckets/override",
+        server_url.trim_end_matches('/')
+    );
+    let mut req = Client::new()
+        .post(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10))
+        .json(&serde_json::json!({ "app_key": app_key, "bucket_key": bucket_key }));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("set app bucket failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("set app bucket failed: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// POST /v1/runtime/profile/buckets/language — set (or clear, with `None`) the
+/// per-bucket output-language override.
+pub async fn set_bucket_language(
+    server_url: &str,
+    token: &str,
+    active_org_id: Option<&str>,
+    bucket_key: &str,
+    output_language: Option<&str>,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/v1/runtime/profile/buckets/language",
+        server_url.trim_end_matches('/')
+    );
+    let mut req = Client::new()
+        .post(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(10))
+        .json(&serde_json::json!({
+            "bucket_key": bucket_key,
+            "output_language": output_language,
+        }));
+    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
+        req = req.header("x-airnote-org-id", org_id);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("set bucket language failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "set bucket language failed: HTTP {}",
+            resp.status()
+        ));
+    }
+    Ok(())
+}
+
 pub async fn activate_workspace_on_server(
     server_url: &str,
     token: &str,
@@ -1688,6 +1836,7 @@ pub async fn classify_edit(
     capture_meta: CaptureMeta,
     client_run_id: Option<&str>,
     prior_text: Option<&str>,
+    edit_trace_json: Option<Value>,
 ) -> Result<ClassifyEditResponse, String> {
     let url = format!("{}/v1/classify-edit", ep.url);
     let mut body = serde_json::json!({
@@ -1707,6 +1856,9 @@ pub async fn classify_edit(
     // and ignore the surrounding context. Empty/None → field was empty.
     if let Some(prior) = prior_text.filter(|s| !s.is_empty()) {
         body["prior_text"] = serde_json::Value::String(prior.to_string());
+    }
+    if let Some(trace) = edit_trace_json {
+        body["edit_trace_json"] = trace;
     }
     Client::new()
         .post(&url)
@@ -1757,6 +1909,34 @@ pub async fn get_stt_bias(ep: &BackendEndpoint) -> Result<BiasPackage, String> {
         .json::<BiasPackage>()
         .await
         .map_err(|e| format!("parse stt bias: {e}"))
+}
+
+// ── Vocabulary alias API (honest UI: learned wrong→right fixes) ─────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AliasRow {
+    pub correct_form: String,
+    pub transcript_form: String,
+    pub use_count: i64,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AliasesResponse {
+    pub aliases: Vec<AliasRow>,
+}
+
+pub async fn list_vocab_aliases(ep: &BackendEndpoint) -> Result<AliasesResponse, String> {
+    let url = format!("{}/v1/vocabulary/aliases", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .send()
+        .await
+        .map_err(|e| format!("list vocab aliases failed: {e}"))?
+        .json::<AliasesResponse>()
+        .await
+        .map_err(|e| format!("parse vocab aliases: {e}"))
 }
 
 // ── Vocabulary management API (settings UI) ─────────────────────────────────

@@ -101,14 +101,26 @@ wait_for_health() {
 }
 
 cleanup() {
+  if [[ -n "${VITE_PID:-}" ]] && kill -0 "$VITE_PID" 2>/dev/null; then
+    kill "$VITE_PID" 2>/dev/null || true
+    wait "$VITE_PID" 2>/dev/null || true
+  fi
   if [[ -n "${CP_PID:-}" ]] && kill -0 "$CP_PID" 2>/dev/null; then
     kill "$CP_PID" 2>/dev/null || true
+    wait "$CP_PID" 2>/dev/null || true
   fi
   if [[ -n "${TUNNEL_PID:-}" ]] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
     kill "$TUNNEL_PID" 2>/dev/null || true
+    wait "$TUNNEL_PID" 2>/dev/null || true
   fi
 }
-trap cleanup EXIT INT TERM
+
+shutdown() {
+  cleanup
+  exit 130
+}
+trap cleanup EXIT
+trap shutdown INT TERM
 
 echo "▶ ensuring admin-ui deps..."
 (cd "$ADMIN_DIR" && pnpm install --prefer-offline)
@@ -131,4 +143,6 @@ free_port "$VITE_PORT"
 cd "$ADMIN_DIR"
 export VITE_API_TARGET="${VITE_API_TARGET:-http://127.0.0.1:$PORT}"
 echo "  API proxy target  $VITE_API_TARGET"
-exec pnpm dev -- --port "$VITE_PORT"
+pnpm dev -- --port "$VITE_PORT" &
+VITE_PID=$!
+wait "$VITE_PID"

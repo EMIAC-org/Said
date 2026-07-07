@@ -7,10 +7,6 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|s| !s.trim().is_empty())
 }
 
-fn has_deepgram_key(prefs: &Preferences) -> bool {
-    said_core::stt::resolve_deepgram_api_key(prefs.deepgram_api_key.as_deref()).is_some()
-}
-
 pub fn effective_stt_provider(prefs: &Preferences) -> String {
     // Dev/testing override mirrors said_core::stt::effective_dictation_provider so
     // AIRNOTE_FORCE_STT_PROVIDER=whisper_local routes dictation to on-device
@@ -27,8 +23,10 @@ pub fn effective_stt_provider(prefs: &Preferences) -> String {
 fn has_stt_key(prefs: &Preferences) -> bool {
     let provider = effective_stt_provider(prefs);
     if said_core::stt::is_deepgram(&provider) {
-        has_deepgram_key(prefs)
+        // Cloud dictation = OpenRouter Whisper Large V3 Turbo (server-managed key).
+        crate::stt::openrouter_qwen_asr::resolve_api_key().is_some()
     } else {
+        // Local engines (whisper.cpp / Swift) need no key.
         true
     }
 }
@@ -142,15 +140,12 @@ mod tests {
     }
 
     #[test]
-    fn deepgram_stt_requires_deepgram_key() {
-        let env_has_deepgram = said_core::stt::DEEPGRAM_ENV_KEY_CANDIDATES
-            .iter()
-            .any(|key| {
-                std::env::var(key)
-                    .ok()
-                    .is_some_and(|value| !value.trim().is_empty())
-            });
-        assert_eq!(has_stt_key(&prefs("deepgram", None)), env_has_deepgram);
-        assert!(has_stt_key(&prefs("deepgram", Some("dg_key".into()))));
+    fn cloud_stt_requires_openrouter_key() {
+        // Cloud dictation now runs on OpenRouter Whisper (server-managed key), so
+        // its availability tracks OPENROUTER_API_KEY, not a user Deepgram key.
+        let env_has_openrouter = std::env::var("OPENROUTER_API_KEY")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty());
+        assert_eq!(has_stt_key(&prefs("deepgram", None)), env_has_openrouter);
     }
 }

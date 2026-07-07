@@ -37,6 +37,49 @@ pub async fn list(
     Ok(Json(items))
 }
 
+/// Per-app dictation usage, grouped by `target_app` (most-used first). Feeds the
+/// Insights "apps you dictate in" section; app identity is resolved desktop-side.
+pub async fn app_usage(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::store::history::AppUsage>>, StatusCode> {
+    let user_id = state.default_user_id.clone();
+    Ok(Json(crate::store::history::list_app_usage(
+        &state.pool,
+        &user_id,
+    )))
+}
+
+#[derive(Deserialize)]
+pub struct SiteContextBody {
+    target_app: String,
+    host: String,
+}
+
+/// Record a browser dictation's site (host). On-device only — stored in the
+/// local SQLite `site_visits` table, never forwarded to the cloud runtime.
+pub async fn record_site(
+    State(state): State<AppState>,
+    Json(body): Json<SiteContextBody>,
+) -> StatusCode {
+    if body.host.trim().is_empty() || body.target_app.trim().is_empty() {
+        return StatusCode::NO_CONTENT;
+    }
+    let user_id = state.default_user_id.clone();
+    crate::store::history::record_site_visit(&state.pool, &user_id, &body.target_app, &body.host);
+    StatusCode::NO_CONTENT
+}
+
+/// Per-site dictation usage (grouped by host) for the Insights "Sites" section.
+pub async fn site_usage(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::store::history::SiteUsage>>, StatusCode> {
+    let user_id = state.default_user_id.clone();
+    Ok(Json(crate::store::history::list_site_usage(
+        &state.pool,
+        &user_id,
+    )))
+}
+
 #[derive(Debug, Deserialize)]
 struct RuntimeHistoryItem {
     id: Uuid,
@@ -158,6 +201,7 @@ fn server_row_to_recording(row: RuntimeHistoryItem, user_id: &str) -> Recording 
         raw_transcript: row.raw_transcript,
         local_corrected_transcript: row.local_corrected_transcript,
         polished_output: row.polished_output,
+        trace_json: None,
     }
 }
 

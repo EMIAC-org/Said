@@ -15,7 +15,6 @@ pub mod polish_models;
 pub mod pre_embed;
 pub mod prefs;
 pub mod problem;
-pub mod prompts;
 pub mod runtime_credentials;
 pub mod runtime_live;
 pub mod server_migration;

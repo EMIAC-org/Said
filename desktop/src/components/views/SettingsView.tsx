@@ -1,20 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { formatKeycap, type Platform } from "@/lib/hotkeys";
+import { formatKeycap, hotkeyDisplay, type Platform } from "@/lib/hotkeys";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Shield, Key, Info, Wifi, Check, Sparkles,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Bell, Bug, Copy, FileText, Mic, Download, Activity,
-  RotateCcw, Save, GitCompareArrows, Play, Link, LogOut, Power, BookOpen,
+  Save, GitCompareArrows, Link, LogOut, Power, BookOpen,
   Code2, Plus, Trash2, AlertTriangle, Monitor,
 } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
-import type { AppSnapshot, Preferences, PromptTemplateResponse, PromptTestResponse } from "@/types";
+import type { AppSnapshot, Preferences } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
+import type { Theme, ThemePreference } from "@/lib/useTheme";
 import { DictationSttSection } from "@/components/DictationSttSection";
+import { HotkeyPicker } from "@/components/HotkeyPicker";
 
 import {
   getConnection as enterpriseGetConnection,
@@ -30,11 +32,10 @@ import {
 import { EnterpriseConnectForm } from "@/components/EnterpriseConnectForm";
 import {
   getPreferences, patchPreferences,
-  getVoicePrompt, saveVoicePromptDraft, applyVoicePromptDraft,
-  resetVoicePrompt, testVoicePrompt,
   getDebugLogs,
   requestNotifications, checkNotificationPermission,
-  getDesktopPrefs, setDesktopPrefs,
+  getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
+  browserAutomationStatus, triggerBrowserAutomation, type BrowserAutomation,
   readBackendLog, backendLogLocation, openLogFolder,
   openExternal,
   getServerSettingsStatus,
@@ -200,6 +201,7 @@ export type SettingsSection =
   | "about";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "appearance",     label: "Appearance"     },
   { id: "hotkeys",      label: "Hotkeys"      },
   { id: "models",         label: "Models"         },
   // Developer section hidden from the user-facing nav. The section type, panel,
@@ -215,154 +217,9 @@ function Show({ when, children }: { when: boolean; children: React.ReactNode }) 
   return when ? <>{children}</> : null;
 }
 
-type DiffLine = {
-  type: "same" | "add" | "remove";
-  text: string;
-};
-
-type PromptPreviewMode = "rendered" | "diff";
-
-function splitPromptLines(value: string): string[] {
-  return value.replace(/\r\n/g, "\n").split("\n");
-}
-
-function diffPromptLines(before: string, after: string): DiffLine[] {
-  const a = splitPromptLines(before);
-  const b = splitPromptLines(after);
-  const dp = Array.from({ length: a.length + 1 }, () =>
-    Array<number>(b.length + 1).fill(0)
-  );
-
-  for (let i = a.length - 1; i >= 0; i -= 1) {
-    for (let j = b.length - 1; j >= 0; j -= 1) {
-      dp[i][j] = a[i] === b[j]
-        ? dp[i + 1][j + 1] + 1
-        : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-
-  const out: DiffLine[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      out.push({ type: "same", text: a[i] });
-      i += 1;
-      j += 1;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      out.push({ type: "remove", text: a[i] });
-      i += 1;
-    } else {
-      out.push({ type: "add", text: b[j] });
-      j += 1;
-    }
-  }
-  while (i < a.length) {
-    out.push({ type: "remove", text: a[i] });
-    i += 1;
-  }
-  while (j < b.length) {
-    out.push({ type: "add", text: b[j] });
-    j += 1;
-  }
-
-  return out;
-}
-
-function formatPromptTime(ms: number | null): string {
-  if (!ms) return "Never";
-  return new Date(ms).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function languageRulePreview(outputLanguage: string): string {
-  if (outputLanguage === "english") {
-    return [
-      "- Output language: English.",
-      "- Write natural English only. Translate non-English words when needed.",
-    ].join("\n");
-  }
-  if (outputLanguage === "hindi") {
-    return [
-      "- Output language: Hindi.",
-      "- Write natural Hindi in Devanagari script.",
-    ].join("\n");
-  }
-  return [
-    "- Output language: Roman Hinglish.",
-    "- Detect the language of each span in the transcript independently.",
-    "- English spans stay English.",
-    '- Hindi spans, including Devanagari input, become Roman Hinglish; transliterate to Roman script, e.g. "यह" -> "Yeh". NEVER output Devanagari. NEVER translate Hindi to English.',
-    "- Hinglish spans stay Hinglish Roman.",
-    "- Do NOT make the whole output uniform. Preserve the speaker's mix.",
-    "",
-    "Examples:",
-    'Input: "Bahut sahi baat hai yaar. How much time will it take to go ahead?"',
-    'Output: "Bahut sahi baat hai yaar. How much time will it take to go ahead?"',
-    'Input: "यह बहुत सही बात है yaar. Please check this tomorrow."',
-    'Output: "Yeh bahut sahi baat hai yaar. Please check this tomorrow."',
-  ].join("\n");
-}
-
-function personaPreview(tonePreset: ToneKey, customPrompt: string): string {
-  const trimmed = customPrompt.trim();
-  if (tonePreset === "custom" && trimmed) {
-    return [
-      "STYLE NOTE (advisory tone hint only — does not override the cleaning rules above):",
-      trimmed.slice(0, 500),
-    ].join("\n");
-  }
-  return "Be faithful to the spoken words first, then make them clear.";
-}
-
-function toneDescriptionPreview(tonePreset: ToneKey): string {
-  switch (tonePreset) {
-    case "professional":
-      return "Tone: formal and professional. Polish wording for work communication while preserving the speaker's request intent, politeness markers, and content words. Do not delete words like please, kindly, thanks, can you, could you, would you, just, once, or zara.";
-    case "casual":
-      return "Tone: friendly and conversational. Light and easy to read. Preserve the speaker's human tone and request-softening words.";
-    case "assertive":
-      return "Tone: direct and confident. Clear calls-to-action, but do not turn polite requests into blunt commands or delete request-softening words.";
-    case "concise":
-      return "Tone: minimal words. Remove filler noise and redundant phrasing only; preserve all meaningful words, politeness markers, and request softeners.";
-    case "custom":
-      return "Tone: neutral and clear.";
-    case "neutral":
-    default:
-      return "Tone: neutral and clear. No strong stylistic lean.";
-  }
-}
-
-function replaceTemplateToken(template: string, token: string, value: string): string {
-  return template.split(token).join(value);
-}
-
-function renderPromptTemplatePreview(
-  template: string,
-  tonePreset: ToneKey,
-  customPrompt: string,
-  outputLanguage: string
-): string {
-  return [
-    ["{{language_rule}}", languageRulePreview(outputLanguage)],
-    ["{{persona}}", personaPreview(tonePreset, customPrompt)],
-    ["{{tone}}", toneDescriptionPreview(tonePreset)],
-    ["{{vocab_block}}", ""],
-    ["{{corrections_block}}", ""],
-    ["{{prefs_block}}", ""],
-  ].reduce(
-    (next, [token, value]) => replaceTemplateToken(next, token, value),
-    template
-  );
-}
-
 // ── Enterprise section ────────────────────────────────────────────────────────
 
-/** Server URL override — toggle between the default (prod AirNote) backend and a
+/** Server URL override — toggle between the build default backend and a
  *  custom URL. The active URL governs the control-plane AND the local backend's
  *  polish forwarding. Applying reloads the app so every endpoint re-resolves. */
 function ServerOverrideCard() {
@@ -401,11 +258,11 @@ function ServerOverrideCard() {
           <button
             type="button"
             disabled={busy}
-            onClick={() => { setMode("default"); if (mode !== "default") void apply("default"); }}
+            onClick={() => { setMode("default"); void apply("default"); }}
             className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
             style={segStyle(mode === "default")}
           >
-            Default (prod AirNote)
+            Default
           </button>
           <button
             type="button"
@@ -677,6 +534,12 @@ interface SettingsViewProps {
   performanceMonitorEnabled?: boolean;
   onPerformanceMonitorChange?: (enabled: boolean) => void;
   onEnterpriseDisconnect?: () => void;
+  /** Active theme + setter for the Appearance theme picker. */
+  theme?:            Theme;
+  onThemeChange?:    (t: Theme) => void;
+  /** Theme preference (system/dark/light) + setter for the Appearance picker. */
+  themePreference?:        ThemePreference;
+  onThemePreferenceChange?: (p: ThemePreference) => void;
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────
@@ -693,6 +556,10 @@ export function SettingsView({
   performanceMonitorEnabled = false,
   onPerformanceMonitorChange,
   onEnterpriseDisconnect,
+  theme,
+  onThemeChange,
+  themePreference,
+  onThemePreferenceChange,
 }: SettingsViewProps) {
   // Helper — settings are always section-scoped in the stable UI. If a caller
   // omits the section, default to Models instead of rendering every advanced
@@ -726,16 +593,6 @@ export function SettingsView({
   const [saveError,    setSaveError]    = useState("");
   const [customPrompt, setCustomPrompt] = useState("");
   const [promptDirty,  setPromptDirty]  = useState(false);
-  const [voicePrompt,      setVoicePrompt]      = useState<PromptTemplateResponse | null>(null);
-  const [promptDraftBody,  setPromptDraftBody]  = useState("");
-  const [promptBodyDirty,  setPromptBodyDirty]  = useState(false);
-  const [promptBusy,       setPromptBusy]       = useState(false);
-  const [promptError,      setPromptError]      = useState("");
-  const [promptTestInput,  setPromptTestInput]  = useState("Get my task, please.");
-  const [promptTestResult, setPromptTestResult] = useState<PromptTestResponse | null>(null);
-  const [promptTesting,    setPromptTesting]    = useState(false);
-  const [promptPreviewMode, setPromptPreviewMode] = useState<PromptPreviewMode>("rendered");
-  const promptLoadStartedRef = useRef(false);
 
   // ── API key state ────────────────────────────────────────────────────────────
   // ── Debug logs state ───────────────────────────────────────────────────────
@@ -752,6 +609,7 @@ export function SettingsView({
     message_polish_mode: false,
     launch_at_login: false,
     beta_mode: false,
+    browser_context_enabled: false,
   });
   useEffect(() => {
     void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});
@@ -762,6 +620,15 @@ export function SettingsView({
       console.warn("[settings] failed to write desktop prefs:", e);
     });
   }, []);
+  // Live per-browser Automation consent state (Apple Events), so the browser-
+  // context row can show granted/denied/not-asked and a working Grant button.
+  const [browserAuto, setBrowserAuto] = useState<BrowserAutomation[]>([]);
+  const refreshBrowserAuto = useCallback(async () => {
+    setBrowserAuto(await browserAutomationStatus());
+  }, []);
+  useEffect(() => {
+    if (desktopPrefs.browser_context_enabled) void refreshBrowserAuto();
+  }, [desktopPrefs.browser_context_enabled, refreshBrowserAuto]);
   const [debugTab,     setDebugTab]     = useState<"combined" | "desktop" | "backend">("combined");
 
   // ── Auto-update state ─────────────────────────────────────────────────────
@@ -912,10 +779,7 @@ export function SettingsView({
   // so it's hidden from the picker on Windows entirely.
   const isWindows = snapshot?.platform === "windows";
   const platform = (snapshot?.platform ?? "macos") as Platform;
-  const recordHotkeyLabel =
-    recordHotkey === "right_option" ? (isWindows ? "Right Alt" : "Right Option") :
-    recordHotkey === "fn" ? (isWindows ? "Caps Lock" : "Fn") :
-    "Caps Lock";
+  const recordHotkeyLabel = hotkeyDisplay(recordHotkey, platform).label;
   // Polish chord shown per-platform (cmd+shift+p → Ctrl+Shift+P on Windows).
   const polishHotkeyLabel = formatKeycap(prefs?.polish_text_hotkey ?? "cmd+shift+p", platform);
 
@@ -1028,113 +892,11 @@ export function SettingsView({
     setPromptDirty(false);
   }
 
-  function syncVoicePrompt(template: PromptTemplateResponse) {
-    setVoicePrompt(template);
-    setPromptDraftBody(template.draft_body ?? template.active_body);
-    setPromptBodyDirty(false);
-  }
-
-  async function loadVoicePrompt() {
-    promptLoadStartedRef.current = true;
-    setPromptBusy(true);
-    setPromptError("");
-    try {
-      const template = await getVoicePrompt();
-      if (!template) throw new Error("Prompt template is unavailable");
-      syncVoicePrompt(template);
-    } catch (err) {
-      setPromptError(err instanceof Error ? err.message : "Failed to load prompt");
-    } finally {
-      setPromptBusy(false);
-    }
-  }
-
-  async function savePromptDraft() {
-    if (!promptDraftBody.trim()) {
-      setPromptError("Prompt draft cannot be empty");
-      return;
-    }
-    setPromptBusy(true);
-    setPromptError("");
-    try {
-      const template = await saveVoicePromptDraft(promptDraftBody);
-      if (!template) throw new Error("Backend did not return the saved prompt");
-      syncVoicePrompt(template);
-    } catch (err) {
-      setPromptError(err instanceof Error ? err.message : "Failed to save draft");
-    } finally {
-      setPromptBusy(false);
-    }
-  }
-
-  async function applyPromptDraft() {
-    if (!promptDraftBody.trim()) {
-      setPromptError("Prompt draft cannot be empty");
-      return;
-    }
-    setPromptBusy(true);
-    setPromptError("");
-    try {
-      if (promptBodyDirty) {
-        const saved = await saveVoicePromptDraft(promptDraftBody);
-        if (!saved) throw new Error("Backend did not save the draft");
-      }
-      const template = await applyVoicePromptDraft();
-      if (!template) throw new Error("Backend did not apply the prompt");
-      syncVoicePrompt(template);
-    } catch (err) {
-      setPromptError(err instanceof Error ? err.message : "Failed to apply prompt");
-    } finally {
-      setPromptBusy(false);
-    }
-  }
-
-  async function resetPromptToDefault() {
-    if (!window.confirm("Reset the active voice prompt to the app default?")) return;
-    setPromptBusy(true);
-    setPromptError("");
-    try {
-      const template = await resetVoicePrompt();
-      if (!template) throw new Error("Backend did not reset the prompt");
-      syncVoicePrompt(template);
-      setPromptTestResult(null);
-    } catch (err) {
-      setPromptError(err instanceof Error ? err.message : "Failed to reset prompt");
-    } finally {
-      setPromptBusy(false);
-    }
-  }
-
-  async function runPromptTest() {
-    if (!promptTestInput.trim()) {
-      setPromptError("Add a sample transcript first");
-      return;
-    }
-    setPromptTesting(true);
-    setPromptError("");
-    setPromptTestResult(null);
-    try {
-      const result = await testVoicePrompt(promptTestInput, promptDraftBody);
-      if (!result) throw new Error("Backend did not return a prompt test result");
-      setPromptTestResult(result);
-    } catch (err) {
-      setPromptError(err instanceof Error ? err.message : "Prompt test failed");
-    } finally {
-      setPromptTesting(false);
-    }
-  }
-
   useEffect(() => {
     if (isOn("debug") && !debugLogs && !debugBusy) {
       refreshDebugLogs();
     }
   }, [activeSection]);
-
-  useEffect(() => {
-    if (isOn("writing") && !voicePrompt && !promptBusy && !promptLoadStartedRef.current) {
-      loadVoicePrompt();
-    }
-  }, [activeSection, voicePrompt, promptBusy]);
 
   useEffect(() => {
     if (!isOn("developer") || developerLoaded || developerBusy) return;
@@ -1175,22 +937,6 @@ export function SettingsView({
   }, []);
 
   const tone = (prefs?.tone_preset ?? "neutral") as ToneKey;
-  const activeToneLabel = TONE_PRESETS.find((preset) => preset.key === tone)?.label ?? "Neutral";
-  const promptDiff = useMemo(
-    () => diffPromptLines(voicePrompt?.active_body ?? "", promptDraftBody),
-    [voicePrompt?.active_body, promptDraftBody]
-  );
-  const renderedPromptPreview = useMemo(
-    () => renderPromptTemplatePreview(
-      promptDraftBody,
-      tone,
-      customPrompt,
-      prefs?.output_language ?? "hinglish"
-    ),
-    [promptDraftBody, tone, customPrompt, prefs?.output_language]
-  );
-  const promptChangedFromActive = Boolean(voicePrompt && promptDraftBody !== voicePrompt.active_body);
-  const promptCanApply = promptBodyDirty || promptChangedFromActive || Boolean(voicePrompt?.has_draft);
 
   // Inner content that gets either wrapped in ScrollArea (full view) or rendered
   // bare (modal embeds it inside its own scroll container).
@@ -1232,7 +978,12 @@ export function SettingsView({
         {/* ── Appearance ────────────────────────────────── */}
         <Show when={isOn("appearance")}>
           <div className="mb-7">
-            <AppearanceSection />
+            <AppearanceSection
+              theme={theme}
+              onThemeChange={onThemeChange}
+              preference={themePreference}
+              onPreferenceChange={onThemePreferenceChange}
+            />
           </div>
         </Show>
 
@@ -1254,38 +1005,14 @@ export function SettingsView({
                 </p>
               </div>
             </div>
-            <div
-              className="flex mt-3 rounded-xl p-0.5 gap-0.5"
-              style={{ background: "hsl(var(--surface-4))" }}
-            >
-              {([
-                { key: "caps_lock", label: "Caps Lock" },
-                { key: "right_option", label: isWindows ? "Right Alt" : "Right Option" },
-                ...(!isWindows ? [{ key: "fn", label: "Fn / Globe" }] : []),
-              ] as { key: "caps_lock" | "right_option" | "fn"; label: string }[]).map((opt) => {
-                const isActive = recordHotkey === opt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    aria-pressed={isActive}
-                    disabled={saving}
-                    onClick={() => patch({ record_hotkey: opt.key })}
-                    className="flex-1 text-[13px] font-medium rounded-[10px] py-1.5 transition-all disabled:opacity-60"
-                    style={{
-                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
-                      color: isActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
-                      boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.25)" : "none",
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+            <div className="mt-3">
+              <HotkeyPicker
+                value={recordHotkey}
+                onChange={(id) => patch({ record_hotkey: id })}
+                platform={platform}
+                disabled={saving}
+              />
             </div>
-            <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
-              Current: {recordHotkeyLabel}.{!isWindows ? " macOS requires Input Monitoring for global hotkeys." : ""}
-            </p>
             {saveError && (
               <p className="text-[11px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
                 {saveError}
@@ -1414,275 +1141,6 @@ export function SettingsView({
             )}
           </div>
 
-          {/* Voice prompt editor */}
-          <div className="panel p-4 mt-3">
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <GitCompareArrows size={14} className="text-muted-foreground" />
-                  <p className="text-[12px] font-semibold text-foreground">Prompt Lab</p>
-                  {voicePrompt?.has_draft && (
-                    <span
-                      className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
-                    >
-                      Draft saved
-                    </span>
-                  )}
-                </div>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Active prompt updates the next recording after Apply.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {voicePrompt && (
-                  <span className="text-[10px] text-muted-foreground hidden sm:inline">
-                    Applied {formatPromptTime(voicePrompt.applied_at)}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={loadVoicePrompt}
-                  disabled={promptBusy}
-                  className="btn-ghost !py-1.5 !px-3"
-                >
-                  {promptBusy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                  Reload
-                </button>
-              </div>
-            </div>
-
-            {promptError && (
-              <div
-                className="mb-3 rounded-lg px-3 py-2 text-[12px]"
-                style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
-              >
-                {promptError}
-              </div>
-            )}
-
-            {voicePrompt ? (
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <p className="text-[11px] font-semibold text-muted-foreground">Active</p>
-                      <span className="text-[10px] text-muted-foreground">
-                        {voicePrompt.active_is_default ? "Default" : voicePrompt.base_version}
-                      </span>
-                    </div>
-                    <textarea
-                      readOnly
-                      value={voicePrompt.active_body}
-                      rows={13}
-                      className="input resize-none font-mono text-[11px] leading-relaxed opacity-80"
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <p className="text-[11px] font-semibold text-muted-foreground">Draft</p>
-                      <span className="text-[10px] text-muted-foreground">
-                        {promptChangedFromActive ? "Changed" : "Same as active"}
-                      </span>
-                    </div>
-                    <textarea
-                      value={promptDraftBody}
-                      onChange={(e) => {
-                        setPromptDraftBody(e.target.value);
-                        setPromptBodyDirty(true);
-                        setPromptTestResult(null);
-                      }}
-                      rows={13}
-                      className="input resize-none font-mono text-[11px] leading-relaxed"
-                      spellCheck={false}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPromptDraftBody(voicePrompt.active_body);
-                        setPromptBodyDirty(false);
-                        setPromptTestResult(null);
-                      }}
-                      className="btn-ghost !py-1.5 !px-3"
-                    >
-                      Use active
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPromptDraftBody(voicePrompt.default_body);
-                        setPromptBodyDirty(true);
-                        setPromptTestResult(null);
-                      }}
-                      className="btn-ghost !py-1.5 !px-3"
-                    >
-                      Use default
-                    </button>
-                    <button
-                      type="button"
-                      onClick={resetPromptToDefault}
-                      disabled={promptBusy}
-                      className="btn-ghost !py-1.5 !px-3"
-                    >
-                      <RotateCcw size={12} />
-                      Reset active
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={savePromptDraft}
-                      disabled={promptBusy || !promptBodyDirty}
-                      className="btn-ghost !py-1.5 !px-3"
-                    >
-                      {promptBusy ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                      Save draft
-                    </button>
-                    <button
-                      type="button"
-                      onClick={applyPromptDraft}
-                      disabled={promptBusy || !promptCanApply}
-                      className="btn-primary !py-1.5 !px-3 !text-[12px]"
-                    >
-                      Apply prompt
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  className="rounded-xl p-3"
-                  style={{ background: "hsl(var(--surface-4))" }}
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                    <div>
-                      <p className="text-[11px] font-semibold text-muted-foreground">
-                        {promptPreviewMode === "rendered" ? "Rendered Prompt" : "Template Diff"}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        {promptPreviewMode === "rendered"
-                          ? `${activeToneLabel} · ${prefs?.output_language ?? "hinglish"}`
-                          : "Active → draft"}
-                      </p>
-                    </div>
-                    <div
-                      className="flex rounded-xl p-0.5 gap-0.5"
-                      style={{ background: "hsl(var(--surface-2))" }}
-                    >
-                      {([
-                        { key: "rendered", label: "Rendered" },
-                        { key: "diff", label: "Diff" },
-                      ] as const).map((mode) => {
-                        const isModeActive = promptPreviewMode === mode.key;
-                        return (
-                          <button
-                            key={mode.key}
-                            type="button"
-                            onClick={() => setPromptPreviewMode(mode.key)}
-                            className="text-[11px] font-medium rounded-[10px] px-3 py-1.5 transition-all"
-                            style={{
-                              background: isModeActive ? "hsl(var(--surface-1))" : "transparent",
-                              color: isModeActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
-                            }}
-                          >
-                            {mode.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {promptPreviewMode === "rendered" ? (
-                    <textarea
-                      readOnly
-                      value={renderedPromptPreview}
-                      rows={13}
-                      className="input resize-none font-mono text-[11px] leading-relaxed"
-                    />
-                  ) : (
-                    <div
-                      className="max-h-64 overflow-auto rounded-lg font-mono text-[11px] leading-relaxed"
-                      style={{ background: "hsl(var(--surface-2))" }}
-                    >
-                      {promptDiff.map((line, index) => (
-                        <div
-                          key={`${line.type}-${index}`}
-                          className="grid grid-cols-[24px_1fr] gap-2 px-2 py-0.5 whitespace-pre-wrap break-words"
-                          style={{
-                            color:
-                              line.type === "add"
-                                ? "hsl(145 70% 70%)"
-                                : line.type === "remove"
-                                ? "hsl(0 80% 76%)"
-                                : "hsl(var(--muted-foreground))",
-                            background:
-                              line.type === "add"
-                                ? "hsl(145 70% 24% / 0.25)"
-                                : line.type === "remove"
-                                ? "hsl(0 70% 24% / 0.25)"
-                                : "transparent",
-                          }}
-                        >
-                          <span>{line.type === "add" ? "+" : line.type === "remove" ? "-" : " "}</span>
-                          <span>{line.text || " "}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div
-                  className="rounded-xl p-3"
-                  style={{ background: "hsl(var(--surface-4))" }}
-                >
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <p className="text-[11px] font-semibold text-muted-foreground">Test Sample</p>
-                    <button
-                      type="button"
-                      onClick={runPromptTest}
-                      disabled={promptTesting || promptBusy || !promptTestInput.trim()}
-                      className="btn-primary !py-1.5 !px-3 !text-[12px]"
-                    >
-                      {promptTesting ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-                      Run test
-                    </button>
-                  </div>
-                  <textarea
-                    value={promptTestInput}
-                    onChange={(e) => setPromptTestInput(e.target.value)}
-                    rows={2}
-                    className="input resize-none text-[12px] leading-relaxed"
-                  />
-                  {promptTestResult && (
-                    <div className="mt-3 rounded-lg p-3" style={{ background: "hsl(var(--surface-2))" }}>
-                      <div className="flex items-center justify-between gap-3 mb-1.5">
-                        <p className="text-[11px] font-semibold text-muted-foreground">Output</p>
-                        <span className="text-[10px] text-muted-foreground">
-                          {promptTestResult.model_used} · {promptTestResult.latency_ms}ms
-                        </span>
-                      </div>
-                      <p className="text-[13px] text-foreground leading-relaxed whitespace-pre-wrap">
-                        {promptTestResult.output}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div
-                className="rounded-xl px-4 py-6 flex items-center justify-center gap-2 text-[12px] text-muted-foreground"
-                style={{ background: "hsl(var(--surface-4))" }}
-              >
-                <Loader2 size={14} className={cn(promptBusy && "animate-spin")} />
-                {promptBusy ? "Loading prompt…" : "Prompt not loaded"}
-              </div>
-            )}
-          </div>
         </div>
 
         {/* ── Language ─────────────────────────────────── */}
@@ -1781,31 +1239,13 @@ export function SettingsView({
               </div>
             </div>
             <div
-              className="flex mt-3 rounded-xl p-0.5 gap-0.5"
-              style={{ background: "hsl(var(--surface-4))" }}
+              className="mt-3"
             >
-              {([
-                { key: "caps_lock", label: "Caps Lock" },
-                { key: "right_option", label: isWindows ? "Right Alt" : "Right Option" },
-                // Fn / Globe key has no Windows analog — hide the option there.
-                ...(!isWindows ? [{ key: "fn", label: "Fn" }] : []),
-              ] as { key: "caps_lock" | "right_option" | "fn"; label: string }[]).map((opt) => {
-                const isActive = recordHotkey === opt.key;
-                return (
-                  <button
-                    key={opt.key}
-                    onClick={() => patch({ record_hotkey: opt.key })}
-                    className="flex-1 text-[13px] font-medium rounded-[10px] py-1.5 transition-all"
-                    style={{
-                      background: isActive ? "hsl(var(--surface-1))" : "transparent",
-                      color: isActive ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
-                      boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.25)" : "none",
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+              <HotkeyPicker
+                value={recordHotkey}
+                onChange={(id) => patch({ record_hotkey: id })}
+                platform={platform}
+              />
             </div>
           </div>
         </Section>
@@ -1834,10 +1274,10 @@ export function SettingsView({
                 <div className="min-w-0 flex-1">
                   <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
                   <p className="text-[12px] text-muted-foreground mt-0.5">
-                    {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
+                    {polishHotkeyLabel} polish runs on {DEFAULT_CLOUD_SERVER_URL.replace(/^https?:\/\//, "")} using Cerebras GPT OSS 120B.
                     {prefs?.stt_provider === "swift_local"
                       ? " Speech recognition stays on this Mac (Swift)."
-                      : " Speech recognition uses Deepgram in the cloud."}
+                      : " Speech recognition uses Whisper Large V3 Turbo in the cloud."}
                   </p>
                 </div>
               </div>
@@ -2412,6 +1852,136 @@ export function SettingsView({
                     )}
                   </div>
                 </div>
+              </>
+            )}
+
+            {/* Browser context — opt-in, macOS. Reads the active tab's domain
+                for site-level dictation context; toggling on triggers the
+                per-browser Automation consent prompt. */}
+            {!isWindows && (
+              <>
+                <div className="mx-5 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
+                <div className="flex items-center gap-4 px-5 py-4">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                  >
+                    <Link size={16} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium text-foreground">Browser context</p>
+                    <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
+                      When you dictate into a browser, remember the site (domain only — e.g.
+                      mail.google.com, never the full URL), stored on this Mac only. Turning this
+                      on asks macOS for permission to read your browser’s active tab.
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 ml-4">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={desktopPrefs.browser_context_enabled}
+                      onClick={() => {
+                        const next = !desktopPrefs.browser_context_enabled;
+                        writeDesktopPrefs({ ...desktopPrefs, browser_context_enabled: next });
+                        if (next) {
+                          void requestBrowserAutomation().then(refreshBrowserAuto);
+                        }
+                      }}
+                      className="relative h-6 w-11 rounded-full transition-colors"
+                      style={{
+                        background: desktopPrefs.browser_context_enabled
+                          ? "hsl(var(--primary))"
+                          : "hsl(var(--surface-4))",
+                      }}
+                    >
+                      <span
+                        className="absolute top-1 h-4 w-4 rounded-full transition-transform"
+                        style={{
+                          left: 4,
+                          transform: desktopPrefs.browser_context_enabled
+                            ? "translateX(20px)"
+                            : "translateX(0)",
+                          background: "hsl(var(--foreground))",
+                        }}
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Live per-browser Automation consent. Apple Events need a
+                    running target, so if nothing's open we prompt the user to
+                    open a browser; granted browsers show a badge, others a
+                    Grant button (denied → System Settings, macOS won't re-ask). */}
+                {desktopPrefs.browser_context_enabled && (
+                  <div className="mx-5 mb-4 -mt-1">
+                    {browserAuto.length === 0 ? (
+                      <div
+                        className="rounded-xl px-4 py-3 text-[12px] text-muted-foreground leading-relaxed"
+                        style={{ background: "hsl(var(--surface-3))" }}
+                      >
+                        Open a browser (Chrome, Safari, Edge, Brave, Arc…), then{" "}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 text-foreground"
+                          onClick={() => void refreshBrowserAuto()}
+                        >
+                          refresh
+                        </button>{" "}
+                        to grant access — macOS asks once per browser.
+                      </div>
+                    ) : (
+                      <div
+                        className="rounded-xl overflow-hidden"
+                        style={{ background: "hsl(var(--surface-3))" }}
+                      >
+                        {browserAuto.map((b, i) => (
+                          <div
+                            key={b.app_key}
+                            className="flex items-center gap-3 px-4 py-2.5"
+                            style={i > 0 ? { borderTop: "1px solid hsl(var(--surface-4))" } : undefined}
+                          >
+                            <span className="text-[12px] text-foreground flex-1 min-w-0 truncate">
+                              {b.name}
+                            </span>
+                            {b.status === "granted" ? (
+                              <span
+                                className="text-[11px] font-medium"
+                                style={{ color: "hsl(152 60% 50%)" }}
+                              >
+                                Granted
+                              </span>
+                            ) : b.status === "denied" ? (
+                              <button
+                                type="button"
+                                className="text-[11px] font-medium px-2.5 py-1 rounded-lg"
+                                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+                                onClick={() =>
+                                  void openExternal(
+                                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+                                  )
+                                }
+                              >
+                                Denied — open Settings
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="text-[11px] font-medium px-2.5 py-1 rounded-lg"
+                                style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                                onClick={() =>
+                                  void triggerBrowserAutomation(b.app_key).then(refreshBrowserAuto)
+                                }
+                              >
+                                Grant
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
 

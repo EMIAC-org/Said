@@ -1,7 +1,10 @@
 //! POST /v1/metering/report
 //!
 //! Receives aggregate usage counts from the local backend daemon.
-//! No user content is sent — only counts and dates.
+//! No user content is sent to THIS endpoint — only counts and dates. (Transcript
+//! text is persisted separately, via /v1/runtime/history/sync → the
+//! `runtime_history_items` table; don't read this line as a global "server stores
+//! no content" claim.)
 //!
 //! Body: { "events": [{ "date": "YYYY-MM-DD", "polish_count": n, "word_count": n, "model": "fast" }] }
 

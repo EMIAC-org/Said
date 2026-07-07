@@ -2,6 +2,7 @@
 
 pub mod alias;
 pub mod alias_safety;
+pub mod bucket;
 pub mod store;
 pub mod updater;
 
@@ -67,12 +68,238 @@ impl CachedRuntimeProfile {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct AppBucketCacheKey {
+    pub app_key: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CachedAppBucket {
+    pub bucket: bucket::Bucket,
+    pub source: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BucketProfileCacheKey {
+    pub account_id: Uuid,
+    pub org_scope: Uuid,
+    pub bucket_key: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CachedBucketProfile {
+    pub profile_markdown: String,
+    pub version: i64,
+    pub status: String,
+    /// User-chosen output-language override for this bucket (None = inherit).
+    pub output_language_override: Option<String>,
+}
+
+impl CachedBucketProfile {
+    pub fn from_row(row: &bucket::BucketProfileRow) -> Self {
+        let profile_markdown = bucket::Bucket::from_key(&row.bucket_key)
+            .map(|bucket| bucket::render_bucket_overlay_markdown(bucket, &row.profile_json))
+            .filter(|markdown| !markdown.trim().is_empty())
+            .unwrap_or_default();
+        Self {
+            // Runtime never trusts stale DB free-text bucket prose. The DB row
+            // stores the knob JSON; prompt text is always rendered by our
+            // deterministic renderer so old model-authored overlays become empty.
+            profile_markdown,
+            version: row.version,
+            status: row.status.clone(),
+            output_language_override: bucket::normalize_output_language_override(
+                row.output_language_override.as_deref(),
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct PromptProfileContextCacheKey {
+    pub account_id: Uuid,
+    pub org_scope: Uuid,
+    pub app_key: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CachedPromptProfileContext {
+    pub markdown: String,
+    pub profile_version: Option<i64>,
+    pub bucket_key: Option<String>,
+    pub bucket_source: Option<&'static str>,
+    /// Rendered `## CONTEXT` domain line injected into the polish prompt.
+    pub domain_context: String,
+    /// The learned top domains (≤3, weight-sorted) that drove `domain_context`.
+    pub domains: Vec<String>,
+    /// How the domain line was derived: "classified" (learned domains present),
+    /// "coding_bucket_seed" (no domains but a coding app), or "generic_default".
+    pub domain_source: &'static str,
+    /// Per-bucket output-language override for the active app (None = inherit).
+    pub language_override: Option<String>,
+}
+
+impl CachedPromptProfileContext {
+    pub fn profile_chars(&self) -> usize {
+        self.markdown.chars().count()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PromptProfileContext {
+    pub markdown: String,
+    pub profile_version: Option<i64>,
+    pub cache_hit: bool,
+    pub global_profile_cache_hit: bool,
+    pub app_bucket_cache_hit: bool,
+    pub bucket_profile_cache_hit: bool,
+    pub bucket_key: Option<String>,
+    pub bucket_source: Option<&'static str>,
+    pub domain_context: String,
+    pub domains: Vec<String>,
+    pub domain_source: &'static str,
+    pub language_override: Option<String>,
+}
+
+impl PromptProfileContext {
+    pub fn profile_chars(&self) -> usize {
+        self.markdown.chars().count()
+    }
+
+    fn from_cached(cached: CachedPromptProfileContext, cache_hit: bool) -> Self {
+        Self {
+            markdown: cached.markdown,
+            profile_version: cached.profile_version,
+            cache_hit,
+            global_profile_cache_hit: cache_hit,
+            app_bucket_cache_hit: cache_hit,
+            bucket_profile_cache_hit: cache_hit,
+            bucket_key: cached.bucket_key,
+            bucket_source: cached.bucket_source,
+            domain_context: cached.domain_context,
+            domains: cached.domains,
+            domain_source: cached.domain_source,
+            language_override: cached.language_override,
+        }
+    }
+}
+
+/// Confidence floor for a learned domain to be asserted as the user's domain in
+/// the polish prompt. A single stray mention (low weight) must not flip the
+/// prior; below the floor the domain is ignored and we stay generic.
+const DOMAIN_MIN_WEIGHT: f64 = 0.3;
+
+/// Extract the user's top domains from the global profile JSON: weight-sorted
+/// descending, confidence-gated by [`DOMAIN_MIN_WEIGHT`], de-duplicated, capped
+/// at `max`. Weightless entries default to 0.5 so older rows still surface.
+pub fn top_domains(profile_json: &Value, max: usize) -> Vec<String> {
+    let Some(arr) = profile_json.get("domains").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut scored: Vec<(String, f64)> = arr
+        .iter()
+        .filter_map(|d| {
+            let name = d.get("name").and_then(|n| n.as_str())?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let weight = d.get("weight").and_then(|w| w.as_f64()).unwrap_or(0.5);
+            Some((name.to_string(), weight))
+        })
+        .filter(|(_, w)| *w >= DOMAIN_MIN_WEIGHT)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut seen = std::collections::HashSet::new();
+    scored
+        .into_iter()
+        .filter(|(name, _)| seen.insert(name.to_lowercase()))
+        .take(max)
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// Build the dynamic `## CONTEXT` domain line for this run, plus the top domains
+/// used and a source tag for admin telemetry.
+///
+/// - Learned domains present -> "classified" (strong per-user prior).
+/// - No domains but a Coding app bucket -> "coding_bucket_seed" (coding clause,
+///   no invented domain list).
+/// - Otherwise -> "generic_default" (locale-only, unbiased cold start).
+fn compute_domain_context(
+    profile_json: Option<&Value>,
+    bucket: Option<bucket::Bucket>,
+) -> (String, Vec<String>, &'static str) {
+    let domains = profile_json.map(|j| top_domains(j, 3)).unwrap_or_default();
+    let bucket_coding = bucket == Some(bucket::Bucket::Coding);
+    let domain_refs: Vec<&str> = domains.iter().map(String::as_str).collect();
+    let context = said_core::polish::prompt::render_domain_context(&domain_refs, bucket_coding);
+    let source = if !domains.is_empty() {
+        "classified"
+    } else if bucket_coding {
+        "coding_bucket_seed"
+    } else {
+        "generic_default"
+    };
+    (context, domains, source)
+}
+
 pub fn resolve_org_scope(tenant: &TenantContext) -> Uuid {
     store::resolve_org_scope(tenant.active_org_id)
 }
 
 pub fn invalidate_profile_cache(state: &AppState, key: &ProfileCacheKey) {
     state.profile_cache.invalidate(key);
+}
+
+pub fn invalidate_profile_scope_caches(state: &AppState, account_id: Uuid, org_scope: Uuid) {
+    let global_scope = alias_safety::global_org_scope();
+    if org_scope == global_scope {
+        state
+            .profile_cache
+            .invalidate_where(|key| key.account_id == account_id);
+        state
+            .prompt_profile_context_cache
+            .invalidate_where(|key| key.account_id == account_id);
+    } else {
+        state.profile_cache.invalidate(&ProfileCacheKey {
+            account_id,
+            org_scope,
+        });
+        state
+            .prompt_profile_context_cache
+            .invalidate_where(|key| key.account_id == account_id && key.org_scope == org_scope);
+    }
+}
+
+pub fn invalidate_bucket_profile_cache(
+    state: &AppState,
+    account_id: Uuid,
+    org_scope: Uuid,
+    bucket: bucket::Bucket,
+) {
+    let bucket_key = bucket.as_key().to_string();
+    state
+        .bucket_profile_cache
+        .invalidate(&BucketProfileCacheKey {
+            account_id,
+            org_scope,
+            bucket_key: bucket_key.clone(),
+        });
+    state
+        .prompt_profile_context_cache
+        .invalidate_where(|key| key.account_id == account_id && key.org_scope == org_scope);
+}
+
+pub fn invalidate_app_bucket_cache(state: &AppState, app_key: &str) {
+    let Some(app_key) = normalize_app_key(app_key) else {
+        return;
+    };
+    state.app_bucket_cache.invalidate(&AppBucketCacheKey {
+        app_key: app_key.clone(),
+    });
+    state
+        .prompt_profile_context_cache
+        .invalidate_where(|key| key.app_key.as_deref() == Some(app_key.as_str()));
 }
 
 pub async fn load_profile_cached(
@@ -108,20 +335,168 @@ pub async fn load_profile_cached_for_scope(
     account_id: Uuid,
     org_scope: Uuid,
 ) -> Result<Option<CachedRuntimeProfile>, sqlx::Error> {
+    load_profile_cached_for_scope_with_hit(state, account_id, org_scope)
+        .await
+        .map(|(profile, _)| profile)
+}
+
+pub async fn load_profile_cached_for_scope_with_hit(
+    state: &AppState,
+    account_id: Uuid,
+    org_scope: Uuid,
+) -> Result<(Option<CachedRuntimeProfile>, bool), sqlx::Error> {
     let key = ProfileCacheKey {
         account_id,
         org_scope,
     };
     if let Some(hit) = state.profile_cache.get(&key) {
-        return Ok(Some(hit));
+        return Ok((Some(hit), true));
     }
     let row = store::get_profile_with_fallback(&state.db, account_id, org_scope).await?;
     let Some(row) = row else {
-        return Ok(None);
+        return Ok((None, false));
     };
     let cached = CachedRuntimeProfile::from_row(&row);
     state.profile_cache.insert(key, cached.clone());
-    Ok(Some(cached))
+    Ok((Some(cached), false))
+}
+
+pub async fn resolve_bucket_cached(state: &AppState, app_key: &str) -> (CachedAppBucket, bool) {
+    let Some(app_key) = normalize_app_key(app_key) else {
+        return (
+            CachedAppBucket {
+                bucket: bucket::Bucket::Default,
+                source: "default",
+            },
+            false,
+        );
+    };
+    let key = AppBucketCacheKey {
+        app_key: app_key.clone(),
+    };
+    if let Some(hit) = state.app_bucket_cache.get(&key) {
+        return (hit, true);
+    }
+    let (bucket, source) = bucket::resolve_bucket_with_source(&state.db, &app_key).await;
+    let cached = CachedAppBucket { bucket, source };
+    state.app_bucket_cache.insert(key, cached.clone());
+    (cached, false)
+}
+
+pub async fn load_bucket_profile_cached(
+    state: &AppState,
+    account_id: Uuid,
+    org_scope: Uuid,
+    bucket: bucket::Bucket,
+) -> Result<(Option<CachedBucketProfile>, bool), sqlx::Error> {
+    let key = BucketProfileCacheKey {
+        account_id,
+        org_scope,
+        bucket_key: bucket.as_key().to_string(),
+    };
+    if let Some(hit) = state.bucket_profile_cache.get(&key) {
+        return Ok((hit, true));
+    }
+    let row = bucket::get_bucket_profile(&state.db, account_id, org_scope, bucket).await?;
+    let cached = row.as_ref().map(CachedBucketProfile::from_row);
+    state.bucket_profile_cache.insert(key, cached.clone());
+    Ok((cached, false))
+}
+
+pub async fn load_prompt_profile_context_cached(
+    state: &AppState,
+    account_id: Uuid,
+    org_scope: Uuid,
+    target_app: Option<&str>,
+) -> PromptProfileContext {
+    let app_key = target_app.and_then(normalize_app_key);
+    let context_key = PromptProfileContextCacheKey {
+        account_id,
+        org_scope,
+        app_key: app_key.clone(),
+    };
+    if let Some(hit) = state.prompt_profile_context_cache.get(&context_key) {
+        return PromptProfileContext::from_cached(hit, true);
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut profile_version = None;
+    let mut global_profile_cache_hit = false;
+    let mut profile_json: Option<Value> = None;
+    if let Ok((Some(profile), hit)) =
+        load_profile_cached_for_scope_with_hit(state, account_id, org_scope).await
+    {
+        global_profile_cache_hit = hit;
+        profile_version = Some(profile.version);
+        profile_json = Some(profile.profile_json.clone());
+        if !profile.profile_markdown.trim().is_empty() {
+            parts.push(profile.profile_markdown);
+        }
+    }
+
+    let mut app_bucket_cache_hit = false;
+    let mut bucket_profile_cache_hit = false;
+    let mut bucket_key = None;
+    let mut bucket_source = None;
+    let mut resolved_bucket = None;
+    let mut language_override = None;
+    if let Some(app_key) = app_key.as_deref() {
+        let (app_bucket, app_hit) = resolve_bucket_cached(state, app_key).await;
+        app_bucket_cache_hit = app_hit;
+        bucket_key = Some(app_bucket.bucket.as_key().to_string());
+        bucket_source = Some(app_bucket.source);
+        resolved_bucket = Some(app_bucket.bucket);
+        if let Ok((Some(overlay), bucket_hit)) =
+            load_bucket_profile_cached(state, account_id, org_scope, app_bucket.bucket).await
+        {
+            bucket_profile_cache_hit = bucket_hit;
+            language_override = overlay.output_language_override.clone();
+            if !overlay.profile_markdown.trim().is_empty() {
+                parts.push(overlay.profile_markdown);
+            }
+        }
+    }
+
+    let (domain_context, domains, domain_source) =
+        compute_domain_context(profile_json.as_ref(), resolved_bucket);
+
+    let cached = CachedPromptProfileContext {
+        markdown: parts.join("\n\n"),
+        profile_version,
+        bucket_key,
+        bucket_source,
+        domain_context,
+        domains,
+        domain_source,
+        language_override,
+    };
+    state
+        .prompt_profile_context_cache
+        .insert(context_key, cached.clone());
+
+    PromptProfileContext {
+        markdown: cached.markdown,
+        profile_version: cached.profile_version,
+        cache_hit: false,
+        global_profile_cache_hit,
+        app_bucket_cache_hit,
+        bucket_profile_cache_hit,
+        bucket_key: cached.bucket_key,
+        bucket_source: cached.bucket_source,
+        domain_context: cached.domain_context,
+        domains: cached.domains,
+        domain_source: cached.domain_source,
+        language_override: cached.language_override,
+    }
+}
+
+fn normalize_app_key(app_key: &str) -> Option<String> {
+    let app_key = app_key.trim().to_lowercase();
+    if app_key.is_empty() {
+        None
+    } else {
+        Some(app_key)
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +514,29 @@ mod tests {
     #[test]
     fn common_alias_guard_blocks_kaam() {
         assert!(is_common_alias_source("kaam"));
+    }
+
+    #[test]
+    fn top_domains_sorts_by_weight_and_gates_low_confidence() {
+        use serde_json::json;
+        let profile = json!({
+            "domains": [
+                { "name": "sales", "weight": 0.4 },
+                { "name": "finance", "weight": 0.9 },
+                { "name": "gardening", "weight": 0.1 },   // below floor -> dropped
+                { "name": "logistics", "weight": 0.6 },
+                { "name": "hr", "weight": 0.5 },
+            ]
+        });
+        let got = super::top_domains(&profile, 3);
+        // Weight-sorted, capped at 3, low-confidence "gardening" excluded.
+        assert_eq!(got, vec!["finance", "logistics", "hr"]);
+    }
+
+    #[test]
+    fn top_domains_empty_without_domains_field() {
+        use serde_json::json;
+        assert!(super::top_domains(&json!({}), 3).is_empty());
+        assert!(super::top_domains(&json!({ "domains": [] }), 3).is_empty());
     }
 }

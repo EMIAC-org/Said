@@ -56,6 +56,14 @@ pub struct DesktopPrefs {
     /// Unlocks experimental polish model picker in Settings → Models.
     #[serde(default)]
     pub beta_mode: bool,
+
+    /// Opt-in: when dictating into a browser, capture the active tab's *host*
+    /// (e.g. `mail.google.com`, never the full URL) for site-level context.
+    /// Off by default — reading the tab URL triggers a macOS Automation prompt
+    /// and records browsing domains, so it's strictly opt-in and on-device.
+    /// Read synchronously by the recording pipeline before each capture.
+    #[serde(default)]
+    pub browser_context_enabled: bool,
 }
 
 fn default_channel() -> String {
@@ -70,6 +78,7 @@ impl Default for DesktopPrefs {
             message_polish_mode: false,
             launch_at_login: false,
             beta_mode: false,
+            browser_context_enabled: false,
         }
     }
 }
@@ -148,6 +157,7 @@ mod tests {
             message_polish_mode: true,
             launch_at_login: true,
             beta_mode: true,
+            browser_context_enabled: true,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
@@ -156,5 +166,6 @@ mod tests {
         assert!(back.message_polish_mode);
         assert!(back.launch_at_login);
         assert!(back.beta_mode);
+        assert!(back.browser_context_enabled);
     }
 }

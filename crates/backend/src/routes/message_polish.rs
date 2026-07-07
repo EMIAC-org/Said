@@ -58,7 +58,7 @@ pub async fn run_server_message_polish(
         .enterprise_server_url
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or("https://airnote.emiactech.com")
+        .unwrap_or(said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL)
         .to_string();
 
     let req = ServerMessagePolishRequest {

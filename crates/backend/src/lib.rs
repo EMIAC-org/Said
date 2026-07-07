@@ -361,6 +361,10 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/vocabulary/terms", get(routes::vocabulary::list_terms))
         .route(
+            "/v1/vocabulary/aliases",
+            get(routes::vocabulary::list_aliases),
+        )
+        .route(
             "/v1/vocabulary/all",
             axum::routing::delete(routes::vocabulary::delete_all),
         )
@@ -375,6 +379,9 @@ pub fn router_with_state(state: AppState) -> Router {
             post(routes::vocabulary::toggle_star),
         )
         .route("/v1/history", get(routes::history::list))
+        .route("/v1/history/apps", get(routes::history::app_usage))
+        .route("/v1/history/sites", get(routes::history::site_usage))
+        .route("/v1/site-context", post(routes::history::record_site))
         .route(
             "/v1/voice-runs/latest-failed",
             get(routes::voice_runs::latest_failed),
@@ -398,23 +405,6 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/preferences", get(routes::prefs::get_prefs))
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
         .route("/v1/polish/models", get(routes::polish_models::list_models))
-        .route("/v1/prompts/voice", get(routes::prompts::get_voice_prompt))
-        .route(
-            "/v1/prompts/voice/draft",
-            patch(routes::prompts::save_voice_prompt_draft),
-        )
-        .route(
-            "/v1/prompts/voice/apply",
-            post(routes::prompts::apply_voice_prompt_draft),
-        )
-        .route(
-            "/v1/prompts/voice/reset",
-            post(routes::prompts::reset_voice_prompt),
-        )
-        .route(
-            "/v1/prompts/voice/test",
-            post(routes::prompts::test_voice_prompt),
-        )
         .route("/v1/corrections", get(routes::prefs::get_corrections))
         .route("/v1/stt/bias", get(routes::stt::get_bias))
         .route("/v1/tier2/status", get(routes::tier2::status))
@@ -423,6 +413,10 @@ pub fn router_with_state(state: AppState) -> Router {
             patch(routes::telemetry::patch_run),
         )
         .route("/v1/telemetry/flush", post(routes::telemetry::flush))
+        .route(
+            "/v1/observability/dictation/:recording_id/trace",
+            post(routes::telemetry::patch_dictation_trace),
+        )
         // Cloud auth bridge — store/clear cloud token, query cloud status
         .route(
             "/v1/cloud/token",

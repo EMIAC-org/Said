@@ -11,6 +11,7 @@ import {
   Wifi,
   LogOut,
   Loader2,
+  ExternalLink,
   X,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
@@ -24,7 +25,17 @@ import {
   loadSavedAuthMode,
 } from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
-import { getPreferences, invoke, patchPreferences } from "@/lib/invoke";
+import {
+  getPreferences, invoke, patchPreferences,
+  getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
+} from "@/lib/invoke";
+import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
+import { ReclaimOldModelsRow, type ReclaimResult } from "@/components/ReclaimOldModelsRow";
+import { CopyableError, describeError } from "@/components/CopyableError";
+import { friendlyError } from "@/lib/friendlyError";
+import { ErrorNotice } from "./ErrorNotice";
+import { HotkeyPicker } from "@/components/HotkeyPicker";
+import { hotkeyDisplay, hotkeyMode, type Platform } from "@/lib/hotkeys";
 import {
   clearOnboardingProgress,
   computeResumeProgress,
@@ -46,6 +57,9 @@ interface Props {
   onAccessibility: () => void;
   onInputMonitoring: () => void;
   onFinish: () => void;
+  /** Re-read the permission snapshot (used to poll while on the permissions step
+   *  so a grant made in System Settings is picked up without a window refocus). */
+  onRefreshPermissions?: () => void;
   /** When true, user must connect workspace before continuing setup. */
   enterpriseRequired?: boolean;
   /** Called when workspace OAuth completes. */
@@ -59,11 +73,6 @@ interface Props {
   /** Called once the local dictation model is installed. */
   onLocalModelReady?: () => void;
 }
-
-// The one on-device dictation model (Oriserve Hinglish GGML, ~148 MB). The Silero
-// VAD is bundled with the app and auto-fetched after this download, so onboarding
-// only ever surfaces this single model.
-const DICTATION_MODEL_NAME = "ggml-oriserve-hinglish-fp16.bin";
 
 interface DictationModelStatus {
   installed: boolean;
@@ -96,22 +105,6 @@ function visibleStepsFor(): Step[] {
   return [...STEPS];
 }
 
-type HotkeyMode = "hold" | "toggle";
-
-/** Display label for a record-hotkey id, platform-aware. */
-function hotkeyLabelFor(key: string, isWindows: boolean): string {
-  if (key === "fn") return "Fn / Globe";
-  if (key === "right_option") return isWindows ? "Right Alt" : "Right Option";
-  return "Caps Lock";
-}
-
-/** How the key actually behaves at runtime (must mirror crates/hotkey):
- *  macOS Caps Lock is a LOCKING key → tap to start, tap again to stop (toggle).
- *  Fn / Right Option, and every Windows key (incl. the hook-suppressed Caps
- *  Lock), are momentary → push-to-talk (hold while speaking, release to send). */
-function hotkeyMode(key: string, isWindows: boolean): HotkeyMode {
-  return key === "caps_lock" && !isWindows ? "toggle" : "hold";
-}
 
 // ── Main component ─────────────────────────────────────────────────────────
 
@@ -121,6 +114,7 @@ export function OnboardingFlow({
   onAccessibility,
   onInputMonitoring,
   onFinish,
+  onRefreshPermissions,
   enterpriseRequired = false,
   onEnterpriseConnected,
   workspaceOnly = false,
@@ -132,10 +126,20 @@ export function OnboardingFlow({
   const [keySaving, setKeySaving] = useState(false);
   const [keyError, setKeyError] = useState("");
   const [dictationTried, setDictationTried] = useState(false);
+  // Mirror of dictationTried readable inside timers/listeners without re-subscribing.
+  const dictationTriedRef = useRef(false);
   const [dictationModel, setDictationModel] = useState<DictationModelStatus | null>(null);
   const [dictationDownload, setDictationDownload] = useState<DictationDownloadProgress | null>(null);
   const [dictationBusy, setDictationBusy] = useState(false);
   const [dictationError, setDictationError] = useState("");
+  // Old-model cleanup (only offered once the new model is verified installed).
+  const [reclaiming, setReclaiming] = useState(false);
+  const [reclaimResult, setReclaimResult] = useState<ReclaimResult | null>(null);
+  const [reclaimError, setReclaimError] = useState("");
+  // Live "Try it" feedback so a failed first dictation is never a silent empty box.
+  const [testError, setTestError] = useState("");
+  const [testPhase, setTestPhase] = useState<"idle" | "recording" | "processing">("idle");
+  const [testNoAudio, setTestNoAudio] = useState(false);
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
   const [userNavigatedManually, setUserNavigatedManually] = useState(false);
   const resumeSynced = useRef(false);
@@ -165,6 +169,7 @@ export function OnboardingFlow({
   const imGranted = snapshot?.input_monitoring_granted ?? false;
   const isWindows = snapshot?.platform === "windows";
   const isMac = snapshot?.platform === "macos";
+  const hkPlatform: Platform = isWindows ? "windows" : "macos";
 
   const [step, setStep] = useState<Step>(() => progress.currentStep);
 
@@ -192,7 +197,7 @@ export function OnboardingFlow({
 
   const refreshDictationModel = useCallback(async () => {
     try {
-      const status = await invoke<DictationModelStatus>("dictation_model_status");
+      const status = await invoke<DictationModelStatus>("apex_model_status");
       setDictationModel(status);
       if (status.installed) onLocalModelReady?.();
       return status;
@@ -209,9 +214,9 @@ export function OnboardingFlow({
   useEffect(() => {
     const unlistenP = listen<DictationDownloadProgress>("meeting-model-download", (event) => {
       const payload = event.payload;
-      // The event is shared across models (dictation + VAD); only react to the
-      // dictation model so VAD's silent auto-fetch never shows in onboarding.
-      if (payload.name !== DICTATION_MODEL_NAME) return;
+      // The event is shared across models (new model + VAD); only react to the
+      // new model so VAD's silent auto-fetch never shows in onboarding.
+      if (payload.name !== NEW_MODEL_FILE) return;
       if (payload.status === "downloading") {
         setDictationDownload(payload);
         setDictationError("");
@@ -222,7 +227,7 @@ export function OnboardingFlow({
         void refreshDictationModel();
       }
       if (payload.status === "error") {
-        setDictationError(payload.error || "Model download failed.");
+        setDictationError(friendlyError(payload.error, "Model download failed."));
       }
     });
     return () => {
@@ -441,6 +446,59 @@ export function OnboardingFlow({
     userNavigatedManually,
   ]);
 
+  // Poll the permission snapshot every 3 s while the user is on the permissions
+  // step and something is still ungranted. macOS grants made in System Settings
+  // otherwise only surface on a window refocus — this catches them without one,
+  // so the user never sits on "Waiting for grants…" after actually granting.
+  useEffect(() => {
+    if (step !== "permissions" || permsReady || !onRefreshPermissions) return;
+    const id = setInterval(() => onRefreshPermissions(), 3000);
+    return () => clearInterval(id);
+  }, [step, permsReady, onRefreshPermissions]);
+
+  // "Try it" live feedback. The polished text is typed straight into the focused
+  // textarea (that's the real pipeline confirmation → `dictationTried`), but a
+  // failure — mic silence, empty STT, no internet on cloud — would otherwise be a
+  // silent empty box. Surface phase + errors so the user always knows what
+  // happened. Only active on the test step.
+  useEffect(() => {
+    if (step !== "test") return;
+    let noAudioTimer: ReturnType<typeof setTimeout> | null = null;
+    const unlistenErr = listen<{ message?: string }>("voice-error", (e) => {
+      if (noAudioTimer) clearTimeout(noAudioTimer);
+      setTestNoAudio(false);
+      setTestPhase("idle");
+      setTestError(friendlyError(e.payload?.message, "That didn’t go through. Try again."));
+    });
+    const unlistenState = listen<{ state?: string }>("app-state", (e) => {
+      const s = e.payload?.state;
+      if (s === "recording") {
+        setTestError("");
+        setTestNoAudio(false);
+        setTestPhase("recording");
+      } else if (s === "processing") {
+        setTestPhase("processing");
+      } else {
+        setTestPhase("idle");
+      }
+    });
+    // When a capture finishes but nothing lands in the box shortly after, nudge
+    // the user instead of leaving them staring at an empty field.
+    const unlistenDone = listen("voice-done", () => {
+      setTestPhase("idle");
+      if (noAudioTimer) clearTimeout(noAudioTimer);
+      noAudioTimer = setTimeout(() => {
+        if (!dictationTriedRef.current) setTestNoAudio(true);
+      }, 3500);
+    });
+    return () => {
+      if (noAudioTimer) clearTimeout(noAudioTimer);
+      void unlistenErr.then((fn) => fn());
+      void unlistenState.then((fn) => fn());
+      void unlistenDone.then((fn) => fn());
+    };
+  }, [step]);
+
   // No API keys are collected anymore — they're bundled into the build. This
   // step records which speech engine the user wants.
   const chooseCloudEngine = useCallback(async () => {
@@ -457,8 +515,8 @@ export function OnboardingFlow({
       setPrefs(updated);
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setKeyError(message || "Couldn't save your choice. Try again.");
+      console.error("[onboarding] chooseCloudEngine (Use cloud) failed:", e);
+      setKeyError(describeError(e) || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
@@ -483,8 +541,12 @@ export function OnboardingFlow({
       onLocalModelReady?.();
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setKeyError(message || "Couldn't save your choice. Try again.");
+      const detail = describeError(e);
+      // Full detail to the console/log AND to the visible copyable box, so a
+      // failure on another user's Mac (e.g. the sidecar PATCH /v1/preferences
+      // being unreachable) is exactly diagnosable instead of a dead button.
+      console.error("[onboarding] chooseLocalEngine (Use AirNote Native) failed:", e);
+      setKeyError(detail || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
@@ -495,33 +557,45 @@ export function OnboardingFlow({
     setDictationError("");
     setKeyError("");
     try {
-      await invoke("download_dictation_model");
+      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
       const status = await refreshDictationModel();
       if (status?.installed) onLocalModelReady?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg !== "cancelled") setDictationError(msg);
+      if (msg !== "cancelled") setDictationError(friendlyError(msg));
     } finally {
       setDictationBusy(false);
     }
   }, [onLocalModelReady, refreshDictationModel]);
 
   const handleDictationCancel = useCallback(async () => {
-    await invoke("meeting_cancel_model_download", { name: DICTATION_MODEL_NAME }).catch(() => {});
+    await invoke("meeting_cancel_model_download", { name: NEW_MODEL_FILE }).catch(() => {});
     setDictationDownload(null);
   }, []);
 
-  const handleHotkeySelect = useCallback(async (key: string) => {
-    const updated = await patchPreferences({ record_hotkey: key }, { throwOnError: true });
-    // Reflect the choice in local state so the next step ("Try it") shows the
-    // key the user actually picked (not the stale default).
+  // Reclaim old-model disk. Gated on the new model being installed (UI-side) and
+  // additionally guarded backend-side — never deletes the old model before the
+  // new one is verified. Best-effort: a failure leaves everything intact.
+  const handleReclaimOldModels = useCallback(async () => {
+    setReclaiming(true);
+    setReclaimError("");
+    try {
+      const result = await invoke<ReclaimResult>("reclaim_old_models");
+      setReclaimResult(result);
+    } catch (e) {
+      setReclaimError(friendlyError(e));
+    } finally {
+      setReclaiming(false);
+    }
+  }, []);
+
+  // Persist the picked hotkey immediately (applied live by the backend on
+  // patch). No step advance — the picker sits on the hotkey step and Continue
+  // advances. Reflected in local state so the "Try it" step shows the right key.
+  const saveHotkeyPref = useCallback(async (id: string) => {
+    const updated = await patchPreferences({ record_hotkey: id }, { throwOnError: true });
     if (updated) setPrefs(updated);
-    // Hotkey is no longer the final step — advance to the live "Try it" step,
-    // which is where onboarding actually completes (handleTestComplete). In
-    // workspaceOnly reconnect mode "test" is pre-marked done, so this is a no-op
-    // there and the existing account-driven completion is unchanged.
-    advanceToNextUndone({ hotkey: "done" });
-  }, [advanceToNextUndone]);
+  }, []);
 
   // Final step: the live dictation try-it. Completing it ends onboarding.
   const handleTestComplete = useCallback(() => {
@@ -825,9 +899,10 @@ export function OnboardingFlow({
           <PermRow
             icon={<Mic size={15} />}
             title="Microphone"
-            desc="Capture audio while you hold the hotkey."
+            desc="Capture audio while you dictate with your hotkey."
             granted={micGranted}
             onAllow={onMicrophone}
+            onOpenSettings={() => void invoke("open_microphone_settings")}
           />
           {!isWindows && (
             <PermRow
@@ -836,6 +911,7 @@ export function OnboardingFlow({
               desc="Type polished text into the focused app."
               granted={accGranted}
               onAllow={onAccessibility}
+              onOpenSettings={() => void invoke("open_accessibility_settings")}
             />
           )}
           {!isWindows && (
@@ -845,8 +921,10 @@ export function OnboardingFlow({
               desc="Hear your hotkey from any app — even when AirNote isn’t focused."
               granted={imGranted}
               onAllow={onInputMonitoring}
+              onOpenSettings={() => void invoke("open_input_monitoring_settings")}
             />
           )}
+          {!isWindows && <BrowserContextOnboardingRow />}
         </div>
 
         <div className="mt-6">
@@ -858,6 +936,12 @@ export function OnboardingFlow({
             {allGranted ? "Continue" : "Waiting for grants…"}
             {allGranted && <ArrowRight size={14} />}
           </button>
+          {!allGranted && (
+            <p className="mt-2 text-[11px] text-center" style={{ color: "hsl(var(--muted-foreground))" }}>
+              Granted already but still waiting? Use “Open Settings” above, toggle it on, and
+              switch back — AirNote re-checks automatically.
+            </p>
+          )}
         </div>
       </OnboardingShell>
     );
@@ -877,86 +961,110 @@ export function OnboardingFlow({
         step={stepIndex}
         totalSteps={totalSteps}
         eyebrow="Speech recognition"
-        title="How should AirNote hear you?"
-        subtitle={`Run speech recognition on this ${deviceName}, or in the cloud. You can switch any time in Settings.`}
-        brandTagline={`On-device keeps your voice on this ${deviceName}. Cloud is instant with nothing to download.`}
-        brandKicker="Recommended · on-device"
-        brandQuote={`The local model transcribes Hinglish right on your ${deviceName} — private, works offline, no per-use cost.`}
+        title="Choose how AirNote hears you"
+        subtitle="Two ways to transcribe your voice. Pick either — you can switch any time in Settings."
+        brandTagline="On-device for accuracy, or cloud for speed. Your call."
+        brandKicker="Your choice"
+        brandQuote={`Local runs entirely on this ${deviceName} and works offline. Cloud is instant, with nothing to download.`}
         topRight={<span>{stepLabel(step)}</span>}
         onBack={goBack}
         {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
-          {/* On-device (recommended) */}
+          {/* Option A — On-device. Neutral, equal weight with cloud. */}
           <div
             className="rounded-xl p-4"
-            style={{
-              border: "1px solid hsl(var(--primary) / 0.4)",
-              background: "hsl(var(--primary) / 0.04)",
-            }}
+            style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
           >
-            <div className="flex items-center justify-between mb-1.5">
-              <p className="text-[13px] font-semibold text-foreground">On-device</p>
-              <span
-                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
-                style={{ background: "hsl(var(--primary) / 0.15)", color: "hsl(var(--primary))" }}
-              >
-                Recommended
-              </span>
+            <div className="flex items-center justify-between mb-1.5 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
+                  style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
+                >
+                  <Cpu size={13} />
+                </span>
+                <p className="text-[13.5px] font-semibold text-foreground truncate">
+                  {NEW_MODEL_NAME}
+                </p>
+              </div>
+              <span className="text-[11px] text-muted-foreground shrink-0">On-device · better accuracy</span>
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Hinglish, transcribed on this device — offline, private, no per-use cost.
+              Best Hinglish accuracy. One-time {NEW_MODEL_SIZE_HINT} download, then runs fully
+              offline on this {deviceName} — private, no per-use cost.
             </p>
             <DictationModelCard
+              modelName={NEW_MODEL_NAME}
               installed={dictationModelInstalled}
               sizeBytes={dictationModel?.size_bytes ?? 0}
+              sizeHint={NEW_MODEL_SIZE_HINT}
               progressPct={dictationDownloadPct ?? null}
               busy={dictationBusy}
               error={dictationError}
               onDownload={() => void handleDictationDownload()}
               onCancel={() => void handleDictationCancel()}
             />
-            <button
-              onClick={() => void chooseLocalEngine()}
-              disabled={keySaving || !dictationModelInstalled}
-              className="btn-primary btn-lg w-full mt-3"
-            >
-              {keySaving
-                ? "Saving…"
-                : dictationModelInstalled
-                  ? "Use on-device model"
-                  : "Download to use on-device"}
-              {!keySaving && dictationModelInstalled && <ArrowRight size={14} />}
-            </button>
+
+            {dictationModelInstalled && (
+              <ReclaimOldModelsRow
+                reclaiming={reclaiming}
+                result={reclaimResult}
+                error={reclaimError}
+                onReclaim={() => void handleReclaimOldModels()}
+              />
+            )}
+
+            {dictationModelInstalled && (
+              <button
+                onClick={() => void chooseLocalEngine()}
+                disabled={keySaving}
+                className="btn-primary btn-lg w-full mt-3"
+              >
+                {keySaving ? "Saving…" : `Use ${NEW_MODEL_NAME}`}
+                {!keySaving && <ArrowRight size={14} />}
+              </button>
+            )}
           </div>
 
-          {/* Cloud */}
+          {/* Option B — Cloud. Neutral, equal weight with on-device. */}
           <div
             className="rounded-xl p-4"
             style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
           >
-            <p className="text-[13px] font-semibold text-foreground mb-1.5">Cloud (Deepgram)</p>
+            <div className="flex items-center justify-between mb-1.5 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
+                  style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
+                >
+                  <Wifi size={13} />
+                </span>
+                <p className="text-[13.5px] font-semibold text-foreground truncate">
+                  Cloud Whisper
+                </p>
+              </div>
+              <span className="text-[11px] text-muted-foreground shrink-0">Fast · lightweight</span>
+            </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Instant — nothing to download. Needs an internet connection while you dictate.
+              Whisper Large V3 Turbo, streamed from the cloud. Lightweight with decent quality for
+              most tasks. Nothing to download; needs internet while you dictate.
             </p>
             <button
               onClick={() => void chooseCloudEngine()}
               disabled={keySaving}
-              className="w-full rounded-xl px-4 py-2.5 text-[13px] font-medium border transition-colors disabled:opacity-50"
-              style={{
-                borderColor: "hsl(var(--surface-3))",
-                background: "hsl(var(--surface-3))",
-                color: "hsl(var(--foreground))",
-              }}
+              className="btn-primary btn-lg w-full"
             >
-              {keySaving ? "Saving…" : "Use cloud instead"}
+              {keySaving ? "Saving…" : "Use Cloud Whisper"}
+              {!keySaving && <ArrowRight size={14} />}
             </button>
           </div>
 
           {keyError && (
-            <p className="text-[12px] text-center" style={{ color: "hsl(var(--destructive))" }}>
-              {keyError}
-            </p>
+            <CopyableError
+              title="Couldn't switch to AirNote Native — exact error:"
+              detail={keyError}
+            />
           )}
         </div>
       </OnboardingShell>
@@ -970,8 +1078,8 @@ export function OnboardingFlow({
   // step, required), mic is granted, and (macOS) Accessibility is granted.
   if (step === "test") {
     const hk = prefs?.record_hotkey ?? "caps_lock";
-    const hkLabel = hotkeyLabelFor(hk, isWindows);
-    const isToggle = hotkeyMode(hk, isWindows) === "toggle";
+    const hkLabel = hotkeyDisplay(hk, hkPlatform).label;
+    const isToggle = hotkeyMode(hk, hkPlatform) === "toggle";
     const trySubtitle = isToggle
       ? `Tap ${hkLabel} to start, speak, then tap again — AirNote types polished text right into the box below. This is the real thing, not a demo.`
       : `Hold ${hkLabel} and speak, then release — AirNote types polished text right into the box below. This is the real thing, not a demo.`;
@@ -993,28 +1101,56 @@ export function OnboardingFlow({
         {...navProps}
       >
         <div className="mt-7">
+          <div className="onb-try-readaloud">
+            <span className="onb-try-readaloud-label">Not sure what to say? Read this aloud</span>
+            <span className="onb-try-readaloud-text">“Kal ka demo ready hai — let’s ship it.”</span>
+          </div>
           <textarea
             autoFocus
             className="onb-try-field"
             placeholder={tryPlaceholder}
             onChange={(e) => {
-              if (e.target.value.trim()) setDictationTried(true);
+              if (e.target.value.trim()) {
+                setDictationTried(true);
+                dictationTriedRef.current = true;
+                setTestError("");
+                setTestNoAudio(false);
+              }
             }}
           />
           <div className="onb-try-hint">
             <Mic size={13} />
-            {isToggle ? (
+            {testPhase === "recording" ? (
+              <>Listening… keep speaking.</>
+            ) : testPhase === "processing" ? (
+              <>Polishing your words…</>
+            ) : isToggle ? (
               <>Tap <span className="onb-try-kbd">{hkLabel}</span> to start, tap again to send.</>
             ) : (
               <>Hold <span className="onb-try-kbd">{hkLabel}</span> and speak, then release.</>
             )}
           </div>
+          <ErrorNotice error={testError} />
+          {testNoAudio && !testError && (
+            <p className="onb-try-warn">
+              Didn’t catch anything — click into the box above, then {isToggle ? "tap" : "hold"} the
+              key and speak a little louder.
+            </p>
+          )}
         </div>
 
-        <div className="mt-6">
-          <button onClick={handleTestComplete} className="btn-primary btn-lg w-full">
-            {dictationTried ? "Perfect — finish setup" : "Finish setup"}
-            <ArrowRight size={14} />
+        <div className="mt-6 flex flex-col gap-2">
+          <button
+            onClick={handleTestComplete}
+            disabled={!dictationTried}
+            className="btn-primary btn-lg w-full"
+          >
+            {dictationTried ? "Perfect — finish setup" : "Waiting for your first words…"}
+            {dictationTried && <ArrowRight size={14} />}
+          </button>
+          {/* Escape hatch — strongly gated, never a trap (VoiceTypr "Skip for now"). */}
+          <button type="button" onClick={handleTestComplete} className="onb-skip-link">
+            Skip for now
           </button>
         </div>
       </OnboardingShell>
@@ -1023,27 +1159,8 @@ export function OnboardingFlow({
 
   // ── Step 5: Hotkey ───────────────────────────────────────────────────────
   const currentHotkey = prefs?.record_hotkey ?? "caps_lock";
-  const options: { key: string; glyph: string; label: string; desc: string }[] = [
-    {
-      key: "caps_lock",
-      glyph: "⇪",
-      label: "Caps Lock",
-      // macOS Caps Lock toggles; on Windows the hook makes it hold-to-talk.
-      desc: isWindows ? "Hold to talk — one easy key." : "Tap to start, tap again to stop.",
-    },
-    {
-      key: "right_option",
-      glyph: isWindows ? "Alt" : "⌥",
-      label: isWindows ? "Right Alt" : "Right Option",
-      desc: "Hold while you speak.",
-    },
-    ...(!isWindows
-      ? [{ key: "fn", glyph: "fn", label: "Fn / Globe", desc: "Hold to talk — the Globe key." }]
-      : []),
-  ];
-  // Reflect the actually-selected key (not a hardcoded "Caps Lock").
-  const selectedHotkeyLabel = options.find((o) => o.key === currentHotkey)?.label ?? "Caps Lock";
-  const selectedMode = hotkeyMode(currentHotkey, isWindows);
+  const selected = hotkeyDisplay(currentHotkey, hkPlatform);
+  const selectedMode = hotkeyMode(currentHotkey, hkPlatform);
 
   return (
     <OnboardingShell
@@ -1051,55 +1168,35 @@ export function OnboardingFlow({
       totalSteps={totalSteps}
       eyebrow="Hotkey"
       title="Pick your dictation key."
-      subtitle="Choose the key you’ll use to dictate. You can change it any time."
+      subtitle={
+        selectedMode === "toggle"
+          ? `Tap ${selected.label} once to start dictating, tap again to stop — no holding. Pick a modifier or Fn instead to switch to hold-to-talk. Change it any time.`
+          : `Press and hold ${selected.label} while you speak, then release. Pick Caps Lock instead to tap on and off. Change it any time.`
+      }
       brandTagline="One key to dictate. Your thumb learns it in a day."
       brandKicker="Pro tip"
       brandQuote="Most users settle on Caps Lock — it’s right under your finger."
       topRight={<span>{stepLabel(step)}</span>}
       bottomNote={
         <span>
-          {selectedMode === "toggle" ? "Tap" : "Hold"} {selectedHotkeyLabel} anywhere to dictate,
-          once setup is done
+          {selectedMode === "toggle" ? "Tap" : "Hold"} {selected.label} anywhere to dictate, once
+          setup is done
         </span>
       }
       onBack={goBack}
       {...navProps}
     >
       <div className="mt-7">
-        {options.map((opt) => {
-          const isSelected = currentHotkey === opt.key;
-          return (
-            <div
-              key={opt.key}
-              role="button"
-              tabIndex={0}
-              onClick={() => handleHotkeySelect(opt.key)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  handleHotkeySelect(opt.key);
-                }
-              }}
-              className={`onb-row selectable ${isSelected ? "selected" : ""}`}
-            >
-              <span className="key-glyph">{opt.glyph}</span>
-              <div>
-                <div className="row-title">{opt.label}</div>
-                <div className="row-desc">{opt.desc}</div>
-              </div>
-              {isSelected ? (
-                <Check size={14} style={{ color: "hsl(var(--primary))" }} />
-              ) : (
-                <ArrowRight size={14} style={{ color: "hsl(var(--muted-foreground) / 0.6)" }} />
-              )}
-            </div>
-          );
-        })}
+        <HotkeyPicker
+          value={currentHotkey}
+          onChange={(id) => void saveHotkeyPref(id)}
+          platform={hkPlatform}
+        />
       </div>
 
       <div className="mt-6">
         <button
-          onClick={() => handleHotkeySelect(currentHotkey)}
+          onClick={() => advanceToNextUndone({ hotkey: "done" })}
           className="btn-primary btn-lg w-full"
         >
           Continue
@@ -1110,31 +1207,78 @@ export function OnboardingFlow({
   );
 }
 
+// ── Browser context (optional opt-in) ──────────────────────────────────────
+// Reuses the PermRow look. "granted" is driven by the opt-in pref rather than an
+// OS check (macOS has no Automation preflight); enabling triggers the per-browser
+// Automation prompt so it's asked upfront, not mid-dictation.
+function BrowserContextOnboardingRow() {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    void getDesktopPrefs().then((p) => setEnabled(p.browser_context_enabled)).catch(() => {});
+  }, []);
+  const enable = async () => {
+    try {
+      const p = await getDesktopPrefs();
+      await setDesktopPrefs({ ...p, browser_context_enabled: true });
+      setEnabled(true);
+      void requestBrowserAutomation();
+    } catch { /* best-effort */ }
+  };
+  return (
+    <PermRow
+      icon={<Link size={15} />}
+      title="Browser context (optional)"
+      desc="Remember which website you dictate into — the domain only (e.g. mail.google.com), stored on this Mac. You can change this anytime in Settings."
+      granted={enabled}
+      onAllow={() => void enable()}
+      onOpenSettings={() => void enable()}
+    />
+  );
+}
+
 // ── Permission row ──────────────────────────────────────────────────────────
 
 function PermRow({
-  icon, title, desc, granted, onAllow,
+  icon, title, desc, granted, onAllow, onOpenSettings,
 }: {
   icon: React.ReactNode;
   title: string;
   desc: string;
   granted: boolean;
   onAllow: () => void;
+  /** Recovery: open the OS privacy pane so the user can flip the grant by hand. */
+  onOpenSettings?: () => void;
 }) {
+  const [attempted, setAttempted] = useState(false);
   return (
-    <div className="onb-row">
-      <span className="ico-wrap">{icon}</span>
-      <div>
-        <div className="row-title">{title}</div>
-        <div className="row-desc">{desc}</div>
+    <div className="onb-perm-wrap">
+      <div className="onb-row">
+        <span className="ico-wrap">{icon}</span>
+        <div>
+          <div className="row-title">{title}</div>
+          <div className="row-desc">{desc}</div>
+        </div>
+        {granted ? (
+          <span className="accent-pill" style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}>
+            Granted
+          </span>
+        ) : (
+          <button
+            onClick={() => {
+              setAttempted(true);
+              onAllow();
+            }}
+            className="btn-ghost text-[11.5px]"
+            style={{ height: 28 }}
+          >
+            Allow
+          </button>
+        )}
       </div>
-      {granted ? (
-        <span className="accent-pill" style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}>
-          Granted
-        </span>
-      ) : (
-        <button onClick={onAllow} className="btn-ghost text-[11.5px]" style={{ height: 28 }}>
-          Allow
+      {!granted && onOpenSettings && (
+        <button type="button" onClick={onOpenSettings} className="onb-perm-settings-link">
+          <ExternalLink size={11} />
+          {attempted ? "Didn’t work? Open System Settings" : "Open System Settings"}
         </button>
       )}
     </div>
@@ -1144,16 +1288,20 @@ function PermRow({
 // ── Local model setup card ───────────────────────────────────────────────────
 
 function DictationModelCard({
+  modelName,
   installed,
   sizeBytes,
+  sizeHint,
   progressPct,
   busy,
   error,
   onDownload,
   onCancel,
 }: {
+  modelName: string;
   installed: boolean;
   sizeBytes: number;
+  sizeHint: string;
   progressPct: number | null;
   busy: boolean;
   error: string;
@@ -1179,10 +1327,10 @@ function DictationModelCard({
           </span>
           <span className="text-[12.5px] font-medium truncate" style={{ color: "hsl(var(--foreground))" }}>
             {installed
-              ? `On-device model · ${sizeBytes > 0 ? formatSize(sizeBytes) : "148 MB"}`
+              ? `${modelName} · ${sizeBytes > 0 ? formatSize(sizeBytes) : sizeHint}`
               : downloading
-                ? "Downloading model…"
-                : "On-device model · ~148 MB"}
+                ? `Downloading ${modelName}…`
+                : `${modelName} · ${sizeHint}`}
           </span>
         </div>
 
@@ -1234,11 +1382,7 @@ function DictationModelCard({
         </div>
       )}
 
-      {error && (
-        <p className="text-[11.5px] mt-2" style={{ color: "hsl(var(--destructive))" }}>
-          {error}
-        </p>
-      )}
+      <ErrorNotice error={error} onRetry={onDownload} className="mt-2" />
     </div>
   );
 }

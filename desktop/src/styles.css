@@ -102,87 +102,93 @@
     --topbar-height:        48px;
   }
 
-  /* ── LIGHT — crisp gray + periwinkle accent (mirror of dark) ─ */
+  /* ── LIGHT — "Warm Paper": warm off-white floor, layered surfaces,
+        deeper indigo-periwinkle accent, shadow-driven depth. Cool accent on
+        warm paper is the contrast that reads crafted (Linear / Things), not
+        clinical. Same token keys as dark — only values change. ─────────── */
   [data-theme="light"] {
-    --background:           220 22% 93%;       /* soft gray floor */
-    --foreground:           230 13% 12%;       /* near-black text */
-    --card:                 220 28% 98%;       /* lifted panels */
-    --card-foreground:      230 13% 12%;
-    --popover:              220 28% 98%;
-    --popover-foreground:   230 13% 12%;
+    --background:           38 32% 95.5%;      /* warm paper floor */
+    --foreground:           230 20% 15%;       /* warm near-black ink */
+    --card:                 42 46% 99.2%;      /* clean warm-white card */
+    --card-foreground:      230 20% 15%;
+    --popover:              42 46% 99.2%;
+    --popover-foreground:   230 20% 15%;
 
-    --primary:              226 70% 56%;       /* deeper periwinkle for contrast on white */
+    --primary:              232 74% 59%;       /* deeper indigo — pops on paper, AA on white */
     --primary-foreground:   0 0% 100%;
 
-    --accent-violet:        226 70% 56%;
-    --accent-violet-soft:   226 70% 56% / 0.10;
+    --accent-violet:        232 74% 59%;
+    --accent-violet-soft:   232 74% 59% / 0.12;
 
-    --secondary:            220 18% 91%;
-    --secondary-foreground: 230 12% 18%;
-    --muted:                220 18% 91%;
-    --muted-foreground:     230 9% 43%;
+    --secondary:            38 22% 90%;
+    --secondary-foreground: 230 16% 22%;
+    --muted:                38 22% 90%;
+    --muted-foreground:     232 12% 42%;
 
-    --accent:               226 70% 56%;
+    --accent:               232 74% 59%;
     --accent-foreground:    0 0% 100%;
 
-    --destructive:          354 78% 50%;
+    --destructive:          356 72% 50%;
     --destructive-foreground: 0 0% 100%;
 
-    --border:               220 14% 80%;
-    --input:                220 24% 97%;
-    --ring:                 226 70% 56%;
+    --border:               36 20% 84%;
+    --input:                42 40% 98%;
+    --ring:                 232 74% 59%;
 
-    --recording:            354 78% 52%;
+    --recording:            356 72% 50%;
 
-    /* ── Surface hierarchy (light) ──────────────────────────────────── */
-    --surface-1:            220 18% 90%;       /* sidebar / rail */
-    --surface-2:            220 20% 94%;       /* page mat */
-    --surface-3:            220 28% 98%;       /* cards / content panels */
-    --surface-4:            220 15% 86%;       /* chips / icon backplates */
-    --surface-hover:        220 20% 92%;
+    /* ── Surface hierarchy — widened ladder so rail / mat / card are each
+          legibly distinct (the old 90→94→98 collapse is gone). ────────── */
+    --surface-1:            36 26% 92%;         /* sidebar / rail — deeper than the mat */
+    --surface-2:            40 30% 94.5%;       /* page mat / gutter */
+    --surface-3:            42 46% 99.2%;       /* cards / content panels */
+    --surface-4:            36 22% 88%;         /* chips / icon backplates */
+    --surface-hover:        38 26% 91.5%;
 
     /* Nearly opaque — stops macOS vibrancy dark bleed ("dhabbaa" stains) */
-    --glass-bg:             220 18% 92% / 0.98;
-    --glass-bg-strong:      220 28% 98% / 0.98;
-    --glass-stroke:         220 12% 63% / 0.18;
-    --glass-stroke-strong:  220 12% 58% / 0.24;
-    --glass-highlight:      0 0% 100% / 0.38;
+    --glass-bg:             40 30% 94% / 0.98;
+    --glass-bg-strong:      42 46% 99% / 0.98;
+    --glass-stroke:         36 24% 78% / 0.55;
+    --glass-stroke-strong:  36 22% 70% / 0.6;
+    --glass-highlight:      40 60% 100% / 0.7;
 
-    --pill-active-bg:       240 8% 14%;
+    /* Selected pill / primary CTA = the accent — NOT a black pill. */
+    --pill-active-bg:       232 74% 59%;
     --pill-active-fg:       0 0% 100%;
 
-    /* Chip colors — semantic tints stay soft in light mode */
-    --chip-mint-bg:         226 70% 56% / 0.12;
-    --chip-mint-fg:         226 70% 40%;
-    --chip-violet-bg:       226 70% 56% / 0.12;
-    --chip-violet-fg:       226 70% 40%;
-    --chip-cyan-bg:         226 70% 56% / 0.12;
-    --chip-cyan-fg:         226 70% 40%;
-    --chip-blue-bg:         226 70% 56% / 0.12;
-    --chip-blue-fg:         226 70% 40%;
-    --chip-amber-bg:        38 90% 50% / 0.16;
-    --chip-amber-fg:        28 80% 30%;
-    --chip-red-bg:          354 78% 50% / 0.13;
-    --chip-red-fg:          354 78% 38%;
-    --chip-lime-bg:         145 55% 42% / 0.12;
-    --chip-lime-fg:         145 55% 28%;
+    /* Chip colors — bolder tints so they actually register on paper */
+    --chip-mint-bg:         232 74% 59% / 0.14;
+    --chip-mint-fg:         232 60% 44%;
+    --chip-violet-bg:       232 74% 59% / 0.14;
+    --chip-violet-fg:       232 60% 44%;
+    --chip-cyan-bg:         232 74% 59% / 0.14;
+    --chip-cyan-fg:         232 60% 44%;
+    --chip-blue-bg:         232 74% 59% / 0.14;
+    --chip-blue-fg:         232 60% 44%;
+    --chip-amber-bg:        32 92% 52% / 0.18;
+    --chip-amber-fg:        26 84% 34%;
+    --chip-red-bg:          356 72% 50% / 0.14;
+    --chip-red-fg:          356 66% 40%;
+    --chip-lime-bg:         150 60% 42% / 0.16;
+    --chip-lime-fg:         150 60% 28%;
 
-    --heat-0:               220 15% 88%;
+    --heat-0:               36 22% 89%;
 
+    /* Shadows — layered, cool-tinted so warm cards visibly float. */
     --shadow-tile:
-      0 1px 0 hsl(220 12% 50% / 0.05) inset,
-      0 1px 3px hsl(220 12% 40% / 0.05),
-      0 4px 14px hsl(220 12% 40% / 0.04);
+      0 1px 0 hsl(40 60% 100% / 0.7) inset,
+      0 1px 2px hsl(232 24% 40% / 0.05),
+      0 4px 12px hsl(232 24% 40% / 0.05);
     --shadow-glass:
-      0 1px 0 hsl(0 0% 100% / 0.22) inset,
-      0 0 0 1px hsl(220 12% 60% / 0.12),
-      0 6px 20px hsl(220 12% 40% / 0.06);
+      0 1px 0 hsl(40 60% 100% / 0.7) inset,
+      0 0 0 1px hsl(36 20% 74% / 0.5),
+      0 8px 24px hsl(232 24% 40% / 0.08);
     --shadow-pop:
-      0 20px 50px hsl(220 16% 50% / 0.10);
+      0 30px 70px hsl(232 30% 35% / 0.20);
 
     --mesh-bg:
-      radial-gradient(60% 50% at 10% 0%,  hsl(226 70% 56% / 0.025) 0%, transparent 55%),
-      radial-gradient(50% 50% at 100% 100%, hsl(200 60% 48% / 0.018) 0%, transparent 60%);
+      radial-gradient(60% 50% at 10% 0%,  hsl(232 74% 59% / 0.03) 0%, transparent 55%),
+      radial-gradient(50% 50% at 100% 100%, hsl(24 82% 60% / 0.03) 0%, transparent 60%);
   }
 
   * {
@@ -213,7 +219,7 @@
     --body-overlay: hsl(240 8% 2.5% / 1);
   }
   [data-theme="light"] {
-    --body-overlay: hsl(220 22% 93% / 0.99);
+    --body-overlay: hsl(38 32% 95.5% / 0.99);
   }
 
   body {
@@ -302,20 +308,22 @@
       0 24px 60px hsl(0 0% 0% / 0.45);
   }
 
-  /* Light mode — solid surfaces, no heavy black drop shadows */
+  /* Light mode — warm layered shadows so surfaces lift off the paper. */
   [data-theme="light"] .glass {
     backdrop-filter: blur(12px) saturate(120%);
     -webkit-backdrop-filter: blur(12px) saturate(120%);
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke)),
-      0 1px 3px hsl(220 16% 50% / 0.05);
+      inset 0 1px 0 hsl(40 60% 100% / 0.6),
+      0 2px 8px hsl(232 24% 40% / 0.07);
   }
   [data-theme="light"] .glass-strong {
     backdrop-filter: blur(12px) saturate(120%);
     -webkit-backdrop-filter: blur(12px) saturate(120%);
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke-strong)),
-      0 2px 8px hsl(220 16% 50% / 0.06);
+      inset 0 1px 0 hsl(40 60% 100% / 0.7),
+      0 6px 20px hsl(232 24% 40% / 0.09);
   }
 
   /* ── Tile (card surface) — solid panel with subtle inner highlight ── */
@@ -333,8 +341,9 @@
   }
   [data-theme="light"] .tile-glass {
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.18),
-      0 1px 3px hsl(220 12% 40% / 0.06);
+      inset 0 1px 0 hsl(40 60% 100% / 0.7),
+      0 1px 2px hsl(232 24% 40% / 0.05),
+      0 4px 14px hsl(232 24% 40% / 0.06);
   }
   /* Panel — Sentinel-style: white card with subtle 1px border + soft shadow */
   .panel {
@@ -344,10 +353,13 @@
       inset 0 0 0 1px hsl(var(--border)),
       0 1px 2px hsl(220 18% 8% / 0.04);
   }
-  /* Light mode — clean border, no muddy drop shadow */
+  /* Light mode — hairline border + soft warm lift so panels float. */
   [data-theme="light"] .panel {
-    box-shadow: none;
     border: 1px solid hsl(var(--border));
+    box-shadow:
+      inset 0 1px 0 hsl(40 60% 100% / 0.6),
+      0 1px 2px hsl(232 24% 40% / 0.05),
+      0 6px 18px hsl(232 24% 40% / 0.06);
   }
   /* Main content mat (App.tsx) — elevated surface behind routed views */
   .content-mat {
@@ -359,8 +371,9 @@
   }
   [data-theme="light"] .content-mat {
     border: 1px solid hsl(var(--border));
-    /* No outer drop shadow — parent overflow clips it into a harsh dark edge */
-    box-shadow: none;
+    /* Warm inner highlight only — outer drop is clipped by the app shell, and a
+       warm inset keeps the mat reading as lifted paper without a harsh edge. */
+    box-shadow: inset 0 1px 0 hsl(40 60% 100% / 0.6);
   }
 
   /* Settings modal — portaled to body so shadow isn't clipped by app shell */
@@ -381,8 +394,8 @@
   [data-theme="light"] .settings-modal-dialog {
     border: 1px solid hsl(var(--border));
     box-shadow:
-      0 0 0 1px hsl(0 0% 100% / 0.65) inset,
-      0 24px 64px hsl(220 16% 50% / 0.14);
+      0 1px 0 hsl(40 60% 100% / 0.7) inset,
+      0 30px 70px hsl(232 30% 35% / 0.20);
   }
   /* Dark mode override — drop the visible border, restore inset highlight */
   :root:not([data-theme="light"]) .panel,
@@ -499,23 +512,24 @@
     background: hsl(0 0% 100% / 0.04);
     box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
   }
+  /* Light — primary CTA is the ACCENT (indigo), not a black pill. */
   [data-theme="light"] .btn-primary {
-    background: hsl(240 8% 14%);
-    color: hsl(0 0% 100%);
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.08),
-      0 1px 3px hsl(220 16% 50% / 0.10),
-      0 4px 12px hsl(220 16% 50% / 0.08);
+      inset 0 1px 0 hsl(0 0% 100% / 0.22),
+      0 1px 2px hsl(232 40% 30% / 0.18),
+      0 4px 12px hsl(232 40% 30% / 0.16);
   }
   [data-theme="light"] .btn-primary:hover {
-    background: hsl(240 8% 10%);
+    background: hsl(232 74% 55%);
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.10),
-      0 2px 6px hsl(220 16% 50% / 0.12),
-      0 6px 16px hsl(220 16% 50% / 0.10);
+      inset 0 1px 0 hsl(0 0% 100% / 0.26),
+      0 2px 6px hsl(232 40% 30% / 0.22),
+      0 6px 16px hsl(232 40% 30% / 0.20);
   }
   [data-theme="light"] .btn-ghost:hover {
-    background: hsl(220 16% 50% / 0.05);
+    background: hsl(36 24% 50% / 0.06);
     box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
   }
 
@@ -741,6 +755,135 @@
   .onb-try-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; padding: 4px 9px; border-radius: 999px; color: hsl(140 60% 70%); background: hsl(140 60% 50% / 0.1); box-shadow: inset 0 0 0 1px hsl(140 60% 50% / 0.2); }
   .onb-try-hint { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: hsl(var(--muted-foreground)); margin-top: 12px; }
   .onb-try-kbd { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; padding: 2px 7px; border-radius: 6px; color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.06); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)); }
+
+  /* Try-it: read-aloud prompt + failure feedback */
+  .onb-try-readaloud { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; padding: 10px 12px; border-radius: 10px; background: hsl(var(--primary) / 0.06); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.16); }
+  .onb-try-readaloud-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: hsl(var(--muted-foreground)); }
+  .onb-try-readaloud-text { font-size: 13px; color: hsl(var(--foreground)); font-weight: 500; }
+  .onb-try-error { margin-top: 10px; font-size: 11.5px; color: hsl(var(--destructive)); }
+  .onb-try-warn { margin-top: 10px; font-size: 11.5px; color: hsl(38 92% 62%); }
+
+  /* Skip / ghost text link (test step + error boundary) */
+  .onb-skip-link { align-self: center; background: none; border: none; cursor: pointer; font-size: 11.5px; color: hsl(var(--muted-foreground)); padding: 4px 8px; transition: color 0.15s ease; }
+  .onb-skip-link:hover { color: hsl(var(--foreground)); }
+
+  /* Permissions: Open-System-Settings recovery link under an ungranted row */
+  .onb-perm-wrap { display: flex; flex-direction: column; }
+  .onb-perm-settings-link { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; margin: -2px 0 8px 44px; background: none; border: none; cursor: pointer; font-size: 11px; color: hsl(var(--primary)); transition: opacity 0.15s ease; }
+  .onb-perm-settings-link:hover { opacity: 0.8; }
+
+  /* Old-model cleanup row inside the new-model card */
+  .onb-reclaim { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 10px 11px; border-radius: 10px; background: hsl(0 0% 100% / 0.025); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
+  .onb-reclaim-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .onb-reclaim-copy { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 11.5px; color: hsl(var(--muted-foreground)); }
+  .onb-reclaim-error { font-size: 11px; color: hsl(var(--destructive)); }
+  .onb-reclaim-done { flex-direction: row; align-items: center; gap: 7px; font-size: 11.5px; color: hsl(140 65% 65%); background: hsl(140 65% 50% / 0.1); box-shadow: inset 0 0 0 1px hsl(140 65% 50% / 0.2); }
+
+  /* Onboarding error boundary fallback */
+  .onb-error-screen { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: hsl(var(--background)); }
+  .onb-error-card { max-width: 380px; text-align: center; padding: 28px; border-radius: 16px; background: hsl(240 5% 6% / 0.9); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
+  .onb-error-title { font-size: 17px; font-weight: 600; color: hsl(var(--foreground)); margin-bottom: 8px; }
+  .onb-error-desc { font-size: 12.5px; line-height: 1.6; color: hsl(var(--muted-foreground)); margin-bottom: 20px; }
+  .onb-error-actions { display: flex; flex-direction: column; gap: 8px; }
+
+  /* The onboarding BRAND canvas (left aurora panel) is intentionally always
+     dark — a dark-brand / light-form split is a deliberate premium pattern.
+     Its text uses --foreground, which flips to near-black under the Warm-Paper
+     light theme → invisible on the dark aurora. Pin --foreground to its dark
+     value here so the brand copy stays light regardless of app theme. The FORM
+     side (.onb-form) and the migration/error cards are NOT pinned — they adapt
+     to the active theme via the [data-theme="light"] overrides below. */
+  .onb-brand {
+    --foreground: 240 6% 93%;
+  }
+
+  /* Forced post-update "Meet the new model" migration screen */
+  .mig-card { max-width: 440px; width: 100%; padding: 30px; border-radius: 18px; background: hsl(240 5% 6% / 0.92); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
+  .mig-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: hsl(var(--primary)); background: hsl(var(--primary) / 0.14); padding: 4px 9px; border-radius: 999px; margin-bottom: 14px; }
+  .mig-title { font-size: 19px; font-weight: 600; color: hsl(var(--foreground)); margin-bottom: 8px; }
+  .mig-desc { font-size: 12.5px; line-height: 1.65; color: hsl(var(--muted-foreground)); margin-bottom: 18px; }
+  .mig-model { border-radius: 12px; padding: 12px; background: hsl(var(--primary) / 0.05); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.25); margin-bottom: 18px; }
+  .mig-model-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .mig-model-left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .mig-model-ico { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; flex-shrink: 0; background: hsl(var(--primary)); color: white; }
+  .mig-model-name { font-size: 12.5px; font-weight: 500; color: hsl(var(--foreground)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mig-ready { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: hsl(140 65% 65%); flex-shrink: 0; }
+  .mig-bar { margin-top: 10px; height: 6px; border-radius: 999px; overflow: hidden; background: hsl(var(--surface-4)); }
+  .mig-bar > div { height: 100%; border-radius: 999px; background: hsl(var(--primary)); transition: width 0.2s ease; }
+  .mig-actions { display: flex; flex-direction: column; gap: 8px; }
+
+  /* ── Onboarding + migration under the Warm-Paper LIGHT theme ─────────
+     The brand aurora stays dark (pinned above). The form half and the
+     migration / error cards adopt the light palette; the dark-hardcoded
+     inner surfaces (inputs, rows, keycaps) are remapped to warm tokens so
+     everything stays legible on paper. Dark mode is untouched. */
+  [data-theme="light"] .onb-form {
+    background: hsl(var(--card));
+  }
+  [data-theme="light"] .mig-card,
+  [data-theme="light"] .onb-error-card {
+    background: hsl(var(--card));
+    box-shadow: inset 0 0 0 1px hsl(var(--border)), 0 18px 48px hsl(232 30% 35% / 0.14);
+  }
+  [data-theme="light"] .onb-try-field {
+    background: hsl(var(--surface-2));
+    box-shadow: inset 0 0 0 1px hsl(var(--border));
+  }
+  [data-theme="light"] .onb-try-field:focus {
+    background: hsl(var(--card));
+    box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.4), 0 0 0 3px hsl(var(--primary) / 0.08);
+  }
+  [data-theme="light"] .onb-try-kbd,
+  [data-theme="light"] .hk-keycap,
+  [data-theme="light"] .key-glyph {
+    background: hsl(var(--surface-4));
+    box-shadow: inset 0 0 0 1px hsl(var(--border));
+  }
+  [data-theme="light"] .onb-reclaim,
+  [data-theme="light"] .onb-row,
+  [data-theme="light"] .hk-capture {
+    background: hsl(var(--surface-2));
+  }
+  [data-theme="light"] .onb-row.selectable:hover,
+  [data-theme="light"] .hk-capture:hover,
+  [data-theme="light"] .onb-stepnav-clickable:hover {
+    background: hsl(var(--surface-4));
+  }
+  [data-theme="light"] .onb-row .ico-wrap {
+    background: hsl(var(--surface-4));
+  }
+
+  /* Hold-to-talk hotkey picker (onboarding + settings + migration) */
+  .hk-picker { display: flex; flex-direction: column; gap: 10px; }
+  .hk-capture { width: 100%; text-align: left; padding: 12px 14px; border-radius: 12px; background: hsl(0 0% 100% / 0.03); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); cursor: pointer; transition: box-shadow 0.15s ease, background 0.15s ease; }
+  .hk-capture:hover { background: hsl(0 0% 100% / 0.05); }
+  .hk-capturing { box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.6), 0 0 0 3px hsl(var(--primary) / 0.1); background: hsl(var(--primary) / 0.06); }
+  .hk-capture-prompt { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: hsl(var(--primary)); font-weight: 500; }
+  .hk-esc { font-size: 11px; color: hsl(var(--muted-foreground)); font-weight: 400; }
+  .hk-current { display: inline-flex; align-items: center; gap: 10px; width: 100%; }
+  .hk-keycap { min-width: 30px; height: 30px; padding: 0 8px; border-radius: 8px; display: inline-grid; place-items: center; font-size: 14px; font-weight: 600; color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.06); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)); }
+  .hk-current-label { font-size: 13px; font-weight: 500; color: hsl(var(--foreground)); }
+  .hk-mode { font-size: 11px; color: hsl(var(--muted-foreground)); }
+  .hk-change { margin-left: auto; font-size: 11.5px; font-weight: 600; color: hsl(var(--primary)); }
+  .hk-hint { font-size: 11.5px; color: hsl(38 92% 62%); }
+  .hk-capture-note { font-size: 11px; color: hsl(var(--muted-foreground)); }
+  .hk-warn { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; line-height: 1.45; margin-top: 2px; }
+  .hk-warn svg { flex-shrink: 0; margin-top: 1.5px; }
+  .hk-warn-warning { color: hsl(38 92% 62%); }
+  .hk-warn-error { color: hsl(var(--destructive)); }
+  /* Actionable error row — friendly copy + a one-click fix (Retry / Open Settings). */
+  .err-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 11.5px; color: hsl(var(--destructive)); line-height: 1.45; }
+  .err-notice-icon { flex-shrink: 0; }
+  .err-notice-msg { flex: 1 1 auto; min-width: 0; }
+  .err-notice-action { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 8px; font-size: 11px; font-weight: 600; color: hsl(var(--foreground)); background: hsl(var(--surface-2)); box-shadow: inset 0 0 0 1px hsl(var(--surface-3)); cursor: pointer; transition: all 0.12s ease; white-space: nowrap; }
+  .err-notice-action:hover { background: hsl(var(--surface-3)); }
+  .hk-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .hk-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 9px; font-size: 11.5px; color: hsl(var(--muted-foreground)); background: hsl(var(--surface-2)); box-shadow: inset 0 0 0 1px hsl(var(--surface-3)); cursor: pointer; transition: all 0.12s ease; }
+  .hk-chip:hover { color: hsl(var(--foreground)); background: hsl(var(--surface-3)); }
+  .hk-chip-active { color: hsl(var(--foreground)); background: hsl(var(--primary) / 0.12); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.5); }
+  .hk-chip-glyph { font-weight: 600; min-width: 16px; text-align: center; }
+  .hk-chip-check { color: hsl(var(--primary)); }
+  .hk-foot { font-size: 11px; color: hsl(var(--muted-foreground)); line-height: 1.5; }
   .onb-form {
     position: relative;
     /* Dense near-black form canvas — readable, sits one notch lighter than
@@ -1511,25 +1654,6 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   letter-spacing: 0.02em;
 }
 
-.sb-progress-dots {
-  display: inline-flex;
-  gap: 2px;
-  height: 3px;
-}
-
-.sb-progress-dots span {
-  width: 3px;
-  height: 3px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.25);
-  animation: sb-dot-run 0.9s steps(5) infinite;
-}
-
-.sb-progress-dots span:nth-child(2) { animation-delay: 0.07s; }
-.sb-progress-dots span:nth-child(3) { animation-delay: 0.14s; }
-.sb-progress-dots span:nth-child(4) { animation-delay: 0.21s; }
-.sb-progress-dots span:nth-child(5) { animation-delay: 0.28s; }
-
 .sb-success {
   display: inline-flex;
   align-items: center;
@@ -1667,14 +1791,6 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
 }
 
 
-@keyframes sb-dot-run {
-  0%, 20% {
-    background: rgba(255, 255, 255, 0.86);
-  }
-  21%, 100% {
-    background: rgba(255, 255, 255, 0.25);
-  }
-}
 
 @keyframes sb-success-rise {
   0%, 100% {
@@ -2019,6 +2135,28 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   pointer-events: auto;
 }
 
+/* Sleek pill: the voice phases and every single-row compact state read as a
+   full-round glass capsule that morphs its width/height to hug the content
+   (the native window is a fixed canvas; this capsule floats and resizes inside
+   it). Placed after the base blocks so it overrides their radius/transition. */
+.sb-survey--voice,
+.sb-survey--compact {
+  border-radius: 999px;
+  background: hsl(var(--card) / 0.86);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  transition:
+    width 0.3s cubic-bezier(0.2, 0.9, 0.2, 1),
+    height 0.3s cubic-bezier(0.2, 0.9, 0.2, 1),
+    border-radius 0.28s ease,
+    background 0.3s ease;
+}
+
+/* Transcript open → grow into a rounded card, not a stretched stadium. */
+.sb-survey--voice.sb-survey--tall {
+  border-radius: 20px;
+}
+
 .sb-survey-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -2188,25 +2326,35 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
 }
 
 .sb-survey-visualizer {
-  height: 28px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 2.5px;
+  gap: 2px;
   overflow: visible;
 }
 
+/* Fluid waveform: fixed-height bars animated via scaleY (center origin) by the
+   RAF driver. No per-bar transition — the driver runs at 60fps, so a transition
+   would smear the motion. Only the colour crossfades between phases. */
 .sb-survey-visualizer span {
   width: 2.5px;
-  min-height: 3px;
-  border-radius: 99px;
-  background: hsl(var(--muted-foreground) / 0.45);
-  transition: background 0.15s ease, box-shadow 0.15s ease;
+  height: 20px;
+  border-radius: 999px;
+  transform: scaleY(0.14);
+  transform-origin: center;
+  will-change: transform;
+  background: hsl(var(--primary));
+  transition: background 0.25s ease, box-shadow 0.25s ease;
 }
 
-.sb-survey-visualizer--active span {
-  background: hsl(var(--primary) / 0.88);
-  box-shadow: 0 0 6px hsl(var(--primary) / 0.22);
+/* Phase = motion + hue, no text. Listening tracks the mic; transcription is a
+   dim left→right ripple; AI-polish is a brighter, taller sweep. */
+.sb-wave--listening span { background: hsl(var(--primary)); }
+.sb-wave--transcribing span { background: hsl(var(--primary) / 0.6); }
+.sb-wave--polishing span {
+  background: hsl(226 92% 85%);
+  box-shadow: 0 0 7px hsl(226 90% 80% / 0.4);
 }
 
 .sb-mode-badge {
@@ -2234,38 +2382,6 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   margin-right: 5px;
   background: hsl(var(--primary) / 0.14);
   box-shadow: none;
-}
-
-.sb-survey-visualizer--active .sb-mode-badge {
-  background: hsl(var(--primary) / 0.14);
-  box-shadow: none;
-}
-
-.sb-survey-processing {
-  height: 24px;
-  min-width: 80px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  color: hsl(var(--foreground) / 0.88);
-  font-size: 10.5px;
-  line-height: 1;
-  font-weight: 560;
-  letter-spacing: 0.02em;
-}
-
-.sb-processing-line {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  white-space: nowrap;
-}
-
-.sb-processing-line .sb-mode-badge {
-  flex: none;
 }
 
 .sb-survey-success {

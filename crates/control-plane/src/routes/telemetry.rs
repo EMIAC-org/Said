@@ -1540,6 +1540,125 @@ fn run_row_to_json(r: TelemetryRunRow) -> Value {
     .unwrap_or(Value::Null)
 }
 
+/// Pull `field` from each object in `v[arr_key]` as a string list.
+fn kb_str_array(v: &Value, arr_key: &str, field: &str) -> Vec<String> {
+    v.get(arr_key)
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.get(field).and_then(|x| x.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// GET /v1/orgs/:org_id/telemetry/users/:account_id/knowledge —
+/// per-user KB monitoring for the admin user page: learn-run stats, the global
+/// knowledge base, per-bucket learned style (rendered from knobs), and batch-job cost.
+pub async fn user_knowledge(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path((org_id, account_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>, StatusCode> {
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    require_org_viewer(&role)?;
+    ensure_org_account_member(&state.db, org_id, account_id).await?;
+
+    let org_scope = crate::profile::store::resolve_org_scope(Some(org_id));
+
+    // Global KB (the person) + version.
+    let profile =
+        crate::profile::store::get_profile_with_fallback(&state.db, account_id, org_scope)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let profile_json = profile
+        .as_ref()
+        .map(|r| r.profile_json.clone())
+        .unwrap_or_else(|| json!({}));
+    let background = profile_json
+        .get("user_background")
+        .and_then(|b| b.get("summary"))
+        .and_then(|s| s.as_str())
+        .map(str::to_string);
+
+    // Learn-run rollups.
+    let rollup: Option<(i32, i32, Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
+        "SELECT profile_run_count, skipped_run_count, last_run_at, last_run_outcome
+           FROM runtime_user_profiles WHERE account_id = $1 AND org_scope = $2",
+    )
+    .bind(account_id)
+    .bind(org_scope)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (run_count, skipped_count, last_run_at, last_run_outcome) =
+        rollup.unwrap_or((0, 0, None, None));
+
+    // Batch-job aggregates (health + cost). Aggregates always return one row.
+    let (total, applied, skipped, failed, avg_latency_ms, token_total): (
+        i64,
+        i64,
+        i64,
+        i64,
+        Option<f64>,
+        Option<i64>,
+    ) = sqlx::query_as(
+        "SELECT count(*)::bigint,
+                count(*) FILTER (WHERE status = 'applied')::bigint,
+                count(*) FILTER (WHERE status = 'skipped')::bigint,
+                count(*) FILTER (WHERE status = 'failed')::bigint,
+                avg(latency_ms)::float8,
+                sum(token_usage)::bigint
+           FROM runtime_profile_batch_jobs WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Per-bucket learned style, rendered from the fixed knobs (our wording).
+    let overlays = crate::profile::bucket::list_bucket_profiles(&state.db, account_id, org_scope)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let buckets: Vec<Value> = overlays
+        .into_iter()
+        .map(|r| {
+            json!({
+                "bucket_key": r.bucket_key,
+                "version": r.version,
+                "style": crate::profile::bucket::render_bucket_knob_lines(&r.profile_json),
+                "knobs": r.profile_json,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "run_stats": {
+            "run_count": run_count,
+            "skipped_count": skipped_count,
+            "last_run_at": last_run_at,
+            "last_run_outcome": last_run_outcome,
+        },
+        "batch": {
+            "total": total,
+            "applied": applied,
+            "skipped": skipped,
+            "failed": failed,
+            "avg_latency_ms": avg_latency_ms,
+            "token_total": token_total,
+        },
+        "knowledge": {
+            "background": background,
+            "domains": kb_str_array(&profile_json, "domains", "name"),
+            "focus_areas": kb_str_array(&profile_json, "focus_areas", "area"),
+        },
+        "buckets": buckets,
+    })))
+}
+
 pub async fn user_memory(
     State(state): State<AppState>,
     headers: HeaderMap,
