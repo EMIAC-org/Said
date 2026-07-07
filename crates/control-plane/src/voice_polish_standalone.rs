@@ -110,8 +110,14 @@ pub async fn polish_transcript_with_prompt_model(
         })
         .unwrap_or_else(|| route.model.clone());
 
-    let output =
-        call_groq(groq_api_key, &model, system_prompt, &user_message, endpoint_override).await?;
+    let output = call_groq(
+        groq_api_key,
+        &model,
+        system_prompt,
+        &user_message,
+        endpoint_override,
+    )
+    .await?;
     // Defensive guard: weak models occasionally echo the polish prompt's
     // role-anchor instructions into the output; strip any leaked lines.
     let output = strip_leaked_instructions(&output);
@@ -134,11 +140,9 @@ async fn call_groq(
     // Resolve endpoint up front — reasoning-param SHAPE is provider-specific
     // (OpenRouter uses a `reasoning` object; Sarvam + Cerebras use a top-level
     // `reasoning_effort`), so we must know the target before building the body.
-    let endpoint = endpoint_override
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            std::env::var("POLISH_CHAT_ENDPOINT").unwrap_or_else(|_| GROQ_ENDPOINT.to_string())
-        });
+    let endpoint = endpoint_override.map(|s| s.to_string()).unwrap_or_else(|| {
+        std::env::var("POLISH_CHAT_ENDPOINT").unwrap_or_else(|_| GROQ_ENDPOINT.to_string())
+    });
     let is_openrouter = endpoint.contains("openrouter");
     let is_sarvam = endpoint.contains("sarvam");
 
@@ -205,7 +209,11 @@ async fn call_groq(
     // prompt lab can measure a SPECIFIC provider's latency instead of nitro's
     // roaming tail. No-op when unset (live path never sets it).
     if let Ok(prov) = std::env::var("POLISH_CHAT_PROVIDER") {
-        let order: Vec<&str> = prov.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let order: Vec<&str> = prov
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
         if !order.is_empty() {
             body["provider"] = json!({ "order": order, "allow_fallbacks": false });
         }
@@ -228,7 +236,8 @@ async fn call_groq(
     let value: serde_json::Value = loop {
         attempt += 1;
         let last = attempt >= MAX_ATTEMPTS;
-        let backoff = |a: u32| tokio::time::sleep(std::time::Duration::from_secs_f64(0.4 * a as f64));
+        let backoff =
+            |a: u32| tokio::time::sleep(std::time::Duration::from_secs_f64(0.4 * a as f64));
 
         let resp = match client
             .post(&endpoint)
@@ -442,25 +451,25 @@ pub fn build_voice_system_prompt_with_vocab_hints(
             .iter()
             .filter_map(|hint| {
                 let trimmed = hint.term.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
+                if trimmed.is_empty() {
+                    None
+                } else {
                     let resolution = if hint.tier.eq_ignore_ascii_case("suggest") {
                         VocabResolution::Candidate
                     } else {
                         VocabResolution::Resolved
                     };
-                Some(VocabEntry {
-                    term: trimmed.to_string(),
+                    Some(VocabEntry {
+                        term: trimmed.to_string(),
                         context: hint.context.clone(),
                         resolution,
                         term_type: hint.term_type.clone(),
                         meaning: hint.meaning.clone(),
                         evidence: hint.evidence.clone(),
                         stt_aliases: vec![],
-                })
-            }
-        })
+                    })
+                }
+            })
             .collect()
     };
 

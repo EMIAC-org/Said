@@ -21,6 +21,7 @@
 //!   ... --bin prompt_eval -- base                                        # only baseline
 //!   ... --bin prompt_eval -- v1                                          # only v1
 
+use futures_util::stream::{self, StreamExt};
 use said_control_plane::voice_polish_standalone::{
     polish_transcript_with_prompt, polish_transcript_with_prompt_model,
 };
@@ -28,7 +29,6 @@ use said_core::polish::prompt::{
     RagExample, VocabEntry, default_voice_prompt_template, render_voice_system_prompt_template,
 };
 use said_core::polish::types::{Correction, PolishPrefs};
-use futures_util::stream::{self, StreamExt};
 use std::time::Instant;
 
 // ── Golden set ───────────────────────────────────────────────────────────────
@@ -54,53 +54,105 @@ const CASES: &[Case] = &[
     Case {
         id: "amount-otp",
         input: "The total amount is 12 karod Rs 4500678 including 18% GST. Room number 04.04 extension 2244 hai aur agar expire ho jaega paanch minute mein to aap dekh lena OTP 482916 hai.",
-        fixes: &[Fix { garble: "karod", correct: &["crore"], held_out: true }],
+        fixes: &[Fix {
+            garble: "karod",
+            correct: &["crore"],
+            held_out: true,
+        }],
         keep: &["482916", "2244", "18%"],
     },
     Case {
         id: "pincode-pillar",
         input: "Incode 110001 landmark metro killer number 47 hai.",
         fixes: &[
-            Fix { garble: "incode", correct: &["pin code"], held_out: true },
-            Fix { garble: "metro killer", correct: &["metro pillar"], held_out: true },
+            Fix {
+                garble: "incode",
+                correct: &["pin code"],
+                held_out: true,
+            },
+            Fix {
+                garble: "metro killer",
+                correct: &["metro pillar"],
+                held_out: true,
+            },
         ],
         keep: &["110001", "47"],
     },
     Case {
         id: "meeting-ist",
         input: "Meeting reschedule karni hai from third April to fifth April 2PM to 4 30PM IOSD.",
-        fixes: &[Fix { garble: "iosd", correct: &["ist"], held_out: true }],
+        fixes: &[Fix {
+            garble: "iosd",
+            correct: &["ist"],
+            held_out: true,
+        }],
         keep: &["april"],
     },
     Case {
         id: "capslock",
         input: "PIN code? Nahin. Cabs lock hold karke bolo release karne ke baad polish text paste hona chaahie.",
-        fixes: &[Fix { garble: "cabs lock", correct: &["caps lock"], held_out: true }],
+        fixes: &[Fix {
+            garble: "cabs lock",
+            correct: &["caps lock"],
+            held_out: true,
+        }],
         keep: &["pin code"],
     },
     Case {
         id: "eod",
         input: "Abhishek ne Rahul ko bola ki PR merge kar do before UD, end of day.",
-        fixes: &[Fix { garble: "before ud", correct: &["before eod"], held_out: true }],
+        fixes: &[Fix {
+            garble: "before ud",
+            correct: &["before eod"],
+            held_out: true,
+        }],
         keep: &["pr merge", "end of day", "abhishek", "rahul"],
     },
     Case {
         id: "fare",
         input: "I know the note is not working in the note just service. Fair pricing nahin hai, fair zyaada lag raha hai Uber mein.",
-        fixes: &[Fix { garble: "fair zyaada", correct: &["fare zyaada"], held_out: true }],
+        fixes: &[Fix {
+            garble: "fair zyaada",
+            correct: &["fare zyaada"],
+            held_out: true,
+        }],
         keep: &["uber"],
     },
     Case {
         id: "logs-race-caseins",
         input: "Yaar yah bug reproduce nahin ho raha, blocks mein kuchh nahin aa raha, maybe raise condition hai ya phir cash in validation miss ho rahi hai. Back end stable nahin hai front end bhi thoda flaky hai.",
         fixes: &[
-            Fix { garble: "blocks mein", correct: &["logs mein"], held_out: true },
-            Fix { garble: "raise condition", correct: &["race condition"], held_out: true },
+            Fix {
+                garble: "blocks mein",
+                correct: &["logs mein"],
+                held_out: true,
+            },
+            Fix {
+                garble: "raise condition",
+                correct: &["race condition"],
+                held_out: true,
+            },
             // "cash in validation" has >1 valid reading; user confirmed "cache
             // validation"/"cache invalidation" is also correct in a bug context.
-            Fix { garble: "cash in validation", correct: &["case insensitive validation", "cache invalidation", "cache validation"], held_out: true },
-            Fix { garble: "back end", correct: &["backend"], held_out: true },
-            Fix { garble: "front end", correct: &["frontend"], held_out: true },
+            Fix {
+                garble: "cash in validation",
+                correct: &[
+                    "case insensitive validation",
+                    "cache invalidation",
+                    "cache validation",
+                ],
+                held_out: true,
+            },
+            Fix {
+                garble: "back end",
+                correct: &["backend"],
+                held_out: true,
+            },
+            Fix {
+                garble: "front end",
+                correct: &["frontend"],
+                held_out: true,
+            },
         ],
         keep: &["reproduce", "flaky"],
     },
@@ -108,8 +160,16 @@ const CASES: &[Case] = &[
         id: "sql-swiftlocal",
         input: "Version 2.4 0.3 build mein 20 C collide migrations hai. Migration 053 ne swift underscore local retire kiya.",
         fixes: &[
-            Fix { garble: "c collide", correct: &["sql"], held_out: true },
-            Fix { garble: "swift underscore local", correct: &["swift_local"], held_out: true },
+            Fix {
+                garble: "c collide",
+                correct: &["sql"],
+                held_out: true,
+            },
+            Fix {
+                garble: "swift underscore local",
+                correct: &["swift_local"],
+                held_out: true,
+            },
         ],
         keep: &["053", "2.4"],
     },
@@ -117,89 +177,144 @@ const CASES: &[Case] = &[
         id: "contact",
         input: "Phone number is +919876543210 alternate +1415 555-0199 email is abhishek.varma+test@metec.com",
         // domain reconstruction needs company knowledge (vocab territory) -> bonus only.
-        fixes: &[Fix { garble: "metec.com", correct: &["emiac.com"], held_out: true }],
+        fixes: &[Fix {
+            garble: "metec.com",
+            correct: &["emiac.com"],
+            held_out: true,
+        }],
         keep: &["+919876543210"],
     },
-
     // ==== EXPANDED SET (heavy gemma validation) — all disjoint from v4 examples ====
     // -- coding / technical reconstruction (recall) --
     Case {
         id: "memory-leak",
         input: "the pod keeps restarting I think it is a memory leek somewhere in the service",
-        fixes: &[Fix { garble: "memory leek", correct: &["memory leak"], held_out: true }],
+        fixes: &[Fix {
+            garble: "memory leek",
+            correct: &["memory leak"],
+            held_out: true,
+        }],
         keep: &["pod", "restarting"],
     },
     Case {
         id: "auth-controller",
         input: "there is a null pointer exception in the off controller code",
-        fixes: &[Fix { garble: "off controller", correct: &["auth controller"], held_out: true }],
+        fixes: &[Fix {
+            garble: "off controller",
+            correct: &["auth controller"],
+            held_out: true,
+        }],
         keep: &["null pointer", "exception"],
     },
     Case {
         id: "midnight-cron",
         input: "the cron job did not trigger at mid night yesterday",
-        fixes: &[Fix { garble: "mid night", correct: &["midnight"], held_out: true }],
+        fixes: &[Fix {
+            garble: "mid night",
+            correct: &["midnight"],
+            held_out: true,
+        }],
         keep: &["cron", "not"],
     },
     Case {
         id: "evenly-lb",
         input: "the load balancer is not distributing traffic even lee across the nodes",
-        fixes: &[Fix { garble: "even lee", correct: &["evenly"], held_out: true }],
+        fixes: &[Fix {
+            garble: "even lee",
+            correct: &["evenly"],
+            held_out: true,
+        }],
         keep: &["load balancer", "not"],
     },
     Case {
         id: "oauth",
         input: "hum log in ke liye O Auth use karte hain abhi",
-        fixes: &[Fix { garble: "o auth", correct: &["oauth"], held_out: true }],
+        fixes: &[Fix {
+            garble: "o auth",
+            correct: &["oauth"],
+            held_out: true,
+        }],
         keep: &["log", "use"],
     },
     Case {
         id: "sql-injection",
         input: "is query mein S Q L injection ka risk hai dekh lena",
-        fixes: &[Fix { garble: "s q l injection", correct: &["sql injection"], held_out: true }],
+        fixes: &[Fix {
+            garble: "s q l injection",
+            correct: &["sql injection"],
+            held_out: true,
+        }],
         keep: &["query", "risk"],
     },
     Case {
         id: "piece-of-code",
         input: "bhai wo peace of code kaam nahin kar raha abhi tak",
-        fixes: &[Fix { garble: "peace of code", correct: &["piece of code"], held_out: true }],
+        fixes: &[Fix {
+            garble: "peace of code",
+            correct: &["piece of code"],
+            held_out: true,
+        }],
         keep: &["nahin", "kaam"],
     },
     Case {
         id: "api-doc",
         input: "iska A P I documentation kahan milega mujhe",
-        fixes: &[Fix { garble: "a p i documentation", correct: &["api documentation"], held_out: true }],
+        fixes: &[Fix {
+            garble: "a p i documentation",
+            correct: &["api documentation"],
+            held_out: true,
+        }],
         keep: &["kahan"],
     },
     Case {
         id: "root-cause",
         input: "iska route cause pata karo phir hi fix karna",
-        fixes: &[Fix { garble: "route cause", correct: &["root cause"], held_out: true }],
+        fixes: &[Fix {
+            garble: "route cause",
+            correct: &["root cause"],
+            held_out: true,
+        }],
         keep: &["fix"],
     },
     Case {
         id: "indira-airport",
         input: "flight delay ho gayi Indra Gandhi airport pe kaafi",
-        fixes: &[Fix { garble: "indra gandhi", correct: &["indira gandhi"], held_out: true }],
+        fixes: &[Fix {
+            garble: "indra gandhi",
+            correct: &["indira gandhi"],
+            held_out: true,
+        }],
         keep: &["flight", "airport"],
     },
     // -- spoken symbols (recall; disjoint tokens from v4's api_token/user.email) --
     Case {
         id: "report-file",
         input: "file ka naam rakho report dash final dot pdf theek hai",
-        fixes: &[Fix { garble: "report dash final dot pdf", correct: &["report-final.pdf"], held_out: true }],
+        fixes: &[Fix {
+            garble: "report dash final dot pdf",
+            correct: &["report-final.pdf"],
+            held_out: true,
+        }],
         keep: &["file"],
     },
     Case {
         id: "db-url",
         input: "env file mein database underscore url set kar do jaldi",
-        fixes: &[Fix { garble: "database underscore url", correct: &["database_url"], held_out: true }],
+        fixes: &[Fix {
+            garble: "database underscore url",
+            correct: &["database_url"],
+            held_out: true,
+        }],
         keep: &["env"],
     },
     Case {
         id: "email-symbol",
         input: "mujhe mail bhej do rahul at company dot com pe",
-        fixes: &[Fix { garble: "rahul at company dot com", correct: &["rahul@company.com"], held_out: true }],
+        fixes: &[Fix {
+            garble: "rahul at company dot com",
+            correct: &["rahul@company.com"],
+            held_out: true,
+        }],
         keep: &["mail"],
     },
     // -- PRECISION TRAPS (fixes empty; keep = words that must NOT be over-corrected) --
@@ -570,9 +685,10 @@ async fn run_model_sweep(
     let template = template_by_id(&prompt_id);
     let no_rag: &[RagExample] = &[];
     let no_corr: &[Correction] = &[];
-    let sys = render_voice_system_prompt_template(
-        &template, prefs, no_rag, no_corr, vocab, None, |_| false,
-    );
+    let sys =
+        render_voice_system_prompt_template(&template, prefs, no_rag, no_corr, vocab, None, |_| {
+            false
+        });
     let cap: usize = std::env::var("POLISH_SWEEP_CONCURRENCY")
         .ok()
         .and_then(|s| s.trim().parse().ok())
@@ -602,7 +718,11 @@ async fn run_model_sweep(
                 .and_then(|env_name| std::env::var(env_name).ok())
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| key.to_string());
-            ModelSpec { model, endpoint, key }
+            ModelSpec {
+                model,
+                endpoint,
+                key,
+            }
         })
         .collect();
 
@@ -628,7 +748,14 @@ async fn run_model_sweep(
             async move {
                 let t = Instant::now();
                 let r = polish_transcript_with_prompt_model(
-                    input, "hinglish", "smart", k, sys_ref, safe_terms, Some(m), ep,
+                    input,
+                    "hinglish",
+                    "smart",
+                    k,
+                    sys_ref,
+                    safe_terms,
+                    Some(m),
+                    ep,
                 )
                 .await;
                 let ms = t.elapsed().as_millis();
@@ -726,7 +853,11 @@ async fn run_model_sweep(
         recall(&stats[b])
             .partial_cmp(&recall(&stats[a]))
             .unwrap()
-            .then(preserve(&stats[b]).partial_cmp(&preserve(&stats[a])).unwrap())
+            .then(
+                preserve(&stats[b])
+                    .partial_cmp(&preserve(&stats[a]))
+                    .unwrap(),
+            )
             .then(med(&stats[a]).cmp(&med(&stats[b])))
     });
 
@@ -790,7 +921,9 @@ async fn run_model_sweep(
             f.correct.join(" / ")
         ));
     }
-    md.push_str("\n## Recall matrix (rows ranked; ✓ = reconstructed, · = missed/echoed garble)\n\n");
+    md.push_str(
+        "\n## Recall matrix (rows ranked; ✓ = reconstructed, · = missed/echoed garble)\n\n",
+    );
     md.push_str("| model |");
     for fi in 0..fixrefs.len() {
         md.push_str(&format!(" F{} |", fi + 1));
@@ -805,7 +938,10 @@ async fn run_model_sweep(
         for fi in 0..fixrefs.len() {
             md.push_str(if recall_ok[mi][fi] { " ✓ |" } else { " · |" });
         }
-        md.push_str(&format!(" {}/{} |\n", stats[mi].held_won, stats[mi].held_tot));
+        md.push_str(&format!(
+            " {}/{} |\n",
+            stats[mi].held_won, stats[mi].held_tot
+        ));
     }
 
     // ── Keep legend + precision matrix ──
@@ -828,7 +964,10 @@ async fn run_model_sweep(
         for ki in 0..keeprefs.len() {
             md.push_str(if keep_hit[mi][ki] { " ✓ |" } else { " ✗ |" });
         }
-        md.push_str(&format!(" {}/{} |\n", stats[mi].keep_ok, stats[mi].keep_tot));
+        md.push_str(&format!(
+            " {}/{} |\n",
+            stats[mi].keep_ok, stats[mi].keep_tot
+        ));
     }
 
     let out_path = std::env::var("EVAL_OUT").unwrap_or_else(|_| "model_sweep_results.md".into());
@@ -917,7 +1056,13 @@ async fn main() {
         println!("\n================ CANDIDATE [{cid}] ================");
         md.push_str(&format!("\n## Candidate `{cid}`\n\n"));
         let sys = render_voice_system_prompt_template(
-            template, &prefs, no_rag, no_corr, &vocab, None, |_| false,
+            template,
+            &prefs,
+            no_rag,
+            no_corr,
+            &vocab,
+            None,
+            |_| false,
         );
 
         let (mut held_won, mut held_tot, mut all_won, mut all_tot, mut keep_ok, mut keep_tot) =
@@ -925,7 +1070,12 @@ async fn main() {
 
         for case in CASES {
             let out = match polish_transcript_with_prompt(
-                case.input, "hinglish", "smart", &key, &sys, &safe_terms,
+                case.input,
+                "hinglish",
+                "smart",
+                &key,
+                &sys,
+                &safe_terms,
             )
             .await
             {
@@ -970,31 +1120,67 @@ async fn main() {
                 keep_marks.push(format!("{}{}", if ok { "OK " } else { "LOST " }, k));
             }
 
-            println!("[{}]\n  OUT: {out}\n  fix: {}\n  keep: {}",
-                case.id, fix_marks.join(" | "), keep_marks.join(" | "));
+            println!(
+                "[{}]\n  OUT: {out}\n  fix: {}\n  keep: {}",
+                case.id,
+                fix_marks.join(" | "),
+                keep_marks.join(" | ")
+            );
             md.push_str(&format!(
                 "### {}\n\n**in:** {}\n\n**out:** {}\n\n- fix: {}\n- keep: {}\n\n",
-                case.id, case.input, out, fix_marks.join(" · "), keep_marks.join(" · ")
+                case.id,
+                case.input,
+                out,
+                fix_marks.join(" · "),
+                keep_marks.join(" · ")
             ));
         }
 
-        let pct = |a: u32, b: u32| if b == 0 { 100.0 } else { 100.0 * a as f64 / b as f64 };
+        let pct = |a: u32, b: u32| {
+            if b == 0 {
+                100.0
+            } else {
+                100.0 * a as f64 / b as f64
+            }
+        };
         println!(
             "\n[{cid}] held-out recall {}/{} = {:.0}% | all-fix recall {}/{} = {:.0}% | preservation {}/{} = {:.0}%",
-            held_won, held_tot, pct(held_won, held_tot),
-            all_won, all_tot, pct(all_won, all_tot),
-            keep_ok, keep_tot, pct(keep_ok, keep_tot),
+            held_won,
+            held_tot,
+            pct(held_won, held_tot),
+            all_won,
+            all_tot,
+            pct(all_won, all_tot),
+            keep_ok,
+            keep_tot,
+            pct(keep_ok, keep_tot),
         );
-        agg.push((cid.to_string(), held_won, held_tot, all_won, all_tot, keep_ok, keep_tot));
+        agg.push((
+            cid.to_string(),
+            held_won,
+            held_tot,
+            all_won,
+            all_tot,
+            keep_ok,
+            keep_tot,
+        ));
     }
 
     md.push_str("\n## Leaderboard\n\n| prompt | held-out recall | all-fix recall | preservation |\n|---|---|---|---|\n");
     println!("\n\n================ LEADERBOARD ================");
     for (id, hw, ht, aw, at, ko, kt) in &agg {
-        let pct = |a: u32, b: u32| if b == 0 { 100.0 } else { 100.0 * a as f64 / b as f64 };
+        let pct = |a: u32, b: u32| {
+            if b == 0 {
+                100.0
+            } else {
+                100.0 * a as f64 / b as f64
+            }
+        };
         let line = format!(
             "| `{id}` | {hw}/{ht} ({:.0}%) | {aw}/{at} ({:.0}%) | {ko}/{kt} ({:.0}%) |",
-            pct(*hw, *ht), pct(*aw, *at), pct(*ko, *kt)
+            pct(*hw, *ht),
+            pct(*aw, *at),
+            pct(*ko, *kt)
         );
         println!("{line}");
         md.push_str(&line);

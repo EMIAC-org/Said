@@ -173,9 +173,8 @@ fn context_applied_from_prompt_meta(meta: &Value) -> Option<Value> {
         .get("profile_chars")
         .and_then(Value::as_i64)
         .unwrap_or_default();
-    let style = bucket_style_lines_from_profile(
-        meta.get("profile_markdown").and_then(Value::as_str),
-    );
+    let style =
+        bucket_style_lines_from_profile(meta.get("profile_markdown").and_then(Value::as_str));
     let domains: Vec<String> = meta
         .get("domains")
         .and_then(Value::as_array)
@@ -239,12 +238,18 @@ fn move_trace_stage_before_fallback_prompt(
     trace: &mut said_core::dictation_trace::DictationTrace,
     stage_name: &str,
 ) {
-    let Some(stage_pos) = trace.stages.iter().position(|stage| stage.stage == stage_name) else {
+    let Some(stage_pos) = trace
+        .stages
+        .iter()
+        .position(|stage| stage.stage == stage_name)
+    else {
         return;
     };
-    let Some(insert_pos) = trace.stages.iter().position(|stage| {
-        stage.stage == "fallback_prompt.build" || stage.stage == "prompt.build"
-    }) else {
+    let Some(insert_pos) = trace
+        .stages
+        .iter()
+        .position(|stage| stage.stage == "fallback_prompt.build" || stage.stage == "prompt.build")
+    else {
         return;
     };
     if insert_pos >= stage_pos {
@@ -494,8 +499,11 @@ pub async fn get_org_dictation_detail(
         .and_then(context_applied_from_prompt_meta)
     {
         Some(context)
-    } else if let Some(app) =
-        row.target_app.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    } else if let Some(app) = row
+        .target_app
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
     {
         let org_scope = crate::profile::store::resolve_org_scope(row.org_id);
         let (bucket, bucket_source) =

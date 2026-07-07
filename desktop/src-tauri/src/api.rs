@@ -1540,7 +1540,10 @@ pub async fn set_bucket_language(
         .await
         .map_err(|e| format!("set bucket language failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("set bucket language failed: HTTP {}", resp.status()));
+        return Err(format!(
+            "set bucket language failed: HTTP {}",
+            resp.status()
+        ));
     }
     Ok(())
 }

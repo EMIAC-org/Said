@@ -2399,10 +2399,7 @@ async fn polish_runtime_transcript(
     let active_org_id = primary_org_id(state, account_id).await?;
     let org_scope = crate::profile::store::resolve_org_scope(active_org_id);
     let profile_context = crate::profile::load_prompt_profile_context_cached(
-        state,
-        account_id,
-        org_scope,
-        target_app,
+        state, account_id, org_scope, target_app,
     )
     .await;
     let profile_block = profile_context.markdown.clone();
@@ -2531,8 +2528,10 @@ async fn polish_runtime_transcript(
                 json!({"model": model, "provider": provider_label}),
             )
             .await?;
-            let output =
-                crate::voice_polish_standalone::enforce_output_script(&raw_output, &effective_output_language);
+            let output = crate::voice_polish_standalone::enforce_output_script(
+                &raw_output,
+                &effective_output_language,
+            );
             let restored = restore_literal_tokens(&formatted_transcript, &output, safe_vocab_terms);
             let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
             if restored != output {
@@ -2585,8 +2584,11 @@ async fn polish_runtime_transcript(
                 .await?;
             }
             let output = tidy_casing(&email_output);
-            let (output, guard_reason) =
-                guard_voice_polish_output(&output, &formatted_transcript, &effective_output_language);
+            let (output, guard_reason) = guard_voice_polish_output(
+                &output,
+                &formatted_transcript,
+                &effective_output_language,
+            );
             if let Some(reason) = guard_reason {
                 insert_stage_event(
                     state,
@@ -2924,132 +2926,138 @@ pub async fn voice_wav(
     .await?;
 
     let polish_start = Instant::now();
-    let (output, model, prompt_version, history_source, effective_output_language) = if message_polish_mode {
-        if state.deepseek_api_key.trim().is_empty() {
-            let _ = mark_runtime_session(
+    let (output, model, prompt_version, history_source, effective_output_language) =
+        if message_polish_mode {
+            if state.deepseek_api_key.trim().is_empty() {
+                let _ = mark_runtime_session(
+                    &state,
+                    run_id,
+                    "failed",
+                    Some("message_polish_unconfigured"),
+                )
+                .await;
+                return Err(json_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "DEEPSEEK_API_KEY is not configured on the server",
+                ));
+            }
+            let system_prompt = build_message_polish_system_prompt();
+            let user_message = build_message_polish_user_message(&transcript);
+            let raw_output = match call_deepseek_message_polish(
+                &state,
+                &state.deepseek_api_key,
+                &system_prompt,
+                &user_message,
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(err) => {
+                    let _ = mark_runtime_session(
+                        &state,
+                        run_id,
+                        "failed",
+                        Some("message_polish_failed"),
+                    )
+                    .await;
+                    return Err(err);
+                }
+            };
+            let output = scrub_message_polish_output(&raw_output);
+            let model = deepseek_message_polish_model(&state);
+            insert_stage_event(
                 &state,
                 run_id,
-                "failed",
-                Some("message_polish_unconfigured"),
-            )
-            .await;
-            return Err(json_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "DEEPSEEK_API_KEY is not configured on the server",
-            ));
-        }
-        let system_prompt = build_message_polish_system_prompt();
-        let user_message = build_message_polish_user_message(&transcript);
-        let raw_output = match call_deepseek_message_polish(
-            &state,
-            &state.deepseek_api_key,
-            &system_prompt,
-            &user_message,
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(err) => {
-                let _ =
-                    mark_runtime_session(&state, run_id, "failed", Some("message_polish_failed"))
-                        .await;
-                return Err(err);
-            }
-        };
-        let output = scrub_message_polish_output(&raw_output);
-        let model = deepseek_message_polish_model(&state);
-        insert_stage_event(
-            &state,
-            run_id,
-            "message_polish_model",
-            "ok",
-            None,
-            None,
-            json!({
-                "model": model,
-                "input_chars": transcript.chars().count(),
-                "output_chars": output.chars().count(),
-                "source": "audio"
-            }),
-        )
-        .await?;
-        (
-            output,
-            model,
-            "message-polish-audio-openai-transcribe-deepseek-v4-flash-2026-06-20".to_string(),
-            "server_message_polish_audio",
-            "english".to_string(),
-        )
-    } else {
-        let request_vocab_hints = normalize_runtime_vocab_hints(&req.vocab_hints);
-        let has_rich_vocab_hints = !request_vocab_hints.is_empty();
-        let merged_vocab = if has_rich_vocab_hints {
-            apply_terms_from_vocab_hints(&request_vocab_hints)
-        } else {
-            merge_vocab_terms(
-                &req.safe_vocab_terms,
-                &server_memory.vocab_terms,
-                &transcript,
-            )
-        };
-        let merged_vocab_hints = if has_rich_vocab_hints {
-            request_vocab_hints
-        } else {
-            vocab_hints_from_flat_terms(&merged_vocab)
-        };
-        let (output, effective_output_language) = match polish_runtime_transcript(
-            &state,
-            user.account_id,
-            run_id,
-            &transcript,
-            &req.output_language,
-            &req.selected_model,
-            req.screen_context.as_deref(),
-            &merged_vocab,
-            &merged_vocab_hints,
-            req.target_app.as_deref(),
-        )
-        .await
-        {
-            Ok(pair) => pair,
-            Err(err) => {
-                let _ = mark_runtime_session(&state, run_id, "failed", Some("polish_failed")).await;
-                return Err(err);
-            }
-        };
-
-        // Stable 2.3.4 parity: final runtime mutation is approved/safe exact STT
-        // aliases only. Edit-policy rules remain memory/status data for now; they
-        // must not broaden the server output until parity against the shipped
-        // local pipeline is proven.
-        let formatted_for_resolver = crate::number_format::apply(&transcript);
-        let (output, resolver_applied, resolver_skipped) =
-            apply_exact_resolver(&output, &formatted_for_resolver, &server_memory);
-        if resolver_applied > 0 {
-            let _ = insert_stage_event(
-                &state,
-                run_id,
-                "exact_resolver",
+                "message_polish_model",
                 "ok",
                 None,
                 None,
                 json!({
-                    "evidence_count": server_memory.replacements.len(),
-                    "applied_count": resolver_applied,
-                    "skipped_count": resolver_skipped,
+                    "model": model,
+                    "input_chars": transcript.chars().count(),
+                    "output_chars": output.chars().count(),
+                    "source": "audio"
                 }),
             )
-            .await;
-        }
+            .await?;
+            (
+                output,
+                model,
+                "message-polish-audio-openai-transcribe-deepseek-v4-flash-2026-06-20".to_string(),
+                "server_message_polish_audio",
+                "english".to_string(),
+            )
+        } else {
+            let request_vocab_hints = normalize_runtime_vocab_hints(&req.vocab_hints);
+            let has_rich_vocab_hints = !request_vocab_hints.is_empty();
+            let merged_vocab = if has_rich_vocab_hints {
+                apply_terms_from_vocab_hints(&request_vocab_hints)
+            } else {
+                merge_vocab_terms(
+                    &req.safe_vocab_terms,
+                    &server_memory.vocab_terms,
+                    &transcript,
+                )
+            };
+            let merged_vocab_hints = if has_rich_vocab_hints {
+                request_vocab_hints
+            } else {
+                vocab_hints_from_flat_terms(&merged_vocab)
+            };
+            let (output, effective_output_language) = match polish_runtime_transcript(
+                &state,
+                user.account_id,
+                run_id,
+                &transcript,
+                &req.output_language,
+                &req.selected_model,
+                req.screen_context.as_deref(),
+                &merged_vocab,
+                &merged_vocab_hints,
+                req.target_app.as_deref(),
+            )
+            .await
+            {
+                Ok(pair) => pair,
+                Err(err) => {
+                    let _ =
+                        mark_runtime_session(&state, run_id, "failed", Some("polish_failed")).await;
+                    return Err(err);
+                }
+            };
 
-        (
-            output,
-            polish_model_label(&req.selected_model),
-            "server-runtime-wav-probe-2026-06-07".to_string(),
-            "server_wav",
-            effective_output_language,
-        )
-    };
+            // Stable 2.3.4 parity: final runtime mutation is approved/safe exact STT
+            // aliases only. Edit-policy rules remain memory/status data for now; they
+            // must not broaden the server output until parity against the shipped
+            // local pipeline is proven.
+            let formatted_for_resolver = crate::number_format::apply(&transcript);
+            let (output, resolver_applied, resolver_skipped) =
+                apply_exact_resolver(&output, &formatted_for_resolver, &server_memory);
+            if resolver_applied > 0 {
+                let _ = insert_stage_event(
+                    &state,
+                    run_id,
+                    "exact_resolver",
+                    "ok",
+                    None,
+                    None,
+                    json!({
+                        "evidence_count": server_memory.replacements.len(),
+                        "applied_count": resolver_applied,
+                        "skipped_count": resolver_skipped,
+                    }),
+                )
+                .await;
+            }
+
+            (
+                output,
+                polish_model_label(&req.selected_model),
+                "server-runtime-wav-probe-2026-06-07".to_string(),
+                "server_wav",
+                effective_output_language,
+            )
+        };
 
     let polish_ms = polish_start.elapsed().as_millis() as i64;
     let total_ms = total_start.elapsed().as_millis() as i64;
@@ -8140,7 +8148,10 @@ mod tests {
         }
         assert_eq!(selected_polish_model("fast"), GROQ_POLISH_MODEL_FAST);
         assert_eq!(selected_polish_model("deepseek"), GROQ_POLISH_MODEL_FAST);
-        assert_eq!(selected_polish_model("smart"), CEREBRAS_POLISH_MODEL_GPT_OSS);
+        assert_eq!(
+            selected_polish_model("smart"),
+            CEREBRAS_POLISH_MODEL_GPT_OSS
+        );
         assert_eq!(
             selected_polish_model("scout"),
             "meta-llama/llama-4-scout-17b-16e-instruct"
@@ -8230,14 +8241,21 @@ mod tests {
     #[test]
     fn server_voice_prompt_forbids_normal_word_translation() {
         let prompt = crate::voice_polish_standalone::build_voice_system_prompt(
-            "hinglish", "neutral", None, None, &[], None,
+            "hinglish",
+            "neutral",
+            None,
+            None,
+            &[],
+            None,
         );
         let user = build_voice_user_message("hello भाई कैसे हो", "hinglish");
 
         assert!(prompt.contains("reply in the input language and never translate"));
         assert!(prompt.contains("Hinglish stays Roman Hinglish"));
         assert!(prompt.contains("Hindi words in Latin script, English words in English"));
-        assert!(prompt.contains("\"hello bhai kaise ho\" must not become \"Namaste bhai kaise ho\""));
+        assert!(
+            prompt.contains("\"hello bhai kaise ho\" must not become \"Namaste bhai kaise ho\"")
+        );
         assert!(user.contains("BEGIN TRANSCRIPT"));
     }
 

@@ -51,7 +51,7 @@ fn vocab() -> Vec<VocabEntry> {
         term_type: None,
         meaning: None,
         evidence: None,
-                stt_aliases: vec![],
+        stt_aliases: vec![],
     })
     .collect()
 }

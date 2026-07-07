@@ -41,7 +41,11 @@ pub fn strip_edge_ellipses(text: &str) -> String {
     let mut s = text.trim_start_matches(char::is_whitespace);
 
     // Leading run.
-    let lead_len: usize = s.chars().take_while(|c| is_dotish(*c)).map(char::len_utf8).sum();
+    let lead_len: usize = s
+        .chars()
+        .take_while(|c| is_dotish(*c))
+        .map(char::len_utf8)
+        .sum();
     if lead_len > 0 && is_ellipsis_run(&s[..lead_len]) {
         s = s[lead_len..].trim_start();
     }
@@ -105,7 +109,9 @@ mod tests {
     fn strips_leading_ellipsis_from_stt() {
         // The screenshot case: Deepgram continuation artifact.
         assert_eq!(
-            strip_edge_ellipses("...And jo speed hai, latency sab decent hai. Koi dikkat nahin aati hai abhi."),
+            strip_edge_ellipses(
+                "...And jo speed hai, latency sab decent hai. Koi dikkat nahin aati hai abhi."
+            ),
             "And jo speed hai, latency sab decent hai. Koi dikkat nahin aati hai abhi."
         );
         assert_eq!(strip_edge_ellipses("… and then"), "and then");
@@ -123,8 +129,14 @@ mod tests {
     #[test]
     fn leaves_interior_and_non_ellipsis_untouched() {
         // Interior dots, URLs, decimals, initials — never touched.
-        assert_eq!(strip_edge_ellipses("go to acme.app/login"), "go to acme.app/login");
-        assert_eq!(strip_edge_ellipses("version 2.4.3 ready"), "version 2.4.3 ready");
+        assert_eq!(
+            strip_edge_ellipses("go to acme.app/login"),
+            "go to acme.app/login"
+        );
+        assert_eq!(
+            strip_edge_ellipses("version 2.4.3 ready"),
+            "version 2.4.3 ready"
+        );
         assert_eq!(strip_edge_ellipses("a...b"), "a...b");
         // A lone leading period (rare) is not an ellipsis — preserved.
         assert_eq!(strip_edge_ellipses(".env file"), ".env file");

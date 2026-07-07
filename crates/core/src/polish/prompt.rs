@@ -1275,7 +1275,8 @@ mod tests {
         );
         // English mode must now actively translate (the reconciled HARD RULE 2).
         assert!(
-            prompt.contains("translate every Hindi or Hinglish span faithfully into natural English"),
+            prompt
+                .contains("translate every Hindi or Hinglish span faithfully into natural English"),
             "English output mode must instruct faithful translation"
         );
     }

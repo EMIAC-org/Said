@@ -402,11 +402,12 @@ pub async fn get_app_buckets(
     }
 
     let mut bucket_languages = std::collections::BTreeMap::new();
-    if let Ok(rows) = profile::bucket::list_bucket_profiles(&state.db, account_id, org_scope).await {
+    if let Ok(rows) = profile::bucket::list_bucket_profiles(&state.db, account_id, org_scope).await
+    {
         for r in rows {
-            if let Some(lang) =
-                profile::bucket::normalize_output_language_override(r.output_language_override.as_deref())
-            {
+            if let Some(lang) = profile::bucket::normalize_output_language_override(
+                r.output_language_override.as_deref(),
+            ) {
                 bucket_languages.insert(r.bucket_key, lang);
             }
         }
