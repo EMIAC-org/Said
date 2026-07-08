@@ -94,7 +94,7 @@ pub async fn config(State(state): State<AppState>) -> Json<LiveRuntimeConfigResp
         .or_else(|| {
             user.as_ref()
                 .and_then(|u| u.cloud_token.as_ref())
-                .map(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string())
+                .map(|_| "https://airnote.emiactech.com".to_string())
         });
     let runtime_ws_url = match (
         &server_url,
@@ -125,7 +125,7 @@ pub async fn notifications_config(
         .or_else(|| {
             user.as_ref()
                 .and_then(|u| u.cloud_token.as_ref())
-                .map(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string())
+                .map(|_| "https://airnote.emiactech.com".to_string())
         });
     let notifications_ws_url = match (
         &server_url,
@@ -271,7 +271,7 @@ async fn handle_live_ws(state: AppState, socket: WebSocket) {
                                 let base_url = user
                                     .enterprise_server_url
                                     .filter(|s| !s.trim().is_empty())
-                                    .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+                                    .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
 
                                 let client_run_id = value
                                     .get("run_id")

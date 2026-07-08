@@ -12,7 +12,7 @@ If anything here is unclear or appears to contradict the code, please open an is
 
 | Data | Where it goes | Why |
 |---|---|---|
-| Microphone audio (while a hotkey is held) | **Deepgram** servers (US) | Speech-to-text |
+| Microphone audio (while a hotkey is held) | **This device only** | Local speech-to-text |
 | Transcript text | **Groq** servers | LLM polish |
 | Optional correction context (snippets of edits you make) | **Gemini** API (Google) | Embedding for the on-device learning lexicon |
 | Anonymous crash reports + lifecycle events | **Sentry** servers | Diagnose crashes and regressions |
@@ -26,15 +26,14 @@ We never sell or share your data. We send the minimum required to make the app w
 
 Said is a thin client that orchestrates three external services to convert your speech into polished text.
 
-### 1. Deepgram (speech-to-text)
-- **What is sent**: Raw 16 kHz PCM audio bytes, streamed over a WebSocket while you hold the hotkey.
-- **What is received**: Live transcript tokens.
-- **When**: Only while you are holding the dictation hotkey. Audio capture stops on key-release.
-- **Retention on their side**: Per Deepgram's policy (see https://deepgram.com/privacy).
-- **API key**: Yours, configured in Settings.
+### 1. Local speech-to-text
+- **What is sent**: Nothing to a speech provider. Raw audio is transcribed locally on your device.
+- **What is received**: A local transcript.
+- **When**: Only while you are dictating. Audio capture stops on key-release.
+- **API key**: None.
 
-### 2. Groq (LLM polish)
-- **What is sent**: The transcript text from Deepgram, plus a polish prompt and any keyterms / replacements you've added to your local lexicon.
+### 2. Groq / configured text polish runtime
+- **What is sent**: The local transcript text, plus a polish prompt and any keyterms / replacements you've added to your local lexicon.
 - **What is received**: Polished, streamed tokens that get typed into your focused application.
 - **When**: Immediately after a transcript chunk arrives during dictation.
 - **Retention on their side**: Per Groq's policy.
@@ -85,7 +84,6 @@ The first time Said launches, it generates a random UUID (e.g. `7b9d3e4f-...`). 
 
 For audit purposes, the only outbound hosts Said contacts are:
 
-- `api.deepgram.com` (STT)
 - `api.groq.com` (LLM polish)
 - `generativelanguage.googleapis.com` (Gemini embeddings, optional)
 - `*.ingest.sentry.io` (diagnostics, opt-out)

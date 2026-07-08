@@ -43,4 +43,4 @@ curl -sS https://airnote.emiactech.com/v1/runtime/voice/wav \
   }"
 ```
 
-This route runs server-side Deepgram batch STT and server-side polish, then returns the transcript, transcript hash, output, model, and latency breakdown. The server ledger still stores hashes and metadata, not the raw WAV/transcript/output by default.
+This route runs server-side Local speech batch STT and server-side polish, then returns the transcript, transcript hash, output, model, and latency breakdown. The server ledger still stores hashes and metadata, not the raw WAV/transcript/output by default.

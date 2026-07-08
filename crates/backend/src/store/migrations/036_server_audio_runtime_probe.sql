@@ -1,1 +1,1 @@
-ALTER TABLE preferences ADD COLUMN server_audio_runtime_enabled INTEGER NOT NULL DEFAULT 0;
+-- retired: cloud audio runtime is removed; cloud runtime polishes text only

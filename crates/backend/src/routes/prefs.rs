@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// GET /v1/corrections — returns the "right" words from the user's correction
-/// history as a flat list of strings, ready for use as Deepgram keyterms.
+/// history as a flat list of strings for profile and prompt context.
 pub async fn get_corrections(State(state): State<AppState>) -> Json<CorrectionsResponse> {
     let user_id = state.default_user_id.clone();
     let all = corrections::load_all(&state.pool, &user_id);
@@ -38,7 +38,6 @@ pub async fn patch_prefs(
     Json(update): Json<PrefsUpdate>,
 ) -> Result<Json<Preferences>, StatusCode> {
     let provider_key_updated = update.gateway_api_key.is_some()
-        || update.deepgram_api_key.is_some()
         || update.gemini_api_key.is_some()
         || update.groq_api_key.is_some()
         || update.cerebras_api_key.is_some()
@@ -50,9 +49,7 @@ pub async fn patch_prefs(
         || update.auto_paste.is_some()
         || update.edit_capture.is_some()
         || update.learning_enabled.is_some()
-        || update.server_runtime_enabled.is_some()
-        || update.server_audio_runtime_enabled.is_some()
-        || update.stt_provider.is_some();
+        || update.server_runtime_enabled.is_some();
     info!(
         "[patch_prefs] backend received: llm_provider={:?} selected_model={:?} gateway_key_set={} gemini_key_set={} groq_key_set={}",
         update.llm_provider,

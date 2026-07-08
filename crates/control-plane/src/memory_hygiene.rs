@@ -80,7 +80,7 @@ pub async fn build_profile_snapshot(db: &PgPool, account_id: Uuid) -> Result<Val
 
     let aliases: Vec<(String, String, f64, i32, String, Option<String>)> = sqlx::query_as(
         "SELECT transcript_form, correct_form, weight, positive_count, safety_status,
-                learned_stt_provider
+                learned_speech_model
            FROM personal_stt_replacements
           WHERE account_id = $1 AND status = 'active'
           ORDER BY positive_count DESC, weight DESC
@@ -112,14 +112,14 @@ pub async fn build_profile_snapshot(db: &PgPool, account_id: Uuid) -> Result<Val
                 "status": status,
             })
         }).collect::<Vec<_>>(),
-        "aliases": aliases.iter().map(|(heard, correct, weight, pos, safety, stt)| {
+        "aliases": aliases.iter().map(|(heard, correct, weight, pos, safety, speech_model)| {
             json!({
                 "heard": heard,
                 "correct": correct,
                 "weight": weight,
                 "positive_count": pos,
                 "safety_status": safety,
-                "learned_stt_provider": stt,
+                "learned_speech_model": speech_model,
             })
         }).collect::<Vec<_>>(),
         "edit_policies": policies.iter().map(|(variant, correct, edit_type, pos, neg, status)| {

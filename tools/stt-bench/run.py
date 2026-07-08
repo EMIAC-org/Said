@@ -45,7 +45,7 @@ BUILTIN_TERMS = [
     "Claude",
     "JavaScript",
     "TypeScript",
-    "Deepgram",
+    "Local speech",
     "OpenAI",
     "Groq",
     "Gemini",
@@ -459,62 +459,6 @@ def provider_db_polished(case: Case, args: argparse.Namespace) -> ProviderResult
     if not text:
         raise ProviderSkip("DB polished/final text is empty")
     return ProviderResult(provider="db_polished", ok=True, transcript=text, model=case.meta.model_used)
-
-
-def provider_deepgram_raw(case: Case, args: argparse.Namespace) -> ProviderResult:
-    key = os.environ.get("DEEPGRAM_API_KEY", "").strip()
-    if not key:
-        raise ProviderSkip("DEEPGRAM_API_KEY is not set")
-    params = {
-        "model": args.deepgram_model,
-        "language": args.deepgram_language,
-        "smart_format": "false",
-        "punctuate": "false",
-        "numerals": "false",
-    }
-    if args.deepgram_extra:
-        for pair in args.deepgram_extra:
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                params[k] = v
-    url = "https://api.deepgram.com/v1/listen?" + urllib.parse.urlencode(params)
-    data = case.wav_path.read_bytes()
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Authorization": f"Token {key}",
-            "Content-Type": "audio/wav",
-        },
-        method="POST",
-    )
-    t0 = time.perf_counter()
-    try:
-        with urllib.request.urlopen(req, timeout=args.provider_timeout_s) as resp:
-            body = resp.read()
-    except urllib.error.HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"Deepgram HTTP {exc.code}: {details}")
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-    payload = json.loads(body.decode("utf-8"))
-    alt = (
-        payload.get("results", {})
-        .get("channels", [{}])[0]
-        .get("alternatives", [{}])[0]
-    )
-    transcript = alt.get("transcript") or ""
-    return ProviderResult(
-        provider="deepgram_raw",
-        ok=bool(transcript),
-        transcript=transcript,
-        latency_ms=latency_ms,
-        confidence=alt.get("confidence"),
-        model=args.deepgram_model,
-        extra={
-            "words": len(alt.get("words") or []),
-            "request_id": payload.get("metadata", {}).get("request_id"),
-        },
-    )
 
 
 def request_json(
@@ -1041,7 +985,6 @@ PROVIDERS: Dict[str, Callable[[Case, argparse.Namespace], ProviderResult]] = {
     "db_raw": provider_db_raw,
     "db_local": provider_db_local,
     "db_polished": provider_db_polished,
-    "deepgram_raw": provider_deepgram_raw,
     "vosk": provider_vosk,
     "faster_whisper": provider_faster_whisper,
     "whisper_cpp": provider_whisper_cpp,
@@ -1058,8 +1001,6 @@ def expand_providers(value: str) -> List[str]:
     for item in requested:
         if item == "auto":
             expanded.extend(["db_raw", "db_local", "db_polished"])
-            if os.environ.get("DEEPGRAM_API_KEY"):
-                expanded.append("deepgram_raw")
             if os.environ.get("VOSK_MODEL"):
                 expanded.append("vosk")
             if os.environ.get("WHISPER_CPP_MODEL"):
@@ -1270,7 +1211,7 @@ def positive_int(value: str) -> int:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--providers", default="auto", help="Comma-separated providers: auto, db, db_raw, db_local, db_polished, deepgram_raw, apple_speech, fluid_audio, gladia, assemblyai, vosk, faster_whisper, whisper_cpp")
+    parser.add_argument("--providers", default="auto", help="Comma-separated providers: auto, db, db_raw, db_local, db_polished, apple_speech, fluid_audio, gladia, assemblyai, vosk, faster_whisper, whisper_cpp")
     parser.add_argument("--audio-dir", action="append", default=[], help="Directory containing WAV files. Can be passed multiple times.")
     parser.add_argument("--db", action="append", default=[], help="SQLite DB path. Can be passed multiple times.")
     parser.add_argument("--manifest", type=Path, help="JSONL manifest with wav/audio_id and expected terms.")
@@ -1283,10 +1224,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--provider-timeout-s", type=int, default=120)
     parser.add_argument("--sleep-s", type=float, default=0.0, help="Sleep between provider network calls.")
     parser.add_argument("--dry-run", action="store_true", help="Only discover cases and write cases.jsonl; do not run providers.")
-
-    parser.add_argument("--deepgram-model", default="nova-3")
-    parser.add_argument("--deepgram-language", default="multi")
-    parser.add_argument("--deepgram-extra", action="append", default=[], help="Extra Deepgram query param as key=value.")
 
     parser.add_argument("--vosk-model", default="")
 
@@ -1386,7 +1323,7 @@ def main(argv: Sequence[str]) -> int:
             detailed["term_matches"] = score["term_matches"]
             detailed["provider_extra"] = result.extra
             detailed_rows.append(detailed)
-            if args.sleep_s > 0 and provider in {"deepgram_raw", "gladia", "assemblyai"}:
+            if args.sleep_s > 0 and provider in {"gladia", "assemblyai"}:
                 time.sleep(args.sleep_s)
 
     write_jsonl(out_dir / "results.jsonl", detailed_rows)

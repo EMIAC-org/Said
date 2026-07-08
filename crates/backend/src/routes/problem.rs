@@ -151,7 +151,7 @@ async fn run_server_problem_solve(
         .enterprise_server_url
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or(said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL)
+        .unwrap_or("https://airnote.emiactech.com")
         .to_string();
     let prefs = crate::get_prefs_cached(&state.prefs_cache, &state.pool, user_id)
         .await

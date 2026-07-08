@@ -11,12 +11,7 @@
 //!     call site stays byte-identical and the backend's real `is_common_word`
 //!     guard is injected into the shared builder.
 
-use crate::store::{
-    corrections::Correction,
-    prefs::Preferences,
-    vocab_embeddings::{VocabSelection, VocabSelectionTier},
-    vocabulary::VocabTerm,
-};
+use crate::store::{corrections::Correction, prefs::Preferences, vocabulary::VocabTerm};
 
 pub use said_core::polish::prompt::{
     FormatPreference, RagExample, VOICE_PROMPT_BASE_VERSION, VOICE_PROMPT_KIND, VOICE_PROMPT_TITLE,
@@ -136,6 +131,27 @@ pub fn render_voice_system_prompt_template_with_profile(
     )
 }
 
+pub fn render_voice_system_prompt_template_with_profile_and_recent(
+    template: &str,
+    prefs: &Preferences,
+    rag_examples: &[RagExample],
+    corrections: &[Correction],
+    vocabulary_entries: &[VocabEntry],
+    profile_markdown: Option<&str>,
+    recent_speech_hints: &[String],
+) -> String {
+    said_core::polish::prompt::render_voice_system_prompt_template_with_recent_speech(
+        template,
+        &to_polish_prefs(prefs),
+        rag_examples,
+        &to_core_corrections(corrections),
+        vocabulary_entries,
+        profile_markdown,
+        recent_speech_hints,
+        is_common,
+    )
+}
+
 pub fn build_tray_format_system_prompt(
     vocab_entries: &[VocabEntry],
     corrections: &[Correction],
@@ -158,7 +174,6 @@ pub fn vocab_terms_to_entries(terms: Vec<VocabTerm>) -> Vec<VocabEntry> {
             resolution: VocabResolution::Candidate,
             term_type: v.term_type,
             meaning: v.meaning,
-            evidence: None,
             stt_aliases: vec![],
         })
         .collect()
@@ -173,31 +188,26 @@ pub fn resolved_vocab_terms_to_entries(terms: Vec<VocabTerm>) -> Vec<VocabEntry>
             resolution: VocabResolution::Resolved,
             term_type: v.term_type,
             meaning: v.meaning,
-            evidence: None,
             stt_aliases: vec![],
         })
         .collect()
 }
 
-pub fn selected_vocab_terms_to_entries_with_aliases(
-    selections: Vec<VocabSelection>,
+pub fn resolved_vocab_terms_to_entries_with_aliases(
+    terms: Vec<VocabTerm>,
     alias_map: &std::collections::HashMap<String, Vec<(String, i64)>>,
 ) -> Vec<VocabEntry> {
-    selections
+    terms
         .into_iter()
-        .map(|selection| {
-            let key = selection.term.term.to_ascii_lowercase();
+        .map(|v| {
+            let key = v.term.to_ascii_lowercase();
             let aliases = alias_map.get(&key).cloned().unwrap_or_default();
             VocabEntry {
-                term: selection.term.term,
-                context: selection.term.example_context,
-                resolution: match selection.tier {
-                    VocabSelectionTier::Apply => VocabResolution::Resolved,
-                    VocabSelectionTier::Suggest => VocabResolution::Candidate,
-                },
-                term_type: selection.term.term_type,
-                meaning: selection.term.meaning,
-                evidence: (!selection.evidence.trim().is_empty()).then_some(selection.evidence),
+                term: v.term,
+                context: v.example_context,
+                resolution: VocabResolution::Resolved,
+                term_type: v.term_type,
+                meaning: v.meaning,
                 stt_aliases: aliases,
             }
         })

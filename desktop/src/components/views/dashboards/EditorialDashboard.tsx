@@ -1,14 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { downloadRecordingAudio, getRecordingAudioBytes, openExternal, getAppIcon } from "@/lib/invoke";
-import {
-  getHistorySnapshot,
-  subscribeHistory,
-  refreshHistoryCache,
-  type HistoryCacheSnapshot,
-} from "@/lib/historyUiCache";
+import { listHistory, downloadRecordingAudio, getRecordingAudioBytes, openExternal, getAppIcon } from "@/lib/invoke";
 import { cn } from "@/lib/utils";
 import { Copy, Download, Check, Play, Square, BookOpen, ExternalLink } from "lucide-react";
+import { AppIcon, appDisplayName, useAppIdentity } from "@/components/AppIcon";
 import type { AppSnapshot, Recording } from "@/types";
 
 interface Props {
@@ -16,9 +11,6 @@ interface Props {
 }
 
 const GUIDE_URL = "https://airnote.emiactech.com/guide";
-
-// The dashboard needs enough recent recordings for the 14-day activity + today.
-const DASHBOARD_HISTORY_PAGE_SIZE = 300;
 
 // Persist that the user has opened the guide so the dashboard prompt is shown
 // only until they've read it once. Mirrors the localStorage pattern used by
@@ -49,17 +41,15 @@ function markGuideOpened(): void {
  * Calm reading mode rather than analytics console.
  */
 export function EditorialDashboard({ snapshot }: Props) {
+  const [recordings, setRecordings] = useState<Recording[]>([]);
   const [guideOpened, setGuideOpened] = useState(guideWasOpened);
+  const history = snapshot?.history ?? [];
 
-  // Shared, cached recordings (5-min fresh, dedup'd, auto-refreshed on dictation)
-  // — same cache the History page uses, so navigating here never re-fetches/flashes.
-  const [histSnap, setHistSnap] = useState<HistoryCacheSnapshot>(getHistorySnapshot);
   useEffect(() => {
-    const unsub = subscribeHistory(() => setHistSnap(getHistorySnapshot()));
-    void refreshHistoryCache(DASHBOARD_HISTORY_PAGE_SIZE);
-    return unsub;
-  }, []);
-  const recordings = histSnap.data ?? [];
+    let alive = true;
+    listHistory(300).then((r) => { if (alive) setRecordings(r); });
+    return () => { alive = false; };
+  }, [history.length]);
 
   // ── Derived: today's words + time saved ─────────────────────────────────
   const today = useMemo(() => {
@@ -110,8 +100,7 @@ export function EditorialDashboard({ snapshot }: Props) {
       if (alive) setAppIcons(Object.fromEntries(pairs));
     });
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topKeys]);
+  }, [topKeys, topApps]);
 
   // ── Today's recordings ──────────────────────────────────────────────────
   const latest = today;
@@ -335,7 +324,6 @@ function TopAppsRow({
   const SIZES = [34, 27, 22, 19];
   const items = apps.slice(0, 4);
 
-  // Left offset per icon — larger factor = more spacing / less overlap.
   const lefts: number[] = [];
   let cursor = 0;
   items.forEach((_, i) => {
@@ -365,7 +353,6 @@ function TopAppsRow({
               zIndex: 40 - i * 10,
               borderRadius: Math.round(size * 0.28),
               overflow: "hidden",
-              // thin ring in the page background colour separates the overlaps
               border: "1.5px solid hsl(var(--background))",
               boxShadow: "0 1px 4px hsl(0 0% 0% / 0.3)",
               background: "hsl(var(--surface-3))",
@@ -470,15 +457,8 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
   const [downloading, setDownloading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [hasAudio, setHasAudio] = useState(Boolean(r.audio_id));
-  const [appIcon, setAppIcon] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    if (r.target_app) {
-      void getAppIcon(r.target_app).then((ic) => { if (alive) setAppIcon(ic); });
-    }
-    return () => { alive = false; };
-  }, [r.target_app]);
+  const appIdentity = useAppIdentity(r.target_app);
+  const appName = appDisplayName(r.target_app, appIdentity);
 
   useEffect(() => {
     let alive = true;
@@ -542,6 +522,7 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
       className="group/row flex items-start gap-3 py-3"
       style={{ borderBottom: "1px solid hsl(var(--border))" }}
     >
+      <AppIcon appKey={r.target_app} label={appName} size={26} radius={7} fallbackSize={14} style={{ marginTop: 2 }} />
       <div className="flex-1 min-w-0">
         <div
           className="text-[13.5px] leading-snug truncate"
@@ -562,14 +543,10 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
               {r.word_count} words
             </span>
           )}
-          {r.target_app && appIcon && (
-            <img
-              src={appIcon}
-              alt=""
-              title={r.target_app}
-              className="w-4 h-4 rounded-[4px] flex-shrink-0"
-              style={{ opacity: 0.85 }}
-            />
+          {r.target_app && (
+            <span className="text-[10px] truncate" style={{ color: "hsl(var(--muted-foreground) / 0.62)", maxWidth: 140 }}>
+              {appName}
+            </span>
           )}
         </div>
       </div>

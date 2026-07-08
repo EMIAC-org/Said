@@ -1,5 +1,5 @@
 #!/bin/bash
-# Extract (deepgram_transcript, polished_output) pairs from the running
+# Extract (local_speech_transcript, polished_output) pairs from the running
 # desktop's log file. Output is JSONL ready to feed into polish-bench.py.
 #
 # Usage:
@@ -21,13 +21,13 @@ if [ ! -f "$LOG" ]; then
 fi
 
 # Use Python to handle Unicode escape sequences (Devanagari is logged as \u{...}).
-# We pair the "[finish] ✓ WS pre-transcript ready" line (Deepgram output)
+# We pair the "[finish] ✓ local transcript ready" line (Local speech output)
 # with the "[main] polished text:" that follows it (LLM output).
 python3 - "$LOG" <<'PY'
 import re, sys, json
 
 path = sys.argv[1]
-PRE  = re.compile(r"\[finish\] ✓ WS pre-transcript ready \([^)]*\): \"(.+)\"\s*$")
+PRE  = re.compile(r"\[finish\] ✓ local transcript ready \([^)]*\): \"(.+)\"\s*$")
 POL  = re.compile(r"\[main\] polished text: \"(.+)\"\s*$")
 
 # Python's parser understands \u{...} when we go through unicode-escape, but only

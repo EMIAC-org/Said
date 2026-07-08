@@ -65,7 +65,7 @@ if [ -d "$LEGACY_INSTALL_DIR" ]; then
     echo ""
     echo -e "    • ${BOLD}You'll re-grant${NC} Input Monitoring + Accessibility (TCC keys"
     echo -e "      permissions by bundle id, and the bundle id changed)."
-    echo -e "    • ${BOLD}You'll re-save${NC} your Deepgram key (\`said deepgram-key\`)"
+    echo -e "    • ${BOLD}You'll re-check${NC} the local speech model in the desktop app"
     echo -e "      and reconnect ChatGPT (\`said auth\`) — Keychain entries are"
     echo -e "      also bundle-id-namespaced."
     echo ""
@@ -122,7 +122,7 @@ ok "Binary downloaded $(du -h "$APP_EXEC" | cut -f1 | xargs) — tag $TAG"
 
 # ── 3. Standalone config ────────────────────────────────────────────────────
 step "3/5" "Standalone config"
-note "This standalone build stores its own Deepgram key + OpenAI OAuth token locally"
+note "This standalone build uses the local speech model + OpenAI OAuth token locally"
 note "No shared app DB and no gateway API key are used"
 ok "Config flow ready"
 
@@ -282,13 +282,6 @@ case "${1:-}" in
   auth)
     "$APP_EXEC" auth
     ;;
-  deepgram-key)
-    if [ -n "${2:-}" ]; then
-      "$APP_EXEC" deepgram-key "$2"
-    else
-      "$APP_EXEC" deepgram-key
-    fi
-    ;;
   disconnect-openai)
     "$APP_EXEC" disconnect-openai
     ;;
@@ -375,7 +368,6 @@ case "${1:-}" in
     echo "  said restart        stop + start (use after granting permissions)"
     echo "  said status         is it running?"
     echo "  said auth           connect ChatGPT OAuth"
-    echo "  said deepgram-key   save your Deepgram API key"
     echo "  said disconnect-openai  clear the saved OpenAI token"
     echo "  said logs           recent output"
     echo "  said errors         recent errors"
@@ -413,8 +405,7 @@ echo "════════════════════════�
 echo -e "${YELLOW}${BOLD}⚠️  Setup required before first run${NC}"
 echo "══════════════════════════════════════════════"
 echo ""
-echo -e "  ${BOLD}1.${NC} Save your Deepgram key:"
-echo -e "     ${CYAN}${BOLD}said deepgram-key${NC}"
+echo -e "  ${BOLD}1.${NC} Install or verify the local speech model in the desktop app."
 echo ""
 echo -e "  ${BOLD}2.${NC} Connect ChatGPT OAuth:"
 echo -e "     ${CYAN}${BOLD}said auth${NC}"

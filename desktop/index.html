@@ -28,16 +28,12 @@
           }
           var t = localStorage.getItem('vp-theme');
           if (t === 'light' || t === 'dark') {
-            // Explicit user choice — honour it.
             document.documentElement.dataset.theme = t;
           } else {
-            // No preference (or 'system') → follow the OS appearance.
-            // prefers-color-scheme works in both WKWebView (macOS) and
-            // WebView2 (Windows); default to dark if unavailable.
-            var prefersDark = window.matchMedia
-              && window.matchMedia('(prefers-color-scheme: dark)').matches;
             document.documentElement.dataset.theme =
-              (window.matchMedia && !prefersDark) ? 'light' : 'dark';
+              window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark';
           }
         } catch (_) { document.documentElement.dataset.theme = 'dark'; }
       })();

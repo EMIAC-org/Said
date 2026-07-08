@@ -2,7 +2,7 @@
 #
 # Schema:
 #   name            — short label shown in the run output
-#   input           — the Deepgram transcript that gets sent to /v1/text/polish
+#   input           — the Local speech transcript that gets sent to /v1/text/polish
 #   expect_contains — list of substrings that MUST appear in the LLM output (case-insensitive)
 #   expect_not      — list of substrings that must NOT appear (case-insensitive)
 #   tone            — optional per-case override: "format" forces the format-fix prompt
@@ -13,7 +13,7 @@
 {"name":"https-mishear-1",  "input":"Open HATPS://religwav.com.",                                          "expect_contains":["https://religwav.com"], "expect_not":["HATPS","hatps"]}
 {"name":"https-mishear-2",  "input":"Visit ACHTPS://google.co.in for results.",                            "expect_contains":["https://google.co.in"], "expect_not":["ACHTPS","achtps"]}
 {"name":"otp-digits",       "input":"Mera OTP one two three four hai aur pin nine zero seven six hai.",   "expect_contains":["1234","9076"],          "expect_not":["one two three four","nine zero seven six"]}
-{"name":"env-var",          "input":"Set env DEEPGRAM underscore API underscore KEY equals abc one two three.", "expect_contains":["DEEPGRAM_API_KEY","abc123"], "expect_not":["underscore","equals"]}
+{"name":"env-var",          "input":"Set env LOCAL_SPEECH underscore API underscore KEY equals abc one two three.", "expect_contains":["LOCAL_SPEECH_MODEL","abc123"], "expect_not":["underscore","equals"]}
 {"name":"localhost-url",    "input":"Open localhost colon three thousand slash api slash health.",        "expect_contains":["localhost:3000/api/health"], "expect_not":["colon","slash"]}
 {"name":"percent-prose",    "input":"Growing at the rate of ten percent every year, hum log scale kar rahe hain.", "expect_contains":["10%","at the rate"], "expect_not":["@","ten percent"]}
 {"name":"handle",           "input":"Ping me at abhi verma two zero zero five on GitHub.",                "expect_contains":["@abhiverma2005"], "expect_not":["two zero zero five"]}

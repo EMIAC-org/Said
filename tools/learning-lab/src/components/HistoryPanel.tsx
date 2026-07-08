@@ -43,7 +43,7 @@ export function HistoryPanel({ entries, selectedId, onSelect }: Props) {
                 {entry.trace.total_ms}ms
               </span>
             </div>
-            <div style={s.raw}>{trunc(entry.trace.deepgram_raw, 50)}</div>
+            <div style={s.raw}>{trunc(entry.trace.local_speech_raw, 50)}</div>
             <div style={s.output}>{trunc(entry.trace.final_output, 50)}</div>
             {entry.trace.stt_replacements_applied.length > 0 && (
               <div style={s.tags}>

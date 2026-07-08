@@ -56,15 +56,9 @@ pub fn hash_profile(markdown: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn prompt_built_metadata(
     snapshot: &PromptProfileSnapshot,
     client_profile_version: Option<i64>,
-    bucket_key: Option<&str>,
-    bucket_source: Option<&str>,
-    domains: &[String],
-    domain_context: Option<&str>,
-    domain_source: Option<&str>,
 ) -> Value {
     json!({
         "prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION,
@@ -73,16 +67,6 @@ pub fn prompt_built_metadata(
         "profile_hash": snapshot.profile_hash,
         "profile_markdown": snapshot.profile_markdown,
         "client_profile_version": client_profile_version,
-        // Which app-bucket resolved for this run + where the mapping came from
-        // (user override / static / agent). Powers the "Context applied" section.
-        "bucket_key": bucket_key,
-        "bucket_source": bucket_source,
-        // The dynamic domain prior actually injected into the ## CONTEXT block:
-        // the top learned domains, the rendered line, and how it was derived
-        // ("classified" / "coding_bucket_seed" / "generic_default").
-        "domains": domains,
-        "domain_context": domain_context,
-        "domain_source": domain_source,
     })
 }
 

@@ -163,9 +163,9 @@ pub async fn list_terms(
     State(state): State<AppState>,
     Query(_q): Query<TermsQuery>,
 ) -> Json<TermsResponse> {
-    // Only starred (user-curated) terms are sent as Deepgram keyterm bias.
-    // Sending all vocab degrades STT accuracy — too many keywords confuse
-    // the model. Users star the terms they care most about.
+    // Only starred (user-curated) terms are exposed as speech/polish hints.
+    // Sending all vocab degrades quality — too many hints confuse the model.
+    // Users star the terms they care most about.
     let terms = vocabulary::starred_term_strings(&state.pool, &state.default_user_id);
     Json(TermsResponse { terms })
 }

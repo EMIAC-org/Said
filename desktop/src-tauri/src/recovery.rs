@@ -1,7 +1,7 @@
 //! Crash-safe dictation recovery.
 //!
 //! While a (non-meeting) recording is in flight we stream the same 16 kHz mono
-//! i16 PCM that goes to Deepgram into an on-disk file. If the app dies before the
+//! i16 PCM that local speech transcription consumes into an on-disk file. If the app dies before the
 //! recording has been delivered (panic → SIGABRT, OS kill, power loss), the audio
 //! survives on disk. On the next launch [`take_orphan`] returns it so the normal
 //! pipeline can re-transcribe and hand the user their words back.

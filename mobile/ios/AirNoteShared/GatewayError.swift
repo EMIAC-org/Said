@@ -2,7 +2,7 @@ import Foundation
 
 /// Typed gateway failures so the UI can react precisely:
 /// - `.unauthorized` → token expired/invalid → sign the user out and re-auth.
-/// - `.credentialMissing` → the server has no Deepgram/Groq credential provisioned
+/// - `.credentialMissing` → the server has no Groq polish credential provisioned
 ///   yet → show a calm "dictation is being set up" state instead of a hard error.
 public enum GatewayError: Error, Equatable {
     case unauthorized
@@ -42,7 +42,6 @@ public enum GatewayError: Error, Equatable {
 
     /// Server error codes that indicate provider credentials are not provisioned.
     public static let credentialMissingCodes: Set<String> = [
-        "deepgram_credential_missing",
         "groq_credential_missing",
         "credential_missing",
         "provider_credential_missing",

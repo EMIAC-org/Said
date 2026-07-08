@@ -66,7 +66,6 @@ fn prefs(output_language: &str, custom_prompt: Option<&str>) -> Preferences {
         record_hotkey: "caps_lock".into(),
         server_runtime_enabled: false,
         server_audio_runtime_enabled: false,
-        deepgram_api_key: None,
         gemini_api_key: None,
         learning_enabled: true,
         gateway_api_key: None,
@@ -74,7 +73,6 @@ fn prefs(output_language: &str, custom_prompt: Option<&str>) -> Preferences {
         llm_provider: "groq".into(),
         cerebras_api_key: None,
         deepinfra_api_key: None,
-        stt_provider: "deepgram".into(),
         updated_at: 0,
     }
 }
@@ -426,7 +424,6 @@ async fn test_vocab_terms_preserved() {
         resolution: VocabResolution::Resolved,
         term_type: Some("code_identifier".into()),
         meaning: Some("Workflow automation tool.".into()),
-        evidence: None,
         stt_aliases: vec![],
     }];
     let transcript = "set up the n8n workflow for the new client today";

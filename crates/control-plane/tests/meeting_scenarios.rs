@@ -47,14 +47,9 @@ impl TestServer {
             },
             hub,
             notifications: said_control_plane::notification_hub::NotificationHub::new(),
-            deepgram_api_key: String::new(),
-            deepgram_api_keys: Vec::new(),
-            stt_provider: "deepgram".to_string(),
             openai_api_key: String::new(),
-            openai_transcribe_model: "whisper-1".to_string(),
             groq_api_key: String::new(),
             cerebras_api_key: String::new(),
-            openrouter_api_key: String::new(),
             deepinfra_api_key: String::new(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             divo_base_url: String::new(),
@@ -144,6 +139,13 @@ impl TestServer {
         .execute(&self.db)
         .await
         .unwrap();
+
+        sqlx::query("UPDATE accounts SET active_org_id = $1 WHERE id = $2")
+            .bind(org_id)
+            .bind(account_id)
+            .execute(&self.db)
+            .await
+            .unwrap();
 
         let _ = token; // token used for auth context in HTTP calls
         org_id

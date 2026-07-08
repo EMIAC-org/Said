@@ -1,9 +1,8 @@
 //! Vocabulary store — STT-layer bias terms.
 //!
 //! These are correctly-spelled terms (jargon, names, brands, code identifiers)
-//! that we want the STT engine to recognize.  At recording start we load the
-//! top-N by weight and inject them into the STT request — Deepgram's `keyterm`
-//! parameter for nova-3, Whisper's `initial_prompt` for OSS Whisper.
+//! that we want the local speech and polish layers to recognize. At recording
+//! start we load the top-N by weight as local speech/polish hints.
 //!
 //! Promotion paths (handled in `routes::classify`):
 //!   • STT_ERROR classification with jargon-like candidate → auto-add (weight=1.0)
@@ -121,8 +120,7 @@ pub fn upsert(pool: &DbPool, user_id: &str, term: &str, bump: f64, source: &str)
 /// Insert or strengthen a vocabulary term, recording the user's
 /// `output_language` at the time of the sighting.  This is what the
 /// learning pipeline calls so the keyterms slate can be filtered by
-/// language at recording time (no Devanagari leaking into English-mode
-/// Deepgram requests).
+/// language at recording time (no Devanagari leaking into English-mode hints).
 pub fn upsert_for_language(
     pool: &DbPool,
     user_id: &str,
@@ -520,7 +518,7 @@ pub fn top_term_strings(pool: &DbPool, user_id: &str, limit: usize) -> Vec<Strin
         .collect()
 }
 
-/// Only starred (user-curated) terms — used for Deepgram keyterm biasing.
+/// Only starred (user-curated) terms — used as speech/polish hints.
 pub fn starred_term_strings(pool: &DbPool, user_id: &str) -> Vec<String> {
     let conn = match pool.get() {
         Ok(c) => c,

@@ -51,7 +51,7 @@ Use a release or staging build. Do not route Android through the desktop app or 
 Prerequisites:
 
 - Gateway account exists.
-- Account has active Deepgram and Groq runtime credentials in the server vault.
+- Account has an active Groq polish credential in the server vault.
 - Android device has network access to `https://airnote.emiactech.com`.
 
 Run:

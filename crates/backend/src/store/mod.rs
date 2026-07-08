@@ -59,7 +59,7 @@ const MIGRATION_026: &str = include_str!("migrations/026_cerebras_api_key.sql");
 const MIGRATION_027: &str = include_str!("migrations/027_tier2_model_metadata.sql");
 const MIGRATION_028: &str = include_str!("migrations/028_tier2_policy_learning.sql");
 const MIGRATION_029: &str = include_str!("migrations/029_tier2_edit_policy.sql");
-const MIGRATION_030: &str = include_str!("migrations/030_stt_provider.sql");
+const MIGRATION_030: &str = include_str!("migrations/030_local_speech_contract.sql");
 const MIGRATION_031: &str = include_str!("migrations/031_alias_safety_judgments.sql");
 const MIGRATION_032: &str = include_str!("migrations/032_enterprise_server_url.sql");
 const MIGRATION_033: &str = include_str!("migrations/033_email_memory.sql");
@@ -82,10 +82,11 @@ const MIGRATION_049: &str = include_str!("migrations/049_lock_cerebras_polish_de
 const MIGRATION_050: &str = include_str!("migrations/050_local_profile_summary.sql");
 const MIGRATION_051: &str = include_str!("migrations/051_observability_outbox.sql");
 const MIGRATION_052: &str = include_str!("migrations/052_voice_runs.sql");
-const MIGRATION_053: &str = include_str!("migrations/053_retire_swift_local_stt.sql");
+const MIGRATION_053: &str = include_str!("migrations/053_retire_legacy_local_stt.sql");
 const MIGRATION_054: &str = include_str!("migrations/054_recording_trace_json.sql");
 const MIGRATION_055: &str = include_str!("migrations/055_drop_prompt_templates.sql");
 const MIGRATION_056: &str = include_str!("migrations/056_site_visits.sql");
+const MIGRATION_057: &str = include_str!("migrations/057_force_cerebras_gemma_4.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -375,7 +376,7 @@ fn run_migrations(pool: &DbPool) {
     }
 
     if version < 30 {
-        info!("running migration 030_stt_provider");
+        info!("running migration 030_local_speech_contract");
         conn.execute_batch(MIGRATION_030)
             .expect("migration 030 failed");
         conn.execute_batch("PRAGMA user_version = 30")
@@ -559,7 +560,7 @@ fn run_migrations(pool: &DbPool) {
     }
 
     if version < 53 {
-        info!("running migration 053_retire_swift_local_stt");
+        info!("running migration 053_retire_legacy_local_stt");
         conn.execute_batch(MIGRATION_053)
             .expect("migration 053 failed");
         conn.execute_batch("PRAGMA user_version = 53")
@@ -588,6 +589,14 @@ fn run_migrations(pool: &DbPool) {
             .expect("migration 056 failed");
         conn.execute_batch("PRAGMA user_version = 56")
             .expect("failed to set user_version to 56");
+    }
+
+    if version < 57 {
+        info!("running migration 057_force_cerebras_gemma_4");
+        conn.execute_batch(MIGRATION_057)
+            .expect("migration 057 failed");
+        conn.execute_batch("PRAGMA user_version = 57")
+            .expect("failed to set user_version to 57");
     }
 }
 
@@ -639,12 +648,6 @@ fn repair_schema_gaps(pool: &DbPool) {
     add_column_if_missing(
         &conn,
         "preferences",
-        "deepgram_api_key",
-        "deepgram_api_key TEXT",
-    );
-    add_column_if_missing(
-        &conn,
-        "preferences",
         "gemini_api_key",
         "gemini_api_key TEXT",
     );
@@ -676,20 +679,8 @@ fn repair_schema_gaps(pool: &DbPool) {
     add_column_if_missing(
         &conn,
         "preferences",
-        "stt_provider",
-        "stt_provider TEXT NOT NULL DEFAULT 'deepgram'",
-    );
-    add_column_if_missing(
-        &conn,
-        "preferences",
         "server_runtime_enabled",
         "server_runtime_enabled INTEGER NOT NULL DEFAULT 0",
-    );
-    add_column_if_missing(
-        &conn,
-        "preferences",
-        "server_audio_runtime_enabled",
-        "server_audio_runtime_enabled INTEGER NOT NULL DEFAULT 0",
     );
     add_column_if_missing(
         &conn,
@@ -744,7 +735,7 @@ pub fn ensure_default_user(pool: &DbPool) -> String {
     conn.execute(
         "INSERT INTO preferences (user_id, selected_model, tone_preset, language,
          auto_paste, edit_capture, polish_text_hotkey, record_hotkey, server_runtime_enabled, updated_at)
-         VALUES (?1, 'cerebras-gpt-oss', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
+         VALUES (?1, 'cerebras-gemma-4', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
         params![id, now_ms],
     )
     .expect("failed to create default preferences");
@@ -842,7 +833,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 56);
+        assert_eq!(version, 57);
 
         for table in [
             "tier2_policy_weights",

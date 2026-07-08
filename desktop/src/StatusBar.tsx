@@ -163,6 +163,7 @@ type ReviewCandidate = {
   term_type: string;
   learnable: boolean;
   tag: string;
+  context?: string | null;
 };
 
 type VoiceErrorPayload = {
@@ -1429,9 +1430,9 @@ export default function StatusBar() {
     }
   }
 
-  async function handleConfirm(term: string, original: string, action: "learn" | "skip", recordingId: string) {
+  async function handleConfirm(term: string, original: string, action: "learn" | "skip", recordingId: string, context?: string) {
     try {
-      await invoke("confirm_term", { term, original, action, recordingId: recordingId || null });
+      await invoke("confirm_term", { term, original, action, recordingId: recordingId || null, context: context || null });
     } catch (e) {
       console.warn("[status-bar] confirm_term failed:", e);
     }
@@ -1832,10 +1833,10 @@ export default function StatusBar() {
             Is <strong>&ldquo;{bar.term}&rdquo;</strong> a product, brand, or name?
           </div>
           <div className="sb-survey-footer">
-            <button type="button" className="sb-survey-skip" onClick={() => handleConfirm(bar.term, bar.original, "skip", bar.recordingId)}>
+            <button type="button" className="sb-survey-skip" onClick={() => handleConfirm(bar.term, bar.original, "skip", bar.recordingId, bar.context)}>
               No, just rephrasing
             </button>
-            <button type="button" className="sb-survey-next" onClick={() => handleConfirm(bar.term, bar.original, "learn", bar.recordingId)}>
+            <button type="button" className="sb-survey-next" onClick={() => handleConfirm(bar.term, bar.original, "learn", bar.recordingId, bar.context)}>
               Yes, learn it
               <CornerDownLeft size={14} strokeWidth={2} aria-hidden="true" />
             </button>
@@ -1875,7 +1876,7 @@ export default function StatusBar() {
     const handleLearn = async () => {
       const items = bar.candidates
         .filter((_, i) => sel.has(i))
-        .map((c) => ({ original: c.original, corrected: c.corrected }));
+        .map((c) => ({ original: c.original, corrected: c.corrected, context: c.context || null }));
       if (items.length === 0) return;
       try {
         const result = await invoke<{ learned_count: number; server_owned?: boolean }>("confirm_batch", { items, recordingId: bar.recordingId });

@@ -4,7 +4,7 @@
 //! (with vocab entries, screen context, etc.) and calls the real Groq API
 //! to verify that:
 //!   1. A vocab term ("Emiac") is correctly substituted when the transcript
-//!      contains a Deepgram distortion ("MEAH").
+//!      contains a Speech engine distortion ("MEAH").
 //!   2. An unrelated word ("MACOBS") is NOT falsely replaced with "Emiac"
 //!      even when "Emiac" is in the screen context.
 //!
@@ -55,7 +55,6 @@ fn main() {
                 meaning: Some("Indian technology company".to_string()),
                 context: Some("Emiac ke naam se karenge hum".to_string()),
                 resolution: VocabResolution::Resolved,
-                evidence: None,
                 stt_aliases: vec![("meah".to_string(), 2)],
             }];
 
@@ -110,7 +109,6 @@ fn main() {
                 meaning: Some("Indian technology company".to_string()),
                 context: Some("Emiac ke naam se karenge hum".to_string()),
                 resolution: VocabResolution::Resolved,
-                evidence: None,
                 stt_aliases: vec![("meah".to_string(), 2)],
             }];
 
@@ -278,13 +276,11 @@ fn make_test_prefs() -> Preferences {
         server_audio_runtime_enabled: false,
         updated_at: 0,
         gateway_api_key: None,
-        deepgram_api_key: None,
         gemini_api_key: None,
         groq_api_key: None,
         cerebras_api_key: None,
         deepinfra_api_key: None,
         llm_provider: "groq".to_string(),
-        stt_provider: "deepgram".to_string(),
     }
 }
 

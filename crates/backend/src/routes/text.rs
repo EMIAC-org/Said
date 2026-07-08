@@ -1,6 +1,6 @@
 //! POST /v1/text/polish
 //!
-//! Same pipeline as /v1/voice/polish but skips Deepgram.
+//! Same polish pipeline as /v1/voice/polish for already-transcribed text.
 //! Body: { "text": "...", "target_app"?: "..." }
 //! Response: SSE stream identical to voice/polish.
 
@@ -728,7 +728,10 @@ pub async fn refine_last(
 
 #[cfg(test)]
 mod tests {
-    use crate::llm::{prompt::resolved_vocab_terms_to_entries, vocab_resolver};
+    use crate::llm::{
+        prompt::{resolved_vocab_terms_to_entries, vocab_terms_to_entries},
+        vocab_resolver,
+    };
     use crate::store::vocab_embeddings::upsert_embedding;
     use crate::store::{DbPool, now_ms, stt_replacements, vocab_embeddings};
     use r2d2_sqlite::SqliteConnectionManager;
@@ -836,7 +839,8 @@ mod tests {
             &selected,
             &alias_result,
         );
-        let chosen = resolved_vocab_terms_to_entries(resolved.resolved_terms);
+        let mut chosen = resolved_vocab_terms_to_entries(resolved.resolved_terms);
+        chosen.extend(vocab_terms_to_entries(resolved.candidate_terms));
         assert!(
             chosen.is_empty(),
             "text polish should not inject unrelated top-weight vocab"

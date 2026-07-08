@@ -4,30 +4,23 @@ pub const PROFILE_BATCH_SYSTEM_PROMPT: &str = r#"You are a per-context profiling
 You are given a WINDOW of recent dictations from ONE app-context bucket (e.g. coding, messaging, work_tracker, formal_writing, default) for a single user, the user's CURRENT style for that bucket, and a short summary of their GLOBAL background. Output STRICT JSON only — no markdown fences, no prose.
 
 Learn TWO things, grounded ONLY in the runs shown:
-1. The user's preferred WRITING STYLE in THIS bucket, expressed ONLY as the fixed "style_knobs" below. For each knob, pick exactly one of its allowed values based on how they EDITED the polished output (edited runs are the strongest signal) and outputs they accepted unchanged. Do NOT average across contexts — this window is one bucket only.
+1. The user's preferred WRITING STYLE in THIS bucket (formality, greetings/sign-offs, capitalization, emoji, sentence length, structure, whether to preserve code identifiers verbatim). Base this on how they EDITED the polished output (edited runs are the strongest signal) and on outputs they accepted unchanged. Do NOT average across contexts — this window is one bucket only.
 2. GLOBAL identity facts that are true regardless of app (their background, focus areas, domains they work in).
 
 Also: for any app listed under "unknown_apps", assign it to exactly ONE bucket from the fixed set [coding, messaging, work_tracker, formal_writing, default].
 
 STRICT RULES:
 - Do NOT propose aliases, stable_terms, or STT spelling corrections — a separate reviewed pipeline owns those. Leave them out entirely.
-- "style_knobs": every value MUST be exactly one of that knob's allowed strings. NEVER write free-form style text or any key not listed. OMIT a knob entirely when this window gives no clear signal for it — omission is the default and is preferred over guessing.
-- Only set a knob when at least two runs corroborate it.
+- Only assert a style when at least two runs corroborate it; otherwise omit it. Prefer omission over speculation.
 - Set "apply": true only when the window gives clear, corroborated evidence; set a calibrated "confidence" in [0,1].
 
-Output schema (STRICT JSON, no fences, no prose). Include only the knobs you have evidence for; omit the rest:
+Output schema:
 {
   "apply": true,
   "confidence": 0.0,
-  "style_knobs": {
-    "tone": "casual|neutral|formal",
-    "greeting": "avoid|ok|expected",
-    "casing": "preserve|sentence|lower",
-    "length": "terse|normal|expansive",
-    "emoji": "avoid|ok",
-    "technical_terms": "preserve|normal"
-  },
-  "user_background": { "summary": "string", "evidence": "string" },
+  "style_updates": [{ "category": "formality|greeting|casing|emoji|length|structure|verbatim", "preference": "string", "evidence": "string" }],
+  "speech_patterns": [{ "pattern": "string", "evidence": "string" }],
+  "user_background": { "summary": "string", "evidence": "string" } ,
   "add_domains": [{ "name": "string", "weight": 0.0, "evidence": "string" }],
   "add_focus_areas": [{ "area": "string", "weight": 0.0, "evidence": "string" }],
   "app_bucket_suggestions": [{ "app_key": "string", "bucket": "coding|messaging|work_tracker|formal_writing|default", "confidence": 0.0 }],
@@ -106,7 +99,7 @@ Good profile_markdown_patch example:
 Background: User appears to be a developer/business operator shipping AirNote-style software and client-facing automations.
 Focus areas: software releases, local STT, LLM polish, Docker/SQLite/Sentry, Google Ads, inventory and finance ops.
 Speech style: Mixes Hinglish with developer/business English; usually wants natural but clear work-ready text.
-Stable vocabulary: AirNote, Caps Lock, Deepgram, DeepSeek, Docker, SQLite, Sentry, webhook, PR, main branch.
+Stable vocabulary: AirNote, Caps Lock, Local Speech, DeepSeek, Docker, SQLite, Sentry, webhook, PR, main branch.
 STT recovery: doctor rebuild → Docker rebuild; CQLite migration → SQLite migration; webbook retry → webhook retry.
 Recent context: Testing dictation quality, profile-biased prompts, runtime latency, and local Swift STT.
 
@@ -137,7 +130,7 @@ Output STRICT JSON only:
 Hard rules:
 1. Aliases are only for STT hearing/spelling recovery of approved brands, tools, acronyms, product names, code identifiers, proper nouns, or rare phrases.
 2. NEVER alias common Hinglish/Hindi/English words by themselves: kaam, main, mein, kya, time, hello, bhai, app, call, message, meeting, detail, issue, etc.
-3. Multi-word non-common heard forms are allowed when evidence supports them, e.g. "n 10" -> "n8n", "deep gram" -> "Deepgram".
+3. Multi-word non-common heard forms are allowed when evidence supports them, e.g. "n 10" -> "n8n", "super base" -> "Supabase".
 4. Do not create aliases for grammar, tone, translation, style, or normal wording.
 5. Require high confidence and same-phrase evidence. Do not propose an alias merely because the approved term is in the user's profile.
 6. Do not create broad aliases that could turn unrelated company/person/product names into developer terms like Kafka, ZooKeeper, Sentry, crash, Docker, SQLite, etc.

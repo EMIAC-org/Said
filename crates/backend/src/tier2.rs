@@ -773,15 +773,15 @@ fn build_candidates(
         if rule.review_status != ReviewStatus::Approved {
             continue;
         }
+        let key = normalize_core(&rule.correct_form);
+        let Some(candidate) = by_term.get_mut(&key) else {
+            continue;
+        };
         if crate::llm::alias_safety::is_common_alias_source(&rule.transcript_form)
             || is_in_dictionary(&rule.transcript_form)
         {
             continue;
         }
-        let key = normalize_core(&rule.correct_form);
-        let Some(candidate) = by_term.get_mut(&key) else {
-            continue;
-        };
         let alias = normalize_core(&rule.transcript_form);
         if alias.len() < MIN_TOKEN_LEN || alias == candidate.term_lower {
             continue;
@@ -2015,13 +2015,22 @@ static DICTIONARY: Lazy<HashSet<String>> = Lazy::new(|| {
         "cheez", "jagah", "waqt", "baar", "baat", "kaam", "aaj", "kal", "aajkal", "ajkal", "parso",
         "subah", "shaam", "dopahar", "hamesha", "kabhi", "tarah", "saath", "andar", "bahar",
         "upar", "neeche", "peeche", "saamne",
-        // Hinglish adjectives/adverbs that Deepgram transcribes and are close to brand names
+        // Hinglish adjectives/adverbs that speech engines transcribe and are close to brand names
         "kaafi", "kafi", "sahi", "galat", "accha", "pura", "poora",
     ] {
         words.insert(w.to_string());
     }
     words
 });
+
+pub fn warm_runtime_caches() {
+    let dictionary = Lazy::force(&DICTIONARY);
+    let _ = Lazy::force(&CONTEXT_PATH_ENABLED);
+    info!(
+        "[tier2] runtime caches warmed dictionary_words={}",
+        dictionary.len()
+    );
+}
 
 pub fn is_in_dictionary(token: &str) -> bool {
     let norm = token

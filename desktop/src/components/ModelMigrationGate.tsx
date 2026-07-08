@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowRight, Check, Cpu, Download, Keyboard, Link, Loader2, Sparkles, Wifi, X } from "lucide-react";
+import { ArrowRight, Check, Cpu, Download, Keyboard, Link, Loader2, Sparkles, X } from "lucide-react";
 import {
   getPreferences, invoke, patchPreferences,
   getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
 } from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
-import { ReclaimOldModelsRow, type ReclaimResult } from "@/components/ReclaimOldModelsRow";
+import type { ReclaimResult } from "@/components/ReclaimOldModelsRow";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
@@ -52,13 +52,10 @@ export function ModelMigrationGate({
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [reclaiming, setReclaiming] = useState(false);
-  const [reclaimResult, setReclaimResult] = useState<ReclaimResult | null>(null);
-  const [reclaimError, setReclaimError] = useState("");
   const [recordHotkey, setRecordHotkey] = useState("caps_lock");
   const [modelChecked, setModelChecked] = useState(false);
-  const [choosing, setChoosing] = useState(false);
   const mounted = useRef(true);
+  const silentLegacyModelCleanupDone = useRef(false);
 
   const installed = model?.installed ?? false;
 
@@ -74,7 +71,7 @@ export function ModelMigrationGate({
   }, []);
 
   const refresh = useCallback(async () => {
-    const s = await invoke<ModelStatus>("apex_model_status").catch((e) => {
+    const s = await invoke<ModelStatus>("dictation_model_status").catch((e) => {
       if (mounted.current) setError(friendlyError(e));
       return null;
     });
@@ -92,6 +89,16 @@ export function ModelMigrationGate({
       mounted.current = false;
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (silentLegacyModelCleanupDone.current || !modelChecked) return;
+    silentLegacyModelCleanupDone.current = true;
+    void invoke<ReclaimResult>("reclaim_old_models")
+      .then((result) => {
+        if (mounted.current && result.removed.length > 0) void refresh();
+      })
+      .catch(() => {});
+  }, [installed, modelChecked, refresh]);
 
   useEffect(() => {
     const un = listen<DownloadProgress>("meeting-model-download", (e) => {
@@ -114,26 +121,13 @@ export function ModelMigrationGate({
   const startDownload = useCallback(async () => {
     setBusy(true);
     setError("");
-    setReclaimError("");
-    setReclaimResult(null);
     try {
-      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
+      await invoke("download_dictation_model");
       const status = await refresh();
       if (!status?.installed) {
         throw new Error(`${NEW_MODEL_NAME} did not install correctly.`);
       }
-
-      // Best-effort disk reclaim after the new model is verified. Failure here
-      // should not block the user from continuing with the updated model.
-      if (mounted.current) setReclaiming(true);
-      try {
-        const result = await invoke<ReclaimResult>("reclaim_old_models");
-        if (mounted.current) setReclaimResult(result);
-      } catch (e) {
-        if (mounted.current) setReclaimError(friendlyError(e));
-      } finally {
-        if (mounted.current) setReclaiming(false);
-      }
+      await invoke<ReclaimResult>("reclaim_old_models").catch(() => null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg !== "cancelled") setError(friendlyError(msg));
@@ -145,46 +139,6 @@ export function ModelMigrationGate({
   const cancelDownload = useCallback(async () => {
     await invoke("meeting_cancel_model_download", { name: NEW_MODEL_FILE }).catch(() => {});
     setDownload(null);
-  }, []);
-
-  // Persist the chosen engine, then advance to the hotkey step. Neither option
-  // is forced — the user picks on-device or cloud here.
-  const chooseLocalAndContinue = useCallback(async () => {
-    setChoosing(true);
-    setError("");
-    try {
-      await patchPreferences({ stt_provider: "whisper_local" });
-      setGateStep("hotkey");
-    } catch (e) {
-      setError(friendlyError(e));
-    } finally {
-      if (mounted.current) setChoosing(false);
-    }
-  }, []);
-
-  const chooseCloudAndContinue = useCallback(async () => {
-    setChoosing(true);
-    setError("");
-    try {
-      await patchPreferences({ stt_provider: "deepgram" });
-      setGateStep("hotkey");
-    } catch (e) {
-      setError(friendlyError(e));
-    } finally {
-      if (mounted.current) setChoosing(false);
-    }
-  }, []);
-
-  const reclaim = useCallback(async () => {
-    setReclaiming(true);
-    setReclaimError("");
-    try {
-      setReclaimResult(await invoke<ReclaimResult>("reclaim_old_models"));
-    } catch (e) {
-      setReclaimError(friendlyError(e));
-    } finally {
-      setReclaiming(false);
-    }
   }, []);
 
   const pct =
@@ -269,108 +223,73 @@ export function ModelMigrationGate({
     <div className="onb-error-screen">
       <div className="mig-card">
         <div className="mig-badge">
-          <Sparkles size={12} /> New in this update
+          <Sparkles size={12} /> Local speech model
         </div>
-        <h2 className="mig-title">Pick your speech engine</h2>
+        <h2 className="mig-title">Meet {NEW_MODEL_NAME}</h2>
         <p className="mig-desc">
-          AirNote now gives you two ways to transcribe your voice. Choose either — you can switch
-          any time in Settings.
+          AirNote uses one on-device Hinglish model for dictation and meetings. It stays
+          private, works offline, and has no per-use cost. Install it to enable local speech.
         </p>
 
-        {/* Option A — On-device (better accuracy) */}
-        <div
-          className="rounded-xl p-4 mt-1 text-left"
-          style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
-        >
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
-                style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
-              >
+        <div className="mig-model">
+          <div className="mig-model-row">
+            <div className="mig-model-left">
+              <span className="mig-model-ico">
                 <Cpu size={13} />
               </span>
-              <span className="text-[13.5px] font-semibold text-foreground truncate">
-                {NEW_MODEL_NAME}
+              <span className="mig-model-name">
+                {checkingModel
+                  ? `Checking ${NEW_MODEL_NAME}…`
+                  : installed
+                  ? `${NEW_MODEL_NAME} · ${
+                      model && model.size_bytes > 0 ? formatSize(model.size_bytes) : NEW_MODEL_SIZE_HINT
+                    }`
+                  : downloading
+                    ? `Downloading ${NEW_MODEL_NAME}…`
+                    : `${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
               </span>
             </div>
-            <span className="text-[11px] text-muted-foreground shrink-0">On-device · better accuracy</span>
+            {checkingModel ? (
+              <span className="mig-ready">
+                <Loader2 size={12} className="animate-spin" /> Checking
+              </span>
+            ) : installed ? (
+              <span className="mig-ready">
+                <Check size={12} /> Installed
+              </span>
+            ) : downloading ? (
+              <button
+                type="button"
+                onClick={() => void cancelDownload()}
+                className="btn-ghost text-[11px] shrink-0"
+                style={{ height: 26 }}
+              >
+                <X size={12} /> Cancel
+              </button>
+            ) : null}
           </div>
-          <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-            Best Hinglish accuracy. One-time {NEW_MODEL_SIZE_HINT} download, then fully offline —
-            private, no per-use cost.
-          </p>
 
-          <div className="mig-model">
-            <div className="mig-model-row">
-              <div className="mig-model-left">
-                <span className="mig-model-ico">
-                  <Cpu size={13} />
-                </span>
-                <span className="mig-model-name">
-                  {checkingModel
-                    ? `Checking ${NEW_MODEL_NAME}…`
-                    : installed
-                    ? `${NEW_MODEL_NAME} · ${
-                        model && model.size_bytes > 0 ? formatSize(model.size_bytes) : NEW_MODEL_SIZE_HINT
-                      }`
-                    : downloading
-                      ? `Downloading ${NEW_MODEL_NAME}…`
-                      : `${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
-                </span>
-              </div>
-              {checkingModel ? (
-                <span className="mig-ready">
-                  <Loader2 size={12} className="animate-spin" /> Checking
-                </span>
-              ) : installed ? (
-                <span className="mig-ready">
-                  <Check size={12} /> Installed
-                </span>
-              ) : downloading ? (
-                <button
-                  type="button"
-                  onClick={() => void cancelDownload()}
-                  className="btn-ghost text-[11px] shrink-0"
-                  style={{ height: 26 }}
-                >
-                  <X size={12} /> Cancel
-                </button>
-              ) : null}
+          {downloading && (
+            <div className="mig-bar">
+              <div style={{ width: `${Math.max(4, pct ?? 0)}%` }} />
             </div>
+          )}
 
-            {downloading && (
-              <div className="mig-bar">
-                <div style={{ width: `${Math.max(4, pct ?? 0)}%` }} />
-              </div>
-            )}
+          <ErrorNotice error={error} onRetry={() => void startDownload()} className="mt-2" />
 
-            {installed && (
-              <ReclaimOldModelsRow
-                reclaiming={reclaiming}
-                result={reclaimResult}
-                error={reclaimError}
-                onReclaim={() => void reclaim()}
-              />
-            )}
+        </div>
 
-            <ErrorNotice error={error} onRetry={() => void startDownload()} className="mt-2" />
-          </div>
-
+        <div className="mig-actions">
           {installed ? (
-            <button
-              onClick={() => void chooseLocalAndContinue()}
-              disabled={choosing}
-              className="btn-primary btn-lg w-full mt-3"
-            >
-              {choosing ? "Saving…" : `Use ${NEW_MODEL_NAME}`}
+            <button onClick={() => setGateStep("hotkey")} className="btn-primary btn-lg w-full">
+              Next — pick your hotkey
               <ArrowRight size={14} />
             </button>
           ) : (
             <button
               onClick={() => void startDownload()}
               disabled={checkingModel || busy || downloading}
-              className="btn-primary btn-lg w-full mt-3"
+              className="btn-primary btn-lg w-full"
             >
               {checkingModel || busy || downloading ? (
                 <Loader2 size={14} className="animate-spin" />
@@ -378,48 +297,16 @@ export function ModelMigrationGate({
                 <Download size={14} />
               )}
               {checkingModel
-                ? "Checking…"
+                ? "Checking local model…"
                 : downloading
                 ? `Installing… ${pct ?? 0}%`
-                : `Download · ${NEW_MODEL_SIZE_HINT}`}
+                : `Install ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
             </button>
           )}
-        </div>
-
-        {/* Option B — Cloud (lightweight) */}
-        <div
-          className="rounded-xl p-4 mt-3 text-left"
-          style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
-        >
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
-                style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
-              >
-                <Wifi size={13} />
-              </span>
-              <span className="text-[13.5px] font-semibold text-foreground truncate">Cloud Whisper</span>
-            </div>
-            <span className="text-[11px] text-muted-foreground shrink-0">Fast · lightweight</span>
-          </div>
-          <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-            Whisper Large V3 Turbo, streamed from the cloud. Lightweight with decent quality for most
-            tasks. Nothing to download; needs internet while you dictate.
-          </p>
-          <button
-            onClick={() => void chooseCloudAndContinue()}
-            disabled={choosing}
-            className="btn-primary btn-lg w-full"
-          >
-            {choosing ? "Saving…" : "Use Cloud Whisper"}
-            <ArrowRight size={14} />
+          <button type="button" onClick={() => setGateStep("hotkey")} className="onb-skip-link">
+            Keep my current setup
           </button>
         </div>
-
-        <button type="button" onClick={() => setGateStep("hotkey")} className="onb-skip-link">
-          Decide later — keep my current setup
-        </button>
       </div>
     </div>
   );

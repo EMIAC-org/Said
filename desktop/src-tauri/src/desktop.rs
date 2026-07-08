@@ -88,7 +88,7 @@ impl DesktopApp {
         }
     }
 
-    /// Take the live audio chunk receiver for Deepgram WS streaming (P5).
+    /// Take the live audio chunk receiver for local speech processing.
     /// Returns `None` if the recorder hasn't started yet or the receiver was already taken.
     pub fn take_chunk_receiver(&mut self) -> Option<ChunkReceiver> {
         self.recorder.take_chunk_receiver()

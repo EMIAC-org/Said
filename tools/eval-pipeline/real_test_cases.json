@@ -2,7 +2,7 @@
   {
     "id": "PN1",
     "category": "proper_noun_distortion",
-    "description": "Deepgram outputs meac for Emiac",
+    "description": "Local speech outputs meac for Emiac",
     "transcript": "meac और में कितना काम हो गया",
     "expected_contains": [
       "Emiac"
@@ -19,7 +19,7 @@
   {
     "id": "PN2",
     "category": "proper_noun_distortion",
-    "description": "Deepgram outputs मेकोर्स for Macobs",
+    "description": "Local speech outputs मेकोर्स for Macobs",
     "transcript": "मेकोर्स जो है emiac के अंदर आती है",
     "expected_contains": [
       "Macobs",
@@ -59,7 +59,7 @@
   {
     "id": "PN4",
     "category": "proper_noun_distortion",
-    "description": "meac technologies - Deepgram distortion",
+    "description": "meac technologies - Local speech distortion",
     "transcript": "मैं meac technologies में काम करता हूं",
     "expected_contains": [
       "Emiac"
@@ -269,9 +269,9 @@
     "id": "DR2",
     "category": "devanagari_roman",
     "description": "Mixed script with tech terms",
-    "transcript": "sed app में deepgram से transcript आता है फिर grock पर scout model polish करता है लेकिन local host three thousand पर back end crash हो रहा है",
+    "transcript": "sed app में local_speech से transcript आता है फिर grock पर scout model polish करता है लेकिन local host three thousand पर back end crash हो रहा है",
     "expected_contains": [
-      "Deepgram",
+      "Local speech",
       "localhost",
       "3000"
     ],

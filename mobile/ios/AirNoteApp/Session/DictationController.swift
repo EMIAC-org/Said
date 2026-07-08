@@ -202,7 +202,7 @@ final class DictationController: ObservableObject {
         cancelFinalizeTimeout()
         if unavailable {
             phase = .unavailable
-            errorMessage = "Add your Deepgram and Groq keys in Settings → Voice keys to turn on dictation."
+            errorMessage = "Add your Groq polish key in Settings → Voice keys to turn on dictation."
         } else if message.lowercased().contains("decrypt") {
             // The server has the keys but couldn't decrypt them (its credential key
             // rotated). Re-mirror our local copies to heal the vault for the next
@@ -234,7 +234,7 @@ final class DictationController: ObservableObject {
         case .interimTranscript(let text):
             interim = text
         case .finalTranscript(let text):
-            // Deepgram emits a "final" for each finished utterance WHILE the user
+            // The speech stream emits a "final" for each finished utterance WHILE the user
             // is still speaking. That does NOT mean recording is over — keep the
             // mic live (and the stop button enabled). Only stop() moves us to
             // .processing once the user actually sends audio.end.

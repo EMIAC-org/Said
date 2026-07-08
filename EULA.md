@@ -30,7 +30,7 @@ Said is provided **"as is"** without warranty of any kind. The full disclaimer i
 
 - **No SLA**: Said is a desktop app you install yourself. Crashes, missed words, transcription errors, network failures, third-party API outages, and platform breakage are all possible and not grounds for refund or compensation (there is nothing to refund — Said is free).
 - **No data recovery**: if your local SQLite database is corrupted or deleted, your lexicon and history are gone. Back up `~/Library/Application Support/VoicePolish/db.sqlite` if it matters to you.
-- **Third-party services**: Deepgram, Groq, and Gemini have their own terms and outages. We do not control them. If they break, Said breaks.
+- **Third-party services**: Groq, Gemini, and other configured text-polish services have their own terms and outages. We do not control them. If they break, Said breaks.
 
 ---
 

@@ -11,7 +11,7 @@ Thanks for your interest. AirNote is a small project; the contribution flow is i
 ```bash
 git clone https://github.com/EMIAC-org/Said
 cd Said
-cp .env.example .env       # fill in DEEPGRAM_API_KEY + GATEWAY_API_KEY
+cp .env.example .env       # fill in GATEWAY_API_KEY if using the gateway
 brew install just          # if you don't have it
 just dev                   # builds + launches Tauri desktop app
 ```
@@ -23,7 +23,7 @@ just dev                   # builds + launches Tauri desktop app
 ```powershell
 git clone https://github.com/EMIAC-org/Said
 cd Said
-Copy-Item .env.example .env   # fill in DEEPGRAM_API_KEY + GATEWAY_API_KEY
+Copy-Item .env.example .env   # fill in GATEWAY_API_KEY if using the gateway
 
 # Install just via scoop / winget (one-time):
 #   scoop install just
@@ -78,7 +78,7 @@ See [AGENTS.md](AGENTS.md) for the full map. Briefly:
 |---|---|
 | `crates/hotkey` | Global hotkey listener (macOS today; Windows planned) |
 | `crates/recorder` | Audio capture via `cpal` |
-| `crates/core` | Deepgram WebSocket client |
+| `crates/core` | Shared transcript metadata + polish helpers |
 | `crates/paster` | HID typing + edit-watch (macOS today; Windows planned) |
 | `crates/backend` | Local Axum daemon — routes, LLM polish, SQLite, learning |
 | `crates/said` | Standalone CLI |

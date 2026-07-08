@@ -301,16 +301,16 @@ const DEV_TERMS: &[DevTerm] = &[
         ],
     },
     DevTerm {
-        canonical: "Deepgram",
-        distortions: &["deep grum", "deep gram"],
+        canonical: "ModelArk",
+        distortions: &["model arc", "model ark"],
         sentences: &[
             (
-                "deep grum ka STT model use karo",
-                "Deepgram ka STT model use karo",
+                "model arc ka inference endpoint use karo",
+                "ModelArk ka inference endpoint use karo",
             ),
             (
-                "deep gram API integrate karna hai",
-                "Deepgram API integrate karna hai",
+                "model ark API integrate karna hai",
+                "ModelArk API integrate karna hai",
             ),
         ],
     },

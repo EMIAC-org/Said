@@ -296,7 +296,7 @@ CANONICAL_TARGETS = {
     "cerebras": "Cerebras",
     "clickup": "ClickUp",
     "codex": "Codex",
-    "deepgram": "Deepgram",
+    "local_speech": "Local speech",
     "deepinfra": "DeepInfra",
     "deepseek": "DeepSeek",
     "divo": "Divo",
@@ -583,7 +583,7 @@ def row_is_useful_eval(row: dict[str, Any]) -> bool:
         or flags.get("has_numbers")
         or flags.get("has_currency")
         or flags.get("has_email")
-        or any(term in (raw + " " + kept).lower() for term in ["docker", "webhook", "stt", "api", "postgres", "sqlite", "kafka", "sentry", "deepgram", "airnote", "groq", "scout", "divo", "desktop"])
+        or any(term in (raw + " " + kept).lower() for term in ["docker", "webhook", "stt", "api", "postgres", "sqlite", "kafka", "sentry", "local_speech", "airnote", "groq", "scout", "divo", "desktop"])
     )
     return bool(interesting or base < 0.94)
 
@@ -766,7 +766,7 @@ INTENT RECONSTRUCTION CONTRACT:
 
 INTENT RECONSTRUCTION CONTRACT V2:
 - Your goal is the text the speaker intended to type, not a literal cleaned transcript.
-- Correct close technical sound-alikes when local context supports them, especially known user/domain terms such as AirNote, desktop, Divo, Groq, Scout, STT, Docker, Kafka, ZooKeeper, Sentry, Deepgram, Postgres, SQLite, webhook.
+- Correct close technical sound-alikes when local context supports them, especially known user/domain terms such as AirNote, desktop, Divo, Groq, Scout, STT, Docker, Kafka, ZooKeeper, Sentry, Local speech, Postgres, SQLite, webhook.
 - Be bold only on narrow domain garbles: "GROC scout" can become "Groq Scout"; "dust of changes" can become "desktop changes" only when the surrounding phrase is about app/code changes.
 - Do not restructure the sentence just for style. Preserve word order and wording unless the current words are clearly garbled.
 - Preserve numbers, IDs, model names, casing, and short tokens unless the transcript strongly indicates a spoken word form.
@@ -781,7 +781,7 @@ INTENT RECONSTRUCTION CONTRACT V2:
 INTENT RECONSTRUCTION CONTRACT V3:
 - Your goal is the text the speaker intended to type, not a literal cleaned transcript.
 - Use transcript-relevant memory first. If a learned confusion is listed as relevant for this transcript, treat it as strong evidence but still require local support.
-- Correct close technical sound-alikes when local context supports them: Groq, Scout, Cerebras, API key, ENV key, DB, AirNote, desktop, Divo, Emiac, Macobs, STT, Docker, Kafka, ZooKeeper, Sentry, Deepgram, Postgres, SQLite, webhook.
+- Correct close technical sound-alikes when local context supports them: Groq, Scout, Cerebras, API key, ENV key, DB, AirNote, desktop, Divo, Emiac, Macobs, STT, Docker, Kafka, ZooKeeper, Sentry, Local speech, Postgres, SQLite, webhook.
 - Specific repair examples for this user/domain:
   - "GROC", "growc" near model/provider/request -> "Groq"
   - "shahri bhrasht", "sharibras", "Suri Brothers", "cerebrace" near API/provider/developer plan -> "Cerebras"

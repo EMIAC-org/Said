@@ -25,7 +25,6 @@ pub mod profile;
 pub mod prompt_profile_telemetry;
 pub mod routes;
 pub mod store;
-pub mod stt;
 pub mod tenant;
 pub mod ttl_cache;
 pub mod vocab_worker;
@@ -36,17 +35,17 @@ use std::time::{Duration, Instant};
 
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, Path},
+    extract::Path,
     http::{Method, StatusCode, Uri, header},
     response::{Html, IntoResponse, Redirect},
     routing::{delete, get, patch, post},
 };
 use tower_http::cors::{Any, CorsLayer};
 
-/// Process-global pooled HTTP client for all outbound provider calls (Groq,
-/// DeepSeek, Deepgram batch). Reusing one client keeps connections warm, so
-/// each request reuses a keep-alive connection instead of doing a fresh
-/// DNS+TCP+TLS handshake. Built lazily, once, for the lifetime of the process.
+/// Process-global pooled HTTP client for all outbound text/provider calls.
+/// Reusing one client keeps connections warm, so each request reuses a
+/// keep-alive connection instead of doing a fresh DNS+TCP+TLS handshake.
+/// Built lazily, once, for the lifetime of the process.
 pub static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .pool_idle_timeout(Duration::from_secs(90))
@@ -76,23 +75,13 @@ pub struct AppState {
     pub lark: LarkConfig,
     pub hub: Arc<meeting_hub::MeetingHub>,
     pub notifications: Arc<notification_hub::NotificationHub>,
-    pub deepgram_api_key: String,
-    /// Managed Deepgram STT key pool. Values come from DEEPGRAM_API_KEY_1..3,
-    /// with legacy DEEPGRAM_API_KEY as key-1 fallback. Never log values.
-    pub deepgram_api_keys: Vec<String>,
-    /// Active STT vendor for server runtime (always "deepgram").
-    pub stt_provider: String,
-    /// OpenAI API key for message-polish audio transcription.
+    /// OpenAI API key used as a platform fallback for text-model provider calls.
     pub openai_api_key: String,
-    /// OpenAI audio transcription model for message-polish audio.
-    pub openai_transcribe_model: String,
     pub groq_api_key: String,
     /// Cerebras API key for server-runtime beta polish (CEREBRAS_API_KEY).
     pub cerebras_api_key: String,
     /// DeepInfra API key for server-runtime beta polish (DEEPINFRA_API_KEY).
     pub deepinfra_api_key: String,
-    /// OpenRouter API key for the production Gemma polish model (OPENROUTER_API_KEY).
-    pub openrouter_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
     pub divo_base_url: String,
@@ -137,7 +126,6 @@ pub struct AppState {
 /// because beta usage is small; correctness comes from explicit invalidate-on-
 /// write helpers, not from waiting for TTL expiry.
 pub const SETUP_CACHE_TTL: Duration = Duration::from_secs(3 * 60 * 60);
-const RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES: usize = 24 * 1024 * 1024;
 
 pub struct SetupCaches {
     pub tenant_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
@@ -245,11 +233,6 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/runtime/problem/solve",
             post(routes::runtime::problem_solve),
         )
-        .route(
-            "/v1/runtime/voice/wav",
-            post(routes::runtime::voice_wav)
-                .layer(DefaultBodyLimit::max(RUNTIME_VOICE_WAV_BODY_LIMIT_BYTES)),
-        )
         .route("/v1/runtime/status", get(routes::runtime::status))
         .route(
             "/v1/runtime/profile/insights",
@@ -262,10 +245,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/runtime/profile/buckets/override",
             post(routes::runtime_profile::set_app_bucket),
-        )
-        .route(
-            "/v1/runtime/profile/buckets/language",
-            post(routes::runtime_profile::set_bucket_language),
         )
         .route("/v1/runtime/runs", get(routes::runtime::list_runs))
         .route("/v1/runtime/runs/:id", get(routes::runtime::run_detail))
@@ -284,6 +263,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/runtime/learning/confirm-batch",
             post(routes::runtime::confirm_learning_batch),
+        )
+        .route(
+            "/v1/runtime/learning/meaning",
+            post(routes::runtime::vocabulary_meaning),
         )
         .route(
             "/v1/runtime/notifications/ws",
@@ -305,7 +288,6 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/runtime/voice/dry-run",
             post(routes::runtime::voice_dry_run),
         )
-        .route("/v1/runtime/voice/ws", get(routes::runtime::voice_ws))
         // History
         .route(
             "/v1/runtime/history",
@@ -363,10 +345,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/orgs/:org_id/telemetry/users/:account_id/memory",
             get(routes::telemetry::user_memory),
-        )
-        .route(
-            "/v1/orgs/:org_id/telemetry/users/:account_id/knowledge",
-            get(routes::telemetry::user_knowledge),
         )
         .route(
             "/v1/orgs/:org_id/observability/summary",
@@ -502,10 +480,9 @@ pub fn build_router(state: AppState) -> Router {
         )
         // Local-only meetings: create a Lark doc with no cloud meeting record.
         .route("/v1/lark/export-doc", post(routes::meetings::export_doc))
-        // Enterprise — Guest browser capture
+        // Enterprise — Guest join page. Audio capture is local-only in the desktop app.
         .route("/join/:token", get(routes::guest::guest_page))
         .route("/join/:token/auth", post(routes::guest::guest_auth))
-        .route("/v1/meetings/:id/guest-ws", get(routes::guest_ws::handler))
         // Enterprise — Lark sync
         .route(
             "/v1/meetings/:id/sync-to-lark",

@@ -3,9 +3,9 @@
 //! Unlike eval_pipeline (which sweeps 14K transcripts for false injections),
 //! this binary tests the REAL failure scenarios from user reports:
 //!
-//!   • User says "Emiac" → Deepgram outputs "MEAH" → system should correct
+//!   • User says "Emiac" → Speech engine outputs "MEAH" → system should correct
 //!   • User corrects MEAH→Emiac → system should learn (classify as STT_ERROR)
-//!   • Next time Deepgram says "MEX" → system should still correct
+//!   • Next time Speech engine says "MEX" → system should still correct
 //!   • "128 GB RAM" with vocab "8GB" → must NOT inject
 //!
 //! Each test simulates a concrete scenario: set up SQLite with vocab/STT rules,
@@ -39,7 +39,7 @@ fn main() {
     println!("══ LAYER A: CLASSIFICATION (phonetic triage) ══\n");
 
     // A1: "MEAH" → "Emiac" — this is the exact failure from the user's logs.
-    // Deepgram outputs "MEAH", user corrects to "Emiac". The phonetic triage
+    // Speech engine outputs "MEAH", user corrects to "Emiac". The phonetic triage
     // should NOT auto-classify this as USER_REPHRASE — it should be Ambiguous
     // (forwarded to the LLM) or STT_ERROR.
     {
@@ -66,7 +66,7 @@ fn main() {
         );
     }
 
-    // A2: "MEX" → "Emiac" — different Deepgram distortion, same word.
+    // A2: "MEX" → "Emiac" — different Speech engine distortion, same word.
     {
         let hunk = make_hunk("MEX", "Emiac");
         let decision = phonetic_triage::triage(&[hunk]);
@@ -129,7 +129,7 @@ fn main() {
         );
     }
 
-    // A5: "Meh" → "Emiac" — very short Deepgram distortion.
+    // A5: "Meh" → "Emiac" — very short Speech engine distortion.
     {
         let hunk = make_hunk("Meh", "Emiac");
         let decision = phonetic_triage::triage(&[hunk]);
@@ -177,7 +177,7 @@ fn main() {
         );
     }
 
-    // A7: "hump" → "Humne" — Hindi pronoun, Deepgram→user correction.
+    // A7: "hump" → "Humne" — Hindi pronoun, Speech engine→user correction.
     {
         let hunk = make_hunk("hump", "Humne");
         let decision = phonetic_triage::triage(&[hunk]);
@@ -220,7 +220,7 @@ fn main() {
         );
     }
 
-    // B2: Different distortion — stored "MEAH" → "Emiac", but Deepgram says "MEX".
+    // B2: Different distortion — stored "MEAH" → "Emiac", but Speech engine says "MEX".
     // This tests whether the phonetic fallback in STT apply catches it.
     {
         let rules = vec![make_stt_rule("MEAH", "Emiac")];
@@ -466,7 +466,7 @@ fn main() {
         );
     }
 
-    // C5: Vocab "Emiac" + STT replacement "MEAH"→"Emiac" — but Deepgram says
+    // C5: Vocab "Emiac" + STT replacement "MEAH"→"Emiac" — but Speech engine says
     // "MEX" this time (different distortion). The correct_form phonetic
     // fallback in STT replacement should match "MEX" ≈ "Emiac" and rewrite.
     {
@@ -496,7 +496,7 @@ fn main() {
             &mut total_pass,
             &mut total_fail,
             &mut failures,
-            "C5: Different distortion: stored 'MEAH'→'Emiac', Deepgram says 'MEX' → still fixes",
+            "C5: Different distortion: stored 'MEAH'→'Emiac', Speech engine says 'MEX' → still fixes",
             found,
             &format!(
                 "rewritten={rewritten:?}, selected={}, resolved={:?}",
@@ -524,7 +524,6 @@ fn main() {
             meaning: Some("Indian technology company".to_string()),
             context: Some("Emiac ke naam se karenge hum".to_string()),
             resolution: prompt::VocabResolution::Resolved,
-            evidence: None,
             stt_aliases: vec![],
         }];
         let prompt_text =
@@ -541,7 +540,7 @@ fn main() {
         );
     }
 
-    // D2: Candidate (unresolved) terms should appear as SUGGEST, not hard APPLY.
+    // D2: Candidate (unresolved) terms should NOT appear in the prompt.
     {
         let entries = vec![prompt::VocabEntry {
             term: "RandomTerm".to_string(),
@@ -549,20 +548,18 @@ fn main() {
             meaning: Some("Something".to_string()),
             context: None,
             resolution: prompt::VocabResolution::Candidate,
-            evidence: Some("random term".to_string()),
             stt_aliases: vec![],
         }];
         let prompt_text =
             prompt::build_system_prompt_with_vocab_entries(&make_test_prefs(), &[], &[], &entries);
         let has_term = prompt_text.contains("RandomTerm");
-        let has_suggest = prompt_text.contains("SUGGEST: RandomTerm");
         check(
             &mut total_pass,
             &mut total_fail,
             &mut failures,
-            "D2: Unresolved candidate 'RandomTerm' appears as SUGGEST in prompt",
-            has_term && has_suggest,
-            &format!("has_term={has_term}, has_suggest={has_suggest}"),
+            "D2: Unresolved candidate 'RandomTerm' must NOT appear in prompt",
+            !has_term,
+            &format!("has_term={has_term}"),
         );
     }
 
@@ -828,12 +825,10 @@ fn make_test_prefs() -> Preferences {
         server_audio_runtime_enabled: false,
         updated_at: 0,
         gateway_api_key: None,
-        deepgram_api_key: None,
         gemini_api_key: None,
         groq_api_key: None,
         cerebras_api_key: None,
         deepinfra_api_key: None,
         llm_provider: "gateway".to_string(),
-        stt_provider: "deepgram".to_string(),
     }
 }

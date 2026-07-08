@@ -67,8 +67,8 @@ WAV_PROFILES: dict[str, dict[str, list[str]]] = {
         ],
     },
     "said-2026-06-23-0105-53-words.wav": {
-        "expected": ["Caps Lock", "Deepgram", "Sentry", "ZooKeeper", "Kafka"],
-        "bad": ["zooki", "cabslock", "century", "estulate", "deep gram"],
+        "expected": ["Caps Lock", "Local speech", "Sentry", "ZooKeeper", "Kafka"],
+        "bad": ["zooki", "cabslock", "century", "estulate", "local speech"],
     },
     "said-2026-06-23-0116-49-words.wav": {
         "expected": ["Docker", "SQLite", "webhook", "PR"],

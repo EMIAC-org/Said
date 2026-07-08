@@ -69,8 +69,8 @@ mod tests {
                 "Edit ./config/said.json file.",
             ),
             (
-                "Set DEEPGRAM underscore API underscore KEY equals abc123.",
-                "Set DEEPGRAM_API_KEY=abc123.",
+                "Set GATEWAY underscore API underscore KEY equals abc123.",
+                "Set GATEWAY_API_KEY=abc123.",
             ),
             (
                 "Check the slash api slash health endpoint.",

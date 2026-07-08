@@ -879,6 +879,24 @@ struct WhisperCppConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct DictationLocalAsrConfig {
+    pub model: PathBuf,
+    pub language: String,
+    pub max_context_tokens: i32,
+    pub prompt: Option<String>,
+    pub suppress_non_speech: bool,
+    pub no_fallback: bool,
+    pub no_speech_threshold: Option<f32>,
+    pub logprob_threshold: Option<f32>,
+    pub entropy_threshold: Option<f32>,
+    pub vad_model: Option<PathBuf>,
+    pub vad_threshold: f32,
+    pub vad_speech_pad_ms: i32,
+    pub vad_min_silence_ms: i32,
+    pub romanize: bool,
+}
+
+#[derive(Clone, Debug)]
 struct TranscriptPaths {
     text: PathBuf,
     json: PathBuf,
@@ -6703,8 +6721,7 @@ fn detect_meeting_track_language(config: &WhisperCppConfig, audio_path: &Path) -
 fn meeting_track_config(config: &WhisperCppConfig, audio_path: &Path) -> WhisperCppConfig {
     // The Oriserve Hindi2Hinglish model is Hindi-only: per-track auto-detection
     // mis-detects on it and hallucinates random scripts (e.g. Icelandic). Force
-    // `hi` for it (it emits romanized Hinglish). Auto-detect is for multilingual
-    // models like large-v3-turbo.
+    // `hi` for it (it emits romanized Hinglish).
     let oriserve_model = config
         .model
         .to_string_lossy()
@@ -7285,7 +7302,7 @@ fn is_non_speech_transcript_artifact(text: &str) -> bool {
     has_ascii_letter
 }
 
-fn is_low_quality_transcript_artifact(text: &str) -> bool {
+pub(crate) fn is_low_quality_transcript_artifact(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() || is_non_speech_transcript_artifact(trimmed) {
         return true;
@@ -7596,9 +7613,10 @@ fn refine_low_confidence_segments(
 
 /// Master on/off switch for reusing the durable live transcript in post-meeting
 /// processing. When `false`, every meeting takes a full re-transcription pass
-/// (the live transcript is still persisted, just not reused). Default `true`.
+/// (the live transcript is still persisted, just not reused). Default `false`
+/// so the final transcript always starts from the highest-quality full pass.
 fn live_reuse_enabled() -> bool {
-    env_bool("AIRNOTE_MEETING_LIVE_REUSE", true)
+    env_bool("AIRNOTE_MEETING_LIVE_REUSE", false)
 }
 
 fn live_reuse_min_coverage() -> f32 {
@@ -12983,31 +13001,13 @@ pub fn meeting_cleanup_storage() -> Result<(), String> {
 
 const MODEL_DOWNLOAD_EVENT: &str = "meeting-model-download";
 
-/// Downloadable whisper.cpp models (name, source URL, approx size for a progress
-/// estimate before Content-Length is known). These are shared by meeting
-/// transcription and local Windows dictation; dictation uses the ACTIVE model
-/// (`AIRNOTE_WHISPER_CPP_MODEL`). All are multilingual (no `*.en`) to preserve
-/// Hindi/Hinglish. Sizes are HF download-size hints.
-const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[
-    // Oriserve Hindi2Hinglish (GGML fp16) is the ONE and only meeting/dictation
-    // model — a single local download serves both pipelines, romanized Hinglish
-    // output, language forced to `hi`. No other model is selectable: any other
-    // ggml-*.bin on disk is treated as legacy and cleaned up. When this model is
-    // absent the UI shows the "download model" banner (no silent fallback).
-    (
-        "ggml-oriserve-hinglish-fp16.bin",
-        "https://huggingface.co/anish2305/airnote-hinglish-stt-ggml/resolve/main/ggml-oriserve-hinglish-fp16.bin",
-        148_000_000,
-    ),
-    // Whisper-Hindi2Hinglish-Apex (large-v3-turbo, q8_0 GGML, ~834 MB). Parallel
-    // on-device dictation model, also romanized Hinglish. Listed here so it's a
-    // supported/downloadable name and isn't cleaned up as a stray ggml file.
-    (
-        "ggml-apex-hinglish-q8_0.bin",
-        "https://huggingface.co/Marquestra/Whisper-Hindi2Hinglish-Apex-GGML/resolve/main/ggml-apex-hinglish-q8_0.bin",
-        874_188_075,
-    ),
-];
+/// Downloadable whisper.cpp speech models. AirNote intentionally exposes only
+/// Oriserve Hinglish; Silero VAD is managed separately as a tiny support model.
+const WHISPER_MODEL_CATALOG: &[(&str, &str, u64)] = &[(
+    "ggml-oriserve-hinglish-fp16.bin",
+    "https://huggingface.co/anish2305/airnote-hinglish-stt-ggml/resolve/main/ggml-oriserve-hinglish-fp16.bin",
+    148_000_000,
+)];
 
 /// Silero VAD ggml model for whisper.cpp `--vad` (speech-only segments).
 pub const SILERO_VAD_MODEL_NAME: &str = "ggml-silero-v5.1.2.bin";
@@ -13406,83 +13406,14 @@ pub fn delete_dictation_model() -> Result<(), String> {
     Ok(())
 }
 
-/// Install status of the new on-device model (Apex, q8_0, ~834 MB). Mirrors
-/// `dictation_model_status` but for the Apex file. Platform-agnostic.
-#[tauri::command]
-pub fn apex_model_status() -> DictationModelStatus {
-    let path = said_core::paths::apex_model_path();
-    let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    DictationModelStatus {
-        installed: path.is_file(),
-        size_bytes,
-        path: path.to_string_lossy().to_string(),
-    }
-}
-
-/// Remove the new (Apex) on-device model file. Idempotent. Used to let a user
-/// back out of the new model and fall back to cloud STT cleanly.
-#[tauri::command]
-pub fn delete_apex_model() -> Result<(), String> {
-    let path = said_core::paths::apex_model_path();
-    if path.is_file() {
-        fs::remove_file(&path).map_err(|e| format!("couldn't delete model: {e}"))?;
-    }
-    Ok(())
-}
-
-/// Reclaim disk after migrating to the new on-device model: delete the old
-/// Oriserve fp16 model (superseded by Apex for BOTH dictation and meetings) plus
-/// any legacy / stray ggml files, keeping the Apex model and the Silero VAD.
-/// Returns what was removed and the bytes freed.
-///
-/// SAFETY: only call this once the new model is verified installed. Deleting the
-/// old model before the new one is good would leave the user with no on-device
-/// STT. The onboarding UI gates this button on a verified Apex install; this
-/// function additionally refuses to run if Apex is not present on disk.
+/// Reclaim disk by deleting unsupported speech models from AirNote's model
+/// folder. Keeps the Oriserve speech model and the Silero VAD support model.
 #[tauri::command]
 pub fn reclaim_old_models() -> Result<WhisperModelCleanupResult, String> {
-    // Guard: never strip the old model unless the new one is actually here.
-    if !said_core::paths::apex_model_path().is_file() {
-        return Err(
-            "new model is not installed yet — refusing to remove the old model".to_string(),
-        );
-    }
-
     let dir = meeting_whisper_models_dir();
-    let mut removed: Vec<RemovedWhisperModelInfo> = Vec::new();
-    let mut freed_bytes = 0u64;
-
-    // 1) The Oriserve fp16 model — a catalog model (so the legacy sweep won't
-    //    touch it), removed explicitly because Apex now serves both pipelines.
-    let oriserve = said_core::paths::whisper_model_path();
-    if oriserve.is_file() {
-        let size = fs::metadata(&oriserve).map(|m| m.len()).unwrap_or(0);
-        fs::remove_file(&oriserve).map_err(|e| format!("couldn't delete old model: {e}"))?;
-        let name = oriserve
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("ggml-oriserve-hinglish-fp16.bin")
-            .to_string();
-        removed.push(RemovedWhisperModelInfo {
-            name,
-            size_bytes: size,
-        });
-        freed_bytes += size;
-    }
-
-    // 2) Legacy / stray ggml files (e.g. old large-v3-turbo), keeping catalog
-    //    models (Apex) and the Silero VAD.
-    let legacy = cleanup_legacy_whisper_models_in_dir(&dir)?;
-    freed_bytes += legacy.freed_bytes;
-    removed.extend(legacy.removed);
-
-    // Re-point the active meeting/dictation selection to the remaining model (Apex).
+    let result = cleanup_legacy_whisper_models_in_dir(&dir)?;
     ensure_active_model_sync();
-
-    Ok(WhisperModelCleanupResult {
-        removed,
-        freed_bytes,
-    })
+    Ok(result)
 }
 
 /// Download the fp16 dictation model into `whisper_model_path()`. Streams with
@@ -13547,21 +13478,6 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
     result
 }
 
-/// Expected SHA-256 for models we pin. Verified post-download so a corrupt or
-/// truncated file never masquerades as a good model — the "clean up the old
-/// model" flow deletes the previous model only once the new one is verified, so
-/// this check is what makes that safe. Models without a pinned hash skip the
-/// check (byte-count is still enforced). Downloaded models are hashed on all
-/// platforms; the value is compared case-insensitively.
-fn expected_model_sha256(name: &str) -> Option<&'static str> {
-    match name {
-        "ggml-apex-hinglish-q8_0.bin" => {
-            Some("bef6d9d571e9e7bd3cd2ebba8b2d5c9cc4731e210d6750ae6a9c621a87e60d4c")
-        }
-        _ => None,
-    }
-}
-
 fn download_whisper_model_blocking(
     app: &AppHandle,
     name: &str,
@@ -13571,8 +13487,6 @@ fn download_whisper_model_blocking(
     dest: &Path,
 ) -> Result<(), String> {
     use std::io::{Read, Write};
-
-    use sha2::{Digest, Sha256};
 
     fs::create_dir_all(dir).map_err(|e| format!("couldn't create models folder: {e}"))?;
     let part = dir.join(format!("{name}.part"));
@@ -13617,7 +13531,6 @@ fn download_whisper_model_blocking(
     let mut buf = vec![0u8; 256 * 1024];
     let mut received: u64 = 0;
     let mut last_emit: u64 = 0;
-    let mut hasher = Sha256::new();
     emit(0, total, "downloading", None);
     loop {
         let cancelled = model_download_cancels()
@@ -13638,7 +13551,6 @@ fn download_whisper_model_blocking(
         }
         file.write_all(&buf[..n])
             .map_err(|e| fail(&part, received, total, format!("write failed: {e}")))?;
-        hasher.update(&buf[..n]);
         received += n as u64;
         if received - last_emit >= 2_000_000 {
             last_emit = received;
@@ -13660,21 +13572,6 @@ fn download_whisper_model_blocking(
             total,
             format!("download ended early ({received}/{total} bytes) — please retry"),
         ));
-    }
-    // Integrity: for pinned models, verify the SHA-256 before promoting the .part
-    // file. A byte-complete but corrupt download (proxy/CDN mangling) would
-    // otherwise pass, get renamed, and fail opaquely inside whisper-cli later.
-    if let Some(expected) = expected_model_sha256(name) {
-        let digest = hasher.finalize();
-        let actual: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-        if !actual.eq_ignore_ascii_case(expected) {
-            return Err(fail(
-                &part,
-                received,
-                total,
-                "integrity check failed (SHA-256 mismatch) — please retry".to_string(),
-            ));
-        }
     }
     fs::rename(&part, dest).map_err(|e| fail(&part, received, total, format!("finalize: {e}")))?;
     emit(received, total, "done", None);
@@ -13712,24 +13609,24 @@ pub fn meeting_delete_whisper_model(name: String) -> Result<(), String> {
 }
 
 /// Remove legacy / unsupported meeting whisper models from AirNote's model
-/// folder. The current Q5 model and any in-progress Q5 download are preserved.
+/// folder. Oriserve and Silero VAD are preserved.
 #[tauri::command]
 pub fn meeting_cleanup_legacy_whisper_models() -> Result<WhisperModelCleanupResult, String> {
     let result = cleanup_legacy_whisper_models_in_dir(&meeting_whisper_models_dir())?;
-    // If a stale unsupported model had been selected, this re-points to Q5 or
-    // clears the setting. It never selects a removed file.
+    // If a stale unsupported model had been selected, this re-points to Oriserve
+    // or clears the setting. It never selects a removed file.
     ensure_active_model_sync();
     Ok(result)
 }
 
-// ── Dictation whisper.cpp (shared Turbo Q5 model) ───────────────────────────
+// ── Dictation whisper.cpp (shared Oriserve model) ───────────────────────────
 
 pub fn dictation_whisper_model_installed() -> bool {
     selected_whisper_model_path().is_some()
 }
 
 pub fn dictation_whisper_runtime_ready() -> bool {
-    resolve_whisper_cpp_config().is_ok()
+    resolve_dictation_local_asr_config(DEFAULT_WHISPER_LANGUAGE).is_ok()
 }
 
 pub fn silero_vad_model_installed() -> bool {
@@ -13874,6 +13771,84 @@ fn dictation_whisper_language(pref_language: &str) -> String {
     }
 }
 
+pub fn resolve_dictation_local_asr_config(
+    pref_language: &str,
+) -> Result<DictationLocalAsrConfig, String> {
+    let model = selected_whisper_model_path().ok_or_else(|| {
+        "whisper.cpp model not found; install the local speech model from Settings".to_string()
+    })?;
+
+    if !is_usable_whisper_model(&model) {
+        return Err(format!(
+            "whisper model file is missing or corrupt: {} — reinstall it from Settings",
+            model.display()
+        ));
+    }
+
+    let vad_model = if env_bool("AIRNOTE_MEETING_VAD", true) {
+        resolve_silero_vad_model_path()
+    } else {
+        None
+    };
+    if env_bool("AIRNOTE_MEETING_VAD", true) && vad_model.is_none() {
+        tracing::warn!(
+            "[local_asr] VAD enabled but no Silero model found — running dictation without silence filtering"
+        );
+    }
+
+    Ok(DictationLocalAsrConfig {
+        model,
+        language: dictation_whisper_language(pref_language),
+        max_context_tokens: env_i32_at_least(
+            "AIRNOTE_MEETING_WHISPER_MAX_CONTEXT_TOKENS",
+            DEFAULT_WHISPER_MAX_CONTEXT_TOKENS,
+            -1,
+        ),
+        prompt: meeting_env("AIRNOTE_MEETING_WHISPER_PROMPT")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        suppress_non_speech: env_bool(
+            "AIRNOTE_MEETING_WHISPER_SUPPRESS_NON_SPEECH",
+            DEFAULT_WHISPER_SUPPRESS_NON_SPEECH,
+        ),
+        no_fallback: env_bool(
+            "AIRNOTE_MEETING_WHISPER_NO_FALLBACK",
+            DEFAULT_WHISPER_NO_FALLBACK,
+        ),
+        no_speech_threshold: env_bool("AIRNOTE_MEETING_WHISPER_NO_SPEECH_GATE", true).then(|| {
+            env_f32(
+                "AIRNOTE_MEETING_WHISPER_NO_SPEECH_THRESHOLD",
+                DEFAULT_WHISPER_NO_SPEECH_THRESHOLD,
+            )
+        }),
+        logprob_threshold: env_bool("AIRNOTE_MEETING_WHISPER_LOGPROB_GATE", true).then(|| {
+            env_f32(
+                "AIRNOTE_MEETING_WHISPER_LOGPROB_THRESHOLD",
+                DEFAULT_WHISPER_LOGPROB_THRESHOLD,
+            )
+        }),
+        entropy_threshold: env_bool("AIRNOTE_MEETING_WHISPER_ENTROPY_GATE", true).then(|| {
+            env_f32(
+                "AIRNOTE_MEETING_WHISPER_ENTROPY_THRESHOLD",
+                DEFAULT_WHISPER_ENTROPY_THRESHOLD,
+            )
+        }),
+        vad_model,
+        vad_threshold: env_f32("AIRNOTE_MEETING_VAD_THRESHOLD", DEFAULT_VAD_THRESHOLD),
+        vad_speech_pad_ms: env_i32_at_least(
+            "AIRNOTE_MEETING_VAD_SPEECH_PAD_MS",
+            DEFAULT_VAD_SPEECH_PAD_MS,
+            0,
+        ),
+        vad_min_silence_ms: env_i32_at_least(
+            "AIRNOTE_MEETING_VAD_MIN_SILENCE_MS",
+            DEFAULT_VAD_MIN_SILENCE_MS,
+            0,
+        ),
+        romanize: env_bool("AIRNOTE_MEETING_ROMANIZE", true),
+    })
+}
+
 fn dictation_whisper_timeout(duration_ms: u64) -> Duration {
     let secs = (duration_ms / 1000).saturating_mul(8).max(30).min(300);
     Duration::from_secs(secs)
@@ -13882,71 +13857,6 @@ fn dictation_whisper_timeout(duration_ms: u64) -> Duration {
 fn dictation_whisper_live_timeout(duration_ms: u64) -> Duration {
     let secs = (duration_ms / 1000).saturating_mul(4).max(15).min(120);
     Duration::from_secs(secs)
-}
-
-/// Env-gated RNNoise denoise applied in place to a dictation WAV before whisper.
-/// No-op unless `AIRNOTE_DENOISE=rnnoise`. Dictation-only — meetings never call
-/// this (they keep Silero VAD instead). Best-effort: on any open/decode/format
-/// mismatch it leaves the file untouched so STT still runs on the original audio.
-fn denoise_dictation_wav_in_place(path: &Path) {
-    if !said_core::preprocess::denoise_enabled() {
-        return;
-    }
-    let reader = match hound::WavReader::open(path) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("[meeting_engine] denoise skip — open {path:?}: {e}");
-            return;
-        }
-    };
-    let spec = reader.spec();
-    // RNNoise runs on 16 kHz mono i16 — exactly what dictation capture produces.
-    // Bail on anything unexpected rather than risk corrupting the audio.
-    if spec.channels != 1
-        || spec.sample_rate != SAMPLE_RATE
-        || spec.bits_per_sample != 16
-        || spec.sample_format != hound::SampleFormat::Int
-    {
-        tracing::debug!("[meeting_engine] denoise skip — unexpected WAV spec {spec:?}");
-        return;
-    }
-    let samples: Vec<i16> = match reader.into_samples::<i16>().collect::<Result<_, _>>() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("[meeting_engine] denoise skip — decode {path:?}: {e}");
-            return;
-        }
-    };
-    if samples.is_empty() {
-        return;
-    }
-
-    // i16 → f32 [-1, 1] → RNNoise (length-preserving) → back to i16, same spec.
-    let mut f32buf: Vec<f32> = samples.iter().map(|&s| s as f32 / 32_768.0).collect();
-    said_core::preprocess::denoise_16k(&mut f32buf);
-
-    let mut writer = match hound::WavWriter::create(path, spec) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::warn!("[meeting_engine] denoise skip — rewrite {path:?}: {e}");
-            return;
-        }
-    };
-    for &s in &f32buf {
-        let v = (s * 32_768.0).clamp(-32_768.0, 32_767.0) as i16;
-        if writer.write_sample(v).is_err() {
-            tracing::warn!("[meeting_engine] denoise abort — write sample failed for {path:?}");
-            return;
-        }
-    }
-    if let Err(e) = writer.finalize() {
-        tracing::warn!("[meeting_engine] denoise skip — finalize {path:?}: {e}");
-        return;
-    }
-    tracing::debug!(
-        "[meeting_engine] rnnoise denoised dictation WAV {path:?} ({} samples)",
-        f32buf.len(),
-    );
 }
 
 fn transcribe_dictation_summary(
@@ -13959,33 +13869,6 @@ fn transcribe_dictation_summary(
     }
     let mut config = resolve_whisper_cpp_config()?;
     config.language = dictation_whisper_language(pref_language);
-    // Dictation keeps Silero VAD ON (same as meetings). VAD trims the silent/noisy
-    // lead-in so whisper doesn't hallucinate a phantom prefix, swallow the real
-    // onset, or drift to unrelated text on short push-to-talk clips — the exact
-    // regression from the "dictation = no VAD" experiment. Silero is auto-fetched
-    // on first run; if it's absent whisper simply runs without the gate. Force it
-    // off with AIRNOTE_DICTATION_VAD=0 only if a long-dictation regression shows up.
-    let vad_force_off = std::env::var("AIRNOTE_DICTATION_VAD")
-        .map(|v| matches!(v.trim(), "0" | "false" | "off"))
-        .unwrap_or(false);
-    if vad_force_off {
-        config.vad_model = None;
-    }
-    // Parallel on-device model: prefer Apex (large-v3-turbo Hinglish, q8_0) for
-    // dictation when it's installed. Set AIRNOTE_DICTATION_MODEL=oriserve to force
-    // the Swift/Oriserve model instead. Meetings are unaffected (they resolve the
-    // model separately and keep using Oriserve).
-    let apex_model = said_core::paths::apex_model_path();
-    let force_oriserve = std::env::var("AIRNOTE_DICTATION_MODEL")
-        .map(|v| v.trim().eq_ignore_ascii_case("oriserve"))
-        .unwrap_or(false);
-    if apex_model.is_file() && !force_oriserve {
-        config.model = apex_model;
-    }
-    // Dictation policy: noise-filter, not VAD. Clean steady background noise
-    // (fan/AC) from the WAV before whisper reads it. Meetings never reach here.
-    denoise_dictation_wav_in_place(&summary.path);
-
     let paths = transcript_paths_for_wav(&summary.path);
     let done = transcribe_with_whisper_cpp_for(
         summary,
@@ -14031,7 +13914,7 @@ pub fn transcribe_dictation_pcm_i16(
     result
 }
 
-/// Offline dictation STT via whisper.cpp using the shared Turbo Q5 model.
+/// Offline dictation STT via whisper.cpp using the shared Oriserve model.
 pub fn transcribe_dictation_wav_bytes(
     wav_bytes: &[u8],
     pref_language: &str,
@@ -14588,17 +14471,7 @@ fn default_whisper_model_candidates(data_dir: &Path) -> Vec<PathBuf> {
 }
 
 fn whisper_model_candidate_names() -> Vec<&'static str> {
-    // The shared Oriserve Hinglish model (same one dictation uses) is the only
-    // meeting model — no fallback. If it isn't installed the engine has no model
-    // and the Meetings view surfaces the download banner. The model is Hindi-only,
-    // so the meeting language is forced to `hi` (see meeting_track_config).
-    // Apex is listed after Oriserve so, when both are present, Oriserve stays the
-    // default the resolver finds; dictation overrides to Apex explicitly. When only
-    // Apex is installed, the resolver still finds a usable model instead of erroring.
-    vec![
-        "ggml-oriserve-hinglish-fp16.bin",
-        "ggml-apex-hinglish-q8_0.bin",
-    ]
+    vec!["ggml-oriserve-hinglish-fp16.bin"]
 }
 
 fn is_supported_meeting_whisper_model_name(name: &str) -> bool {
@@ -17092,15 +16965,11 @@ mod tests {
     }
 
     #[test]
-    fn meeting_whisper_defaults_oriserve_then_apex() {
+    fn meeting_whisper_defaults_oriserve_only() {
         let candidates = default_whisper_model_candidates(Path::new("/tmp/airnote-test-data"));
 
-        // Oriserve stays the default the resolver finds first; Apex is the parallel
-        // on-device dictation model, listed after it so it's still found when only
-        // Apex is installed. A missing model surfaces the download banner.
-        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates.len(), 1);
         assert!(candidates[0].ends_with("models/ggml-oriserve-hinglish-fp16.bin"));
-        assert!(candidates[1].ends_with("models/ggml-apex-hinglish-q8_0.bin"));
     }
 
     #[test]
@@ -17113,10 +16982,9 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         // Real-sized stubs: the resolver skips empty/partial models (< 1 MB).
         let blob = vec![0u8; (MIN_WHISPER_MODEL_BYTES + 1) as usize];
-        // Oriserve present alongside a leftover Q5 → Oriserve is chosen; Q5 is
-        // no longer a candidate at all.
+        // Oriserve present alongside an unsupported model → Oriserve is chosen.
         fs::write(dir.join("ggml-oriserve-hinglish-fp16.bin"), &blob).unwrap();
-        fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), &blob).unwrap();
+        fs::write(dir.join("ggml-unsupported-extra.bin"), &blob).unwrap();
 
         let selected = first_whisper_model_in_dir(&dir).unwrap();
 
@@ -17128,11 +16996,11 @@ mod tests {
         fs::write(empty_dir.join("ggml-oriserve-hinglish-fp16.bin"), b"").unwrap();
         assert!(first_whisper_model_in_dir(&empty_dir).is_none());
 
-        // Only a non-Oriserve model on disk → no usable candidate (no fallback).
-        let legacy_only_dir = dir.join("legacy-only");
-        fs::create_dir_all(&legacy_only_dir).unwrap();
-        fs::write(legacy_only_dir.join("ggml-large-v3-turbo-q5_0.bin"), &blob).unwrap();
-        assert!(first_whisper_model_in_dir(&legacy_only_dir).is_none());
+        // Unsupported model alone is ignored.
+        let unsupported_dir = dir.join("unsupported-only");
+        fs::create_dir_all(&unsupported_dir).unwrap();
+        fs::write(unsupported_dir.join("ggml-unsupported-extra.bin"), &blob).unwrap();
+        assert!(first_whisper_model_in_dir(&unsupported_dir).is_none());
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -17157,22 +17025,18 @@ mod tests {
     }
 
     #[test]
-    fn meeting_whisper_catalog_is_oriserve_and_apex() {
+    fn meeting_whisper_catalog_includes_supported_local_models() {
         let names = WHISPER_MODEL_CATALOG
             .iter()
             .map(|(name, _, _)| *name)
             .collect::<std::collections::HashSet<_>>();
 
-        // Two selectable on-device models — Oriserve (default) and Apex (parallel).
-        // Legacy Q5/medium/etc. are gone, so they're never auto-selected.
-        assert_eq!(names.len(), 2);
+        assert_eq!(names.len(), 1);
         assert!(names.contains("ggml-oriserve-hinglish-fp16.bin"));
-        assert!(names.contains("ggml-apex-hinglish-q8_0.bin"));
-        assert!(!names.contains("ggml-large-v3-turbo-q5_0.bin"));
     }
 
     #[test]
-    fn meeting_whisper_cleanup_keeps_only_oriserve_and_vad() {
+    fn meeting_whisper_cleanup_keeps_supported_models_and_vad() {
         let dir = std::env::temp_dir().join(format!(
             "airnote-whisper-cleanup-test-{}-{}",
             std::process::id(),
@@ -17185,10 +17049,10 @@ mod tests {
             b"keep-part",
         )
         .unwrap();
-        fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), b"delete-q5").unwrap();
-        fs::write(dir.join("ggml-large-v3-turbo.bin"), b"delete-full").unwrap();
+        fs::write(dir.join("ggml-unsupported-extra.bin"), b"delete-extra").unwrap();
+        fs::write(dir.join("ggml-unsupported-full.bin"), b"delete-full").unwrap();
         fs::write(dir.join("ggml-medium.bin"), b"delete-medium").unwrap();
-        fs::write(dir.join("ggml-small-q5_0.bin.part"), b"delete-part").unwrap();
+        fs::write(dir.join("ggml-unsupported-small.bin.part"), b"delete-part").unwrap();
         fs::write(dir.join("ggml-silero-v5.1.2.bin"), b"keep-vad").unwrap();
 
         let result = cleanup_legacy_whisper_models_in_dir(&dir).unwrap();
@@ -17198,19 +17062,18 @@ mod tests {
             .map(|model| model.name.as_str())
             .collect::<std::collections::HashSet<_>>();
 
-        // Oriserve is the only catalog model now, so every other ggml-*.bin is
-        // legacy and removed; Oriserve and the Silero VAD stay.
+        // Oriserve and VAD stay; unsupported speech models are reclaimed.
         assert_eq!(removed.len(), 4);
-        assert!(removed.contains("ggml-large-v3-turbo-q5_0.bin"));
         assert!(removed.contains("ggml-medium.bin"));
-        assert!(removed.contains("ggml-large-v3-turbo.bin"));
-        assert!(removed.contains("ggml-small-q5_0.bin.part"));
+        assert!(removed.contains("ggml-unsupported-full.bin"));
+        assert!(removed.contains("ggml-unsupported-extra.bin"));
+        assert!(removed.contains("ggml-unsupported-small.bin.part"));
         assert!(dir.join("ggml-oriserve-hinglish-fp16.bin").exists());
         assert!(dir.join("ggml-oriserve-hinglish-fp16.bin.part").exists());
         assert!(dir.join("ggml-silero-v5.1.2.bin").exists());
-        assert!(!dir.join("ggml-large-v3-turbo-q5_0.bin").exists());
-        assert!(!dir.join("ggml-large-v3-turbo.bin").exists());
-        assert!(!dir.join("ggml-small-q5_0.bin.part").exists());
+        assert!(!dir.join("ggml-unsupported-extra.bin").exists());
+        assert!(!dir.join("ggml-unsupported-full.bin").exists());
+        assert!(!dir.join("ggml-unsupported-small.bin.part").exists());
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -17754,7 +17617,7 @@ mod tests {
     fn preceding_context_is_utf8_safe_and_bounded() {
         let segs = vec![
             mic_segment_for_test(0, 5_000, "ज़रा बताना यह कैसा चल रहा है"),
-            mic_segment_for_test(5_000, 10_000, "deepgram side slow hai"),
+            mic_segment_for_test(5_000, 10_000, "local speech side slow hai"),
             mic_segment_for_test(10_000, 15_000, "should not appear"),
         ];
         let ctx = preceding_context(&segs, 10_000, 12);

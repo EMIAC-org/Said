@@ -66,7 +66,7 @@
 ## Part 2: Said's Current Pipeline (What Happens When You Speak)
 
 ```
- YOU SPEAK            DEEPGRAM              SAID BACKEND              YOUR SCREEN
+ YOU SPEAK            LOCAL_SPEECH              SAID BACKEND              YOUR SCREEN
  ═════════          ═══════════           ══════════════             ════════════
 
  "EMIAC mein    ──►  WebSocket   ──►   ┌──────────────────┐
@@ -123,7 +123,7 @@
   (exact alias match)                 (novel distortion)
 
   "aneten" → n8n  ✅                 "yarmiac" → ???  ❌
-  (exact alias match)                 (creative Deepgram garble)
+  (exact alias match)                 (creative Local speech garble)
 
 
   ┌─────────────────────────────────────────────────────┐
@@ -137,7 +137,7 @@
   │   CEILING: No matter how good the prompt is,        │
   │   a cloud LLM won't learn YOUR accent patterns.     │
   │   Every user is different. Every microphone is       │
-  │   different. Deepgram's failures are user-specific.  │
+  │   different. Local speech's failures are user-specific.  │
   │                                                     │
   │   TARGET: 98%+                                      │
   │                                                     │
@@ -471,7 +471,7 @@
   BEFORE (current):
   ═════════════════
 
-  Deepgram: "meah mein bahut kaam hai"
+  Local speech: "meah mein bahut kaam hai"
                 │
                 ▼
   Alias table: meah not found ❌
@@ -486,7 +486,7 @@
   AFTER (with Tier 2 model):
   ══════════════════════════
 
-  Deepgram: "meah mein bahut kaam hai"
+  Local speech: "meah mein bahut kaam hai"
                 │
                 ▼
   ┌─────────────────────────────────┐
@@ -733,7 +733,7 @@
   CURRENT PIPELINE:
   ═════════════════
 
-  Audio → Deepgram → [PRE-LLM ALIAS SUB] → [LLM POLISH] → Paste
+  Audio → Local speech → [PRE-LLM ALIAS SUB] → [LLM POLISH] → Paste
                        (exact match only)    (prompt hints)
                        handles ~60%          handles ~20% more
                                              misses ~20%
@@ -741,7 +741,7 @@
   WITH TIER 2 MODEL:
   ═══════════════════
 
-  Audio → Deepgram → [PRE-LLM ALIAS SUB] → [CORRECTION MODEL] → [LLM POLISH] → Paste
+  Audio → Local speech → [PRE-LLM ALIAS SUB] → [CORRECTION MODEL] → [LLM POLISH] → Paste
                       (exact match only)     (neural, <2ms)       (much easier
                       handles ~60%           handles ~30% more     job now!)
                                              novel distortions     handles ~8% more
@@ -904,7 +904,7 @@
   │                                                                 │
   │  ✅ Pre-LLM exact alias substitution (DONE — this session)     │
   │  ✅ Alias cap enforcement at 15 per term (DONE — this session) │
-  │  □  Re-enable Deepgram biasing for high-weight terms            │
+  │  □  Re-enable Local speech biasing for high-weight terms            │
   │  □  Auto-store new distortions on each user correction          │
   │  □  Try Llama 3.3 70B (may follow phonetic instructions)        │
   │  □  Run pipeline quality suite, target 90%                      │

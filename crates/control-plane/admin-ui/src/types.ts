@@ -202,15 +202,15 @@ export interface TelemetryUserRow {
   learning_success_rate: number
   last_active_at?: string | null
   desktop_active: boolean
-  primary_stt?: string | null
+  primary_speech?: string | null
 }
 
-export interface TelemetrySttBreakdown {
-  by_provider_path: { stt_provider: string; stt_path: string; count: number }[]
-  by_provider: { stt_provider: string; count: number; share: number }[]
+export interface TelemetrySpeechBreakdown {
+  by_model_path: { speech_model: string; speech_path: string; count: number }[]
+  by_model: { speech_model: string; count: number; share: number }[]
   total_tagged: number
-  latency_by_provider?: {
-    stt_provider: string
+  latency_by_model?: {
+    speech_model: string
     transcribe_p50: number | null
     transcribe_p95: number | null
     runs: number
@@ -294,11 +294,8 @@ export interface TelemetryRun {
   success: boolean
   error_code?: string | null
   used_clipboard_fallback: boolean
-  used_ws_pretranscript: boolean
-  used_http_stt_fallback: boolean
-  stt_provider?: string | null
-  stt_model?: string | null
-  stt_path?: string | null
+  speech_model?: string | null
+  speech_path?: string | null
   edit_detected: boolean
   edit_bucket: string
   edit_distance_chars?: number | null
@@ -354,7 +351,7 @@ export interface TelemetryUserProfile {
     server_learning_blocked: number
   }
   latency_ms: TelemetryLatency
-  stt?: TelemetrySttBreakdown
+  speech?: TelemetrySpeechBreakdown
   by_mode: { mode: string; count: number }[]
   by_target_app: { target_app: string | null; count: number }[]
   content_flags: Record<string, number>
@@ -384,7 +381,7 @@ export interface TelemetryUserMemory {
     positive_count: number
     status: string
     safety_status: string
-    learned_stt_provider?: string | null
+    learned_speech_model?: string | null
   }[]
   edit_policies: {
     variant_form: string
@@ -443,9 +440,6 @@ export interface DictationListItem {
   edit_bucket?: string | null
   edit_detected?: boolean | null
   total_ms?: number | null
-  stt_provider?: string | null
-  stt_model?: string | null
-  output_language?: string | null
   has_edit_feedback: boolean
 }
 
@@ -495,7 +489,6 @@ export interface DictationDetailItem {
   created_at: string
   edit_bucket?: string | null
   total_ms?: number | null
-  output_language?: string | null
 }
 
 export interface AliasLearnEvent {

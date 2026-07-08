@@ -41,14 +41,14 @@ final class AppEnvironment: ObservableObject {
     @Published private(set) var dictationAvailable = false
     @Published private(set) var runtimeStatusLabel = "Checking workspace…"
 
-    // MARK: Provider credentials (BYOK — user's own Deepgram/Groq keys, server-vaulted)
+    // MARK: Provider credentials (BYOK — user's own polish keys, server-vaulted)
 
     @Published private(set) var credentials: [RuntimeCredential] = []
     @Published private(set) var credentialStatus = ""
     @Published private(set) var credentialWorking = false
 
-    /// Providers the runtime needs for end-to-end dictation.
-    static let requiredProviders = ["deepgram", "groq"]
+    /// Providers the runtime needs after local speech transcription.
+    static let requiredProviders = ["groq"]
 
     // MARK: Workspace / orgs (enterprise)
 
@@ -125,7 +125,7 @@ final class AppEnvironment: ObservableObject {
     private let byokStore: SecureStore = KeychainSecureStore()
     /// Keychain item names for each provider's locally-held secret.
     private static let byokKeychainKeys = [
-        "deepgram": "byok.deepgram", "groq": "byok.groq", "gemini": "byok.gemini",
+        "groq": "byok.groq", "gemini": "byok.gemini",
     ]
     /// In-memory throttle so foreground re-mirrors don't hammer the vault. A fresh
     /// launch always re-mirrors (this resets to nil), via loadWorkspaceState().
@@ -390,9 +390,8 @@ final class AppEnvironment: ObservableObject {
     func refreshRuntimeStatus() async {
         do {
             let status = try await gateway.runtimeStatus()
-            // dictationAvailable is owned by refreshCredentials — it needs BOTH
-            // required providers (deepgram + groq), not just any active credential
-            // (an optional Gemini key alone must not flip it on).
+            // dictationAvailable is owned by refreshCredentials. Local speech is
+            // device-side; cloud credentials are only for polish/learning.
             runtimeStatusLabel = status.activeCredentialCount > 0
                 ? (status.serverMemoryReady ? "Personalized" : "Ready")
                 : "Setting up dictation"
@@ -568,7 +567,7 @@ final class AppEnvironment: ObservableObject {
         credentials.contains { $0.provider.lowercased() == provider.lowercased() && $0.status.lowercased() != "revoked" }
     }
 
-    /// Required providers (deepgram, groq) that the user hasn't added yet.
+    /// Required cloud polish providers that the user hasn't added yet.
     var missingRequiredProviders: [String] {
         Self.requiredProviders.filter { !hasCredential($0) }
     }
@@ -577,8 +576,8 @@ final class AppEnvironment: ObservableObject {
         guard account != nil else { credentials = []; return }
         do {
             credentials = try await gateway.listCredentials()
-            // Dictation needs BOTH required providers (deepgram + groq); an
-            // optional Gemini key alone must not turn this on.
+            // Dictation needs the required polish provider. An optional Gemini key
+            // alone must not turn this on.
             dictationAvailable = missingRequiredProviders.isEmpty
         } catch {
             _ = handleUnauthorized(error)
@@ -592,11 +591,11 @@ final class AppEnvironment: ObservableObject {
     private static func keyFormatHint(provider: String, key: String) -> String? {
         switch provider.lowercased() {
         case "groq":
-            return key.hasPrefix("gsk_") ? nil : "A Groq key starts with \u{201C}gsk_\u{201D}. Check you pasted the Groq key (not Deepgram/Gemini)."
+            return key.hasPrefix("gsk_") ? nil : "A Groq key starts with \u{201C}gsk_\u{201D}. Check you pasted the Groq key (not Gemini)."
         case "gemini":
             return key.hasPrefix("AIza") ? nil : "A Gemini key starts with \u{201C}AIza\u{201D}. Check you pasted the Gemini key."
         default:
-            return nil   // Deepgram keys have no fixed prefix
+            return nil
         }
     }
 

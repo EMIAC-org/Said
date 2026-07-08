@@ -398,7 +398,7 @@
                 <div class="card stat-card"><div class="label">👍 Acceptance rate</div><div class="value">71.2%</div><div class="sub">No meaningful edit after paste</div></div>
                 <div class="card stat-card"><div class="label">⏱ Total latency p50</div><div class="value">1,240 ms</div><div class="sub">p95 2,890 ms</div></div>
                 <div class="card stat-card"><div class="label">✎ Edit rate</div><div class="value">24.8%</div><div class="sub">Heavy 6.1%</div></div>
-                <div class="card stat-card"><div class="label">⚡ Fallback rate</div><div class="value">3.2%</div><div class="sub">Clipboard or HTTP STT fallback</div></div>
+                <div class="card stat-card"><div class="label">⚡ Fallback rate</div><div class="value">3.2%</div><div class="sub">Clipboard fallback</div></div>
               </div>
 
               <div class="grid-2 mb-4">
@@ -415,9 +415,9 @@
                   <div style="display:flex;justify-content:space-between;font-size:12px"><span>Cursor</span><span class="tabular">194</span></div>
                 </div>
                 <div class="card">
-                  <div class="section-label">STT provider (runs)</div>
-                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">deepgram · nova-3 WS</span><span class="tabular">892 (69%)</span></div>
-                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">deepgram · batch fallback</span><span class="tabular">148 (12%)</span></div>
+                  <div class="section-label">speech model (runs)</div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">whisper.cpp · local batch</span><span class="tabular">892 (69%)</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">whisper.cpp · local repair</span><span class="tabular">148 (12%)</span></div>
                   <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span class="mono">sarvam · saarika v2.5</span><span class="tabular">224 (17%)</span></div>
                   <div style="display:flex;justify-content:space-between;font-size:12px"><span class="mono">sarvam · batch only</span><span class="tabular">20 (2%)</span></div>
                 </div>
@@ -516,10 +516,10 @@
               </div>
 
               <div class="card mb-4">
-                <div class="section-label">STT provider mix (this user)</div>
+                <div class="section-label">speech model mix (this user)</div>
                 <div class="grid-4" style="font-size:12px" id="sttMixGrid">
-                  <div><div class="k" style="color:var(--color-fg-4);font-size:11px">deepgram WS</div><div class="v tabular" style="font-weight:600;margin-top:4px">128 runs · p50 380ms</div></div>
-                  <div><div class="k" style="color:var(--color-fg-4);font-size:11px">deepgram batch</div><div class="v tabular" style="font-weight:600;margin-top:4px">22 runs · p50 1,840ms</div></div>
+                  <div><div class="k" style="color:var(--color-fg-4);font-size:11px">local speech</div><div class="v tabular" style="font-weight:600;margin-top:4px">128 runs · p50 380ms</div></div>
+                  <div><div class="k" style="color:var(--color-fg-4);font-size:11px">local repair</div><div class="v tabular" style="font-weight:600;margin-top:4px">22 runs · p50 1,840ms</div></div>
                   <div><div class="k" style="color:var(--color-fg-4);font-size:11px">sarvam WS</div><div class="v tabular" style="font-weight:600;margin-top:4px">31 runs · p50 520ms</div></div>
                   <div><div class="k" style="color:var(--color-fg-4);font-size:11px">sarvam batch</div><div class="v tabular" style="font-weight:600;margin-top:4px">5 runs · p50 2,100ms</div></div>
                 </div>
@@ -826,12 +826,11 @@
       paste_ms: 92,
       success: true,
       error_code: null,
-      stt_provider: 'deepgram',
-      stt_model: 'nova-3',
-      stt_path: 'ws_prewarm',
+      speech_model: 'whisper.cpp',
+      speech_path: 'ws_prewarm',
       used_clipboard_fallback: false,
-      used_ws_pretranscript: true,
-      used_http_stt_fallback: false,
+      local_transcript_present: true,
+      local_speech_retry: false,
       edit_detected: true,
       edit_bucket: 'light',
       edit_distance_chars: 6,
@@ -852,9 +851,9 @@
 
     const RUNS = [
       { ...RUN, learning_edit: { polished: '…update from EMIAC team', kept: '…update from Mac team', learned: 'Mac → EMIAC alias reverted' } },
-      { ...RUN, run_id: 'run_1a9d44e2', target_app: 'Cursor', stt_provider: 'sarvam', stt_model: 'saarika:v2.5', stt_path: 'ws_stream', edit_bucket: 'none', accepted_as_is: true, edit_detected: false, total_ms: 1102, event_at: '2026-06-08 11:42:08', learning_candidate: false, learning_modal_shown: false },
-      { ...RUN, run_id: 'run_c77b20ff', mode: 'command', target_app: 'Chrome', stt_provider: 'deepgram', stt_model: 'nova-3', stt_path: 'http_batch', success: false, error_code: 'stt_timeout', edit_bucket: 'none', total_ms: 4200, event_at: '2026-06-07 16:05:41', used_http_stt_fallback: true, used_ws_pretranscript: false },
-      { ...RUN, run_id: 'run_e31ac890', stt_provider: 'deepgram', stt_model: 'nova-3', stt_path: 'ws_prewarm', edit_bucket: 'heavy', edit_distance_chars: 48, edit_distance_words: 9, deleted_entire_output: true, event_at: '2026-06-07 09:22:15', learning_edit: { polished: 'meac ka sixty eight percent hai', kept: 'Mac ka 68% hai', learned: 'meac → EMIAC blocked by cron' } },
+      { ...RUN, run_id: 'run_1a9d44e2', target_app: 'Cursor', speech_model: 'whisper.cpp', speech_path: 'ws_stream', edit_bucket: 'none', accepted_as_is: true, edit_detected: false, total_ms: 1102, event_at: '2026-06-08 11:42:08', learning_candidate: false, learning_modal_shown: false },
+      { ...RUN, run_id: 'run_c77b20ff', mode: 'command', target_app: 'Chrome', speech_model: 'whisper.cpp', speech_path: 'http_batch', success: false, error_code: 'stt_timeout', edit_bucket: 'none', total_ms: 4200, event_at: '2026-06-07 16:05:41', local_speech_retry: true, local_transcript_present: false },
+      { ...RUN, run_id: 'run_e31ac890', speech_model: 'whisper.cpp', speech_path: 'ws_prewarm', edit_bucket: 'heavy', edit_distance_chars: 48, edit_distance_words: 9, deleted_entire_output: true, event_at: '2026-06-07 09:22:15', learning_edit: { polished: 'meac ka sixty eight percent hai', kept: 'Mac ka 68% hai', learned: 'meac → EMIAC blocked by cron' } },
     ];
 
     const USER_VOCAB = {
@@ -867,19 +866,19 @@
           { term: 'Lark', type: 'brand', weight: 5.0, status: 'active', last: '1w ago' },
         ],
         aliases: [
-          { heard: 'meac', correct: 'EMIAC', stt: 'deepgram', safety: 'active', pos: 4, neg: 0, run: 'run_e31ac890' },
-          { heard: 'e miac', correct: 'EMIAC', stt: 'deepgram', safety: 'active', pos: 3, neg: 0, run: 'run_8f2c91a4' },
+          { heard: 'meac', correct: 'EMIAC', speech: 'whisper.cpp', safety: 'active', pos: 4, neg: 0, run: 'run_e31ac890' },
+          { heard: 'e miac', correct: 'EMIAC', speech: 'whisper.cpp', safety: 'active', pos: 3, neg: 0, run: 'run_8f2c91a4' },
           { heard: 'emiac', correct: 'EMIAC', stt: 'sarvam', safety: 'active', pos: 2, neg: 0, run: 'run_1a9d44e2' },
-          { heard: 'mea', correct: 'EMIAC', stt: 'deepgram', safety: 'review', pos: 1, neg: 1, run: 'run_c77b20ff' },
-          { heard: 'mec', correct: 'EMIAC', stt: 'deepgram', safety: 'common_block', pos: 1, neg: 2, run: 'run_e31ac890' },
+          { heard: 'mea', correct: 'EMIAC', speech: 'whisper.cpp', safety: 'review', pos: 1, neg: 1, run: 'run_c77b20ff' },
+          { heard: 'mec', correct: 'EMIAC', speech: 'whisper.cpp', safety: 'common_block', pos: 1, neg: 2, run: 'run_e31ac890' },
           { heard: 'mia', correct: 'EMIAC', stt: 'sarvam', safety: 'common_block', pos: 0, neg: 1, run: '—' },
-          { heard: 'macobs', correct: 'Macobs', stt: 'deepgram', safety: 'active', pos: 2, neg: 0, run: 'run_8f2c91a4' },
+          { heard: 'macobs', correct: 'Macobs', speech: 'whisper.cpp', safety: 'active', pos: 2, neg: 0, run: 'run_8f2c91a4' },
           { heard: 'devo', correct: 'Divo', stt: 'sarvam', safety: 'active', pos: 1, neg: 0, run: 'run_1a9d44e2' },
         ],
         policy: [
           { variant: 'mac', correct: 'EMIAC', type: 'replace', pos: 2, neg: 3, status: 'penalized' },
           { variant: 'set', correct: 'Said', type: 'replace', pos: 1, neg: 0, status: 'active' },
-          { variant: 'nova three', correct: 'nova-3', type: 'replace', pos: 3, neg: 0, status: 'active' },
+          { variant: 'nova three', correct: 'whisper.cpp', type: 'replace', pos: 3, neg: 0, status: 'active' },
         ],
         cron: [
           { at: 'Jun 10, 03:00', alias: 'profile sweep', was: '18 aliases', verdict: 'ok', reason: 'Full brain analysis — 2 blocked, 1 penalized rule, 0 merges', action: 'memory_hygiene' },
@@ -889,9 +888,9 @@
           { at: 'Jun 9, 03:00', alias: 'mea', was: 'EMIAC', verdict: 'review', reason: 'Ambiguous 3-letter; wait for negative signal', action: 'flagged' },
         ],
         learning: [
-          { when: 'Jun 8, 14:18', run: 'run_8f2c91a4', stt: 'deepgram', polished: '…from <span class="edit-span bad">EMIAC</span> team', kept: '…from <span class="edit-span good">Mac</span> team', outcome: '<span class="badge warn">alias reverted</span>' },
-          { when: 'Jun 7, 09:22', run: 'run_e31ac890', stt: 'deepgram', polished: '<span class="edit-span bad">meac</span> ka 68%', kept: '<span class="edit-span good">Mac</span> ka 68%', outcome: '<span class="badge live">hygiene blocked mec/mia</span>' },
-          { when: 'Jun 7, 16:05', run: 'run_c77b20ff', stt: 'deepgram batch', polished: 'open <span class="edit-span bad">EMIAC</span> docs', kept: 'open <span class="edit-span good">Lark</span> docs', outcome: '<span class="badge ok">learned Lark</span>' },
+          { when: 'Jun 8, 14:18', run: 'run_8f2c91a4', speech: 'whisper.cpp', polished: '…from <span class="edit-span bad">EMIAC</span> team', kept: '…from <span class="edit-span good">Mac</span> team', outcome: '<span class="badge warn">alias reverted</span>' },
+          { when: 'Jun 7, 09:22', run: 'run_e31ac890', speech: 'whisper.cpp', polished: '<span class="edit-span bad">meac</span> ka 68%', kept: '<span class="edit-span good">Mac</span> ka 68%', outcome: '<span class="badge live">hygiene blocked mec/mia</span>' },
+          { when: 'Jun 7, 16:05', run: 'run_c77b20ff', stt: 'local repair', polished: 'open <span class="edit-span bad">EMIAC</span> docs', kept: 'open <span class="edit-span good">Lark</span> docs', outcome: '<span class="badge ok">learned Lark</span>' },
         ],
         sttMix: { dgWs: 128, dgBatch: 22, sarvamWs: 31, sarvamBatch: 5 },
         stats: { vocab: 12, aliases: 18, cronBlocked: 4 },
@@ -946,9 +945,9 @@
         </div>
         <h4>STT</h4>
         <div class="field-grid">
-          <div><div class="k">stt_provider</div><div class="v mono">${r.stt_provider || '—'}</div></div>
-          <div><div class="k">stt_model</div><div class="v mono">${r.stt_model || '—'}</div></div>
-          <div><div class="k">stt_path</div><div class="v mono">${r.stt_path || '—'}</div></div>
+          <div><div class="k">speech_model</div><div class="v mono">${r.speech_model || '—'}</div></div>
+          <div><div class="k">speech_model</div><div class="v mono">${r.speech_model || '—'}</div></div>
+          <div><div class="k">speech_path</div><div class="v mono">${r.speech_path || '—'}</div></div>
         </div>
         <h4>Context</h4>
         <div class="field-grid">
@@ -978,8 +977,8 @@
           <div><div class="k">success</div><div class="v">${bool(r.success)}</div></div>
           <div><div class="k">error_code</div><div class="v mono">${r.error_code || '—'}</div></div>
           <div><div class="k">used_clipboard_fallback</div><div class="v">${bool(r.used_clipboard_fallback)}</div></div>
-          <div><div class="k">used_ws_pretranscript</div><div class="v">${bool(r.used_ws_pretranscript)}</div></div>
-          <div><div class="k">used_http_stt_fallback</div><div class="v">${bool(r.used_http_stt_fallback)}</div></div>
+          <div><div class="k">local_transcript_present</div><div class="v">${bool(r.local_transcript_present)}</div></div>
+          <div><div class="k">local_speech_retry</div><div class="v">${bool(r.local_speech_retry)}</div></div>
         </div>
         <h4>Edit watch</h4>
         <div class="field-grid">
@@ -1042,8 +1041,8 @@
 
       if (d.sttMix) {
         document.getElementById('sttMixGrid').innerHTML = `
-          <div><div class="k" style="color:var(--color-fg-4);font-size:11px">deepgram WS</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.dgWs} runs</div></div>
-          <div><div class="k" style="color:var(--color-fg-4);font-size:11px">deepgram batch</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.dgBatch} runs</div></div>
+          <div><div class="k" style="color:var(--color-fg-4);font-size:11px">local speech</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.dgWs} runs</div></div>
+          <div><div class="k" style="color:var(--color-fg-4);font-size:11px">local repair</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.dgBatch} runs</div></div>
           <div><div class="k" style="color:var(--color-fg-4);font-size:11px">sarvam WS</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.sarvamWs} runs</div></div>
           <div><div class="k" style="color:var(--color-fg-4);font-size:11px">sarvam batch</div><div class="v tabular" style="font-weight:600;margin-top:4px">${d.sttMix.sarvamBatch} runs</div></div>
         `;
@@ -1107,14 +1106,14 @@
       tbody.innerHTML = RUNS.map((r, i) => {
         const bucketClass = r.edit_bucket === 'none' ? 'ok' : r.edit_bucket === 'heavy' ? 'live' : 'warn';
         const flagSummary = r.flags ? Object.entries(r.flags).filter(([,v])=>v).map(([k])=>k.replace('has_','')).slice(0,3).join(', ') : '';
-        const sttLabel = r.stt_provider ? `${r.stt_provider === 'sarvam' ? 'Sarvam' : 'DG'}${r.stt_path === 'http_batch' ? '·batch' : ''}` : '—';
+        const sttLabel = r.speech_model ? `${r.speech_model === 'sarvam' ? 'Sarvam' : 'DG'}${r.speech_path === 'http_batch' ? '·batch' : ''}` : '—';
         return `
           <tr class="clickable" data-run="${i}" onclick="toggleRun(${i})">
             <td><span class="chevron">›</span></td>
             <td class="mono" style="font-size:11px">${r.event_at}</td>
             <td class="mono">${r.run_id}</td>
             <td class="mono">${r.mode}</td>
-            <td class="mono" style="font-size:10px" title="${r.stt_model || ''}">${sttLabel}</td>
+            <td class="mono" style="font-size:10px" title="${r.speech_model || ''}">${sttLabel}</td>
             <td>${r.target_app}</td>
             <td class="tabular">${r.audio_seconds}s</td>
             <td class="tabular">${r.word_count}</td>

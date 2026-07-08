@@ -373,7 +373,7 @@ final class KeyboardViewController: UIInputViewController {
         isRecording = false
         currentResult = nil
         if error.isCredentialMissing {
-            setState(.error("Add your Deepgram and Groq keys in the AirNote app (Settings → Voice keys)."))
+            setState(.error("Add your Groq polish key in the AirNote app (Settings → Voice keys)."))
         } else {
             setState(.error(error.message))
         }

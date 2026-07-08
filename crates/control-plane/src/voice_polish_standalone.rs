@@ -1,28 +1,12 @@
 //! Standalone voice polish pipeline — mirrors `voice_polish` / `polish_runtime_transcript`
 //! in `routes/runtime.rs` without DB, auth, or telemetry. For local STT comparison scripts.
 
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::format_recover;
 use crate::number_format;
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RuntimeVocabHint {
-    pub term: String,
-    #[serde(default)]
-    pub tier: String,
-    #[serde(default)]
-    pub evidence: Option<String>,
-    #[serde(default)]
-    pub meaning: Option<String>,
-    #[serde(default)]
-    pub context: Option<String>,
-    #[serde(default)]
-    pub term_type: Option<String>,
-}
 
 /// Full server-runtime polish path: number_format pre → Groq → literal restore → number_format post → email recover.
 pub async fn polish_transcript(
@@ -65,35 +49,6 @@ pub async fn polish_transcript_with_prompt(
     system_prompt: &str,
     safe_vocab_terms: &[String],
 ) -> Result<String, String> {
-    polish_transcript_with_prompt_model(
-        transcript,
-        output_language,
-        selected_model,
-        groq_api_key,
-        system_prompt,
-        safe_vocab_terms,
-        None,
-        None,
-    )
-    .await
-}
-
-/// Identical to [`polish_transcript_with_prompt`] but with explicit model and
-/// endpoint overrides. The prompt-eval model sweep passes `Some(model)` (and
-/// optionally `Some(endpoint)` for non-OpenRouter providers like Sarvam) so it
-/// can fan out across many models/providers CONCURRENTLY without racing on the
-/// process-wide `POLISH_CHAT_MODEL` / `POLISH_CHAT_ENDPOINT` env vars. `None`
-/// for both reproduces the original env/route behavior exactly.
-pub async fn polish_transcript_with_prompt_model(
-    transcript: &str,
-    output_language: &str,
-    selected_model: &str,
-    groq_api_key: &str,
-    system_prompt: &str,
-    safe_vocab_terms: &[String],
-    model_override: Option<&str>,
-    endpoint_override: Option<&str>,
-) -> Result<String, String> {
     let formatted_transcript = number_format::apply(transcript);
     let user_message = build_voice_user_message(&formatted_transcript, output_language);
 
@@ -101,23 +56,12 @@ pub async fn polish_transcript_with_prompt_model(
     // persona lab can A/B on whatever provider has a local key (the live
     // server polishes through `routes/runtime.rs`, never this path).
     let route = said_core::polish::model::resolve_polish_route(selected_model);
-    let model = model_override
-        .map(|s| s.to_string())
-        .or_else(|| {
-            std::env::var("POLISH_CHAT_MODEL")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        })
+    let model = std::env::var("POLISH_CHAT_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| route.model.clone());
 
-    let output = call_groq(
-        groq_api_key,
-        &model,
-        system_prompt,
-        &user_message,
-        endpoint_override,
-    )
-    .await?;
+    let output = call_groq(groq_api_key, &model, system_prompt, &user_message).await?;
     // Defensive guard: weak models occasionally echo the polish prompt's
     // role-anchor instructions into the output; strip any leaked lines.
     let output = strip_leaked_instructions(&output);
@@ -135,22 +79,9 @@ async fn call_groq(
     model: &str,
     system_prompt: &str,
     user_message: &str,
-    endpoint_override: Option<&str>,
 ) -> Result<String, String> {
-    // Resolve endpoint up front — reasoning-param SHAPE is provider-specific
-    // (OpenRouter uses a `reasoning` object; Sarvam + Cerebras use a top-level
-    // `reasoning_effort`), so we must know the target before building the body.
-    let endpoint = endpoint_override.map(|s| s.to_string()).unwrap_or_else(|| {
-        std::env::var("POLISH_CHAT_ENDPOINT").unwrap_or_else(|_| GROQ_ENDPOINT.to_string())
-    });
-    let is_openrouter = endpoint.contains("openrouter");
-    let is_sarvam = endpoint.contains("sarvam");
-
     let estimated_input_tokens = user_message.len() / 4;
-    // Floor high enough that a reasoning model's thinking tokens can't starve the
-    // visible answer (that was the "empty output" seen with small budgets).
-    // Non-reasoning models stop at their natural EOS well before this cap.
-    let mut max_tokens = (estimated_input_tokens * 2 + 256).clamp(2048, 8192) as u32;
+    let mut max_tokens = (estimated_input_tokens * 2 + 256).min(8192) as u32;
     // Test-harness only: `POLISH_TEMPERATURE` lets the persona lab try the
     // research-backed anti-degeneration setting (≈0.2 instead of greedy 0.0,
     // which Groq clamps to 1e-8 and is the repetition-loop trigger). Defaults
@@ -176,97 +107,45 @@ async fn call_groq(
             { "role": "user", "content": user_message }
         ]
     });
-    // Test-harness only: `POLISH_REASONING_EFFORT` A/Bs reasoning depth. Defaults
-    // to "low" so a reasoning model stays fast; the SHAPE is provider-specific.
-    // `skip` sends no reasoning field at all (leave the model at its own default).
-    let effort = std::env::var("POLISH_REASONING_EFFORT")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "low".to_string());
     if model.contains("gpt-oss") {
         max_tokens = max_tokens.max(4096);
         body["max_tokens"] = json!(max_tokens);
-    }
-    if effort != "skip" {
-        if is_openrouter {
-            // OpenRouter unified reasoning object; a no-op on non-reasoning models.
-            body["reasoning"] = json!({ "effort": effort });
-        } else if is_sarvam {
-            // Sarvam hybrid-think: null = non-think (fast). Only medium/high think.
-            if effort == "medium" || effort == "high" {
-                body["reasoning_effort"] = json!(effort);
-            } else {
-                body["reasoning_effort"] = serde_json::Value::Null;
-            }
-        } else if model.contains("gpt-oss") {
-            // Cerebras/Groq direct gpt-oss uses the legacy top-level field.
-            body["reasoning_effort"] = json!(effort);
-        }
-    }
-
-    // Test-harness only: `POLISH_CHAT_PROVIDER` pins OpenRouter provider routing
-    // to a fixed fast/cheap host (comma-separated order, no fallbacks) so the
-    // prompt lab can measure a SPECIFIC provider's latency instead of nitro's
-    // roaming tail. No-op when unset (live path never sets it).
-    if let Ok(prov) = std::env::var("POLISH_CHAT_PROVIDER") {
-        let order: Vec<&str> = prov
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if !order.is_empty() {
-            body["provider"] = json!({ "order": order, "allow_fallbacks": false });
-        }
+        body["reasoning_effort"] = json!("low");
     }
 
     // dev's pooled keep-alive client (avoids a fresh DNS+TCP+TLS handshake per
     // call); anugra's 429-retry loop below drives the actual request.
     let client = &*crate::HTTP_CLIENT;
 
-    // Retry transient failures instead of failing the whole dictation:
-    //   - 429 (TPM/rate limit) with the server-advised backoff,
-    //   - 5xx (provider hiccup / gateway),
-    //   - connection/send errors,
-    //   - and JSON parse failures (a provider under load can return a truncated
-    //     or non-JSON body even on a 200 — the "error decoding response body"
-    //     case that otherwise understates a good model in the benchmark).
-    // The whole send+parse is inside the loop so any of these gets another shot.
-    const MAX_ATTEMPTS: u32 = 4;
-    let mut attempt = 0u32;
-    let value: serde_json::Value = loop {
-        attempt += 1;
-        let last = attempt >= MAX_ATTEMPTS;
-        let backoff =
-            |a: u32| tokio::time::sleep(std::time::Duration::from_secs_f64(0.4 * a as f64));
+    // Retry transient 429s (Groq TPM limit) with the server-advised backoff
+    // instead of failing the whole dictation. 8B on the on-demand tier is only
+    // ~6000 TPM and the polish prompt is large, so a burst of dictations hits
+    // the limit; a short wait + retry turns a hard failure into a brief delay.
+    // Test-harness only: `POLISH_CHAT_ENDPOINT` lets the persona lab target any
+    // OpenAI-compatible provider (OpenAI, DeepSeek) when no Groq key is around.
+    // Defaults to Groq, so the live server path is unaffected.
+    let endpoint =
+        std::env::var("POLISH_CHAT_ENDPOINT").unwrap_or_else(|_| GROQ_ENDPOINT.to_string());
 
-        let resp = match client
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0u32;
+    let resp = loop {
+        attempt += 1;
+        let resp = client
             .post(&endpoint)
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
             .json(&body)
-            .timeout(std::time::Duration::from_secs(25))
+            .timeout(std::time::Duration::from_secs(20))
             .send()
             .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                if last {
-                    return Err(format!("groq request failed: {e}"));
-                }
-                backoff(attempt).await;
-                continue;
-            }
-        };
+            .map_err(|e| format!("groq request failed: {e}"))?;
 
         let status = resp.status();
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-            if last {
-                let preview = resp.text().await.unwrap_or_default();
-                return Err(format!(
-                    "Groq returned {status}: {}",
-                    said_core::text::truncate_utf8(&preview, 400)
-                ));
-            }
+        if status.is_success() {
+            break resp;
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_ATTEMPTS {
             let header_wait = resp
                 .headers()
                 .get("retry-after")
@@ -275,30 +154,22 @@ async fn call_groq(
             let preview = resp.text().await.unwrap_or_default();
             let wait_s = header_wait
                 .or_else(|| parse_retry_seconds(&preview))
-                .unwrap_or(0.4 * attempt as f64)
+                .unwrap_or(1.0)
                 .clamp(0.2, 5.0);
             tokio::time::sleep(std::time::Duration::from_secs_f64(wait_s)).await;
             continue;
         }
-        if !status.is_success() {
-            let preview = resp.text().await.unwrap_or_default();
-            return Err(format!(
-                "Groq returned {status}: {}",
-                said_core::text::truncate_utf8(&preview, 400)
-            ));
-        }
-
-        match resp.json::<serde_json::Value>().await {
-            Ok(v) => break v,
-            Err(e) => {
-                if last {
-                    return Err(format!("groq response parse failed: {e}"));
-                }
-                backoff(attempt).await;
-                continue;
-            }
-        }
+        let preview = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Groq returned {status}: {}",
+            said_core::text::truncate_utf8(&preview, 400)
+        ));
     };
+
+    let value: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("groq response parse failed: {e}"))?;
 
     let output = value
         .get("choices")
@@ -387,31 +258,28 @@ pub fn build_voice_system_prompt(
     safe_vocab_terms: &[String],
     profile_markdown: Option<&str>,
 ) -> String {
-    build_voice_system_prompt_with_vocab_hints(
+    build_voice_system_prompt_with_recent(
         output_language,
         tone_preset,
         custom_prompt,
         screen_context,
         safe_vocab_terms,
-        &[],
         profile_markdown,
-        None,
+        &[],
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn build_voice_system_prompt_with_vocab_hints(
+pub fn build_voice_system_prompt_with_recent(
     output_language: &str,
     tone_preset: &str,
     custom_prompt: Option<&str>,
     screen_context: Option<&str>,
     safe_vocab_terms: &[String],
-    vocab_hints: &[RuntimeVocabHint],
     profile_markdown: Option<&str>,
-    domain_context: Option<&str>,
+    recent_speech_hints: &[String],
 ) -> String {
     use said_core::polish::prompt::{
-        VocabEntry, VocabResolution, build_system_prompt_with_profile_and_domain,
+        VocabEntry, VocabResolution, build_system_prompt_with_profile_and_recent_speech,
     };
     use said_core::polish::types::PolishPrefs;
 
@@ -423,73 +291,41 @@ pub fn build_voice_system_prompt_with_vocab_hints(
         tone_preset: tone_preset.to_string(),
         custom_prompt: custom_prompt.map(str::to_string),
     };
-    let vocab_entries: Vec<VocabEntry> = if vocab_hints.is_empty() {
-        // Backward-compatible fallback for old callers that only know flat
-        // safe terms. New runtime requests should send tiered hints so prompt
-        // evidence and LLM arbitration are not lost.
-        safe_vocab_terms
-            .iter()
-            .filter_map(|t| {
-                let trimmed = t.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(VocabEntry {
-                        term: trimmed.to_string(),
-                        context: None,
-                        resolution: VocabResolution::Resolved,
-                        term_type: None,
-                        meaning: None,
-                        evidence: None,
-                        stt_aliases: vec![],
-                    })
-                }
-            })
-            .collect()
-    } else {
-        vocab_hints
-            .iter()
-            .filter_map(|hint| {
-                let trimmed = hint.term.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    let resolution = if hint.tier.eq_ignore_ascii_case("suggest") {
-                        VocabResolution::Candidate
-                    } else {
-                        VocabResolution::Resolved
-                    };
-                    Some(VocabEntry {
-                        term: trimmed.to_string(),
-                        context: hint.context.clone(),
-                        resolution,
-                        term_type: hint.term_type.clone(),
-                        meaning: hint.meaning.clone(),
-                        evidence: hint.evidence.clone(),
-                        stt_aliases: vec![],
-                    })
-                }
-            })
-            .collect()
-    };
+    // Server vocab arrives as already-trusted bare terms (no STT aliases), so
+    // they render as Resolved entries and the common-word filter never fires.
+    let vocab_entries: Vec<VocabEntry> = safe_vocab_terms
+        .iter()
+        .filter_map(|t| {
+            let trimmed = t.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(VocabEntry {
+                    term: trimmed.to_string(),
+                    context: None,
+                    resolution: VocabResolution::Resolved,
+                    term_type: None,
+                    meaning: None,
+                    stt_aliases: vec![],
+                })
+            }
+        })
+        .collect();
 
-    let mut prompt = build_system_prompt_with_profile_and_domain(
+    let mut prompt = build_system_prompt_with_profile_and_recent_speech(
         &prefs,
         &[],
         &[],
         &vocab_entries,
         profile_markdown,
-        domain_context,
+        recent_speech_hints,
         |_| false,
     );
 
     if let Some(ctx) = screen_context {
-        let trimmed = ctx.trim();
-        if !trimmed.is_empty() {
-            let clipped: String = trimmed.chars().take(400).collect();
-            prompt.push_str(&format!(
-                "\n\nSCREEN CONTEXT: \"{clipped}\"\nUse only as a tiebreaker for names or terms. Transcript words come first. Never use screen context to omit, shorten, or replace transcript clauses."
-            ));
+        let block = said_core::polish::prompt::render_screen_context_block(ctx);
+        if !block.is_empty() {
+            prompt.push_str(&block);
         }
     }
 

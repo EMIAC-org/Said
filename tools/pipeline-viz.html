@@ -133,26 +133,26 @@
 
   <div class="arrow">&#8595;</div>
 
-  <!-- STEP 1: Deepgram STT -->
+  <!-- STEP 1: Local speech STT -->
   <div class="step active">
     <div class="step-header">
       <div class="step-num">1</div>
-      <div class="step-title">Deepgram Nova-3 STT</div>
+      <div class="step-title">Local speech Nova-3 STT</div>
       <span class="tag model">WebSocket streaming</span>
       <span class="tag latency">~300-500ms</span>
     </div>
     <div class="step-body">
-      Audio streamed via WebSocket to Deepgram.
+      Audio streamed via WebSocket to Local speech.
       <br><code>smart_format=false</code> <code>punctuate=true</code> <code>keyterms=0</code> <code>replacements=0</code>
-      <br>Deepgram transcribes neutrally — no biasing, no number expansion.
+      <br>Local speech transcribes neutrally — no biasing, no number expansion.
       <br>Output may be in Devanagari for Hindi words.
     </div>
     <div class="example">
-      <div class="label">Deepgram output</div>
+      <div class="label">Local speech output</div>
       <div class="out">"&#x0905;&#x0928;&#x0940;&#x0937; &#x0938;&#x0941;&#x092E;&#x0928; two three zero five at the rate Gmail dot com &#x0915;&#x094B; mail &#x0932;&#x093F;&#x0916;&#x0928;&#x093E; &#x0939;&#x0948; &#x091B;&#x0939; &#x092C;&#x091C;&#x0947; &#x0915;&#x093E;."</div>
     </div>
     <div class="issues">
-      <strong>Issues:</strong> Deepgram outputs Devanagari for Hindi words. "chheh" may appear as "&#x091B;&#x0939;" (Devanagari).
+      <strong>Issues:</strong> Local speech outputs Devanagari for Hindi words. "chheh" may appear as "&#x091B;&#x0939;" (Devanagari).
       Names may be distorted ("Anish" &#8594; "&#x0905;&#x0928;&#x0940;&#x0937;").
     </div>
   </div>
@@ -213,7 +213,7 @@
     </div>
     <div class="issues">
       <strong>Known issue:</strong> Romanizer outputs "chah" for "&#x091B;&#x0939;" but standard transliteration is "chheh".
-      Different Deepgram outputs &#8594; different romanizations &#8594; inconsistent spelled-out numbers.
+      Different Local speech outputs &#8594; different romanizations &#8594; inconsistent spelled-out numbers.
     </div>
   </div>
 
@@ -316,11 +316,11 @@
 <div class="section-title">End-to-End Latency Budget</div>
 <div class="example" style="max-width:900px;margin:0 auto;">
   <div class="label">Typical recording (no formatting needed)</div>
-  <div class="out">Deepgram WS: ~400ms + Polish LLM: ~300ms = <strong>~700ms total</strong></div>
+  <div class="out">Local speech WS: ~400ms + Polish LLM: ~300ms = <strong>~700ms total</strong></div>
   <div class="label" style="margin-top:12px">Recording with formatting (email/date/etc)</div>
-  <div class="out">Deepgram WS: ~400ms + Polish LLM: ~300ms + Formatter LLM: ~200ms = <strong>~900ms total</strong></div>
-  <div class="label" style="margin-top:12px">HTTP STT fallback</div>
-  <div class="bad">Deepgram HTTP: ~2-5s + Polish LLM: ~300ms + Formatter: ~200ms = <strong>~3-5.5s total</strong></div>
+  <div class="out">Local speech WS: ~400ms + Polish LLM: ~300ms + Formatter LLM: ~200ms = <strong>~900ms total</strong></div>
+  <div class="label" style="margin-top:12px">local speech error</div>
+  <div class="bad">Local speech HTTP: ~2-5s + Polish LLM: ~300ms + Formatter: ~200ms = <strong>~3-5.5s total</strong></div>
 </div>
 
 </body>

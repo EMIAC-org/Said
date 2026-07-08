@@ -2,7 +2,7 @@
 #
 # Schema:
 #   name             — short label
-#   input            — raw Deepgram STT transcript (plain text, no confidence markers)
+#   input            — raw Local speech STT transcript (plain text, no confidence markers)
 #   expect_contains  — substrings that MUST appear in output (case-insensitive)
 #   expect_not       — substrings that must NOT appear
 #   expected_output  — (optional) ideal output for reference, not tested

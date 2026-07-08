@@ -4,7 +4,7 @@ import { apiJson, api } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
 import { RolePill } from '../components/StatusPill'
-import { OpenAILogo, LarkLogo, DeepgramLogo, GroqLogo, SlackLogo, ZoomLogo, GoogleMeetLogo, TeamsLogo, NotionLogo, LinearLogo } from '../components/BrandLogos'
+import { OpenAILogo, LarkLogo, GroqLogo, SlackLogo, ZoomLogo, GoogleMeetLogo, TeamsLogo, NotionLogo, LinearLogo } from '../components/BrandLogos'
 
 interface OpenAIStatus {
   connected: boolean
@@ -132,7 +132,6 @@ export function SettingsPage() {
             {/* Active integrations */}
             {[
               { logo: <LarkLogo size={22} />, name: 'Lark / Feishu', desc: 'OAuth login, task sync, docs', bg: 'bg-surface-4' },
-              { logo: <DeepgramLogo size={20} />, name: 'Deepgram', desc: 'Real-time speech-to-text', bg: 'bg-surface-4' },
               { logo: <GroqLogo size={20} />, name: 'Groq', desc: 'Voice polishing & classification', bg: 'bg-surface-4' },
             ].map(i => (
               <div key={i.name} className="border border-ok/20 rounded-xl p-4 mb-3 flex items-center gap-3">

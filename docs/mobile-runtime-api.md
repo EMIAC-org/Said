@@ -146,7 +146,7 @@ Response:
 The current server can store encrypted BYOK/provider credentials. Secrets are encrypted with `RUNTIME_CREDENTIALS_KEY` using AES-256-GCM; clients never receive the secret back.
 
 Supported `provider` values:
-- `deepgram`
+- `local_speech`
 - `groq`
 - `openai`
 - `gemini`
@@ -157,7 +157,7 @@ Supported `scope` values:
 - `org`
 - `airnote_managed`
 
-If no saved provider credential exists, runtime may fall back to server env keys for `deepgram` and `groq`.
+If no saved provider credential exists, runtime may fall back to server env keys for `local_speech` and `groq`.
 
 ### GET `/v1/runtime/credentials`
 
@@ -167,11 +167,11 @@ Response:
 [
   {
     "id": "credential-uuid",
-    "provider": "deepgram",
+    "provider": "local_speech",
     "scope": "user",
     "org_id": null,
     "account_id": "account-uuid",
-    "display_name": "Deepgram",
+    "display_name": "Local speech",
     "secret_last4": "abcd",
     "status": "active",
     "validated_at": "2026-06-08T12:00:00Z",
@@ -189,11 +189,11 @@ Request:
 
 ```json
 {
-  "provider": "deepgram",
+  "provider": "local_speech",
   "secret": "provider-api-key",
   "scope": "user",
   "org_id": null,
-  "display_name": "Deepgram"
+  "display_name": "Local speech"
 }
 ```
 
@@ -224,7 +224,7 @@ There are three current runtime paths:
 The implemented server flow is:
 
 1. Create a `runtime_sessions` row.
-2. For audio routes, transcribe with Deepgram `nova-3`.
+2. For audio routes, transcribe with Local speech `whisper.cpp`.
 3. Apply server number formatting before prompt assembly.
 4. Build a literal dictation normalizer prompt.
 5. Polish with Groq:
@@ -325,8 +325,8 @@ Response:
 
 Known errors:
 - `400` when `wav_b64` is invalid or empty.
-- `503` when Deepgram/Groq credentials are missing.
-- `502` when Deepgram batch STT fails.
+- `503` when Local speech/Groq credentials are missing.
+- `502` when Local speech batch STT fails.
 
 ### WS `/v1/runtime/voice/ws?token=<token>`
 
@@ -340,7 +340,7 @@ Connection welcome:
   "version": 1,
   "account_id": "account-uuid",
   "email": "user@example.com",
-  "audio_runtime": "deepgram_mvp"
+  "audio_runtime": "local_speech_mvp"
 }
 ```
 
@@ -481,17 +481,17 @@ Error event:
   "version": 1,
   "run_id": "server-runtime-uuid",
   "client_run_id": "mobile-run-003",
-  "error_kind": "deepgram_connect_failed",
+  "error_kind": "local_speech_connect_failed",
   "status": 503,
-  "message": "failed to connect to Deepgram"
+  "message": "failed to connect to Local speech"
 }
 ```
 
 Current `error_kind` values observed in implementation:
 - `recording_already_active`
 - `runtime_session_create_failed`
-- `deepgram_credential_missing`
-- `deepgram_connect_failed`
+- `local_speech_credential_missing`
+- `local_speech_connect_failed`
 - `empty_transcript`
 - `polish_failed`
 
@@ -499,7 +499,7 @@ Audio expectations:
 - Linear16 PCM is the implemented path.
 - Default sample rate is `16000`.
 - Server clamps sample rate to `8000..48000`.
-- Channels default to `1`; Deepgram connection is currently opened with `channels=1`.
+- Channels default to `1`; Local speech connection is currently opened with `channels=1`.
 
 Mobile UI contract:
 - Show live partial transcript from `transcript.partial`.

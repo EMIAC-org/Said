@@ -26,30 +26,6 @@ const PROMPT_VOCAB_K_RELEVANT: usize = 12;
 const PROMPT_VOCAB_MAX_TOTAL: usize = 25;
 const PROMPT_VOCAB_MIN_SIM: f32 = 0.55;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VocabSelectionTier {
-    Apply,
-    Suggest,
-}
-
-impl VocabSelectionTier {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Apply => "apply",
-            Self::Suggest => "suggest",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct VocabSelection {
-    pub term: VocabTerm,
-    pub tier: VocabSelectionTier,
-    pub reason: String,
-    pub evidence: String,
-    pub score: f64,
-}
-
 /// One vocab entry plus its embedding, as loaded from the joined query.
 struct VocabRow {
     term: String,
@@ -677,7 +653,7 @@ pub fn select_for_polish(
     max_total: usize,
     min_sim: f32,
 ) -> Vec<VocabTerm> {
-    select_for_prompt_with_tiers(
+    select_for_polish_hybrid(
         pool,
         user_id,
         language,
@@ -688,9 +664,6 @@ pub fn select_for_polish(
         max_total,
         min_sim,
     )
-    .into_iter()
-    .map(|selection| selection.term)
-    .collect()
 }
 
 /// Shared selector for the final LLM polish prompt.
@@ -705,7 +678,7 @@ pub fn select_for_prompt(
     query_embedding: Option<&[f32]>,
     query_text: Option<&str>,
 ) -> Vec<VocabTerm> {
-    select_for_prompt_with_tiers(
+    select_for_polish_hybrid(
         pool,
         user_id,
         language,
@@ -716,475 +689,373 @@ pub fn select_for_prompt(
         PROMPT_VOCAB_MAX_TOTAL,
         PROMPT_VOCAB_MIN_SIM,
     )
-    .into_iter()
-    .map(|selection| selection.term)
-    .collect()
 }
 
-/// Tiered transcript-evidence selector for the final polish prompt.
+/// Lexical-gated retrieval: only include vocab entries with ACTUAL EVIDENCE
+/// in the transcript that they might apply.
 ///
-/// APPLY entries are safe normalization evidence: exact canonical term, split
-/// CamelCase/PascalCase form, or exact approved STT alias. SUGGEST entries are
-/// longer near-surface matches; the polish model receives them as possible
-/// matches and must use judgment.
-pub fn select_for_prompt_with_tiers(
+/// The architectural shift: previously we used hybrid retrieval (cosine ⊕ BM25
+/// via RRF) which could surface vocab entries with no shared words at all
+/// with the transcript — pure semantic neighbours. That's the bug source for
+/// "tembeess for time": tembeess gets included in the polish prompt because
+/// its embedding is semantically near "time", even though the words have no
+/// lexical overlap. The LLM then over-applies.
+///
+/// New rule: a vocab entry enters the prompt ONLY when its term OR its
+/// example_context shares at least one word with the transcript (BM25 is
+/// the gate). Within the gated set, cosine + decay + use_count rank for
+/// the prompt order — but unevidenced entries never enter regardless of
+/// rank.
+///
+/// This works because the foundational design captures example_context for
+/// every learned term. So "MACOBS recovers from main corps" still works:
+/// MACOBS's example_context "MACOBS ka IPO ka 12 hazaar batana" shares
+/// words like "ka", "IPO", "hazaar" with the transcript "main corps ka IPO
+/// ka 12 hazaar batana" — BM25 catches the overlap, MACOBS enters, LLM
+/// recognises the pattern, output is MACOBS. But "what time is it" shares
+/// no words with any tembeess-related vocab data, so tembeess never enters
+/// the prompt at all, no over-replacement possible.
+///
+/// `query_text` (the raw transcript) is now REQUIRED for the gate to fire.
+/// Without it we fall back to starred + top-weight (legacy behaviour).
+/// `query_embedding` is used for intra-set cosine ranking only — never for
+/// inclusion. `min_sim` is no longer applied as a gate (BM25 is the gate);
+/// it's effectively dead and kept for ABI compatibility.
+pub fn select_for_polish_hybrid(
     pool: &DbPool,
     user_id: &str,
     _language: &str,
-    _query_embedding: Option<&[f32]>,
+    query_embedding: Option<&[f32]>,
     query_text: Option<&str>,
-    _n_top_weight: usize,
-    _k_relevant: usize,
+    n_top_weight: usize,
+    k_relevant: usize,
     max_total: usize,
     _min_sim: f32,
-) -> Vec<VocabSelection> {
-    use crate::store::vocabulary;
+) -> Vec<VocabTerm> {
+    use crate::store::{vocab_fts, vocabulary};
+    let mut chosen: Vec<VocabTerm> = Vec::with_capacity(max_total);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let Some(query_text) = query_text.map(str::trim).filter(|s| !s.is_empty()) else {
-        return vocabulary::top_terms(pool, user_id, 1000)
-            .into_iter()
-            .filter(|t| t.source == "starred")
-            .take(max_total)
-            .map(|term| VocabSelection {
-                term,
-                tier: VocabSelectionTier::Suggest,
-                reason: "starred_no_transcript".to_string(),
-                evidence: String::new(),
-                score: 0.20,
-            })
-            .collect();
-    };
-
+    // Bucket 1 — Starred (always). User-pinned terms bypass the lexical
+    // gate because they represent explicit user intent.
     let all = vocabulary::top_terms(pool, user_id, 1000);
-    let alias_map = load_approved_alias_map(pool, user_id);
-    let transcript_norm = normalize_retrieval_text(query_text);
-    let transcript_tokens = retrieval_tokens(query_text);
-    let transcript_windows = phrase_windows(&transcript_tokens, 4);
-
-    let mut selections = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for term in all.iter().cloned() {
-        if let Some(selection) =
-            score_vocab_term_v3(term, &alias_map, &transcript_norm, &transcript_windows)
-        {
-            if seen.insert(selection.term.term.to_ascii_lowercase()) {
-                selections.push(selection);
+    for t in all.iter().filter(|t| t.source == "starred") {
+        if seen.insert(t.term.to_ascii_lowercase()) {
+            chosen.push(t.clone());
+            if chosen.len() >= max_total {
+                return chosen;
             }
         }
     }
 
-    for term in all.iter().take(20).cloned() {
-        if seen.insert(term.term.to_ascii_lowercase()) {
-            selections.push(VocabSelection {
-                term,
-                tier: VocabSelectionTier::Suggest,
-                reason: "top_vocab_baseline".to_string(),
-                evidence: String::new(),
-                score: 0.30,
-            });
-        }
-    }
-
-    selections.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.term.use_count.cmp(&a.term.use_count))
-            .then_with(|| {
-                b.term
-                    .weight
-                    .partial_cmp(&a.term.weight)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then_with(|| {
-                a.term
-                    .term
-                    .to_ascii_lowercase()
-                    .cmp(&b.term.term.to_ascii_lowercase())
-            })
-    });
-    selections.truncate(max_total);
-    selections
-}
-
-fn load_approved_alias_map(
-    pool: &DbPool,
-    user_id: &str,
-) -> std::collections::HashMap<String, Vec<String>> {
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    let Ok(conn) = pool.get() else {
-        return map;
-    };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT LOWER(correct_form), LOWER(transcript_form)
-           FROM stt_replacements
-          WHERE user_id = ?1
-            AND review_status = 'approved'",
-    ) else {
-        return map;
-    };
-    let Ok(rows) = stmt.query_map(rusqlite::params![user_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    }) else {
-        return map;
-    };
-    for row in rows.flatten() {
-        let alias = row.1.trim().to_string();
-        if !alias.is_empty() {
-            map.entry(row.0).or_default().push(alias);
-        }
-    }
-    map
-}
-
-fn score_vocab_term_v3(
-    term: VocabTerm,
-    alias_map: &std::collections::HashMap<String, Vec<String>>,
-    transcript_norm: &str,
-    transcript_windows: &[String],
-) -> Option<VocabSelection> {
-    let term_key = normalize_retrieval_text(&term.term);
-    if phrase_present(transcript_norm, &term_key) {
-        return Some(VocabSelection {
-            term,
-            tier: VocabSelectionTier::Apply,
-            reason: "exact_term".to_string(),
-            evidence: term_key,
-            score: 1.0,
-        });
-    }
-
-    let split_key = normalize_retrieval_text(&split_camel_case(&term.term));
-    if split_key != term_key && phrase_present(transcript_norm, &split_key) {
-        return Some(VocabSelection {
-            term,
-            tier: VocabSelectionTier::Apply,
-            reason: "exact_split_term".to_string(),
-            evidence: split_key,
-            score: 0.99,
-        });
-    }
-
-    if let Some(aliases) = alias_map.get(&term_key) {
-        for alias in aliases {
-            let alias_key = normalize_retrieval_text(alias);
-            if phrase_present(transcript_norm, &alias_key) {
-                return Some(VocabSelection {
-                    term,
-                    tier: VocabSelectionTier::Apply,
-                    reason: "exact_alias".to_string(),
-                    evidence: alias_key,
-                    score: 0.98,
-                });
-            }
-        }
-        if let Some(alias_match) = best_approved_alias_neighbor(transcript_windows, &term, aliases)
-        {
-            return Some(VocabSelection {
-                term,
-                tier: VocabSelectionTier::Suggest,
-                reason: "near_approved_alias".to_string(),
-                evidence: alias_match.evidence,
-                score: 0.78 + alias_match.surface.max(alias_match.phonetic).min(0.10),
-            });
-        }
-    }
-
-    let target_compact = compact_retrieval_text(&term.term);
-    if matches!(term.term_type.as_deref(), Some("acronym")) || target_compact.chars().count() < 5 {
-        return None;
-    }
-
-    let precise = matches!(
-        term.term_type.as_deref(),
-        Some("proper_noun" | "brand" | "code_identifier" | "phrase")
-    ) || crate::llm::phonetics::jargon_score(&term.term) >= 0.45;
-    let best = best_surface_window(transcript_windows, &term.term)?;
-    if !precise && target_compact.chars().count() < 7 {
-        return None;
-    }
-    if best.surface >= 0.82 {
-        return Some(VocabSelection {
-            term,
-            tier: VocabSelectionTier::Suggest,
-            reason: if precise {
-                "near_surface_precise_term".to_string()
-            } else {
-                "near_surface_long_term".to_string()
-            },
-            evidence: best.evidence,
-            score: 0.82 + (best.surface - 0.82).min(0.08),
-        });
-    }
-    if precise && best.phonetic >= 0.82 && best.surface >= 0.55 {
-        return Some(VocabSelection {
-            term,
-            tier: VocabSelectionTier::Suggest,
-            reason: "strong_phonetic_term".to_string(),
-            evidence: best.evidence,
-            score: 0.82 + (best.phonetic - 0.82).min(0.08),
-        });
-    }
-    None
-}
-
-#[derive(Debug)]
-struct WindowScore {
-    evidence: String,
-    surface: f64,
-    phonetic: f64,
-}
-
-fn best_approved_alias_neighbor(
-    windows: &[String],
-    term: &VocabTerm,
-    aliases: &[String],
-) -> Option<WindowScore> {
-    if matches!(term.term_type.as_deref(), Some("acronym")) {
-        return None;
-    }
-    if !matches!(
-        term.term_type.as_deref(),
-        Some("proper_noun" | "brand" | "code_identifier" | "phrase")
-    ) {
-        return None;
-    }
-
-    let mut best: Option<WindowScore> = None;
-    for alias in aliases {
-        let alias_norm = normalize_retrieval_text(alias);
-        let alias_compact = compact_retrieval_text(&alias_norm);
-        if alias_compact.chars().count() < 2 {
-            continue;
-        }
-        for window in windows {
-            if window
-                .split_whitespace()
-                .all(|word| is_common_retrieval_word(word))
-            {
-                continue;
-            }
-            let window_norm = normalize_retrieval_text(window);
-            let window_compact = compact_retrieval_text(&window_norm);
-            let surface = normalized_similarity(&window_norm, &alias_norm)
-                .max(normalized_similarity(&window_compact, &alias_compact))
-                .max(spoken_alias_similarity(&window_norm, &alias_norm));
-            let phonetic = crate::llm::phonetics::similarity(&window_norm, &alias_norm);
-            let matched = surface >= 0.74 || (phonetic >= 0.74 && surface >= 0.50);
-            if !matched {
-                continue;
-            }
-            if best
-                .as_ref()
-                .map(|current| surface.max(phonetic) > current.surface.max(current.phonetic))
-                .unwrap_or(true)
-            {
-                best = Some(WindowScore {
-                    evidence: window_norm,
-                    surface,
-                    phonetic,
-                });
-            }
-        }
-    }
-    best
-}
-
-fn best_surface_window(windows: &[String], term: &str) -> Option<WindowScore> {
-    let mut best: Option<WindowScore> = None;
-    let target_norm = normalize_retrieval_text(term);
-    let target_compact = compact_retrieval_text(term);
-    for window in windows {
-        if window
-            .split_whitespace()
-            .all(|word| is_common_retrieval_word(word))
-        {
-            continue;
-        }
-        let surface = normalized_similarity(window, &target_norm).max(normalized_similarity(
-            &compact_retrieval_text(window),
-            &target_compact,
-        ));
-        let phonetic = crate::llm::phonetics::similarity(window, term);
-        if best
-            .as_ref()
-            .map(|current| surface.max(phonetic) > current.surface.max(current.phonetic))
-            .unwrap_or(true)
-        {
-            best = Some(WindowScore {
-                evidence: window.clone(),
-                surface,
-                phonetic,
-            });
-        }
-    }
-    best
-}
-
-fn retrieval_tokens(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric() && c != '@' && c != '_' && c != '-' && c != '.')
-        .map(normalize_retrieval_text)
+    // Tokenize the transcript once for all matching paths.
+    let transcript_lower = query_text.unwrap_or_default().to_ascii_lowercase();
+    let transcript_tokens: Vec<&str> = transcript_lower
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
-        .collect()
-}
+        .collect();
+    let has_transcript = matches!(query_text, Some(t) if !t.trim().is_empty());
 
-fn phrase_windows(tokens: &[String], max_width: usize) -> Vec<String> {
-    let mut windows = Vec::new();
-    for width in 1..=max_width.min(tokens.len()) {
-        for start in 0..=tokens.len() - width {
-            windows.push(tokens[start..start + width].join(" "));
-        }
-    }
-    windows
-}
-
-fn phrase_present(text_norm: &str, phrase_norm: &str) -> bool {
-    let phrase: Vec<&str> = phrase_norm.split_whitespace().collect();
-    if phrase.is_empty() {
-        return false;
-    }
-    let words: Vec<&str> = text_norm.split_whitespace().collect();
-    if phrase.len() == 1 {
-        return words.iter().any(|word| *word == phrase[0]);
-    }
-    words
-        .windows(phrase.len())
-        .any(|window| window == phrase.as_slice())
-}
-
-fn normalize_retrieval_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut last_space = true;
-    for ch in text.chars().flat_map(|c| c.to_lowercase()) {
-        if ch.is_alphanumeric() || matches!(ch, '@' | '_' | '-' | '.' | '#') {
-            out.push(ch);
-            last_space = false;
-        } else if !last_space {
-            out.push(' ');
-            last_space = true;
-        }
-    }
-    out.trim().to_string()
-}
-
-fn compact_retrieval_text(text: &str) -> String {
-    normalize_retrieval_text(text)
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .collect()
-}
-
-fn spoken_alias_similarity(a: &str, b: &str) -> f64 {
-    normalized_similarity(
-        &normalize_spoken_alias_text(a),
-        &normalize_spoken_alias_text(b),
-    )
-}
-
-fn normalize_spoken_alias_text(text: &str) -> String {
-    normalize_retrieval_text(text)
-        .split_whitespace()
-        .map(|word| match word {
-            "woh" | "voh" | "vah" | "wa" => "vo",
-            other => other,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn split_camel_case(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 4);
-    let mut prev: Option<char> = None;
-    for ch in text.chars() {
-        if let Some(prev_ch) = prev {
-            if (prev_ch.is_ascii_lowercase() || prev_ch.is_ascii_digit()) && ch.is_ascii_uppercase()
-            {
-                out.push(' ');
+    // Load alias map: term_lower → [alias1, alias2, ...] from stt_replacements.
+    let alias_map: std::collections::HashMap<String, Vec<String>> = {
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        if let Ok(conn) = pool.get() {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT LOWER(correct_form), LOWER(transcript_form) \
+                 FROM stt_replacements WHERE user_id = ?1",
+            ) {
+                if let Ok(rows) = stmt.query_map(rusqlite::params![user_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
+                    for row in rows.flatten() {
+                        map.entry(row.0).or_default().push(row.1);
+                    }
+                }
             }
         }
-        if matches!(ch, '_' | '-') {
-            out.push(' ');
-        } else {
-            out.push(ch);
+        map
+    };
+
+    // ── Bucket A: Legacy top-weight fallback ───────────────────────────
+    // Prompt callers that pass transcript text use the strict evidence gate
+    // below. Legacy callers with no transcript keep the old top-weight behavior.
+    if !has_transcript {
+        let bucket_a_limit = n_top_weight.min(5);
+        for t in all.iter().take(bucket_a_limit) {
+            if t.meaning
+                .as_deref()
+                .map(|m| !m.trim().is_empty())
+                .unwrap_or(false)
+            {
+                if seen.insert(t.term.to_ascii_lowercase()) {
+                    chosen.push(t.clone());
+                    if chosen.len() >= max_total {
+                        return chosen;
+                    }
+                }
+            }
         }
-        prev = Some(ch);
     }
-    out
-}
 
-fn normalized_similarity(a: &str, b: &str) -> f64 {
-    if a.is_empty() && b.is_empty() {
-        return 1.0;
-    }
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
-    }
-    let distance = levenshtein_chars(a, b) as f64;
-    let max_len = a.chars().count().max(b.chars().count()) as f64;
-    1.0 - distance / max_len
-}
+    // ── Bucket B: Phonetic/alias scan (catches distortions) ────────────
+    // For each transcript token, check if ANY vocab term matches via:
+    //   b1) whole-word exact match
+    //   b2) alias exact/substring/fuzzy match
+    //   b3) phonetic similarity to term
+    //   b4) context anchor overlap
+    //   b5) email fragment match
+    // This is independent of Bucket A — a low-weight term that matches
+    // phonetically still enters the prompt.
+    // Bucket B scans ALL vocab terms (not just BM25 hits) for phonetic,
+    // alias, or context matches against the transcript. This is the key
+    // change: terms no longer need to pass BM25 first.
+    let mut gated: Vec<VocabTerm> = if !has_transcript {
+        Vec::new()
+    } else {
+        all.iter()
+            .filter(|vt| !seen.contains(&vt.term.to_ascii_lowercase()))
+            .filter(|vt| {
+                vt.meaning
+                    .as_deref()
+                    .map(|m| !m.trim().is_empty())
+                    .unwrap_or(false)
+            })
+            .filter(|vt| {
+                let term_lower = vt.term.to_ascii_lowercase();
+                let term_words: Vec<&str> = term_lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let whole_word_match = if term_words.len() == 1 {
+                    transcript_tokens.iter().any(|tok| *tok == term_words[0])
+                } else {
+                    transcript_tokens
+                        .windows(term_words.len())
+                        .any(|w| w == term_words.as_slice())
+                };
+                if whole_word_match {
+                    return true;
+                }
+                // Path a2: STT alias matching — three sub-paths:
+                //   a2i)   exact token match against known alias
+                //   a2ii)  substring match — alias appears inside a longer token
+                //          (catches speech joins like "yarmiac" containing "miac")
+                //   a2iii) fuzzy alias — transcript token is phonetically close
+                //          to a known alias (catches "macops" ≈ "macobs")
+                if let Some(aliases) = alias_map.get(&term_lower) {
+                    // a2i: exact alias match
+                    let alias_exact = transcript_tokens
+                        .iter()
+                        .any(|tok| aliases.iter().any(|a| a == tok));
+                    if alias_exact {
+                        return true;
+                    }
+                    // a2ii: substring alias match — speech engines often concatenate
+                    // adjacent words ("yaar" + "miac" → "yarmiac"). If a known
+                    // alias (≥3 chars) appears as a suffix or substring of a
+                    // transcript token, that's a match.
+                    let alias_substring = transcript_tokens.iter().any(|tok| {
+                        if tok.len() < 4 {
+                            return false;
+                        }
+                        aliases.iter().any(|a| {
+                            a.len() >= 3 && tok.len() > a.len() && tok.contains(a.as_str())
+                        })
+                    });
+                    if alias_substring {
+                        return true;
+                    }
+                    // a2iii: fuzzy alias match — speech engines may output a novel
+                    // distortion close to a stored alias ("macops" ≈ "mccorb").
+                    // Check transcript tokens against each alias phonetically.
+                    let alias_fuzzy = transcript_tokens.iter().any(|tok| {
+                        if tok.len() < 3 {
+                            return false;
+                        }
+                        aliases.iter().any(|a| {
+                            if a.len() < 3 {
+                                return false;
+                            }
+                            let sim = crate::llm::phonetics::similarity(
+                                &crate::llm::phonetics::phonetic_key(tok),
+                                &crate::llm::phonetics::phonetic_key(a),
+                            );
+                            sim >= 0.65
+                        })
+                    });
+                    if alias_fuzzy {
+                        return true;
+                    }
+                }
+                // Path b: phonetic match against the TERM itself.
+                // Also strip non-ASCII (Devanagari) before matching so mixed-
+                // script tokens like "meaक" → "mea" can still match.
+                if term_lower.len() >= 4 {
+                    let term_phon = crate::llm::phonetics::phonetic_key(&vt.term);
+                    let term_first = term_lower.chars().next();
+                    let phon_match = transcript_tokens.iter().any(|tok| {
+                        if tok.len() < 3 {
+                            return false;
+                        }
+                        if tok.chars().next().map(|c| c.to_ascii_lowercase()) != term_first {
+                            return false;
+                        }
+                        // Try the token as-is first
+                        let min_sim = if tok.len() <= 4 { 0.65 } else { 0.75 };
+                        let tok_phon = crate::llm::phonetics::phonetic_key(tok);
+                        if crate::llm::phonetics::similarity(&tok_phon, &term_phon) >= min_sim {
+                            return true;
+                        }
+                        // Try with Devanagari stripped (mixed-script tokens)
+                        let ascii_only: String =
+                            tok.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                        if ascii_only.len() >= 3 && ascii_only != *tok {
+                            let ascii_phon = crate::llm::phonetics::phonetic_key(&ascii_only);
+                            let ascii_sim = if ascii_only.len() <= 4 { 0.65 } else { 0.75 };
+                            if crate::llm::phonetics::similarity(&ascii_phon, &term_phon)
+                                >= ascii_sim
+                            {
+                                return true;
+                            }
+                        }
+                        false
+                    });
+                    if phon_match {
+                        return true;
+                    }
+                }
+                // Path c: structured token matching (emails, URLs).
+                // Spoken emails share almost no whole words with the written
+                // form: "vabhi.verma2678@gmail.com" vs "vab dot verma two
+                // six seven eight at the rate gmail dot com". Fragment
+                // matching: split the term on punctuation and check if the
+                // domain + enough local-part fragments appear in the
+                // transcript, plus an email signal word.
+                if term_lower.contains('@') {
+                    let has_email_signal = transcript_tokens.iter().any(|tok| {
+                        matches!(
+                            *tok,
+                            "rate"
+                                | "gmail"
+                                | "yahoo"
+                                | "outlook"
+                                | "hotmail"
+                                | "email"
+                                | "mail"
+                                | "protonmail"
+                        )
+                    });
+                    if has_email_signal {
+                        let matched_fragments = term_words
+                            .iter()
+                            .filter(|frag| frag.len() >= 3)
+                            .filter(|frag| {
+                                transcript_tokens.iter().any(|tok| {
+                                    *tok == **frag
+                                        || (tok.len() >= 3
+                                            && frag.len() >= 3
+                                            && (tok.starts_with(*frag) || frag.starts_with(tok)))
+                                })
+                            })
+                            .count();
+                        if matched_fragments >= 2 {
+                            return true;
+                        }
+                    }
+                }
+                false
+            })
+            .cloned()
+            .collect()
+    };
+    let mut gated_seen: std::collections::HashSet<String> =
+        gated.iter().map(|t| t.term.to_ascii_lowercase()).collect();
 
-fn levenshtein_chars(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    if a.is_empty() {
-        return b.len();
-    }
-    if b.is_empty() {
-        return a.len();
-    }
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut curr = vec![0; b.len() + 1];
-    for (i, ca) in a.iter().enumerate() {
-        curr[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            curr[j + 1] = (curr[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
+    // ── Bucket C: BM25 text matches ────────────────────────────────────
+    // BM25 is only an auxiliary exact-term path. Example-context-only overlap
+    // must not admit a term into the polish prompt.
+    if has_transcript {
+        let lexical_hits: Vec<String> = vocab_fts::search(
+            pool,
+            user_id,
+            query_text.unwrap_or_default(),
+            k_relevant.max(20),
+        );
+        let by_term_lower: std::collections::HashMap<String, &VocabTerm> = all
+            .iter()
+            .map(|t| (t.term.to_ascii_lowercase(), t))
+            .collect();
+        for term_str in &lexical_hits {
+            let key = term_str.to_ascii_lowercase();
+            if let Some(vt) = by_term_lower.get(&key) {
+                let term_words: Vec<&str> = key
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let term_present = if term_words.len() == 1 {
+                    transcript_tokens.contains(&term_words[0])
+                } else {
+                    transcript_tokens
+                        .windows(term_words.len())
+                        .any(|w| w == term_words.as_slice())
+                };
+                if !term_present {
+                    continue;
+                }
+                if vt
+                    .meaning
+                    .as_deref()
+                    .map(|m| !m.trim().is_empty())
+                    .unwrap_or(false)
+                {
+                    if !seen.contains(&key) && gated_seen.insert(key) {
+                        gated.push((*vt).clone());
+                    }
+                }
+            }
         }
-        std::mem::swap(&mut prev, &mut curr);
     }
-    prev[b.len()]
-}
 
-fn is_common_retrieval_word(word: &str) -> bool {
-    matches!(
-        word,
-        "a" | "ab"
-            | "and"
-            | "app"
-            | "are"
-            | "be"
-            | "but"
-            | "dev"
-            | "did"
-            | "do"
-            | "hai"
-            | "hain"
-            | "i"
-            | "in"
-            | "is"
-            | "it"
-            | "ka"
-            | "kar"
-            | "ke"
-            | "ki"
-            | "ko"
-            | "mac"
-            | "main"
-            | "me"
-            | "mein"
-            | "of"
-            | "on"
-            | "or"
-            | "set"
-            | "site"
-            | "that"
-            | "the"
-            | "this"
-            | "to"
-            | "we"
-            | "you"
-    )
+    // Intra-set ranking: cosine × decay × use_count. When no embedding,
+    // fall back to weight × decay so we still produce a sensible order.
+    let now = now_ms();
+    if let Some(q) = query_embedding {
+        let q_norm = l2_norm(q);
+        if q_norm > 0.0 {
+            // Load each gated term's centroid once; if missing, score via
+            // weight only (centroid is async-populated, so a fresh term may
+            // not have one yet).
+            let conn = pool.get().ok();
+            gated.sort_by(|a, b| {
+                let sa = score_within_set(&conn, user_id, a, q, q_norm, now);
+                let sb = score_within_set(&conn, user_id, b, q, q_norm, now);
+                sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    } else {
+        // No embedding: rank by weight × decay only.
+        gated.sort_by(|a, b| {
+            let sa = a.weight as f32 * decay_factor(a.last_used, now);
+            let sb = b.weight as f32 * decay_factor(b.last_used, now);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    let mut gate_added = 0;
+    for vt in gated.into_iter().take(k_relevant) {
+        if seen.insert(vt.term.to_ascii_lowercase()) {
+            chosen.push(vt);
+            gate_added += 1;
+            if chosen.len() >= max_total {
+                return chosen;
+            }
+        }
+    }
+
+    let _ = gate_added;
+
+    chosen
 }
 
 /// Internal: per-term score within the lexically-gated set. Combines
@@ -1757,13 +1628,17 @@ mod tests {
         );
     }
 
-    // ── Tiered prompt selector tests ──────────────────────────────────────────
+    // ── Lexical-gated selector tests ──────────────────────────────────────────
     //
-    // The production selector is transcript-evidence-first. APPLY means exact
-    // canonical/split/approved-alias evidence. SUGGEST means longer fuzzy
-    // evidence that the polish model may accept or ignore in context.
+    // The selector now only includes vocab entries with ACTUAL EVIDENCE in
+    // the transcript (BM25 lexical match against term OR example_context).
+    // Cosine + decay + use_count rank WITHIN that gated set but never
+    // include unevidenced entries.
 
-    /// Helper: also write a vocab_fts row for legacy selector wrappers.
+    /// Helper: also write a vocab_fts row (the in-memory FTS index) so
+    /// BM25 lookups in select_for_polish_hybrid can hit. Seeds a non-empty
+    /// `meaning` so the polish-prompt quality gate passes — tests for the
+    /// NULL-meaning filter use a separate helper.
     fn seed_with_context(
         pool: &DbPool,
         term: &str,
@@ -1813,35 +1688,8 @@ mod tests {
         upsert_embedding(pool, "u1", term, embedding);
     }
 
-    fn select_terms(
-        pool: &DbPool,
-        user_id: &str,
-        language: &str,
-        query_embedding: Option<&[f32]>,
-        query_text: Option<&str>,
-        n_top_weight: usize,
-        k_relevant: usize,
-        max_total: usize,
-        min_sim: f32,
-    ) -> Vec<VocabTerm> {
-        select_for_prompt_with_tiers(
-            pool,
-            user_id,
-            language,
-            query_embedding,
-            query_text,
-            n_top_weight,
-            k_relevant,
-            max_total,
-            min_sim,
-        )
-        .into_iter()
-        .map(|selection| selection.term)
-        .collect()
-    }
-
     #[test]
-    fn tiered_selector_includes_term_when_transcript_mentions_it_directly() {
+    fn lexical_gate_includes_term_when_transcript_mentions_it_directly() {
         let pool = mem_pool();
         seed_with_context(
             &pool,
@@ -1853,7 +1701,7 @@ mod tests {
             "MACOBS ka IPO ka 12 hazaar batana",
         );
 
-        let chosen = select_for_prompt_with_tiers(
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",
@@ -1865,13 +1713,13 @@ mod tests {
             0.0,
         );
         assert!(
-            chosen.iter().any(|v| v.term.term == "MACOBS"),
+            chosen.iter().any(|v| v.term == "MACOBS"),
             "term-itself match must include the entry"
         );
     }
 
     #[test]
-    fn tiered_selector_excludes_term_on_example_context_only_overlap() {
+    fn lexical_gate_excludes_term_on_example_context_only_overlap() {
         // FOUNDATIONAL: "context confirmed" means the term itself must be
         // present in the transcript (verbatim or phonetically close). An
         // example_context-only overlap is NOT enough — that was the loose
@@ -1892,7 +1740,7 @@ mod tests {
 
         // Transcript shares "ka", "IPO", "hazaar" with example_context but
         // contains no token phonetically close to MACOBS.
-        let chosen = select_for_prompt_with_tiers(
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",
@@ -1903,17 +1751,14 @@ mod tests {
             10,
             0.0,
         );
-        let macobs = chosen.iter().find(|v| v.term.term == "MACOBS");
         assert!(
-            macobs.is_some_and(
-                |v| v.reason == "top_vocab_baseline" && v.tier == VocabSelectionTier::Suggest
-            ),
-            "context-only overlap must not look like evidence; it may only appear as weak top-vocab baseline"
+            !chosen.iter().any(|v| v.term == "MACOBS"),
+            "example_context-only overlap must NOT include the entry under the strict gate"
         );
     }
 
     #[test]
-    fn tiered_selector_excludes_term_when_no_transcript_overlap() {
+    fn lexical_gate_excludes_term_when_no_transcript_overlap() {
         // The "tembeess for time" regression. tembeess vocab exists with a
         // distinct context. Transcript "what time is it" shares no words
         // with tembeess or its context. Lexical gate must EXCLUDE tembeess
@@ -1929,7 +1774,7 @@ mod tests {
             "tembeess team meeting on Friday",
         );
 
-        let chosen = select_for_prompt_with_tiers(
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",
@@ -1940,17 +1785,14 @@ mod tests {
             10,
             0.0,
         );
-        let tembeess = chosen.iter().find(|v| v.term.term == "tembeess");
         assert!(
-            tembeess.is_some_and(
-                |v| v.reason == "top_vocab_baseline" && v.tier == VocabSelectionTier::Suggest
-            ),
-            "unrelated high-cosine terms may only appear as weak top-vocab baseline"
+            !chosen.iter().any(|v| v.term == "tembeess"),
+            "lexical gate must exclude tembeess for unrelated transcripts even if cosine is high"
         );
     }
 
     #[test]
-    fn tiered_selector_starred_without_evidence_is_baseline_suggest() {
+    fn lexical_gate_starred_always_included_regardless_of_overlap() {
         let pool = mem_pool();
         seed_with_context(
             &pool,
@@ -1963,7 +1805,7 @@ mod tests {
         );
 
         // Transcript shares NO words with PINNED or its context.
-        let chosen = select_for_prompt_with_tiers(
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",
@@ -1974,19 +1816,18 @@ mod tests {
             10,
             0.0,
         );
-        let pinned = chosen.iter().find(|v| v.term.term == "PINNED");
         assert!(
-            pinned.is_some_and(
-                |v| v.reason == "top_vocab_baseline" && v.tier == VocabSelectionTier::Suggest
-            ),
-            "unrelated starred terms should be weak prompt context, not hard evidence"
+            chosen.iter().any(|v| v.term == "PINNED"),
+            "starred terms always included regardless of lexical match"
         );
     }
 
     #[test]
-    fn tiered_selector_uses_top_vocab_baseline_for_no_match() {
-        // Trial behaviour: even when nothing matches, send top vocab as weak
-        // SUGGEST context so the model can recover short names like Divo.
+    fn lexical_gate_returns_empty_for_no_match_no_starred() {
+        // Foundational behaviour: when nothing matches and no starred exists,
+        // the vocab block is EMPTY. This is correct — no over-replacement
+        // possible because no vocab in scope. Top-weight fallback only runs
+        // when no transcript was passed at all (legacy callers).
         let pool = mem_pool();
         seed_with_context(
             &pool,
@@ -1998,7 +1839,7 @@ mod tests {
             "tembeess Friday team meeting",
         );
 
-        let chosen = select_for_prompt_with_tiers(
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",
@@ -2009,20 +1850,17 @@ mod tests {
             25,
             0.0,
         );
-        let tembeess = chosen.iter().find(|v| v.term.term == "tembeess");
         assert!(
-            tembeess.is_some_and(
-                |v| v.reason == "top_vocab_baseline" && v.tier == VocabSelectionTier::Suggest
-            ),
-            "no-match transcript should still receive top vocab as weak SUGGEST context"
+            chosen.is_empty(),
+            "lexical gate ran with no matches → vocab block must be empty (got: {chosen:?})"
         );
     }
 
     #[test]
-    fn no_text_call_falls_back_to_starred_only() {
+    fn legacy_no_text_call_falls_back_to_top_weight() {
         // Legacy callers (no transcript passed) get the old behaviour:
-        // starred only. Top-weight auto terms without evidence are prompt
-        // pollution and are intentionally not injected.
+        // starred + top-weight. Used by select_for_polish wrapper for
+        // backward compatibility.
         let pool = mem_pool();
         seed_with_context(
             &pool,
@@ -2043,7 +1881,7 @@ mod tests {
             "",
         );
 
-        let chosen = select_terms(
+        let chosen = select_for_polish_hybrid(
             &pool, "u1", "english", None, // no embedding
             None, // no transcript → lexical gate doesn't run
             5, 5, 10, 0.0,
@@ -2051,8 +1889,8 @@ mod tests {
         let names: Vec<&str> = chosen.iter().map(|v| v.term.as_str()).collect();
         assert!(names.contains(&"STARRED"));
         assert!(
-            !names.contains(&"HEAVY"),
-            "no-text fallback must not inject top-weight auto terms"
+            names.contains(&"HEAVY"),
+            "legacy no-text callers fall back to top-weight (otherwise empty)"
         );
     }
 
@@ -2082,7 +1920,7 @@ mod tests {
 
         // Query embedding aligns with MACOBS (1,0,0,0) > OTHERCO (0,1,0,0).
         // Transcript directly contains both terms — passes the strict gate.
-        let chosen = select_terms(
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",
@@ -2104,10 +1942,13 @@ mod tests {
     }
 
     #[test]
-    fn tiered_selector_exact_term_without_meaning_is_apply() {
-        // Exact transcript evidence is enough for APPLY. Requiring meaning
-        // here was the old broken gate: it hid valid learned terms from the
-        // prompt just because the meaning pipeline had not backfilled them.
+    fn lexical_gate_filters_null_meaning_terms() {
+        // FOUNDATIONAL: terms with NULL meaning (Groq+OpenAI both failed,
+        // or learned before the meaning pipeline existed) must be filtered
+        // out of the polish prompt — the LLM has no semantic anchor for
+        // them, which is the documented hallucination failure mode. They
+        // remain in the vocabulary table (still useful for local speech/polish
+        // bias and stt_replacements), just not in the polish prompt.
         let pool = mem_pool();
         seed_with_context_and_meaning(
             &pool,
@@ -2130,7 +1971,7 @@ mod tests {
             None,
         );
 
-        let chosen = select_terms(
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",
@@ -2146,15 +1987,15 @@ mod tests {
             "term with meaning must pass the gate"
         );
         assert!(
-            chosen.iter().any(|v| v.term == "NOMEANING"),
-            "exact term evidence must pass even when meaning is NULL"
+            !chosen.iter().any(|v| v.term == "NOMEANING"),
+            "term with NULL meaning must be filtered out"
         );
     }
 
     #[test]
-    fn tiered_selector_no_text_starred_terms_are_suggest_only() {
-        // No-transcript legacy fallback is intentionally weak: starred terms
-        // may be shown as suggestions, never as hard APPLY corrections.
+    fn lexical_gate_starred_bypasses_null_meaning_filter() {
+        // Starred terms represent explicit user intent and bypass quality
+        // gates — including the meaning filter.
         let pool = mem_pool();
         seed_with_context_and_meaning(
             &pool,
@@ -2166,234 +2007,59 @@ mod tests {
             "starred context",
             None,
         );
-        let chosen = select_terms(&pool, "u1", "english", None, None, 5, 5, 10, 0.0);
+        let chosen = select_for_polish_hybrid(
+            &pool,
+            "u1",
+            "english",
+            None,
+            Some("anything goes"),
+            5,
+            5,
+            10,
+            0.0,
+        );
         assert!(
             chosen.iter().any(|v| v.term == "STARRED_NOMEANING"),
-            "starred terms are retained for no-transcript legacy callers"
-        );
-        let tiered =
-            select_for_prompt_with_tiers(&pool, "u1", "english", None, None, 5, 5, 10, 0.0);
-        assert!(
-            tiered.iter().any(
-                |s| s.term.term == "STARRED_NOMEANING" && s.tier == VocabSelectionTier::Suggest
-            ),
-            "no-transcript starred fallback must be SUGGEST, not APPLY"
+            "starred terms bypass the meaning filter"
         );
     }
 
     #[test]
-    fn tiered_selector_near_surface_long_term_is_suggest() {
-        // Fuzzy recovery is allowed for longer precise terms, but only as a
-        // SUGGEST entry so the polish model can arbitrate with context.
+    fn lexical_gate_phonetic_match_includes_term() {
+        // The strict gate's second leg: phonetic match. If the user said
+        // a word that STT misheard but is phonetically close to a vocab
+        // term, the term should still be retrieved.
         let pool = mem_pool();
         seed_with_context(
             &pool,
-            "Anugra",
+            "EMIAC",
             1.0,
             "auto",
             &vec4(1.0, 0.0, 0.0, 0.0),
             "english",
-            "Anugra is a teammate name",
+            "EMIAC technology",
         );
-        {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "UPDATE vocabulary SET term_type='proper_noun' WHERE user_id='u1' AND term='Anugra'",
-                [],
-            )
-            .unwrap();
-        }
 
-        let chosen = select_for_prompt_with_tiers(
+        // "emyak" is a phonetic neighbour of "EMIAC" but not a substring.
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",
             Some(&vec4(1.0, 0.0, 0.0, 0.0)),
-            Some("ask anupra about the review"),
+            Some("the emyak technology meeting"),
             5,
             5,
             10,
             0.0,
         );
-        let selection = chosen.iter().find(|v| v.term.term == "Anugra");
         assert!(
-            selection.is_some_and(|v| v.tier == VocabSelectionTier::Suggest),
-            "near-surface long proper noun should be suggested, not hard-applied"
+            chosen.iter().any(|v| v.term == "EMIAC"),
+            "phonetic match should include the term even without literal substring"
         );
     }
 
     #[test]
-    fn tiered_selector_short_acronym_fuzzy_is_rejected() {
-        // Short terms and acronyms are too dangerous for fuzzy matching.
-        // Exact/alias can APPLY them; loose words like "site" may only carry
-        // STT through the weak top-vocab baseline, never as fuzzy evidence.
-        let pool = mem_pool();
-        seed_with_context(
-            &pool,
-            "STT",
-            1.0,
-            "auto",
-            &vec4(1.0, 0.0, 0.0, 0.0),
-            "english",
-            "speech to text",
-        );
-        {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "UPDATE vocabulary SET term_type='acronym' WHERE user_id='u1' AND term='STT'",
-                [],
-            )
-            .unwrap();
-        }
-        let chosen = select_for_prompt_with_tiers(
-            &pool,
-            "u1",
-            "english",
-            Some(&vec4(1.0, 0.0, 0.0, 0.0)),
-            Some("site quality is bad"),
-            5,
-            5,
-            10,
-            0.0,
-        );
-        let stt = chosen.iter().find(|v| v.term.term == "STT");
-        assert!(
-            stt.is_some_and(
-                |v| v.reason == "top_vocab_baseline" && v.tier == VocabSelectionTier::Suggest
-            ),
-            "short acronym fuzzy match must be rejected; baseline SUGGEST is allowed"
-        );
-    }
-
-    #[test]
-    fn tiered_selector_approved_alias_is_apply() {
-        let pool = mem_pool();
-        seed_with_context(
-            &pool,
-            "DeepSeek",
-            1.0,
-            "auto",
-            &vec4(1.0, 0.0, 0.0, 0.0),
-            "english",
-            "DeepSeek model",
-        );
-        {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS stt_replacements (
-                    user_id TEXT NOT NULL,
-                    transcript_form TEXT NOT NULL,
-                    correct_form TEXT NOT NULL,
-                    phonetic_key TEXT NOT NULL,
-                    weight REAL NOT NULL DEFAULT 1.0,
-                    use_count INTEGER NOT NULL DEFAULT 1,
-                    last_used INTEGER NOT NULL,
-                    language TEXT,
-                    export_tier TEXT NOT NULL DEFAULT 'local_only',
-                    contradiction_count INTEGER NOT NULL DEFAULT 0,
-                    review_status TEXT NOT NULL DEFAULT 'pending'
-                )",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO stt_replacements
-                   (user_id, transcript_form, correct_form, phonetic_key, weight, use_count, last_used, language, export_tier, contradiction_count, review_status)
-                 VALUES ('u1', 'deep sick', 'DeepSeek', 'DS', 1.0, 1, ?1, 'english', 'local_only', 0, 'approved')",
-                params![now_ms()],
-            )
-            .unwrap();
-        }
-
-        let chosen = select_for_prompt_with_tiers(
-            &pool,
-            "u1",
-            "english",
-            Some(&vec4(1.0, 0.0, 0.0, 0.0)),
-            Some("try deep sick model once"),
-            5,
-            5,
-            10,
-            0.0,
-        );
-        let selection = chosen.iter().find(|v| v.term.term == "DeepSeek");
-        assert!(
-            selection.is_some_and(|v| {
-                v.tier == VocabSelectionTier::Apply
-                    && v.reason == "exact_alias"
-                    && v.evidence == "deep sick"
-            }),
-            "approved exact alias must hard-apply the canonical vocab spelling"
-        );
-    }
-
-    #[test]
-    fn tiered_selector_short_name_near_approved_alias_is_suggest() {
-        let pool = mem_pool();
-        seed_with_context(
-            &pool,
-            "Divo",
-            3.0,
-            "confirmed",
-            &vec4(1.0, 0.0, 0.0, 0.0),
-            "hinglish",
-            "",
-        );
-        {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "UPDATE vocabulary SET term_type='proper_noun' WHERE user_id='u1' AND term='Divo'",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS stt_replacements (
-                    user_id TEXT NOT NULL,
-                    transcript_form TEXT NOT NULL,
-                    correct_form TEXT NOT NULL,
-                    phonetic_key TEXT NOT NULL,
-                    weight REAL NOT NULL DEFAULT 1.0,
-                    use_count INTEGER NOT NULL DEFAULT 1,
-                    last_used INTEGER NOT NULL,
-                    language TEXT,
-                    export_tier TEXT NOT NULL DEFAULT 'local_only',
-                    contradiction_count INTEGER NOT NULL DEFAULT 0,
-                    review_status TEXT NOT NULL DEFAULT 'pending'
-                )",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO stt_replacements
-                   (user_id, transcript_form, correct_form, phonetic_key, weight, use_count, last_used, language, export_tier, contradiction_count, review_status)
-                 VALUES ('u1', 'dvo', 'Divo', 'DF', 1.0, 1, ?1, 'hinglish', 'local_only', 0, 'approved')",
-                params![now_ms()],
-            )
-            .unwrap();
-        }
-
-        let chosen = select_for_prompt_with_tiers(
-            &pool,
-            "u1",
-            "hinglish",
-            Some(&vec4(1.0, 0.0, 0.0, 0.0)),
-            Some("Mere paas yeh note aur d vah donon par kaam karna hai"),
-            5,
-            5,
-            40,
-            0.0,
-        );
-        let divo = chosen.iter().find(|v| v.term.term == "Divo");
-        assert!(
-            divo.is_some_and(|v| v.reason == "near_approved_alias"
-                && v.tier == VocabSelectionTier::Suggest
-                && v.evidence == "d vah"),
-            "short proper noun should be suggested when transcript is near an approved alias"
-        );
-    }
-
-    #[test]
-    fn tiered_selector_caps_at_max_total() {
+    fn lexical_gate_caps_at_max_total() {
         let pool = mem_pool();
         // Seed 50 terms whose names ARE in the transcript so they all pass
         // the strict term-in-transcript gate. The cap should still clamp
@@ -2410,7 +2076,7 @@ mod tests {
             );
         }
         let transcript: String = (0..50).map(|i| format!("T{i} ")).collect();
-        let chosen = select_terms(
+        let chosen = select_for_polish_hybrid(
             &pool,
             "u1",
             "english",

@@ -12,7 +12,7 @@
 #     is the fastest way to flush a full SSE response and close the connection.
 #
 # What this does NOT test (still manual — see README-tests.md §Manual):
-#   • Real Deepgram streaming (needs a live key and actual audio).
+#   • Real Local speech streaming (needs a live key and actual audio).
 #   • AppKit status-bar safety (needs a running Tauri UI + macOS).
 #   • Global hotkey de-bounce (needs CGEventTap permissions).
 #

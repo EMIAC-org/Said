@@ -93,12 +93,6 @@ pub struct DictationListItem {
     pub edit_bucket: Option<String>,
     pub edit_detected: Option<bool>,
     pub total_ms: Option<i32>,
-    // STT engine used for this dictation, from the already-joined telemetry run.
-    // stt_provider is the internal id ("deepgram" for cloud Whisper, "whisper_local"
-    // / "swift_local" for on-device); NULL when no telemetry run matched.
-    pub stt_provider: Option<String>,
-    pub stt_model: Option<String>,
-    pub output_language: Option<String>,
     pub has_edit_feedback: bool,
 }
 
@@ -133,7 +127,6 @@ pub struct DictationDetailItem {
     pub edit_bucket: Option<String>,
     pub edit_detected: Option<bool>,
     pub total_ms: Option<i32>,
-    pub output_language: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -146,120 +139,6 @@ pub struct AliasLearnEvent {
     pub source: String,
     pub safety: Option<String>,
     pub created_at: DateTime<Utc>,
-}
-
-fn bucket_style_lines_from_profile(profile_markdown: Option<&str>) -> Vec<String> {
-    let Some(profile) = profile_markdown else {
-        return Vec::new();
-    };
-    let Some(start) = profile.find("ACTIVE BUCKET POLICY") else {
-        return Vec::new();
-    };
-    profile[start..]
-        .lines()
-        .skip(1)
-        .map(str::trim)
-        .take_while(|line| line.starts_with("- "))
-        .map(|line| line.trim_start_matches("- ").trim().to_string())
-        .filter(|line| !line.is_empty())
-        .take(20)
-        .collect()
-}
-
-fn context_applied_from_prompt_meta(meta: &Value) -> Option<Value> {
-    let bucket_key = meta.get("bucket_key")?.as_str()?;
-    let bucket_source = meta.get("bucket_source").and_then(Value::as_str);
-    let profile_chars = meta
-        .get("profile_chars")
-        .and_then(Value::as_i64)
-        .unwrap_or_default();
-    let style =
-        bucket_style_lines_from_profile(meta.get("profile_markdown").and_then(Value::as_str));
-    let domains: Vec<String> = meta
-        .get("domains")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|d| d.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(json!({
-        "bucket_key": bucket_key,
-        "bucket_source": bucket_source,
-        "style": style,
-        "global_kb": profile_chars > 0,
-        "domains": domains,
-        "domain_context": meta.get("domain_context").and_then(Value::as_str),
-        "domain_source": meta.get("domain_source").and_then(Value::as_str),
-        "context_source": "runtime_trace",
-    }))
-}
-
-fn remove_verbose_prompt_fields(mut metadata: Value) -> Value {
-    if let Some(obj) = metadata.as_object_mut() {
-        obj.remove("system_prompt");
-    }
-    metadata
-}
-
-fn dictation_trace_with_runtime_prompt_stage(
-    base: &Value,
-    transcript: Option<&str>,
-    runtime_prompt_meta: Option<&Value>,
-) -> Value {
-    let Some(meta) = runtime_prompt_meta else {
-        return base.clone();
-    };
-    let Some(system_prompt) = meta
-        .get("system_prompt")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-    else {
-        return base.clone();
-    };
-    let mut trace = said_core::dictation_trace::parse_trace_value(Some(base)).unwrap_or_default();
-    trace.add_stage(said_core::dictation_trace::TraceStageInput {
-        stage: "server_runtime.prompt_built",
-        component: "control-plane",
-        function: "build_voice_system_prompt_with_vocab_hints",
-        input: transcript,
-        output: Some(system_prompt),
-        reason: Some("actual system prompt built for server-runtime polish model"),
-        risk: Some("prompt_context_bias"),
-        metadata: remove_verbose_prompt_fields(meta.clone()),
-        ..Default::default()
-    });
-    move_trace_stage_before_fallback_prompt(&mut trace, "server_runtime.prompt_built");
-    trace.into_value()
-}
-
-fn move_trace_stage_before_fallback_prompt(
-    trace: &mut said_core::dictation_trace::DictationTrace,
-    stage_name: &str,
-) {
-    let Some(stage_pos) = trace
-        .stages
-        .iter()
-        .position(|stage| stage.stage == stage_name)
-    else {
-        return;
-    };
-    let Some(insert_pos) = trace
-        .stages
-        .iter()
-        .position(|stage| stage.stage == "fallback_prompt.build" || stage.stage == "prompt.build")
-    else {
-        return;
-    };
-    if insert_pos >= stage_pos {
-        return;
-    }
-    let stage = trace.stages.remove(stage_pos);
-    trace.stages.insert(insert_pos, stage);
-    for (index, stage) in trace.stages.iter_mut().enumerate() {
-        stage.index = index;
-    }
 }
 
 pub async fn list_org_dictation(
@@ -314,9 +193,6 @@ pub async fn list_org_dictation(
             r.edit_bucket,
             r.edit_detected,
             r.total_ms,
-            r.stt_provider,
-            r.stt_model,
-            h.output_language,
             (h.edit_feedback_json IS NOT NULL AND h.edit_feedback_json != '{}'::jsonb) AS has_edit_feedback
          FROM runtime_history_items h
          LEFT JOIN runtime_telemetry_runs r
@@ -369,7 +245,7 @@ pub async fn get_org_dictation_detail(
         return Err(json_err(StatusCode::BAD_REQUEST, "lookup key required"));
     }
 
-    let mut row: DictationDetailItem = sqlx::query_as(
+    let row: DictationDetailItem = sqlx::query_as(
         "SELECT
             h.id,
             h.account_id,
@@ -399,8 +275,7 @@ pub async fn get_org_dictation_detail(
             h.updated_at,
             r.edit_bucket,
             r.edit_detected,
-            r.total_ms,
-            h.output_language
+            r.total_ms
          FROM runtime_history_items h
          LEFT JOIN runtime_telemetry_runs r
            ON r.account_id = h.account_id
@@ -463,103 +338,9 @@ pub async fn get_org_dictation_detail(
             vec![]
         };
 
-    let runtime_prompt_meta: Option<Value> = sqlx::query_scalar(
-        "SELECT s.metadata_json
-           FROM runtime_sessions rs
-           JOIN runtime_stage_events s ON s.run_id = rs.id
-          WHERE s.stage = 'prompt_built'
-            AND (
-              ($1::uuid IS NOT NULL AND rs.id = $1)
-              OR ($2::text IS NOT NULL AND rs.client_run_id = $2)
-            )
-          ORDER BY s.created_at DESC
-          LIMIT 1",
-    )
-    .bind(row.run_id)
-    .bind(row.client_run_id.as_deref())
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or_else(|e| {
-        tracing::warn!(
-            "[observability] failed to load runtime prompt metadata key={lookup_key}: {e}"
-        );
-        None
-    });
-    row.dictation_trace_json = dictation_trace_with_runtime_prompt_stage(
-        &row.dictation_trace_json,
-        row.transcript.as_deref().or(row.raw_transcript.as_deref()),
-        runtime_prompt_meta.as_ref(),
-    );
-
-    // "Context applied" should reflect the actual run. Prefer the server-runtime
-    // prompt_built stage metadata; only fall back to current DB state for older rows
-    // that do not have runtime stage telemetry.
-    let context_applied = if let Some(context) = runtime_prompt_meta
-        .as_ref()
-        .and_then(context_applied_from_prompt_meta)
-    {
-        Some(context)
-    } else if let Some(app) = row
-        .target_app
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let org_scope = crate::profile::store::resolve_org_scope(row.org_id);
-        let (bucket, bucket_source) =
-            crate::profile::bucket::resolve_bucket_with_source(&state.db, app).await;
-        let style = match crate::profile::bucket::get_bucket_profile(
-            &state.db,
-            row.account_id,
-            org_scope,
-            bucket,
-        )
-        .await
-        {
-            Ok(Some(o)) => crate::profile::bucket::render_bucket_knob_lines(&o.profile_json),
-            _ => Vec::new(),
-        };
-        let profile_row =
-            crate::profile::store::get_profile_with_fallback(&state.db, row.account_id, org_scope)
-                .await
-                .ok()
-                .flatten();
-        let global_kb = profile_row
-            .as_ref()
-            .is_some_and(|r| !r.profile_markdown.trim().is_empty());
-        let domains = profile_row
-            .as_ref()
-            .map(|r| crate::profile::top_domains(&r.profile_json, 3))
-            .unwrap_or_default();
-        let domain_refs: Vec<&str> = domains.iter().map(String::as_str).collect();
-        let bucket_coding = bucket == crate::profile::bucket::Bucket::Coding;
-        let domain_context =
-            said_core::polish::prompt::render_domain_context(&domain_refs, bucket_coding);
-        let domain_source = if !domains.is_empty() {
-            "classified"
-        } else if bucket_coding {
-            "coding_bucket_seed"
-        } else {
-            "generic_default"
-        };
-        Some(json!({
-            "bucket_key": bucket.as_key(),
-            "bucket_source": bucket_source,
-            "style": style,
-            "global_kb": global_kb,
-            "domains": domains,
-            "domain_context": domain_context,
-            "domain_source": domain_source,
-            "context_source": "current_db_fallback",
-        }))
-    } else {
-        None
-    };
-
     Ok(Json(json!({
         "item": row,
         "alias_events": aliases,
-        "context_applied": context_applied,
     })))
 }
 
@@ -694,10 +475,6 @@ pub struct DictationUpsertRequest {
     pub platform: Option<String>,
     pub app_version: Option<String>,
     pub dictation_trace_json: Option<Value>,
-    /// Output language actually used for this dictation (local/offline path). The
-    /// server polish path writes this authoritatively; here it is COALESCE-bound so
-    /// a client sync never clobbers a server-set value.
-    pub output_language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -766,7 +543,6 @@ async fn apply_dictation_update(
             platform = COALESCE($19, platform),
             app_version = COALESCE($20, app_version),
             dictation_trace_json = COALESCE($21, dictation_trace_json),
-            output_language = COALESCE(output_language, $22),
             updated_at = now()
          {DICTATION_UPDATE_WHERE}"
     ))
@@ -791,7 +567,6 @@ async fn apply_dictation_update(
     .bind(req.platform.as_deref())
     .bind(req.app_version.as_deref())
     .bind(req.dictation_trace_json.as_ref())
-    .bind(req.output_language.as_deref())
     .execute(db)
     .await?
     .rows_affected();
@@ -847,9 +622,8 @@ async fn upsert_dictation_row(
              raw_transcript, transcript, local_corrected_transcript,
              polished_output, final_text, model_used,
              word_count, recording_seconds,
-             transcribe_ms, embed_ms, polish_ms, target_app, dictation_trace_json,
-             output_language)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+             transcribe_ms, embed_ms, polish_ms, target_app, dictation_trace_json)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
          ON CONFLICT DO NOTHING",
     )
     .bind(account_id)
@@ -873,7 +647,6 @@ async fn upsert_dictation_row(
     .bind(req.polish_ms)
     .bind(req.target_app.as_deref())
     .bind(req.dictation_trace_json.as_ref())
-    .bind(req.output_language.as_deref())
     .execute(db)
     .await?
     .rows_affected();

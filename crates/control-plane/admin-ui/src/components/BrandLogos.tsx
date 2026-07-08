@@ -21,15 +21,6 @@ export function OpenAILogo({ size = 20, className }: LogoProps) {
   )
 }
 
-export function DeepgramLogo({ size = 20, className }: LogoProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
-      <rect x="2" y="2" width="20" height="20" rx="4" fill="#13EF93" />
-      <path d="M7 8h3v8H7V8zm4 0h3v8h-3V8zm4 0h3v4h-3V8z" fill="#000" />
-    </svg>
-  )
-}
-
 export function GroqLogo({ size = 20, className }: LogoProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>

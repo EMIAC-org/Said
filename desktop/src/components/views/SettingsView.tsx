@@ -14,7 +14,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
-import type { Theme, ThemePreference } from "@/lib/useTheme";
+import type { ThemePreference } from "@/lib/useTheme";
 import { DictationSttSection } from "@/components/DictationSttSection";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
 
@@ -219,7 +219,7 @@ function Show({ when, children }: { when: boolean; children: React.ReactNode }) 
 
 // ── Enterprise section ────────────────────────────────────────────────────────
 
-/** Server URL override — toggle between the build default backend and a
+/** Server URL override — toggle between the default (prod AirNote) backend and a
  *  custom URL. The active URL governs the control-plane AND the local backend's
  *  polish forwarding. Applying reloads the app so every endpoint re-resolves. */
 function ServerOverrideCard() {
@@ -258,11 +258,11 @@ function ServerOverrideCard() {
           <button
             type="button"
             disabled={busy}
-            onClick={() => { setMode("default"); void apply("default"); }}
+            onClick={() => { setMode("default"); if (mode !== "default") void apply("default"); }}
             className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full transition-colors disabled:opacity-50"
             style={segStyle(mode === "default")}
           >
-            Default
+            Default (prod AirNote)
           </button>
           <button
             type="button"
@@ -535,11 +535,8 @@ interface SettingsViewProps {
   onPerformanceMonitorChange?: (enabled: boolean) => void;
   onEnterpriseDisconnect?: () => void;
   /** Active theme + setter for the Appearance theme picker. */
-  theme?:            Theme;
-  onThemeChange?:    (t: Theme) => void;
-  /** Theme preference (system/dark/light) + setter for the Appearance picker. */
-  themePreference?:        ThemePreference;
-  onThemePreferenceChange?: (p: ThemePreference) => void;
+  theme?:            ThemePreference;
+  onThemeChange?:    (t: ThemePreference) => void;
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────
@@ -558,8 +555,6 @@ export function SettingsView({
   onEnterpriseDisconnect,
   theme,
   onThemeChange,
-  themePreference,
-  onThemePreferenceChange,
 }: SettingsViewProps) {
   // Helper — settings are always section-scoped in the stable UI. If a caller
   // omits the section, default to Models instead of rendering every advanced
@@ -978,12 +973,7 @@ export function SettingsView({
         {/* ── Appearance ────────────────────────────────── */}
         <Show when={isOn("appearance")}>
           <div className="mb-7">
-            <AppearanceSection
-              theme={theme}
-              onThemeChange={onThemeChange}
-              preference={themePreference}
-              onPreferenceChange={onThemePreferenceChange}
-            />
+            <AppearanceSection theme={theme} onThemeChange={onThemeChange} />
           </div>
         </Show>
 
@@ -1272,12 +1262,10 @@ export function SettingsView({
                   <Sparkles size={16} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
+                  <p className="text-[13px] font-medium text-foreground">Gemma 4 31B (Cerebras)</p>
                   <p className="text-[12px] text-muted-foreground mt-0.5">
-                    {polishHotkeyLabel} polish runs on {DEFAULT_CLOUD_SERVER_URL.replace(/^https?:\/\//, "")} using Cerebras GPT OSS 120B.
-                    {prefs?.stt_provider === "swift_local"
-                      ? " Speech recognition stays on this Mac (Swift)."
-                      : " Speech recognition uses Whisper Large V3 Turbo in the cloud."}
+                    {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras Gemma 4 31B.
+                    Speech recognition stays local on this device.
                   </p>
                 </div>
               </div>
