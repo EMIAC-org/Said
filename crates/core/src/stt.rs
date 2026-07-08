@@ -1,6 +1,6 @@
 //! Shared speech-to-text provider selection for local backend + control-plane.
 //!
-//! Deepgram is the default cloud STT vendor. `swift_local` is a macOS-only live
+//! DeepInfra Whisper is the default cloud STT vendor. `swift_local` is a macOS-only live
 //! local path (Oriserve Swift). Legacy ids `groq_whisper` and `whisper_local`
 //! remain as local batch fallbacks.
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// The dictation STT engine, as a typed first-class value. This is the single
 /// source of truth for "which engine" — prefer it over ad-hoc string checks.
 ///
-/// - `Deepgram`   — cloud (build-bundled key). Also the bucket for legacy cloud
+/// - `Deepgram`   — cloud compatibility id (DeepInfra Whisper under the hood). Also the bucket for legacy cloud
 ///   ids like `groq_whisper`.
 /// - `SwiftLocal` — on-device, macOS-only Python sidecar (Oriserve Swift).
 /// - `WhisperLocal` — on-device, native whisper.cpp (Oriserve Hinglish GGML).
@@ -46,7 +46,7 @@ impl SttProvider {
         matches!(self, Self::SwiftLocal | Self::WhisperLocal)
     }
 
-    /// Cloud engine (Deepgram).
+    /// Cloud engine (DeepInfra Whisper behind the legacy `deepgram` id).
     pub fn is_cloud(self) -> bool {
         matches!(self, Self::Deepgram)
     }
@@ -112,12 +112,12 @@ pub enum SttPlan {
     UseInboundLocal,
     /// Use the inbound Deepgram WS pre-transcript (rescue-eligible).
     UseInboundCloudWs,
-    /// No pre-transcript; run cloud Deepgram batch on the WAV.
+    /// No pre-transcript; run cloud batch STT on the WAV.
     CloudBatch,
     /// No usable local pre-transcript; re-run the on-device engine here.
     LocalOnDeviceBatch,
     /// Local engine genuinely produced nothing AND no on-device engine is
-    /// available in this build → cloud Deepgram as the genuine-failure safety net.
+    /// available in this build → cloud STT as the genuine-failure safety net.
     CloudFallbackAfterLocalFail,
 }
 
@@ -164,8 +164,8 @@ pub fn resolve_provider_from_pref(pref: &str) -> String {
     normalize_toggle_stt_provider(pref)
 }
 
-/// Server-side STT vendor. Deepgram is the only server vendor, so this always
-/// resolves to `"deepgram"` (kept as a function so call sites stay stable).
+/// Server-side STT vendor. `"deepgram"` remains the compatibility id for cloud
+/// dictation prefs; the batch implementation currently runs on DeepInfra.
 pub fn resolve_server_default_provider() -> String {
     "deepgram".to_string()
 }
@@ -214,10 +214,10 @@ pub fn swift_local_platform_supported() -> bool {
 ///   installed; otherwise cloud.
 /// - `whisper_local` or the default (unset) → on-device whisper.cpp only when
 ///   its model is installed; otherwise fall back to an installed Swift model
-///   (macOS), else cloud Deepgram.
+///   (macOS), else cloud Whisper.
 ///
 /// So: a user who downloaded the local model gets it auto-selected; one who
-/// didn't (or chose cloud) gets Deepgram. The bundled Deepgram key means cloud
+/// didn't (or chose cloud) gets cloud Whisper. The bundled cloud key means cloud
 /// is always available as the fallback.
 pub fn effective_dictation_provider(
     pref: &str,
@@ -259,9 +259,8 @@ pub fn effective_dictation_provider(
 }
 
 /// Providers that skip live WS pre-transcript and batch-STT the full WAV on
-/// release. Cloud dictation ("deepgram" id) is now batch-only too: it no longer
-/// streams to Deepgram — the backend batches the WAV through OpenRouter Whisper
-/// Large V3 Turbo on release.
+/// release. Cloud dictation ("deepgram" compatibility id) is batch-only too: the
+/// backend batches the WAV through DeepInfra Whisper Large V3 on release.
 pub fn use_batch_stt_only(provider: &str) -> bool {
     provider == "groq_whisper" || provider == "whisper_local" || is_deepgram(provider)
 }
@@ -273,7 +272,7 @@ pub fn telemetry_stt_model(provider: &str) -> &'static str {
     } else if is_whisper_local(provider) {
         WHISPER_TURBO_Q5_MODEL
     } else {
-        crate::deepgram::DEEPGRAM_MODEL
+        "openai/whisper-large-v3"
     }
 }
 
@@ -309,6 +308,23 @@ pub fn resolve_deepgram_api_key(pref_key: Option<&str>) -> Option<String> {
         .find_map(|key| non_empty_opt(std::env::var(key).ok().as_deref()))
         .or_else(|| non_empty_opt(BUNDLED_DEEPGRAM_API_KEY))
         .or_else(|| non_empty_opt(pref_key))
+}
+
+pub const DEEPINFRA_ENV_KEY_CANDIDATES: &[&str] = &["DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN"];
+
+/// DeepInfra STT key baked into the build at compile time. End users never enter
+/// this key; shipped builds receive the managed cloud key from the build env.
+pub const BUNDLED_DEEPINFRA_API_KEY: Option<&str> = option_env!("DEEPINFRA_API_KEY");
+pub const BUNDLED_DEEPINFRA_TOKEN: Option<&str> = option_env!("DEEPINFRA_TOKEN");
+
+/// Resolve the DeepInfra STT key: runtime env (dev/server) → build-time bundled
+/// key (shipped app). Saved user Deepgram prefs are intentionally ignored.
+pub fn resolve_deepinfra_api_key() -> Option<String> {
+    DEEPINFRA_ENV_KEY_CANDIDATES
+        .iter()
+        .find_map(|key| non_empty_opt(std::env::var(key).ok().as_deref()))
+        .or_else(|| non_empty_opt(BUNDLED_DEEPINFRA_API_KEY))
+        .or_else(|| non_empty_opt(BUNDLED_DEEPINFRA_TOKEN))
 }
 
 /// How audio reached STT for this run (`ws_prewarm`, `http_batch`).

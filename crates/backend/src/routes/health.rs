@@ -20,7 +20,7 @@ pub async fn handler(State(state): State<AppState>) -> Json<Value> {
             } else if said_core::stt::is_swift_local(&effective) {
                 said_core::paths::swift_model_weights_path().is_file()
             } else {
-                said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref()).is_some()
+                said_core::stt::resolve_deepinfra_api_key().is_some()
             };
             (preferred, effective, ready)
         },

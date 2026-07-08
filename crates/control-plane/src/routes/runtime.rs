@@ -2790,7 +2790,7 @@ pub async fn voice_wav(
             .as_deref()
             .map(said_core::stt::resolve_provider_from_pref)
             .unwrap_or_else(|| state.stt_provider.clone());
-        let credential_provider = runtime_stt_credential_provider(&stt_provider);
+        let credential_provider = "deepinfra";
         let stt_credentials = runtime_stt_provider_secrets(
             &state,
             user.account_id,
@@ -2799,7 +2799,7 @@ pub async fn voice_wav(
             run_id,
         )
         .await?;
-        let stt_model = "nova-3".to_string();
+        let stt_model = "openai/whisper-large-v3".to_string();
         let mut last_error = String::new();
         let mut selected_credential: Option<RuntimeProviderSecret> = None;
         let mut transcript = String::new();
@@ -8138,23 +8138,20 @@ mod tests {
 
     #[test]
     fn selected_polish_model_respects_fast_and_smart() {
-        // Adapter routing (POLISH_MODEL_CATALOG): fast/deepseek -> Groq 8B instant;
-        // smart/cerebras -> Cerebras gpt-oss-120b; scout -> Groq Llama-4 Scout.
-        // NOTE: this asserts stored-pref routing, so it only holds when the global
-        // POLISH_MODEL_OVERRIDE env is unset.
-        use said_core::polish::model::{CEREBRAS_POLISH_MODEL_GPT_OSS, GROQ_POLISH_MODEL_FAST};
-        if std::env::var("POLISH_MODEL_OVERRIDE").is_ok() {
-            return;
-        }
-        assert_eq!(selected_polish_model("fast"), GROQ_POLISH_MODEL_FAST);
-        assert_eq!(selected_polish_model("deepseek"), GROQ_POLISH_MODEL_FAST);
+        // Runtime polish is pinned to Gemma/OpenRouter regardless of stored prefs.
+        use said_core::polish::model::OPENROUTER_POLISH_MODEL_GEMMA;
+        assert_eq!(selected_polish_model("fast"), OPENROUTER_POLISH_MODEL_GEMMA);
+        assert_eq!(
+            selected_polish_model("deepseek"),
+            OPENROUTER_POLISH_MODEL_GEMMA
+        );
         assert_eq!(
             selected_polish_model("smart"),
-            CEREBRAS_POLISH_MODEL_GPT_OSS
+            OPENROUTER_POLISH_MODEL_GEMMA
         );
         assert_eq!(
             selected_polish_model("scout"),
-            "meta-llama/llama-4-scout-17b-16e-instruct"
+            OPENROUTER_POLISH_MODEL_GEMMA
         );
     }
 

@@ -4084,19 +4084,19 @@ async fn run_batch_transcript(
 ) -> Result<TranscriptCandidate, String> {
     let start = Instant::now();
     info!(
-        "[stt] batch_http request source={} wav_bytes={} stt_mode={} keyterms={} replacements={} backend=openrouter_whisper",
+        "[stt] batch_http request source={} wav_bytes={} stt_mode={} keyterms={} replacements={} backend=deepinfra_whisper",
         source,
         wav_data.len(),
         bias.stt_mode,
         bias.keyterms.len(),
         bias.replacements.len(),
     );
-    // Cloud dictation = OpenRouter Whisper Large V3 Turbo (batch). This is the
-    // only cloud STT for dictation; Deepgram is no longer used here.
-    let or_key = crate::stt::openrouter_qwen_asr::resolve_api_key()
-        .ok_or_else(|| "OPENROUTER_API_KEY is not set".to_string())?;
+    // Cloud dictation = DeepInfra Whisper Large V3 (batch). Language is left
+    // unset so Whisper auto-detects per request.
+    let deepinfra_key = crate::stt::deepinfra_whisper::resolve_api_key()
+        .ok_or_else(|| "DEEPINFRA_API_KEY is not set".to_string())?;
     let result =
-        crate::stt::openrouter_qwen_asr::transcribe(client, &or_key, wav_data, &bias).await?;
+        crate::stt::deepinfra_whisper::transcribe(client, &deepinfra_key, wav_data, &bias).await?;
     let meta = result.meta();
     info!(
         "[stt] batch_http done source={} elapsed_ms={} words={} confidence={:.2}",

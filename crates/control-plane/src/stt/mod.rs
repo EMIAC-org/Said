@@ -16,35 +16,38 @@ pub async fn call_batch_stt(
     wav_data: Vec<u8>,
     tag: &str,
 ) -> Result<String, String> {
-    call_deepgram_batch(api_key, wav_data, tag).await
+    call_deepinfra_batch(api_key, wav_data, tag).await
 }
 
-async fn call_deepgram_batch(
+async fn call_deepinfra_batch(
     api_key: &str,
     wav_data: Vec<u8>,
     tag: &str,
 ) -> Result<String, String> {
-    let bias = said_core::deepgram::BiasPackage {
-        stt_mode: "hi".to_string(),
-        ..Default::default()
-    };
-    let url = said_core::deepgram::build_batch_url("https://api.deepgram.com/v1/listen", &bias);
     let client = &*crate::HTTP_CLIENT;
+    let audio = reqwest::multipart::Part::bytes(wav_data)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| format!("{tag}: failed to build DeepInfra audio part: {e}"))?;
+    let form = reqwest::multipart::Form::new()
+        .part("audio", audio)
+        .text("language", "hi")
+        // Force transcription rather than English translation/normalization.
+        .text("task", "transcribe");
     let resp = client
-        .post(url)
-        .header("Authorization", format!("Token {api_key}"))
-        .header("Content-Type", "audio/wav")
-        .body(wav_data)
+        .post("https://api.deepinfra.com/v1/inference/openai/whisper-large-v3")
+        .header("Authorization", format!("Bearer {}", api_key.trim()))
+        .multipart(form)
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
-        .map_err(|e| format!("{tag}: Deepgram request failed: {e}"))?;
+        .map_err(|e| format!("{tag}: DeepInfra request failed: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         return Err(format!(
-            "{tag}: Deepgram returned {status}: {}",
+            "{tag}: DeepInfra returned {status}: {}",
             said_core::text::truncate_utf8(&body, 300)
         ));
     }
@@ -52,23 +55,32 @@ async fn call_deepgram_batch(
     let raw = resp
         .json::<serde_json::Value>()
         .await
-        .map_err(|e| format!("{tag}: failed to parse Deepgram response: {e}"))?;
-    let transcript = raw
-        .get("results")
-        .and_then(|v| v.get("channels"))
-        .and_then(serde_json::Value::as_array)
-        .and_then(|channels| channels.first())
-        .and_then(|channel| channel.get("alternatives"))
-        .and_then(serde_json::Value::as_array)
-        .and_then(|alternatives| alternatives.first())
-        .and_then(|alternative| alternative.get("transcript"))
+        .map_err(|e| format!("{tag}: failed to parse DeepInfra response: {e}"))?;
+    let direct = raw
+        .get("text")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .trim()
         .to_string();
+    let transcript = if direct.is_empty() {
+        raw.get("segments")
+            .and_then(serde_json::Value::as_array)
+            .map(|segments| {
+                segments
+                    .iter()
+                    .filter_map(|segment| segment.get("text").and_then(serde_json::Value::as_str))
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default()
+    } else {
+        direct
+    };
 
     if transcript.is_empty() {
-        Err(format!("{tag}: Deepgram returned empty transcript"))
+        Err(format!("{tag}: DeepInfra returned empty transcript"))
     } else {
         Ok(transcript)
     }

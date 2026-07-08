@@ -3305,9 +3305,7 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
                     swift_installed,
                     whisper_installed,
                 );
-                let has_deepgram =
-                    said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
-                        .is_some();
+                let has_deepgram = said_core::stt::resolve_deepinfra_api_key().is_some();
                 Ok(SttRuntimeInfo {
                     provider: effective.clone(),
                     preferred_provider: preferred,
@@ -3324,7 +3322,7 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
                 provider: "deepgram".into(),
                 preferred_provider: "deepgram".into(),
                 effective_provider: "deepgram".into(),
-                deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+                deepgram_configured: said_core::stt::resolve_deepinfra_api_key().is_some(),
                 swift_installed,
                 swift_ready,
                 whisper_installed,
@@ -3336,7 +3334,7 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
             provider: "deepgram".into(),
             preferred_provider: "deepgram".into(),
             effective_provider: "deepgram".into(),
-            deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
+            deepgram_configured: said_core::stt::resolve_deepinfra_api_key().is_some(),
             swift_installed,
             swift_ready,
             whisper_installed,
@@ -3364,12 +3362,11 @@ fn hot_cache_effective_stt_provider(app: &tauri::AppHandle) -> String {
     )
 }
 
-fn deepgram_session_key_for_provider(stt_provider: &str, deepgram_key: &str) -> String {
-    if said_core::stt::is_deepgram(stt_provider) {
-        deepgram_key.to_string()
-    } else {
-        String::new()
-    }
+fn deepgram_session_key_for_provider(_stt_provider: &str, _deepgram_key: &str) -> String {
+    // Dictation cloud STT is batch-only through DeepInfra now. Keep the legacy
+    // Deepgram session actor disconnected so it cannot warm/reconnect in the
+    // background with the wrong provider key.
+    String::new()
 }
 
 #[cfg(target_os = "macos")]
@@ -3450,9 +3447,7 @@ async fn patch_preferences(
             let mut hot = hot_cache.0.write().await;
             hot.language = p.language.clone();
             hot.stt_provider = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
-            hot.deepgram_key =
-                said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
-                    .unwrap_or_default();
+            hot.deepgram_key = said_core::stt::resolve_deepinfra_api_key().unwrap_or_default();
             // Let meeting AI use the Groq key saved in Settings → API keys.
             meeting_engine::set_runtime_groq_api_key(p.groq_api_key.clone());
             #[cfg(target_os = "macos")]
@@ -10324,13 +10319,8 @@ fn main() {
                                 .ok()
                                 .map(|p| p.language.clone())
                                 .unwrap_or_default();
-                            let deepgram_key = said_core::stt::resolve_deepgram_api_key(
-                                prefs_res
-                                    .as_ref()
-                                    .ok()
-                                    .and_then(|p| p.deepgram_api_key.as_deref()),
-                            )
-                            .unwrap_or_default();
+                            let deepgram_key =
+                                said_core::stt::resolve_deepinfra_api_key().unwrap_or_default();
                             // Seed meeting AI's Groq key from Settings → API keys.
                             meeting_engine::set_runtime_groq_api_key(
                                 prefs_res.as_ref().ok().and_then(|p| p.groq_api_key.clone()),

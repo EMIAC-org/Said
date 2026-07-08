@@ -23,8 +23,8 @@ pub fn effective_stt_provider(prefs: &Preferences) -> String {
 fn has_stt_key(prefs: &Preferences) -> bool {
     let provider = effective_stt_provider(prefs);
     if said_core::stt::is_deepgram(&provider) {
-        // Cloud dictation = OpenRouter Whisper Large V3 Turbo (server-managed key).
-        crate::stt::openrouter_qwen_asr::resolve_api_key().is_some()
+        // Cloud dictation = DeepInfra Whisper Large V3 (server-managed key).
+        crate::stt::deepinfra_whisper::resolve_api_key().is_some()
     } else {
         // Local engines (whisper.cpp / Swift) need no key.
         true
@@ -59,11 +59,11 @@ pub fn missing_voice_api_keys(
     prefs: &Preferences,
     require_stt_key: bool,
 ) -> Vec<&'static str> {
-    // The local backend only validates the STT (Deepgram) key. Polish always runs
+    // The local backend only validates the cloud STT key. Polish always runs
     // server-side (Cerebras via the server runtime), so it needs no local LLM key —
     // gating on one here just blocks keyless shipped builds before the request can
-    // even reach the server. (STT still needs a key when cloud Deepgram is used;
-    // local whisper/swift and server-managed Deepgram set require_stt_key=false.)
+    // even reach the server. (STT still needs a key when cloud Whisper is used;
+    // local whisper/swift and server-managed cloud STT set require_stt_key=false.)
     let mut missing = Vec::new();
     if require_stt_key && !has_stt_key(prefs) {
         missing.push("deepgram");
@@ -140,12 +140,12 @@ mod tests {
     }
 
     #[test]
-    fn cloud_stt_requires_openrouter_key() {
-        // Cloud dictation now runs on OpenRouter Whisper (server-managed key), so
-        // its availability tracks OPENROUTER_API_KEY, not a user Deepgram key.
-        let env_has_openrouter = std::env::var("OPENROUTER_API_KEY")
+    fn cloud_stt_requires_deepinfra_key() {
+        // Cloud dictation now runs on DeepInfra Whisper (server-managed key), so
+        // its availability tracks DEEPINFRA_API_KEY, not a user Deepgram key.
+        let env_has_deepinfra = std::env::var("DEEPINFRA_API_KEY")
             .ok()
             .is_some_and(|value| !value.trim().is_empty());
-        assert_eq!(has_stt_key(&prefs("deepgram", None)), env_has_openrouter);
+        assert_eq!(has_stt_key(&prefs("deepgram", None)), env_has_deepinfra);
     }
 }

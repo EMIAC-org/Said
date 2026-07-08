@@ -404,7 +404,7 @@ export function ModelMigrationGate({
             <span className="text-[11px] text-muted-foreground shrink-0">Fast · lightweight</span>
           </div>
           <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-            Whisper Large V3 Turbo, streamed from the cloud. Lightweight with decent quality for most
+            Whisper Large V3, streamed from the cloud. Lightweight with decent quality for most
             tasks. Nothing to download; needs internet while you dictate.
           </p>
           <button

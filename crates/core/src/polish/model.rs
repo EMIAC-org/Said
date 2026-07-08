@@ -253,15 +253,11 @@ fn resolve_model_id(spec: &PolishModelSpec) -> String {
 
 /// Primary entry point — picks provider + model for any polish request.
 ///
-/// `POLISH_MODEL_OVERRIDE` (env), when set to a catalog key, wins over the
-/// per-account `selected_model` for EVERY request — the one-line global switch
-/// for rolling out or A/B-ing a model without touching stored prefs.
-pub fn resolve_polish_route(selected_model: &str) -> PolishRoute {
-    let key = std::env::var(POLISH_MODEL_OVERRIDE_ENV)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty() && catalog_spec(v).is_some())
-        .unwrap_or_else(|| validate_polish_model_key(selected_model));
+/// Production polish is pinned to Gemma/OpenRouter. Stored prefs are still
+/// accepted for backwards-compatible settings reads/writes, but they do not
+/// select the runtime model.
+pub fn resolve_polish_route(_selected_model: &str) -> PolishRoute {
+    let key = DEFAULT_POLISH_MODEL_KEY.to_string();
     let spec = catalog_spec(&key).unwrap_or_else(|| {
         POLISH_MODEL_CATALOG
             .iter()
@@ -342,39 +338,39 @@ mod tests {
     #[test]
     fn resolve_groq_gpt_oss_20b() {
         let route = resolve_polish_route("groq-gpt-oss-20b");
-        assert_eq!(route.provider, "groq");
-        assert_eq!(route.model, "openai/gpt-oss-20b");
-        assert!(route.reasoning_low);
+        assert_eq!(route.provider, "openrouter");
+        assert_eq!(route.model, OPENROUTER_POLISH_MODEL_GEMMA);
+        assert!(!route.reasoning_low);
     }
 
     #[test]
     fn resolve_phi4_routes_deepinfra() {
         let route = resolve_polish_route("phi4");
-        assert_eq!(route.provider, "deepinfra");
-        assert_eq!(route.model, "microsoft/phi-4");
+        assert_eq!(route.provider, "openrouter");
+        assert_eq!(route.model, OPENROUTER_POLISH_MODEL_GEMMA);
     }
 
     #[test]
     fn resolve_cerebras_gpt_oss() {
         let route = resolve_polish_route("cerebras-gpt-oss");
-        assert_eq!(route.provider, "cerebras");
-        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GPT_OSS);
-        assert!(route.reasoning_low);
+        assert_eq!(route.provider, "openrouter");
+        assert_eq!(route.model, OPENROUTER_POLISH_MODEL_GEMMA);
+        assert!(!route.reasoning_low);
     }
 
     #[test]
     fn legacy_smart_routes_cerebras_gpt_oss() {
         let route = resolve_polish_route("smart");
-        assert_eq!(route.key, "cerebras-gpt-oss");
-        assert_eq!(route.provider, "cerebras");
-        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GPT_OSS);
+        assert_eq!(route.key, "gemma-openrouter");
+        assert_eq!(route.provider, "openrouter");
+        assert_eq!(route.model, OPENROUTER_POLISH_MODEL_GEMMA);
     }
 
     #[test]
     fn resolve_fast_tier_stays_on_groq() {
         let route = resolve_polish_route("fast");
-        assert_eq!(route.provider, "groq");
-        assert_eq!(route.model, GROQ_POLISH_MODEL_FAST);
+        assert_eq!(route.provider, "openrouter");
+        assert_eq!(route.model, OPENROUTER_POLISH_MODEL_GEMMA);
     }
 
     #[test]
@@ -429,19 +425,19 @@ mod tests {
         assert_eq!(g.api_key_env, "OPENROUTER_API_KEY");
         assert_eq!(g.providers, OPENROUTER_GEMMA_PROVIDERS);
         let c = resolve_polish_route("cerebras-gpt-oss");
-        assert_eq!(c.endpoint, CEREBRAS_ENDPOINT);
-        assert_eq!(c.api_key_env, "CEREBRAS_API_KEY");
-        assert!(c.providers.is_empty());
+        assert_eq!(c.endpoint, OPENROUTER_ENDPOINT);
+        assert_eq!(c.api_key_env, "OPENROUTER_API_KEY");
+        assert_eq!(c.providers, OPENROUTER_GEMMA_PROVIDERS);
     }
 
     #[test]
-    fn override_env_forces_model_over_stored_pref() {
+    fn runtime_route_ignores_override_and_stored_pref() {
         // SAFETY: this test owns the env var for its body; no other test reads it.
         unsafe { std::env::set_var(POLISH_MODEL_OVERRIDE_ENV, "cerebras-gpt-oss") };
-        let route = resolve_polish_route("gemma-openrouter"); // stored pref says gemma
-        assert_eq!(route.key, "cerebras-gpt-oss", "override must win");
+        let route = resolve_polish_route("cerebras-gpt-oss");
+        assert_eq!(route.key, "gemma-openrouter");
+        assert_eq!(route.provider, "openrouter");
+        assert_eq!(route.model, OPENROUTER_POLISH_MODEL_GEMMA);
         unsafe { std::env::remove_var(POLISH_MODEL_OVERRIDE_ENV) };
-        let route = resolve_polish_route("gemma-openrouter");
-        assert_eq!(route.key, "gemma-openrouter", "no override honors pref");
     }
 }
