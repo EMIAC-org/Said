@@ -192,6 +192,7 @@ jobs:
           docker compose pull control-plane
           docker compose up -d --force-recreate control-plane
           CID=$(docker compose ps -q control-plane)
+          for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI RUNTIME_CREDENTIALS_KEY CEREBRAS_API_KEY OPENAI_API_KEY DEEPINFRA_API_KEY; do
             docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}' \
               | grep -q "^${key}=." || (echo "$key was not propagated into the control-plane container" && exit 1)
           done
