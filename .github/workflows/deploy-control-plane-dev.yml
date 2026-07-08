@@ -212,7 +212,6 @@ jobs:
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^DEEPINFRA_API_KEY=." \
             || (echo "DEEPINFRA_API_KEY was not propagated into the dev control-plane container" && exit 1)
-          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
 
           for i in $(seq 1 60); do
             if curl -fsS "http://127.0.0.1:${CONTROL_PLANE_PORT}/v1/health" >/dev/null; then
