@@ -30,6 +30,8 @@ export interface EnterpriseConnectFormProps {
    *  is hidden, the URL is auto-validated, and the form jumps straight to the
    *  Lark sign-in. Used by onboarding so users never type a server URL. */
   lockedServerUrl?: string;
+  /** In locked mode, reveal a small development escape hatch for custom URLs. */
+  allowCustomServerUrl?: boolean;
 }
 
 export function EnterpriseConnectForm({
@@ -39,6 +41,7 @@ export function EnterpriseConnectForm({
   variant = "default",
   onCancel,
   lockedServerUrl,
+  allowCustomServerUrl = false,
 }: EnterpriseConnectFormProps) {
   const [serverUrl, setServerUrl] = useState(initialServerUrl);
   const [validating, setValidating] = useState(false);
@@ -50,8 +53,13 @@ export function EnterpriseConnectForm({
   const [tokenError, setTokenError] = useState("");
   const [showManualToken, setShowManualToken] = useState(false);
   const [recentUrls, setRecentUrls] = useState<string[]>(() => getRecentWorkspaceUrls());
+  const [usingCustomServerUrl, setUsingCustomServerUrl] = useState(false);
   const serverUrlRef = useRef(serverUrl);
   serverUrlRef.current = serverUrl;
+  const effectiveLockedServerUrl =
+    lockedServerUrl && !(allowCustomServerUrl && usingCustomServerUrl)
+      ? lockedServerUrl
+      : undefined;
 
   const stopOAuthListener = useCallback(async () => {
     try {
@@ -82,6 +90,24 @@ export function EnterpriseConnectForm({
     void resetOAuth();
   }, [resetOAuth]);
 
+  const useCustomServerUrl = useCallback(() => {
+    setUsingCustomServerUrl(true);
+    setValidated(false);
+    setValidationError("");
+    const locked = lockedServerUrl?.trim().replace(/\/+$/, "");
+    const recent = getRecentWorkspaceUrls().find((url) => url !== locked);
+    setServerUrl(recent ?? "");
+    void resetOAuth();
+  }, [lockedServerUrl, resetOAuth]);
+
+  const useDefaultServerUrl = useCallback(() => {
+    if (!lockedServerUrl) return;
+    setUsingCustomServerUrl(false);
+    setValidationError("");
+    setServerUrl(lockedServerUrl.trim().replace(/\/+$/, ""));
+    void resetOAuth();
+  }, [lockedServerUrl, resetOAuth]);
+
   useEffect(() => {
     const conn = getConnection();
     if (conn) {
@@ -107,9 +133,9 @@ export function EnterpriseConnectForm({
   // Locked server URL (from config/env): pin it, auto-validate, and skip the
   // URL-entry step so the user lands directly on the Lark sign-in.
   useEffect(() => {
-    if (!lockedServerUrl) return;
+    if (!effectiveLockedServerUrl) return;
     let alive = true;
-    const url = lockedServerUrl.trim().replace(/\/+$/, "");
+    const url = effectiveLockedServerUrl.trim().replace(/\/+$/, "");
     setServerUrl(url);
     if (getConnection()) return; // already connected → Lark card already shows
     setValidating(true);
@@ -124,7 +150,7 @@ export function EnterpriseConnectForm({
     return () => {
       alive = false;
     };
-  }, [lockedServerUrl]);
+  }, [effectiveLockedServerUrl]);
 
   const startOAuth = useCallback(async (url: string) => {
     const trimmed = url.trim().replace(/\/+$/, "");
@@ -301,14 +327,30 @@ export function EnterpriseConnectForm({
         </p>
       )}
 
-      {lockedServerUrl && validating && !validated && (
+      {effectiveLockedServerUrl && validating && !validated && (
         <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
           <Loader2 size={14} className="animate-spin" />
           Connecting to AirNote…
         </div>
       )}
 
-      {!lockedServerUrl && (
+      {allowCustomServerUrl && lockedServerUrl && !usingCustomServerUrl && !waitingForBrowser && (
+        <button
+          type="button"
+          onClick={useCustomServerUrl}
+          className="w-full rounded-lg border px-3 py-2.5 transition-colors text-center"
+          style={{ borderColor: "hsl(var(--border))", color: "hsl(var(--foreground))" }}
+        >
+          <span className="block text-[12px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+            Developing against another server?
+          </span>
+          <span className="block text-[12px] font-semibold mt-0.5" style={{ color: "hsl(var(--primary))" }}>
+            Use custom URL →
+          </span>
+        </button>
+      )}
+
+      {!effectiveLockedServerUrl && (
       <div>
         <p className="text-[12px] font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
           <Link size={12} className="text-muted-foreground" />
@@ -340,6 +382,16 @@ export function EnterpriseConnectForm({
               </button>
             )}
             {!validated && <RecentWorkspaces />}
+            {allowCustomServerUrl && lockedServerUrl && (
+              <button
+                type="button"
+                onClick={useDefaultServerUrl}
+                disabled={waitingForBrowser}
+                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Use default AirNote server
+              </button>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
@@ -382,7 +434,7 @@ export function EnterpriseConnectForm({
           {validationError}
         </div>
       )}
-      {lockedServerUrl && validationError && !validated && !validating && (
+      {effectiveLockedServerUrl && validationError && !validated && !validating && (
         <button onClick={() => void handleValidate()} className={connectBtnClass}>
           <RotateCcw size={14} />
           Retry

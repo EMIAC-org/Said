@@ -22,7 +22,7 @@ import type { EnterpriseConnection } from "@/lib/enterprise";
 import {
   getConnection,
   completeEmailAuth,
-  getActiveServerUrl,
+  DEFAULT_CLOUD_SERVER_URL,
   loadSavedAuthMode,
 } from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
@@ -414,7 +414,7 @@ export function OnboardingFlow({
     setPersonalError("");
     try {
       const conn = await completeEmailAuth(
-        getActiveServerUrl(),
+        DEFAULT_CLOUD_SERVER_URL,
         trimmedEmail,
         password,
         emailSignup,
@@ -807,7 +807,8 @@ export function OnboardingFlow({
             <EnterpriseConnectForm
               compact
               variant="onboarding"
-              lockedServerUrl={getActiveServerUrl()}
+              lockedServerUrl={DEFAULT_CLOUD_SERVER_URL}
+              allowCustomServerUrl
               onConnected={setWorkspacePreview}
               onCancel={workspaceBack}
             />
@@ -922,9 +923,13 @@ export function OnboardingFlow({
       <OnboardingShell
         step={stepIndex}
         totalSteps={totalSteps}
-        eyebrow="Speech recognition"
-        title="Install the local speech model."
-        subtitle={`AirNote transcribes on this ${deviceName}. The model is required before dictation can run.`}
+        eyebrow="Local model"
+        title={dictationModelInstalled ? "Local speech model is ready." : "Install the local speech model."}
+        subtitle={
+          dictationModelInstalled
+            ? `AirNote found ${NEW_MODEL_NAME} on this ${deviceName}. Continue when you're ready.`
+            : `AirNote transcribes on this ${deviceName}. Download the model before dictation can run.`
+        }
         brandTagline={`On-device keeps your voice on this ${deviceName}.`}
         brandKicker="Recommended · on-device"
         brandQuote={`The local model transcribes Hinglish right on your ${deviceName} — private, works offline, no per-use cost.`}
@@ -993,7 +998,7 @@ export function OnboardingFlow({
               {keySaving
                 ? "Saving…"
                 : dictationModelInstalled
-                  ? `Use ${NEW_MODEL_NAME}`
+                  ? "Continue"
                   : `Download ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
               {!keySaving && dictationModelInstalled && <ArrowRight size={14} />}
             </button>
