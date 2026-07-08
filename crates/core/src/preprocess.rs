@@ -6,16 +6,18 @@
 //! state would click at chunk boundaries and per-call cost matters.
 //!
 //! Pipeline order (matches the design note):
-//!   1. DC removal + high-pass  — kills rumble / handling noise / mains hum
-//!   2. anti-aliased resample to 16 kHz — band-limited, no fold-back hiss
-//!   3. [whisper.cpp Silero VAD runs here, inside `whisper.full`]
+//!   1. anti-aliased resample to 16 kHz — band-limited, no fold-back hiss
+//!   2. DC removal + high-pass  — kills rumble / handling noise / mains hum
+//!   3. RNNoise (`AIRNOTE_AUDIO_RNNOISE=0` disables) — stationary noise cleanup
 //!   4. loudness normalization — consistent level into the model
+//!   5. [whisper.cpp Silero VAD runs here, inside `whisper.full`]
 //!
-//! Steps 1 + 4 are `condition_16k`; step 2 is `resample_16k_hq`. All are cheap,
-//! deterministic DSP (a couple of biquads + one scalar pass). Timing is logged
-//! at debug so the added latency can be measured against real recordings.
+//! Steps 2, 3, and 4 are `condition_16k`; step 1 is `resample_16k_hq`. The
+//! default path keeps RNNoise on for shipped builds, with an env opt-out for
+//! debugging noisy-device regressions.
 
 use std::f32::consts::PI;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use tracing::debug;
@@ -41,6 +43,11 @@ const NOISE_FLOOR_RMS: f32 = 1.0e-3;
 const PEAK_CEIL: f32 = 0.97;
 /// Butterworth per-stage Q factors for a 4th-order (two-biquad) low-pass.
 const BUTTER_4TH_Q: [f32; 2] = [0.541_20, 1.306_56];
+/// RNNoise is enabled by default; this flag is an opt-out/debug switch.
+const RNNOISE_ENV: &str = "AIRNOTE_AUDIO_RNNOISE";
+/// RNNoise's fixed sample rate and frame shape.
+const RNNOISE_RATE: usize = 48_000;
+const RNNOISE_I16_SCALE: f32 = 32_768.0;
 
 // ── Biquad ───────────────────────────────────────────────────────────────────
 
@@ -143,17 +150,116 @@ pub fn condition_16k(buf: &mut [f32]) -> f32 {
     )
     .run(buf);
 
+    // 3. Speech denoise. Keep it before normalization so
+    // the final level is still controlled by one shared gain step.
+    let rnnoise = maybe_denoise_rnnoise_16k(buf);
+
     // 4. Loudness normalization (silence-floor + peak guarded).
     let gain = normalize(buf);
 
     debug!(
-        "[preprocess] conditioned {} samples: hp@{}Hz gain×{:.2} in {}µs",
+        "[preprocess] conditioned {} samples: hp@{}Hz rnnoise={} gain×{:.2} in {}µs",
         buf.len(),
         HPF_CUTOFF_HZ as u32,
+        rnnoise
+            .map(|s| format!("{}frames/{:.2}vad/{}µs", s.frames, s.mean_vad, s.elapsed_us))
+            .unwrap_or_else(|| "off".to_string()),
         gain,
         t0.elapsed().as_micros()
     );
     gain
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RnnoiseStats {
+    frames: usize,
+    mean_vad: f32,
+    elapsed_us: u128,
+}
+
+fn maybe_denoise_rnnoise_16k(buf: &mut [f32]) -> Option<RnnoiseStats> {
+    if env_flag_disabled(RNNOISE_ENV) {
+        return None;
+    }
+    Some(denoise_rnnoise_16k(buf))
+}
+
+fn env_flag_disabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn denoise_rnnoise_16k(buf: &mut [f32]) -> RnnoiseStats {
+    let t0 = Instant::now();
+    if buf.is_empty() {
+        return RnnoiseStats {
+            frames: 0,
+            mean_vad: 0.0,
+            elapsed_us: 0,
+        };
+    }
+
+    let mut input_48k_i16 = linear_resample(buf, TARGET_RATE, RNNOISE_RATE);
+    for sample in &mut input_48k_i16 {
+        *sample = (*sample * RNNOISE_I16_SCALE).clamp(i16::MIN as f32, i16::MAX as f32);
+    }
+
+    let mut state = nnnoiseless::DenoiseState::with_model(rnnoise_model());
+    let mut in_frame = [0.0_f32; nnnoiseless::DenoiseState::FRAME_SIZE];
+    let mut out_frame = [0.0_f32; nnnoiseless::DenoiseState::FRAME_SIZE];
+    let mut output_48k_i16 = Vec::with_capacity(input_48k_i16.len());
+    let mut vad_sum = 0.0_f32;
+    let mut frames = 0_usize;
+
+    for (idx, chunk) in input_48k_i16
+        .chunks(nnnoiseless::DenoiseState::FRAME_SIZE)
+        .enumerate()
+    {
+        in_frame.fill(0.0);
+        in_frame[..chunk.len()].copy_from_slice(chunk);
+        let vad = state.process_frame(&mut out_frame, &in_frame);
+        vad_sum += vad;
+        frames += 1;
+
+        // RNNoise's first output frame can contain fade-in artifacts. Preserve
+        // the original first 10 ms instead of dropping or shifting audio.
+        let source = if idx == 0 { &in_frame } else { &out_frame };
+        output_48k_i16.extend(source[..chunk.len()].iter().copied());
+    }
+
+    for sample in &mut output_48k_i16 {
+        *sample = (*sample / RNNOISE_I16_SCALE).clamp(-1.0, 1.0);
+    }
+    let output_16k = resample_16k_hq(&output_48k_i16, RNNOISE_RATE);
+    for (dst, src) in buf.iter_mut().zip(output_16k.iter()) {
+        *dst = *src;
+    }
+    if output_16k.len() < buf.len() {
+        for sample in &mut buf[output_16k.len()..] {
+            *sample = 0.0;
+        }
+    }
+
+    RnnoiseStats {
+        frames,
+        mean_vad: if frames == 0 {
+            0.0
+        } else {
+            vad_sum / frames as f32
+        },
+        elapsed_us: t0.elapsed().as_micros(),
+    }
+}
+
+fn rnnoise_model() -> &'static nnnoiseless::RnnModel {
+    static MODEL: OnceLock<nnnoiseless::RnnModel> = OnceLock::new();
+    MODEL.get_or_init(nnnoiseless::RnnModel::default)
 }
 
 /// Scale `buf` toward `TARGET_RMS`. Leaves silence untouched, caps amplification
@@ -243,6 +349,24 @@ mod tests {
     fn condition_leaves_silence_alone() {
         let mut buf = vec![0.0_f32; 8_000];
         assert_eq!(condition_16k(&mut buf), 1.0);
+    }
+
+    #[test]
+    fn rnnoise_preserves_length_and_finite_samples() {
+        let mut buf: Vec<f32> = (0..16_000)
+            .map(|i| {
+                let t = i as f32 / TARGET_RATE as f32;
+                let speech = 0.05 * (2.0 * PI * 220.0 * t).sin();
+                let noise = 0.015 * (2.0 * PI * 1_900.0 * t).sin();
+                speech + noise
+            })
+            .collect();
+        let len = buf.len();
+        let stats = denoise_rnnoise_16k(&mut buf);
+        assert_eq!(buf.len(), len);
+        assert!(stats.frames > 0);
+        assert!(stats.mean_vad.is_finite());
+        assert!(buf.iter().all(|s| s.is_finite()));
     }
 
     #[test]

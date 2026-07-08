@@ -20,4 +20,5 @@ sentry             = { workspace = true }
 sentry-tracing     = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = "0.3"
+nnnoiseless        = { version = "0.5.2", default-features = false }
 ureq               = { version = "3", default-features = false, features = ["rustls"] }

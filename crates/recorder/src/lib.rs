@@ -119,14 +119,7 @@ impl AudioRecorder {
     pub fn start(&mut self) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         if macos_voice_processing_capture_enabled() {
-            match self.start_macos_voice_processing() {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    eprintln!(
-                        "[rec] Apple voice-processing capture unavailable ({e}); falling back to raw CPAL capture"
-                    );
-                }
-            }
+            return self.start_macos_voice_processing();
         }
 
         self.start_cpal()
@@ -588,12 +581,12 @@ fn bluetooth_mic_allowed() -> bool {
 fn macos_voice_processing_capture_enabled() -> bool {
     std::env::var(MACOS_VOICE_PROCESSING_ENV)
         .map(|value| {
-            !matches!(
+            matches!(
                 value.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "no" | "off"
+                "1" | "true" | "yes" | "on"
             )
         })
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
