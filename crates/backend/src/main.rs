@@ -16,8 +16,16 @@ struct Cli {
     db: Option<String>,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    configure_ggml_metal_shutdown_guard();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     install_rustls_crypto_provider();
 
     // ── Sentry — must init before the tracing subscriber so the panic hook
@@ -334,6 +342,18 @@ async fn main() {
 fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
+
+#[cfg(target_os = "macos")]
+fn configure_ggml_metal_shutdown_guard() {
+    if std::env::var_os("GGML_METAL_NO_RESIDENCY").is_none() {
+        // Must be set before whisper.cpp/ggml initializes Metal. Newer ggml
+        // residency-set teardown can assert during libc finalizers on shutdown.
+        unsafe { std::env::set_var("GGML_METAL_NO_RESIDENCY", "1") };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_ggml_metal_shutdown_guard() {}
 
 #[cfg(target_os = "macos")]
 fn exit_after_shutdown_cleanup(code: i32) -> ! {

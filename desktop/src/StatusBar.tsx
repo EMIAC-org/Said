@@ -348,6 +348,7 @@ export default function StatusBar() {
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
   const [polishModeEnabled, setPolishModeEnabled] = useState(false);
+  const [longDictationLocked, setLongDictationLocked] = useState(false);
   const [divo, setDivo] = useState<DivoActivity>(() => emptyDivo());
   const [divoCopied, setDivoCopied] = useState(false);
   const [divoDraft, setDivoDraft] = useState("");
@@ -783,6 +784,7 @@ export default function StatusBar() {
           : { kind: "recording", startMs: Date.now() },
       );
     } else if (snap.state === "processing") {
+      setLongDictationLocked(false);
       if (runId) setCurrentRunId(runId);
       setBar((prev) =>
         prev.kind === "processing"
@@ -790,6 +792,7 @@ export default function StatusBar() {
           : { kind: "processing", phase: "stt" },
       );
     } else if (snap.state === "idle") {
+      setLongDictationLocked(false);
       clearRunTranscript();
       if (restorePinnedUpdate(`auto-update-ready-${source}-idle`)) return;
       setBar((prev) => {
@@ -866,6 +869,7 @@ export default function StatusBar() {
             : { kind: "recording", startMs: Date.now() }
         ));
       } else if (state === "processing") {
+        setLongDictationLocked(false);
         if (runId) setCurrentRunId(runId);
         setBar((prev) =>
           prev.kind === "recording"
@@ -880,6 +884,7 @@ export default function StatusBar() {
           setBar((prev) => prev.kind === "processing" ? { kind: "idle" } : prev);
         }, 15000);
       } else if (state === "idle") {
+        setLongDictationLocked(false);
         clearRunTranscript();
         if (restorePinnedUpdate("auto-update-ready-idle")) return;
         setBar((prev) => {
@@ -1051,9 +1056,20 @@ export default function StatusBar() {
 
     listen("long-dictation-locked", () => {
       console.info("[status-bar] long-dictation-locked event");
+      setLongDictationLocked(true);
+      if (barKindRef.current === "recording") {
+        presentStatusBar("long-dictation-locked");
+      }
     }).then((fn) => {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] long-dictation subscribe failed", err));
+
+    listen("long-dictation-unlocked", () => {
+      console.info("[status-bar] long-dictation-unlocked event");
+      setLongDictationLocked(false);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch((err) => console.warn("[status-bar] long-dictation unlock subscribe failed", err));
 
     listen<{ message?: string }>("status-bar-placement-mode", (e) => {
       console.info("[status-bar] placement mode event", e.payload);
@@ -2307,8 +2323,8 @@ export default function StatusBar() {
               // Phase is conveyed by motion + hue, not text — but keep the exact
               // sub-phase (Server transcribing / Using local runtime / Enhancing…)
               // reachable on hover + for a11y so the diagnostic isn't lost.
-              title={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? "Listening" : undefined}
-              aria-label={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? "Listening" : undefined}
+              title={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? (longDictationLocked ? "Long dictation" : "Listening") : undefined}
+              aria-label={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? (longDictationLocked ? "Long dictation" : "Listening") : undefined}
             >
               {bar.kind === "recording" && polishModeEnabled && (
                 <span className="sb-mode-badge sb-mode-badge--recording">Polish</span>

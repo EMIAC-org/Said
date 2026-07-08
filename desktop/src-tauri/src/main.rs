@@ -149,6 +149,18 @@ fn exit_after_shutdown_cleanup(code: i32) -> ! {
     std::process::exit(code)
 }
 
+#[cfg(target_os = "macos")]
+fn configure_ggml_metal_shutdown_guard() {
+    if std::env::var_os("GGML_METAL_NO_RESIDENCY").is_none() {
+        // Must be set before whisper.cpp/ggml initializes Metal. Newer ggml
+        // residency-set teardown can assert during libc finalizers on app quit.
+        unsafe { std::env::set_var("GGML_METAL_NO_RESIDENCY", "1") };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_ggml_metal_shutdown_guard() {}
+
 fn record_hotkey_label(raw: &str) -> &'static str {
     // Platform-aware: the same pref maps to different physical keys. On Windows
     // `right_option` binds to Right Alt (VK_RMENU) and `fn` degrades to Caps Lock.
@@ -344,6 +356,173 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
         );
     }
 }
+
+#[cfg(target_os = "macos")]
+fn configure_main_window_macos(win: &tauri::WebviewWindow) {
+    use objc::Message;
+    use objc::runtime::{
+        BOOL, Class, Imp, Object, Sel, YES, class_addMethod, class_getName, objc_allocateClassPair,
+        objc_disposeClassPair, objc_getClass, objc_registerClassPair, object_getClass,
+    };
+    use std::ffi::{CStr, CString};
+    use std::ptr;
+
+    unsafe extern "C" {
+        fn object_setClass(
+            obj: *mut tauri_nspanel::objc2_foundation::NSObject,
+            cls: *const tauri_nspanel::objc2::runtime::AnyClass,
+        ) -> *const tauri_nspanel::objc2::runtime::AnyClass;
+    }
+
+    unsafe extern "C" fn accepts_first_mouse(
+        _this: *mut Object,
+        _cmd: Sel,
+        _event: *mut Object,
+    ) -> BOOL {
+        YES
+    }
+
+    unsafe fn install_accepts_first_mouse(view: *mut Object, label: &str) -> bool {
+        if view.is_null() {
+            return false;
+        }
+
+        let current_class = unsafe { object_getClass(view) };
+        if current_class.is_null() {
+            tracing::warn!("[main-window] acceptsFirstMouse skipped for {label}: null class");
+            return false;
+        }
+
+        let class_name = unsafe { CStr::from_ptr(class_getName(current_class)) }.to_string_lossy();
+        if class_name.starts_with("AirNoteAcceptsFirstMouse_") {
+            return true;
+        }
+        let sanitized = class_name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let Ok(subclass_name) = CString::new(format!("AirNoteAcceptsFirstMouse_{}", sanitized))
+        else {
+            tracing::warn!(
+                "[main-window] acceptsFirstMouse skipped for {label}: invalid subclass name"
+            );
+            return false;
+        };
+
+        let mut subclass = unsafe { objc_getClass(subclass_name.as_ptr()) as *mut Class };
+        if subclass.is_null() {
+            subclass = unsafe { objc_allocateClassPair(current_class, subclass_name.as_ptr(), 0) };
+            if subclass.is_null() {
+                tracing::warn!(
+                    "[main-window] acceptsFirstMouse skipped for {label}: allocate class failed"
+                );
+                return false;
+            }
+
+            let Ok(types) = CString::new("c@:@") else {
+                unsafe { objc_disposeClassPair(subclass) };
+                return false;
+            };
+            let imp: Imp = unsafe {
+                std::mem::transmute(
+                    accepts_first_mouse
+                        as unsafe extern "C" fn(*mut Object, Sel, *mut Object) -> BOOL,
+                )
+            };
+            let added = unsafe {
+                class_addMethod(
+                    subclass,
+                    Sel::register("acceptsFirstMouse:"),
+                    imp,
+                    types.as_ptr(),
+                )
+            };
+            if added != YES {
+                unsafe { objc_disposeClassPair(subclass) };
+                tracing::warn!(
+                    "[main-window] acceptsFirstMouse skipped for {label}: add method failed"
+                );
+                return false;
+            }
+            unsafe { objc_registerClassPair(subclass) };
+        }
+
+        unsafe {
+            object_setClass(
+                view as *mut tauri_nspanel::objc2_foundation::NSObject,
+                subclass as *const tauri_nspanel::objc2::runtime::AnyClass,
+            )
+        };
+        tracing::debug!(
+            "[main-window] acceptsFirstMouse enabled for {label} ({})",
+            class_name
+        );
+        true
+    }
+
+    unsafe fn tune_view_tree(view: *mut Object, depth: usize, configured: &mut usize) {
+        if view.is_null() || depth > 8 {
+            return;
+        }
+
+        if unsafe { install_accepts_first_mouse(view, "view") } {
+            *configured += 1;
+        }
+
+        let subviews: *mut Object = unsafe {
+            (&*view)
+                .send_message(Sel::register("subviews"), ())
+                .unwrap_or(ptr::null_mut())
+        };
+        if subviews.is_null() {
+            return;
+        }
+
+        let subviews = unsafe { &*subviews };
+        let count: usize = unsafe {
+            subviews
+                .send_message(Sel::register("count"), ())
+                .unwrap_or(0)
+        };
+        for index in 0..count.min(64) {
+            let child: *mut Object = unsafe {
+                subviews
+                    .send_message(Sel::register("objectAtIndex:"), (index,))
+                    .unwrap_or(ptr::null_mut())
+            };
+            unsafe { tune_view_tree(child, depth + 1, configured) };
+        }
+    }
+
+    let Ok(ns_window) = win.ns_window() else {
+        tracing::warn!("[main-window] macOS tune failed: ns_window unavailable");
+        return;
+    };
+    if ns_window.is_null() {
+        tracing::warn!("[main-window] macOS tune failed: ns_window was null");
+        return;
+    }
+
+    unsafe {
+        let ns_window = &*(ns_window as *mut Object);
+        let content_view: *mut Object = ns_window
+            .send_message(Sel::register("contentView"), ())
+            .unwrap_or(ptr::null_mut());
+        let mut configured = 0;
+        tune_view_tree(content_view, 0, &mut configured);
+
+        tracing::info!("[main-window] macOS click-through tuned views={configured}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_main_window_macos(_win: &tauri::WebviewWindow) {}
 
 const STATUS_BAR_WIDTH: f64 = 300.0;
 const STATUS_BAR_HEIGHT: f64 = 142.0;
@@ -1041,6 +1220,7 @@ struct LongDictationState {
     locked: Arc<AtomicBool>,
     pending_lock: Arc<AtomicBool>,
     stop_consumed: Arc<AtomicBool>,
+    finishing: Arc<AtomicBool>,
 }
 
 impl LongDictationState {
@@ -1049,13 +1229,28 @@ impl LongDictationState {
             locked: Arc::new(AtomicBool::new(false)),
             pending_lock: Arc::new(AtomicBool::new(false)),
             stop_consumed: Arc::new(AtomicBool::new(false)),
+            finishing: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn reset(&self) {
-        self.locked.store(false, Ordering::SeqCst);
-        self.pending_lock.store(false, Ordering::SeqCst);
-        self.stop_consumed.store(false, Ordering::SeqCst);
+    fn reset(&self) -> bool {
+        let was_locked = self.locked.swap(false, Ordering::SeqCst);
+        let had_pending_lock = self.pending_lock.swap(false, Ordering::SeqCst);
+        let had_consumed_stop = self.stop_consumed.swap(false, Ordering::SeqCst);
+        let was_finishing = self.finishing.swap(false, Ordering::SeqCst);
+        was_locked || had_pending_lock || had_consumed_stop || was_finishing
+    }
+
+    fn clear_recording_lock(&self) -> bool {
+        let was_locked = self.locked.swap(false, Ordering::SeqCst);
+        let had_pending_lock = self.pending_lock.swap(false, Ordering::SeqCst);
+        was_locked || had_pending_lock
+    }
+
+    fn clear_finishing(&self) -> bool {
+        let had_consumed_stop = self.stop_consumed.swap(false, Ordering::SeqCst);
+        let was_finishing = self.finishing.swap(false, Ordering::SeqCst);
+        had_consumed_stop || was_finishing
     }
 }
 
@@ -2000,6 +2195,7 @@ fn emit_tray_error(app: &tauri::AppHandle, message: impl Into<String>) {
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        configure_main_window_macos(&w);
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -2177,13 +2373,28 @@ fn activate_airnote(app: &tauri::AppHandle, reason: &'static str) {
     let _ = run_on_main_guarded(app, "activate_airnote", move || {
         use cocoa::appkit::{NSApp, NSApplication};
         use cocoa::base::YES;
+        use objc::Message;
 
         unsafe {
             NSApp().activateIgnoringOtherApps_(YES);
         }
         if let Some(w) = app_h.get_webview_window("main") {
+            configure_main_window_macos(&w);
             let _ = w.show();
             let _ = w.unminimize();
+            if let Ok(ns_window) = w.ns_window() {
+                if !ns_window.is_null() {
+                    unsafe {
+                        let ns_window = &*(ns_window as *mut objc::runtime::Object);
+                        let _: Result<(), _> = ns_window
+                            .send_message(objc::runtime::Sel::register("orderFrontRegardless"), ());
+                        let _: Result<(), _> = ns_window.send_message(
+                            objc::runtime::Sel::register("makeKeyAndOrderFront:"),
+                            (std::ptr::null::<objc::runtime::Object>(),),
+                        );
+                    }
+                }
+            }
             let _ = w.set_focus();
         }
         tracing::debug!("[main] activated AirNote window ({reason})");
@@ -2192,6 +2403,18 @@ fn activate_airnote(app: &tauri::AppHandle, reason: &'static str) {
 
 #[cfg(not(target_os = "macos"))]
 fn activate_airnote(_app: &tauri::AppHandle, _reason: &'static str) {}
+
+#[cfg(target_os = "macos")]
+fn activate_airnote_after(app: &tauri::AppHandle, reason: &'static str, delay_ms: u64) {
+    let app_h = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        activate_airnote(&app_h, reason);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_airnote_after(_app: &tauri::AppHandle, _reason: &'static str, _delay_ms: u64) {}
 
 fn apply_launch_at_login(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let manager = app
@@ -2229,7 +2452,45 @@ fn activate_long_dictation_lock(app: &tauri::AppHandle) {
 
 fn reset_long_dictation_lock(app: &tauri::AppHandle) {
     if let Some(long) = app.try_state::<LongDictationState>() {
-        long.reset();
+        if long.reset() {
+            let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
+        }
+    }
+}
+
+fn clear_long_dictation_recording_lock(app: &tauri::AppHandle) {
+    if let Some(long) = app.try_state::<LongDictationState>() {
+        if long.clear_recording_lock() {
+            let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
+        }
+    }
+}
+
+fn clear_long_dictation_finishing(app: &tauri::AppHandle, reason: &'static str) {
+    if let Some(long) = app.try_state::<LongDictationState>() {
+        if long.clear_finishing() {
+            tracing::debug!("[hotkey] long dictation finishing cleared ({reason})");
+        }
+    }
+}
+
+fn long_dictation_finishing(app: &tauri::AppHandle) -> bool {
+    app.try_state::<LongDictationState>()
+        .map(|long| long.finishing.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+fn stop_long_dictation_lock(
+    app: &tauri::AppHandle,
+    locked: &AtomicBool,
+    stop_consumed: &AtomicBool,
+    finishing: &AtomicBool,
+) {
+    stop_consumed.store(true, Ordering::SeqCst);
+    finishing.store(true, Ordering::SeqCst);
+    if locked.swap(false, Ordering::SeqCst) {
+        tracing::info!("[hotkey] long dictation unlocked for processing");
+        let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
     }
 }
 
@@ -4418,7 +4679,7 @@ fn do_finish_recording(
 ) {
     FINISH_AFTER_START.store(false, Ordering::SeqCst);
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
-    reset_long_dictation_lock(&app);
+    clear_long_dictation_recording_lock(&app);
 
     let session_end = app
         .try_state::<RecordingSessionState>()
@@ -4467,6 +4728,12 @@ fn do_finish_recording(
                 Ok((stop_rx, was_too_short, snap))
             }
             Err(e) => {
+                if e == "not recording" && long_dictation_finishing(&app) {
+                    tracing::debug!(
+                        "[record] duplicate finish ignored while long dictation is already finishing"
+                    );
+                    return;
+                }
                 if is_short_recording_cancel(&e) {
                     tracing::info!("[record] short Option tap — cancelled recording");
                     let snap = d.finish_cancelled();
@@ -4606,6 +4873,7 @@ fn do_finish_recording(
             sync_tray(&app2, &snap);
             emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
+            clear_long_dictation_finishing(&app2, "no_pre_transcript");
             return;
         }
 
@@ -4666,6 +4934,7 @@ fn do_finish_recording(
             emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
             recovery::clear();
+            clear_long_dictation_finishing(&app2, "problem_done");
             return;
         }
 
@@ -4705,6 +4974,7 @@ fn do_finish_recording(
                 "[record] finish superseded by a newer recording — leaving the live run intact (run_id={})",
                 client_run_id.as_deref().unwrap_or("none"),
             );
+            clear_long_dictation_finishing(&app2, "superseded_finish");
             return;
         }
 
@@ -4793,6 +5063,7 @@ fn do_finish_recording(
                 _ => {}
             }
             recovery::clear();
+            clear_long_dictation_finishing(&app2, "divo_done");
             return;
         }
 
@@ -4876,6 +5147,7 @@ fn do_finish_recording(
                     do_start_recording(&shared3, &app3);
                 });
             }
+            clear_long_dictation_finishing(&app2, "meeting_done");
         } else {
             // Normal mode: paste and edit-watch
             // Spawn edit-watcher immediately after paste (non-blocking).
@@ -4931,6 +5203,7 @@ fn do_finish_recording(
             sync_tray(&app2, &snap);
             emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
+            clear_long_dictation_finishing(&app2, "normal_done");
         }
         // Dictation delivered (or surfaced as an error to the user) — the captured
         // audio is no longer needed, so the orphan file must not linger.
@@ -9046,6 +9319,7 @@ fn handle_enterprise_oauth_urls(app: &tauri::AppHandle, urls: &[String]) {
 }
 
 fn main() {
+    configure_ggml_metal_shutdown_guard();
     install_rustls_crypto_provider();
 
     // 1. Load env vars from .env files
@@ -9182,6 +9456,9 @@ fn main() {
                     // NSPanel, so we no longer switch the whole app to Accessory.
                     app.set_activation_policy(tauri::ActivationPolicy::Regular);
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
+                    if let Some(w) = app.get_webview_window("main") {
+                        configure_main_window_macos(&w);
+                    }
                 }
 
                 // Crash recovery: repair WAV headers for any meeting interrupted
@@ -9774,6 +10051,8 @@ fn main() {
                         Arc::clone(&app.state::<LongDictationState>().stop_consumed);
                     let long_stop_consumed_release =
                         Arc::clone(&app.state::<LongDictationState>().stop_consumed);
+                    let long_finishing_press =
+                        Arc::clone(&app.state::<LongDictationState>().finishing);
                     let meeting_active_press = Arc::clone(&app.state::<MeetingModeState>().active);
                     let meeting_muted_press = Arc::clone(&app.state::<MeetingModeState>().muted);
                     let meeting_generation_press =
@@ -9803,6 +10082,7 @@ fn main() {
                                 let back = Arc::clone(&back_hold_press);
                                 let long_locked = Arc::clone(&long_locked_press);
                                 let long_stop_consumed = Arc::clone(&long_stop_consumed_press);
+                                let long_finishing = Arc::clone(&long_finishing_press);
                                 HOTKEY_START_IN_FLIGHT.store(true, Ordering::SeqCst);
                                 std::thread::spawn(move || {
                                     struct HotkeyStartGuard;
@@ -9819,8 +10099,12 @@ fn main() {
                                         tracing::info!(
                                             "[hotkey] record key pressed while long dictation locked → process"
                                         );
-                                        long_locked.store(false, Ordering::SeqCst);
-                                        long_stop_consumed.store(true, Ordering::SeqCst);
+                                        stop_long_dictation_lock(
+                                            &app_h,
+                                            &long_locked,
+                                            &long_stop_consumed,
+                                            &long_finishing,
+                                        );
                                         do_finish_recording(shared, app_h, back);
                                     } else if current == Some(desktop::AppState::Idle) {
                                         do_start_recording(&shared, &app_h);
@@ -9833,6 +10117,14 @@ fn main() {
                                             );
                                         }
                                     } else if current == Some(desktop::AppState::Processing) {
+                                        if long_stop_consumed.load(Ordering::SeqCst)
+                                            || long_finishing.load(Ordering::SeqCst)
+                                        {
+                                            tracing::debug!(
+                                                "[hotkey] record press ignored while long dictation is finishing"
+                                            );
+                                            return;
+                                        }
                                         // Pressing record again while the previous take is
                                         // still processing means the user abandoned it (e.g.
                                         // released the hotkey early by mistake). Reset that
@@ -10380,6 +10672,8 @@ fn main() {
                     tracing::info!("[main] launch-at-login startup — main window left hidden");
                 } else {
                     show_main_window(app);
+                    activate_airnote_after(app, "startup-reassert", 500);
+                    activate_airnote_after(app, "startup-retune", 1500);
                 }
             }
             #[cfg(target_os = "macos")]

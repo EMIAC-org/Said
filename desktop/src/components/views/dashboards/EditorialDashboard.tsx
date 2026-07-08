@@ -204,10 +204,10 @@ export function EditorialDashboard({ snapshot }: Props) {
                     height: h,
                     borderRadius: 2,
                     background: b.words === 0
-                      ? "hsl(0 0% 100% / 0.04)"
+                      ? "hsl(var(--surface-4) / 0.52)"
                       : isAccent
                         ? "hsl(var(--primary) / 0.45)"
-                        : "hsl(0 0% 100% / 0.08)",
+                        : "hsl(var(--primary) / 0.20)",
                   }}
                 />
               );
