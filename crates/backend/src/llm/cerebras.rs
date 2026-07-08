@@ -15,7 +15,7 @@ pub use super::PolishResult;
 
 const CEREBRAS_ENDPOINT: &str = "https://api.cerebras.ai/v1/chat/completions";
 
-pub const CEREBRAS_MODEL_DEFAULT: &str = "gpt-oss-120b";
+pub const CEREBRAS_MODEL_DEFAULT: &str = "gemma-4-31b";
 
 #[derive(Deserialize)]
 struct StreamChunk {

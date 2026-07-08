@@ -6638,16 +6638,19 @@ mod tests {
 
     #[test]
     fn selected_polish_model_respects_fast_and_smart() {
-        use said_core::polish::model::{CEREBRAS_POLISH_MODEL_GPT_OSS, GROQ_POLISH_MODEL_FAST};
-        assert_eq!(selected_polish_model("fast"), GROQ_POLISH_MODEL_FAST);
-        assert_eq!(selected_polish_model("deepseek"), GROQ_POLISH_MODEL_FAST);
+        use said_core::polish::model::CEREBRAS_POLISH_MODEL_GEMMA_4;
+        assert_eq!(selected_polish_model("fast"), CEREBRAS_POLISH_MODEL_GEMMA_4);
+        assert_eq!(
+            selected_polish_model("deepseek"),
+            CEREBRAS_POLISH_MODEL_GEMMA_4
+        );
         assert_eq!(
             selected_polish_model("smart"),
-            CEREBRAS_POLISH_MODEL_GPT_OSS
+            CEREBRAS_POLISH_MODEL_GEMMA_4
         );
         assert_eq!(
             selected_polish_model("scout"),
-            "meta-llama/llama-4-scout-17b-16e-instruct"
+            CEREBRAS_POLISH_MODEL_GEMMA_4
         );
     }
 

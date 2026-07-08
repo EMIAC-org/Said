@@ -7,20 +7,20 @@
 /// Fast polish tier — Groq Llama 3.1 8B instant.
 pub const GROQ_POLISH_MODEL_FAST: &str = "llama-3.1-8b-instant";
 
-/// GPT OSS 120B on Cerebras — production default polish model.
-pub const CEREBRAS_POLISH_MODEL_GPT_OSS: &str = "gpt-oss-120b";
+/// Gemma 4 31B on Cerebras — production polish model.
+pub const CEREBRAS_POLISH_MODEL_GEMMA_4: &str = "gemma-4-31b";
 
-/// Legacy Groq smart tier id (aliases only; routing uses Cerebras).
-pub const GROQ_POLISH_MODEL_SMART_DEFAULT: &str = "openai/gpt-oss-120b";
+/// Legacy Groq smart tier id (aliases only; runtime is hard-pinned elsewhere).
+pub const GROQ_POLISH_MODEL_SMART_DEFAULT: &str = CEREBRAS_POLISH_MODEL_GEMMA_4;
 
-/// Groq balanced tier — GPT OSS 20B (beta only).
-pub const GROQ_POLISH_MODEL_BALANCED_DEFAULT: &str = "openai/gpt-oss-20b";
+/// Deprecated GPT OSS alias target. Runtime maps this away from GPT OSS.
+pub const GROQ_POLISH_MODEL_BALANCED_DEFAULT: &str = CEREBRAS_POLISH_MODEL_GEMMA_4;
 
 /// Env var — legacy override for Groq 120B id when normalizing old aliases.
 pub const SMART_POLISH_MODEL_ENV: &str = "AIRNOTE_SMART_POLISH_MODEL";
 
 /// Production default when beta is off and key is unknown.
-pub const DEFAULT_POLISH_MODEL_KEY: &str = "cerebras-gpt-oss";
+pub const DEFAULT_POLISH_MODEL_KEY: &str = "cerebras-gemma-4";
 
 /// One selectable polish model in the catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub struct PolishModelSpec {
     pub label: &'static str,
     pub provider: &'static str,
     pub model_id: &'static str,
-    /// GPT-OSS style models need `reasoning_effort: low` + higher max_tokens.
+    /// Reasoning models need `reasoning_effort: low` + higher max_tokens.
     pub reasoning_low: bool,
     /// Shown only when desktop beta mode is enabled.
     pub beta_only: bool,
@@ -38,11 +38,11 @@ pub struct PolishModelSpec {
 /// Curated polish catalog — plug-and-play with provider modules in `said-backend`.
 pub const POLISH_MODEL_CATALOG: &[PolishModelSpec] = &[
     PolishModelSpec {
-        key: "cerebras-gpt-oss",
-        label: "GPT OSS 120B (Cerebras)",
+        key: "cerebras-gemma-4",
+        label: "Gemma 4 31B (Cerebras)",
         provider: "cerebras",
-        model_id: CEREBRAS_POLISH_MODEL_GPT_OSS,
-        reasoning_low: true,
+        model_id: CEREBRAS_POLISH_MODEL_GEMMA_4,
+        reasoning_low: false,
         beta_only: false,
     },
     PolishModelSpec {
@@ -55,10 +55,10 @@ pub const POLISH_MODEL_CATALOG: &[PolishModelSpec] = &[
     },
     PolishModelSpec {
         key: "groq-gpt-oss-20b",
-        label: "GPT OSS 20B (Groq)",
-        provider: "groq",
+        label: "Deprecated GPT OSS alias (Cerebras Gemma 4)",
+        provider: "cerebras",
         model_id: GROQ_POLISH_MODEL_BALANCED_DEFAULT,
-        reasoning_low: true,
+        reasoning_low: false,
         beta_only: true,
     },
     PolishModelSpec {
@@ -129,26 +129,28 @@ pub fn legacy_alias_to_key(raw: &str) -> Option<&'static str> {
         );
     }
     match model.as_str() {
-        "smart" | "cerebras" => Some("cerebras-gpt-oss"),
+        "smart" | "cerebras" | "cerebras-gpt-oss" => Some(DEFAULT_POLISH_MODEL_KEY),
         "fast" | "deepseek" => Some("fast"),
         "scout" | "groq-scout" => Some("groq-scout"),
-        "maverick" | "groq-maverick" => Some("cerebras-gpt-oss"),
+        "maverick" | "groq-maverick" => Some(DEFAULT_POLISH_MODEL_KEY),
         "phi4" | "phi-4" | "microsoft/phi-4" => Some("phi4"),
-        "cerebras-gpt-oss" => Some("cerebras-gpt-oss"),
-        "groq-gpt-oss-20b" | "gpt-oss-20b" | "openai/gpt-oss-20b" => Some("groq-gpt-oss-20b"),
+        "cerebras-gemma-4" | "gemma-4" | "gemma-4-31b" => Some(DEFAULT_POLISH_MODEL_KEY),
+        "groq-gpt-oss-20b" | "gpt-oss-20b" | "openai/gpt-oss-20b" => Some(DEFAULT_POLISH_MODEL_KEY),
         "groq-70b" | "70b" => Some("groq-70b"),
         _ if model.contains("gpt-oss-20b") || model.contains("gpt_oss_20b") => {
-            Some("groq-gpt-oss-20b")
+            Some(DEFAULT_POLISH_MODEL_KEY)
         }
         _ if model.contains("gpt-oss-120b")
             || model.contains("gpt_oss_120b")
             || model == "gpt-oss-120b" =>
         {
-            Some("cerebras-gpt-oss")
+            Some(DEFAULT_POLISH_MODEL_KEY)
         }
-        _ if model.contains("gpt-oss") || model.contains("gpt_oss") => Some("cerebras-gpt-oss"),
+        _ if model.contains("gpt-oss") || model.contains("gpt_oss") => {
+            Some(DEFAULT_POLISH_MODEL_KEY)
+        }
         _ if model.contains("scout") => Some("groq-scout"),
-        _ if model.contains("maverick") => Some("cerebras-gpt-oss"),
+        _ if model.contains("maverick") => Some(DEFAULT_POLISH_MODEL_KEY),
         _ if model.contains("70b") && model.contains("versatile") => Some("groq-70b"),
         _ if model.contains("8b") || model.contains("instant") => Some("fast"),
         _ => None,
@@ -180,8 +182,12 @@ fn resolve_model_id(spec: &PolishModelSpec) -> String {
 }
 
 /// Primary entry point — picks provider + model for any polish request.
-pub fn resolve_polish_route(selected_model: &str) -> PolishRoute {
-    let key = validate_polish_model_key(selected_model);
+///
+/// Production polish is hard-pinned to Cerebras Gemma 4. Stored prefs and
+/// legacy aliases are still accepted for compatibility, but they cannot change
+/// the runtime provider/model.
+pub fn resolve_polish_route(_selected_model: &str) -> PolishRoute {
+    let key = DEFAULT_POLISH_MODEL_KEY.to_string();
     let spec = catalog_spec(&key).unwrap_or_else(|| {
         POLISH_MODEL_CATALOG
             .iter()
@@ -233,7 +239,7 @@ mod tests {
         assert_eq!(validate_polish_model_key("groq-scout"), "groq-scout");
         assert_eq!(
             validate_polish_model_key("cerebras-gpt-oss"),
-            "cerebras-gpt-oss"
+            "cerebras-gemma-4"
         );
         assert_eq!(
             validate_polish_model_key("groq-gpt-oss-20b"),
@@ -246,58 +252,58 @@ mod tests {
         assert_eq!(validate_polish_model_key("scout"), "groq-scout");
         assert_eq!(
             validate_polish_model_key("openai/gpt-oss-120b"),
-            "cerebras-gpt-oss"
+            "cerebras-gemma-4"
         );
-        assert_eq!(validate_polish_model_key("smart"), "cerebras-gpt-oss");
+        assert_eq!(validate_polish_model_key("smart"), "cerebras-gemma-4");
         assert_eq!(
             validate_polish_model_key("openai/gpt-oss-20b"),
-            "groq-gpt-oss-20b"
+            "cerebras-gemma-4"
         );
         assert_eq!(validate_polish_model_key("llama-3.1-8b-instant"), "fast");
     }
 
     #[test]
-    fn resolve_groq_gpt_oss_20b() {
+    fn legacy_groq_gpt_oss_20b_routes_cerebras_gemma_4() {
         let route = resolve_polish_route("groq-gpt-oss-20b");
-        assert_eq!(route.provider, "groq");
-        assert_eq!(route.model, "openai/gpt-oss-20b");
-        assert!(route.reasoning_low);
+        assert_eq!(route.provider, "cerebras");
+        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GEMMA_4);
+        assert!(!route.reasoning_low);
     }
 
     #[test]
-    fn resolve_phi4_routes_deepinfra() {
+    fn legacy_phi4_routes_cerebras_gemma_4() {
         let route = resolve_polish_route("phi4");
-        assert_eq!(route.provider, "deepinfra");
-        assert_eq!(route.model, "microsoft/phi-4");
+        assert_eq!(route.provider, "cerebras");
+        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GEMMA_4);
     }
 
     #[test]
-    fn resolve_cerebras_gpt_oss() {
+    fn resolve_cerebras_gemma_4() {
         let route = resolve_polish_route("cerebras-gpt-oss");
         assert_eq!(route.provider, "cerebras");
-        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GPT_OSS);
-        assert!(route.reasoning_low);
+        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GEMMA_4);
+        assert!(!route.reasoning_low);
     }
 
     #[test]
-    fn legacy_smart_routes_cerebras_gpt_oss() {
+    fn legacy_smart_routes_cerebras_gemma_4() {
         let route = resolve_polish_route("smart");
-        assert_eq!(route.key, "cerebras-gpt-oss");
+        assert_eq!(route.key, "cerebras-gemma-4");
         assert_eq!(route.provider, "cerebras");
-        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GPT_OSS);
+        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GEMMA_4);
     }
 
     #[test]
-    fn resolve_fast_tier_stays_on_groq() {
+    fn legacy_fast_tier_routes_cerebras_gemma_4() {
         let route = resolve_polish_route("fast");
-        assert_eq!(route.provider, "groq");
-        assert_eq!(route.model, GROQ_POLISH_MODEL_FAST);
+        assert_eq!(route.provider, "cerebras");
+        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GEMMA_4);
     }
 
     #[test]
     fn list_models_beta_filters() {
         let prod = list_polish_models(false);
-        assert!(prod.iter().any(|s| s.key == "cerebras-gpt-oss"));
+        assert!(prod.iter().any(|s| s.key == "cerebras-gemma-4"));
         assert!(prod.iter().any(|s| s.key == "fast"));
         assert!(!prod.iter().any(|s| s.key == "groq-gpt-oss-20b"));
         let beta = list_polish_models(true);
@@ -310,6 +316,6 @@ mod tests {
         let route = resolve_polish_route("totally-unknown-model");
         assert_eq!(route.key, DEFAULT_POLISH_MODEL_KEY);
         assert_eq!(route.provider, "cerebras");
-        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GPT_OSS);
+        assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GEMMA_4);
     }
 }

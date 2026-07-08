@@ -1262,9 +1262,9 @@ export function SettingsView({
                   <Sparkles size={16} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-[13px] font-medium text-foreground">GPT OSS 120B (Cerebras)</p>
+                  <p className="text-[13px] font-medium text-foreground">Gemma 4 31B (Cerebras)</p>
                   <p className="text-[12px] text-muted-foreground mt-0.5">
-                    {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras GPT OSS 120B.
+                    {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras Gemma 4 31B.
                     Speech recognition stays local on this device.
                   </p>
                 </div>

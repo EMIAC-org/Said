@@ -45,5 +45,5 @@ ALTER TABLE runtime_profile_audit_log
     ADD CONSTRAINT runtime_profile_audit_log_source_check
     CHECK (source IN (
         'api', 'rebuild_worker', 'migration', 'admin',
-        'deepseek_edit', 'validator'
+        'deepseek_edit', 'validator', 'batch'
     ));

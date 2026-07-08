@@ -30,9 +30,9 @@ pub struct Mode {
 }
 
 pub const MODES: &[Mode] = &[Mode {
-    key: "cerebras-gpt-oss",
-    label: "GPT OSS 120B (Cerebras)",
-    model: polish::model::CEREBRAS_POLISH_MODEL_GPT_OSS,
+    key: "cerebras-gemma-4",
+    label: "Gemma 4 31B (Cerebras)",
+    model: polish::model::CEREBRAS_POLISH_MODEL_GEMMA_4,
     icon: "fast",
 }];
 
@@ -52,7 +52,7 @@ pub fn mode_label() -> &'static str {
     MODES[0].label
 }
 
-/// Returns the polish model route (Groq GPT OSS 120B for smart tier).
+/// Returns the polish model route.
 pub fn resolve_model(key_or_model: &str) -> String {
     polish::model::resolve_polish_route(key_or_model).label()
 }

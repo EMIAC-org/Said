@@ -46,6 +46,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/032_app_buckets.sql"),
     include_str!("../migrations/033_profile_batch_jobs.sql"),
     include_str!("../migrations/034_app_bucket_user_source.sql"),
+    include_str!("../migrations/035_force_cerebras_gemma_4.sql"),
 ];
 
 /// Connect to Postgres and apply the schema.

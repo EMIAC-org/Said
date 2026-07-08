@@ -287,9 +287,9 @@ mod tests {
     use super::{normalize_record_hotkey, normalize_selected_model, validate_polish_model_key};
 
     #[test]
-    fn normalizes_smart_model_aliases_to_cerebras_gpt_oss() {
-        assert_eq!(normalize_selected_model("smart"), "cerebras-gpt-oss");
-        assert_eq!(normalize_selected_model("maverick"), "cerebras-gpt-oss");
+    fn normalizes_smart_model_aliases_to_cerebras_gemma_4() {
+        assert_eq!(normalize_selected_model("smart"), "cerebras-gemma-4");
+        assert_eq!(normalize_selected_model("maverick"), "cerebras-gemma-4");
     }
 
     #[test]
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(normalize_selected_model("groq-70b"), "groq-70b");
         assert_eq!(
             normalize_selected_model("cerebras-gpt-oss"),
-            "cerebras-gpt-oss"
+            "cerebras-gemma-4"
         );
     }
 
