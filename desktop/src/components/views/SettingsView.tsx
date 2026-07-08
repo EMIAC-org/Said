@@ -14,7 +14,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { applyPendingUpdate, downloadUpdate, getPendingReadyUpdateVersion } from "@/lib/autoUpdate";
 import type { AppSnapshot, Preferences } from "@/types";
 import { AppearanceSection } from "@/components/views/AppearanceSection";
-import type { Theme } from "@/lib/useTheme";
+import type { ThemePreference } from "@/lib/useTheme";
 import { DictationSttSection } from "@/components/DictationSttSection";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
 
@@ -535,8 +535,8 @@ interface SettingsViewProps {
   onPerformanceMonitorChange?: (enabled: boolean) => void;
   onEnterpriseDisconnect?: () => void;
   /** Active theme + setter for the Appearance theme picker. */
-  theme?:            Theme;
-  onThemeChange?:    (t: Theme) => void;
+  theme?:            ThemePreference;
+  onThemeChange?:    (t: ThemePreference) => void;
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────

@@ -247,8 +247,9 @@ export default function App() {
   const [setupLoader, setSetupLoader] = useState<SetupLoaderState>("idle");
   const [setupStatus, setSetupStatus] = useState<ServerMigrationStatus | null>(null);
 
-  // Theme (light/dark) — persisted in localStorage, applied to <html>
-  const { theme, toggle: toggleTheme, setTheme } = useTheme();
+  // Theme — persisted in localStorage, applied to <html>. The Settings picker
+  // stores the preference, while the topbar receives the resolved light/dark value.
+  const { theme, preference: themePreference, toggle: toggleTheme, setTheme } = useTheme();
 
   // Backend watchdog heartbeat — detects unresponsive backend and shows recovery overlay
   const heartbeat = useBackendHeartbeat();
@@ -865,7 +866,7 @@ export default function App() {
         onPerformanceMonitorChange={setPerformanceMonitor}
         onEnterpriseDisconnect={handleEnterpriseDisconnect}
         initialSection={settingsSection}
-        theme={theme}
+        theme={themePreference}
         onThemeChange={setTheme}
       />
 

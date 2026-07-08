@@ -12,7 +12,7 @@ import {
   type SettingsSection,
 } from "@/components/views/SettingsView";
 import type { AppSnapshot } from "@/types";
-import type { Theme } from "@/lib/useTheme";
+import type { ThemePreference } from "@/lib/useTheme";
 
 /* ════════════════════════════════════════════════════════════════════════════
    SettingsModal — two-pane modal mirroring the InviteTeamModal aesthetic.
@@ -74,8 +74,8 @@ interface Props {
   initialSection?:    SettingsSection;
   /** Active theme + setter — drives the Appearance theme picker, kept in
       sync with the topbar toggle via the single source in App. */
-  theme:              Theme;
-  onThemeChange:      (t: Theme) => void;
+  theme:              ThemePreference;
+  onThemeChange:      (t: ThemePreference) => void;
 }
 
 export function SettingsModal({

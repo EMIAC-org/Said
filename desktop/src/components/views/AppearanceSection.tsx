@@ -1,6 +1,6 @@
 import { Check } from "lucide-react";
 import { useDashboardLayout, type DashboardLayout } from "@/lib/useDashboardLayout";
-import { useTheme, type Theme } from "@/lib/useTheme";
+import { useTheme, type ThemePreference } from "@/lib/useTheme";
 
 /**
  * Appearance section in Settings. Two blocks:
@@ -12,9 +12,9 @@ import { useTheme, type Theme } from "@/lib/useTheme";
  */
 export function AppearanceSection({
   theme, onThemeChange,
-}: { theme?: Theme; onThemeChange?: (t: Theme) => void } = {}) {
+}: { theme?: ThemePreference; onThemeChange?: (t: ThemePreference) => void } = {}) {
   const fallback = useTheme();
-  const activeTheme = theme ?? fallback.theme;
+  const activeTheme = theme ?? fallback.preference;
   const setTheme    = onThemeChange ?? fallback.setTheme;
   const { layout, setLayout } = useDashboardLayout();
 
@@ -26,7 +26,14 @@ export function AppearanceSection({
           title="Theme"
           desc="Dark for focus, Warm Paper for daylight. Applies instantly across the app."
         />
-        <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr" }}>
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+          <ThemeCard
+            palette={SYSTEM_PALETTE}
+            title="Auto"
+            desc="Follows macOS light and dark appearance."
+            selected={activeTheme === "system"}
+            onSelect={() => setTheme("system")}
+          />
           <ThemeCard
             palette={DARK_PALETTE}
             title="Dark"
@@ -121,6 +128,17 @@ const LIGHT_PALETTE: Palette = {
   sub:    "hsl(36 14% 76%)",
   accent: "hsl(232 74% 59%)",
   accentInk: "#ffffff",
+};
+
+const SYSTEM_PALETTE: Palette = {
+  floor:  "linear-gradient(135deg, #0f0f13 0%, #0f0f13 48%, hsl(40 30% 94.5%) 52%, hsl(40 30% 94.5%) 100%)",
+  rail:   "linear-gradient(135deg, #0d0d11 0%, #0d0d11 50%, hsl(36 26% 92%) 50%, hsl(36 26% 92%) 100%)",
+  card:   "linear-gradient(135deg, #17171d 0%, #17171d 50%, hsl(42 46% 99%) 50%, hsl(42 46% 99%) 100%)",
+  line:   "rgba(148,148,160,0.35)",
+  text:   "rgba(233,233,238,0.90)",
+  sub:    "rgba(148,148,160,0.42)",
+  accent: "#9aa7ff",
+  accentInk: "#111219",
 };
 
 function ThemeCard({

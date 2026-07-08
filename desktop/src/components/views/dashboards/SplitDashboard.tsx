@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Copy, Play, Pause, Download, Check } from "lucide-react";
 import { downloadRecordingAudio, listHistory } from "@/lib/invoke";
 import { useAudioPlayer } from "@/lib/useAudioPlayer";
+import { AppIcon, appDisplayName, fallbackAppName, useAppIdentity } from "@/components/AppIcon";
 import type { AppSnapshot, Recording } from "@/types";
 
 interface Props {
@@ -168,7 +169,13 @@ function MiniTile({ label, value, unit, sub }: { label: string; value: string; u
   );
 }
 
-function AppsCard({ apps }: { apps: { name: string; count: number }[] }) {
+interface AppSummary {
+  key: string | null;
+  label: string;
+  count: number;
+}
+
+function AppsCard({ apps }: { apps: AppSummary[] }) {
   return (
     <div
       className="rounded-xl p-4 min-h-0 overflow-hidden"
@@ -184,31 +191,28 @@ function AppsCard({ apps }: { apps: { name: string; count: number }[] }) {
         <p className="text-[11.5px]" style={{ color: "hsl(var(--muted-foreground))" }}>
           We'll track which apps you dictate into the most.
         </p>
-      ) : apps.map((a) => (
-        <div
-          key={a.name}
-          className="grid items-center"
-          style={{ gridTemplateColumns: "22px 1fr 44px", gap: 10, padding: "5px 0", fontSize: 11.5 }}
-        >
-          <span
-            className="grid place-items-center"
-            style={{
-              width: 22, height: 22, borderRadius: 6,
-              background: "linear-gradient(135deg, hsl(var(--secondary)), hsl(var(--surface-3)))",
-              color: "hsl(var(--foreground))", fontSize: 10, fontWeight: 700,
-            }}
-          >
-            {a.name.slice(0, 1).toUpperCase()}
-          </span>
-          <span className="truncate" style={{ color: "hsl(var(--foreground))" }}>{a.name}</span>
-          <span
-            className="text-right"
-            style={{ color: "hsl(var(--muted-foreground))", fontSize: 11, fontFamily: "ui-monospace, SF Mono, monospace" }}
-          >
-            {a.count.toLocaleString()}
-          </span>
-        </div>
-      ))}
+      ) : apps.map((app) => <AppSummaryRow key={app.key ?? app.label} app={app} />)}
+    </div>
+  );
+}
+
+function AppSummaryRow({ app }: { app: AppSummary }) {
+  const identity = useAppIdentity(app.key);
+  const label = app.key ? appDisplayName(app.key, identity) : app.label;
+
+  return (
+    <div
+      className="grid items-center"
+      style={{ gridTemplateColumns: "22px 1fr 44px", gap: 10, padding: "5px 0", fontSize: 11.5 }}
+    >
+      <AppIcon appKey={app.key} label={label} size={22} radius={6} fallbackSize={12} />
+      <span className="truncate" style={{ color: "hsl(var(--foreground))" }}>{label}</span>
+      <span
+        className="text-right"
+        style={{ color: "hsl(var(--muted-foreground))", fontSize: 11, fontFamily: "ui-monospace, SF Mono, monospace" }}
+      >
+        {app.count.toLocaleString()}
+      </span>
     </div>
   );
 }
@@ -314,6 +318,8 @@ function RecordingCard({
   const [hover, setHover]             = useState(false);
   const [copied, setCopied]           = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const appIdentity = useAppIdentity(rec.target_app);
+  const appName = appDisplayName(rec.target_app, appIdentity);
 
   async function copy(e: React.MouseEvent) {
     e.stopPropagation();
@@ -356,7 +362,7 @@ function RecordingCard({
           : "inset 0 0 0 1px hsl(var(--glass-stroke))",
       }}
     >
-      {/* Meta row — time · app pill · (word count ⇄ actions) */}
+      {/* Meta row — time · app · (word count ⇄ actions) */}
       <div className="flex items-center gap-2 mb-1.5" style={{ minHeight: 18 }}>
         <span
           style={{ fontSize: 10.5, color: "hsl(var(--muted-foreground))", fontFamily: "ui-monospace, SF Mono, monospace" }}
@@ -365,19 +371,16 @@ function RecordingCard({
         </span>
         {rec.target_app && (
           <span
-            className="px-1.5 py-0.5 rounded"
+            className="inline-flex items-center gap-1.5 min-w-0"
             style={{
               fontSize: 10,
               color: "hsl(var(--muted-foreground))",
-              background: "hsl(0 0% 100% / 0.05)",
-              fontFamily: "ui-monospace, SF Mono, monospace",
               maxWidth: 120,
-              overflow: "hidden",
-              whiteSpace: "nowrap",
-              textOverflow: "ellipsis",
             }}
+            title={appName}
           >
-            {rec.target_app}
+            <AppIcon appKey={rec.target_app} label={appName} size={16} radius={4} fallbackSize={10} />
+            <span className="truncate">{appName}</span>
           </span>
         )}
 
@@ -485,16 +488,20 @@ function ActionButton({
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildAppBreakdown(recs: Recording[]): { name: string; count: number }[] {
+function buildAppBreakdown(recs: Recording[]): AppSummary[] {
   const counts = new Map<string, number>();
   for (const r of recs) {
     const k = r.target_app && r.target_app.trim() ? r.target_app : "Unknown";
     counts.set(k, (counts.get(k) ?? 0) + 1);
   }
   const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  const top = sorted.slice(0, 4).map(([name, count]) => ({ name, count }));
+  const top = sorted.slice(0, 4).map(([key, count]) => ({
+    key: key === "Unknown" ? null : key,
+    label: key === "Unknown" ? "Unknown app" : fallbackAppName(key),
+    count,
+  }));
   const restCount = sorted.slice(4).reduce((s, [, c]) => s + c, 0);
-  if (restCount > 0) top.push({ name: "Other apps", count: restCount });
+  if (restCount > 0) top.push({ key: null, label: "Other apps", count: restCount });
   return top;
 }
 
