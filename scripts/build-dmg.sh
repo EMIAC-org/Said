@@ -55,6 +55,28 @@ fail()  { echo -e "\n  ${red}✗ $*${nc}\n"; exit 1; }
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
+# whisper-rs/ggml compiles Metal Objective-C objects with Apple clang. Those
+# objects can reference clang runtime helpers such as __isPlatformVersionAtLeast.
+# rustc drives the final link with -nodefaultlibs, so the clang runtime archive is
+# not always pulled in automatically. Add it explicitly for macOS app/sidecar
+# builds; this keeps local DMG builds working across CLT-only and full-Xcode
+# installs.
+if [[ "$TARGET" == *-apple-darwin ]]; then
+  CLANG_BIN="$(xcrun --find clang 2>/dev/null || command -v clang || true)"
+  if [ -n "$CLANG_BIN" ]; then
+    CLANG_USR="$(cd "$(dirname "$CLANG_BIN")/.." && pwd)"
+    CLANG_RT_OSX="$(find "$CLANG_USR/lib/clang" -path "*/lib/darwin/libclang_rt.osx.a" -print 2>/dev/null | sort | tail -n 1)"
+    if [ -f "$CLANG_RT_OSX" ]; then
+      export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=$CLANG_RT_OSX"
+      ok "clang runtime linked: $CLANG_RT_OSX"
+    else
+      warn "clang runtime archive not found under $CLANG_USR/lib/clang"
+    fi
+  else
+    warn "clang not found via xcrun; macOS Metal whisper link may fail"
+  fi
+fi
+
 # ── Pre-clean: undo whatever Tauri's bundle_dmg.sh left attached ─────────────
 step "Pre-clean: detach stale AirNote volumes & temp DMGs"
 
