@@ -153,7 +153,6 @@ jobs:
       - name: Build CLI binary (Mac)
         if: matrix.platform == 'darwin'
         shell: bash
-        env:
         run: |
           cargo build -p said --release --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/airnote airnote-${{ matrix.target }}
@@ -163,7 +162,6 @@ jobs:
         if: matrix.platform == 'darwin'
         shell: bash
         timeout-minutes: 12
-        env:
         run: |
           cargo build -p said-backend --release --target ${{ matrix.target }}
           mkdir -p desktop/src-tauri/binaries
