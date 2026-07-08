@@ -143,6 +143,7 @@ export function OnboardingFlow({
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
   const [userNavigatedManually, setUserNavigatedManually] = useState(false);
   const resumeSynced = useRef(false);
+  const silentLegacyModelCleanupDone = useRef(false);
 
   const [progress, setProgress] = useState<OnboardingProgress>(() =>
     computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
@@ -210,6 +211,16 @@ export function OnboardingFlow({
   useEffect(() => {
     void refreshDictationModel();
   }, [refreshDictationModel]);
+
+  useEffect(() => {
+    if (silentLegacyModelCleanupDone.current || !dictationModel || dictationModel.installed) return;
+    silentLegacyModelCleanupDone.current = true;
+    void invoke<ReclaimResult>("reclaim_old_models")
+      .then((result) => {
+        if (result.removed.length > 0) void refreshDictationModel();
+      })
+      .catch(() => {});
+  }, [dictationModel, refreshDictationModel]);
 
   useEffect(() => {
     const unlistenP = listen<DictationDownloadProgress>("meeting-model-download", (event) => {
@@ -812,13 +823,19 @@ export function OnboardingFlow({
               onConnected={setWorkspacePreview}
               onCancel={workspaceBack}
             />
-            {workspaceOnly && (
+            {!enterpriseRequired && (
               <button
                 type="button"
-                className="text-[11px] text-center text-muted-foreground hover:text-foreground transition-colors"
+                className="w-full rounded-lg border px-3 py-2.5 transition-colors text-center"
+                style={{ borderColor: "hsl(var(--border))", color: "hsl(var(--foreground))" }}
                 onClick={workspaceBack}
               >
-                Sign in with email instead
+                <span className="block text-[12px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  Not using Lark?
+                </span>
+                <span className="block text-[12px] font-semibold mt-0.5" style={{ color: "hsl(var(--primary))" }}>
+                  Continue with email →
+                </span>
               </button>
             )}
           </div>

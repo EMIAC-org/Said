@@ -58,6 +58,7 @@ export function ModelMigrationGate({
   const [recordHotkey, setRecordHotkey] = useState("caps_lock");
   const [modelChecked, setModelChecked] = useState(false);
   const mounted = useRef(true);
+  const silentLegacyModelCleanupDone = useRef(false);
 
   const installed = model?.installed ?? false;
 
@@ -91,6 +92,16 @@ export function ModelMigrationGate({
       mounted.current = false;
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (silentLegacyModelCleanupDone.current || !modelChecked || installed) return;
+    silentLegacyModelCleanupDone.current = true;
+    void invoke<ReclaimResult>("reclaim_old_models")
+      .then((result) => {
+        if (mounted.current && result.removed.length > 0) void refresh();
+      })
+      .catch(() => {});
+  }, [installed, modelChecked, refresh]);
 
   useEffect(() => {
     const un = listen<DownloadProgress>("meeting-model-download", (e) => {
