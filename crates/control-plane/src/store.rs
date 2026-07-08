@@ -74,7 +74,7 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
         .await?;
     let migration_result = async {
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS control_plane_schema_migrations (
+            "CREATE TABLE IF NOT EXISTS airnote_control_plane_migrations (
                 id         TEXT PRIMARY KEY,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )",
@@ -89,7 +89,7 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
         .await?
         .try_get::<bool, _>("initialized")?;
 
-        let rows = sqlx::query("SELECT id FROM control_plane_schema_migrations")
+        let rows = sqlx::query("SELECT id FROM airnote_control_plane_migrations")
             .fetch_all(&mut *conn)
             .await?;
         let mut applied = rows
@@ -104,7 +104,7 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
             );
             for migration in MIGRATIONS {
                 sqlx::query(
-                    "INSERT INTO control_plane_schema_migrations (id)
+                    "INSERT INTO airnote_control_plane_migrations (id)
                      VALUES ($1)
                      ON CONFLICT (id) DO NOTHING",
                 )
@@ -131,7 +131,7 @@ pub async fn connect(database_url: &str) -> Result<Db, sqlx::Error> {
                 }
             }
             sqlx::query(
-                "INSERT INTO control_plane_schema_migrations (id)
+                "INSERT INTO airnote_control_plane_migrations (id)
                  VALUES ($1)
                  ON CONFLICT (id) DO NOTHING",
             )
