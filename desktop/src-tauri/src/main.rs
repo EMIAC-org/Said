@@ -3962,6 +3962,18 @@ async fn fetch_stt_keyterms(ep: &BackendEndpoint) -> Vec<String> {
 
 /// Start recording. Called when user presses Caps Lock (or taps the button).
 fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
+    do_start_recording_inner(shared, app, true);
+}
+
+fn do_start_recording_without_cycle_gap(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
+    do_start_recording_inner(shared, app, false);
+}
+
+fn do_start_recording_inner(
+    shared: &Arc<Mutex<DesktopApp>>,
+    app: &tauri::AppHandle,
+    enforce_cycle_gap: bool,
+) {
     // Reject if another start is already in progress
     if RECORDING_STARTING.swap(true, Ordering::SeqCst) {
         tracing::info!("[record] start skipped — another start already in progress");
@@ -3973,7 +3985,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     // Reject rapid re-entry after a recent finish
     let now = now_ms_desktop();
     let last_finish = LAST_FINISH_MS.load(Ordering::SeqCst);
-    if last_finish > 0 && now.saturating_sub(last_finish) < MIN_CYCLE_GAP_MS {
+    if enforce_cycle_gap && last_finish > 0 && now.saturating_sub(last_finish) < MIN_CYCLE_GAP_MS {
         tracing::info!(
             "[record] start skipped — too soon after last finish ({}ms < {}ms)",
             now.saturating_sub(last_finish),
@@ -9831,7 +9843,7 @@ fn main() {
                                             "[hotkey] record pressed during processing — abandoning previous take, starting fresh"
                                         );
                                         cancel_processing_run(&app_h, "record_pressed_during_processing");
-                                        do_start_recording(&shared, &app_h);
+                                        do_start_recording_without_cycle_gap(&shared, &app_h);
                                         if FINISH_AFTER_START.load(Ordering::SeqCst) {
                                             request_queued_finish(
                                                 shared,

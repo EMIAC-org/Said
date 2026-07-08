@@ -368,6 +368,8 @@ mod imp {
 // SHIL_JUMBO alpha fix) that the follow-up pass should add.
 #[cfg(target_os = "windows")]
 mod imp {
+    use std::path::Path;
+
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -409,6 +411,24 @@ mod imp {
         }
         Some(format!("data:image/png;base64,{b64}"))
     }
+
+    pub fn display_name(app_key: &str) -> Option<String> {
+        let name = Path::new(app_key)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .or_else(|| Path::new(app_key).file_name().and_then(|s| s.to_str()))
+            .unwrap_or(app_key)
+            .trim();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        }
+    }
+
+    pub fn category(_app_key: &str) -> Option<String> {
+        None
+    }
 }
 
 // ── Other platforms ─────────────────────────────────────────────────────────
@@ -418,6 +438,12 @@ mod imp {
         None
     }
     pub fn icon_data_url(_app_key: &str) -> Option<String> {
+        None
+    }
+    pub fn display_name(_app_key: &str) -> Option<String> {
+        None
+    }
+    pub fn category(_app_key: &str) -> Option<String> {
         None
     }
 }
