@@ -136,6 +136,19 @@ fn run_on_main_guarded(
     })
 }
 
+#[cfg(target_os = "macos")]
+fn exit_after_shutdown_cleanup(code: i32) -> ! {
+    // whisper.cpp/ggml Metal has process-exit finalizers that can abort inside
+    // ggml_metal_rsets_free after a clean app shutdown. We have already run the
+    // app-owned cleanup before calling this, so skip C/C++ finalizers on macOS.
+    unsafe { libc::_exit(code) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exit_after_shutdown_cleanup(code: i32) -> ! {
+    std::process::exit(code)
+}
+
 fn record_hotkey_label(raw: &str) -> &'static str {
     // Platform-aware: the same pref maps to different physical keys. On Windows
     // `right_option` binds to Right Alt (VK_RMENU) and `fn` degrades to Caps Lock.
@@ -10378,6 +10391,8 @@ fn main() {
                     drop(guard.take());
                 }
                 backend_guard::clear_pid_file();
+                tracing::info!("[main] shutdown cleanup complete — exiting process");
+                exit_after_shutdown_cleanup(0);
             }
             _ => {}
         });
