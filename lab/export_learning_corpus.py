@@ -290,7 +290,7 @@ WITH base AS (
     r.edit_bucket,
     r.edit_detected,
     r.total_ms,
-    r.stt_provider,
+    r.speech_model,
     r.stt_model,
     r.stt_path,
     r.has_numbers,
@@ -341,7 +341,7 @@ SELECT encode(convert_to(jsonb_build_object(
     'total', total_ms
   ),
   'stt', jsonb_build_object(
-    'provider', stt_provider,
+    'provider', speech_model,
     'model', stt_model,
     'path', stt_path
   ),

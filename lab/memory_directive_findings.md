@@ -158,7 +158,7 @@ Interpretation: a production-safe memory system should be extremely selective. M
 The judge currently marks these as safe directive candidates:
 
 - `click up` -> `ClickUp`
-- `deep gram` -> `Deepgram`
+- `local speech` -> `Local speech`
 - `air note` -> `AirNote`
 - `ear note` -> `AirNote`
 - `webbook` -> `webhook`
@@ -321,13 +321,13 @@ Correctly emitted examples:
 Still missed:
 
 - `AMEAC -> Emiac`: known term exists, but learned context from prior `MIA -> Emiac` examples is IPO/data-oriented, while current context is vocabulary/STT. Need better term-profile evidence before applying.
-- `Laakh -> Lark`: has `CLI` context, but source/target similarity remains weak under the generic scorer. A lower weak-target threshold caused false positives like `deep -> Deepgram`.
+- `Laakh -> Lark`: has `CLI` context, but source/target similarity remains weak under the generic scorer. A lower weak-target threshold caused false positives like `deep -> Local speech`.
 - `NEK -> Emiac`: too weak without explicit alias evidence.
 - `anitain -> n8n`: too weak without explicit alias evidence.
 
 Failed relaxation worth remembering:
 
-- Lowering weak target-surface matching recovered some candidates but caused false positives like `deep/deep and -> Deepgram` and `the stt -> STT`.
+- Lowering weak target-surface matching recovered some candidates but caused false positives like `deep/deep and -> Local speech` and `the stt -> STT`.
 - Adding a generic length/span gate fixed those false positives but did not recover the harder misses.
 
 Current verdict:

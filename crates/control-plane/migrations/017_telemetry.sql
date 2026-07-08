@@ -23,8 +23,6 @@ CREATE TABLE IF NOT EXISTS runtime_telemetry_runs (
     success                 BOOLEAN NOT NULL DEFAULT FALSE,
     error_code              TEXT,
     used_clipboard_fallback BOOLEAN NOT NULL DEFAULT FALSE,
-    used_ws_pretranscript   BOOLEAN NOT NULL DEFAULT FALSE,
-    used_http_stt_fallback  BOOLEAN NOT NULL DEFAULT FALSE,
     edit_detected           BOOLEAN NOT NULL DEFAULT FALSE,
     edit_bucket             TEXT NOT NULL DEFAULT 'none',
     edit_distance_chars     INTEGER,

@@ -91,7 +91,6 @@ LOCAL_STORAGE_KEYS = {
 
 PREFERENCE_RESETS = {
     "gateway_api_key": None,
-    "deepgram_api_key": None,
     "gemini_api_key": None,
     "groq_api_key": None,
     "cerebras_api_key": None,
@@ -104,7 +103,6 @@ PREFERENCE_RESETS = {
     "language": "auto",
     "output_language": "hinglish",
     "record_hotkey": "caps_lock",
-    "stt_provider": "deepgram",
     "server_runtime_enabled": 0,
 }
 

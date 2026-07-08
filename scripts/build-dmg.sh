@@ -55,31 +55,26 @@ fail()  { echo -e "\n  ${red}✗ $*${nc}\n"; exit 1; }
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# ── Bundle the cloud STT key(s) into the build ───────────────────────────────
-# This must happen BEFORE any Rust build. said-core/said-backend capture the
-# values with option_env!(...), so loading them after `cargo build` produces an
-# app whose backend sidecar has an empty/stale bundled key.
-#
-# OPENROUTER_API_KEY powers cloud DICTATION (Whisper Large V3 Turbo). DEEPGRAM_API_KEY
-# still powers meetings/control-plane STT and stays bundled.
-if [ -f "$REPO_ROOT/.env" ]; then
-  for _k in OPENROUTER_API_KEY DEEPGRAM_API_KEY; do
-    if [ -z "$(eval echo "\${$_k:-}")" ]; then
-      _bundle_val="$(grep -E "^${_k}=" "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
-      [ -n "$_bundle_val" ] && export "$_k=$_bundle_val"
+# whisper-rs/ggml compiles Metal Objective-C objects with Apple clang. Those
+# objects can reference clang runtime helpers such as __isPlatformVersionAtLeast.
+# rustc drives the final link with -nodefaultlibs, so the clang runtime archive is
+# not always pulled in automatically. Add it explicitly for macOS app/sidecar
+# builds; this keeps local DMG builds working across CLT-only and full-Xcode
+# installs.
+if [[ "$TARGET" == *-apple-darwin ]]; then
+  CLANG_BIN="$(xcrun --find clang 2>/dev/null || command -v clang || true)"
+  if [ -n "$CLANG_BIN" ]; then
+    CLANG_USR="$(cd "$(dirname "$CLANG_BIN")/.." && pwd)"
+    CLANG_RT_OSX="$(find "$CLANG_USR/lib/clang" -path "*/lib/darwin/libclang_rt.osx.a" -print 2>/dev/null | sort | tail -n 1)"
+    if [ -f "$CLANG_RT_OSX" ]; then
+      export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=$CLANG_RT_OSX"
+      ok "clang runtime linked: $CLANG_RT_OSX"
+    else
+      warn "clang runtime archive not found under $CLANG_USR/lib/clang"
     fi
-  done
-  unset _bundle_val _k
-fi
-if [ -n "${OPENROUTER_API_KEY:-}" ]; then
-  ok "OpenRouter (cloud dictation Whisper) key will be bundled into the build"
-else
-  warn "OPENROUTER_API_KEY not set — Cloud dictation will fail until a key is bundled"
-fi
-if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
-  ok "Deepgram (meetings) STT key will be bundled into the build"
-else
-  warn "DEEPGRAM_API_KEY not set — meeting STT will fail until a key is bundled"
+  else
+    warn "clang not found via xcrun; macOS Metal whisper link may fail"
+  fi
 fi
 
 # ── Pre-clean: undo whatever Tauri's bundle_dmg.sh left attached ─────────────
@@ -147,22 +142,6 @@ if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
   ok "DeepSeek summary key will be bundled into the build"
 else
   warn "DEEPSEEK_API_KEY not set — meeting summaries will fail until a key is bundled"
-fi
-
-# ── Verify the Deepgram STT key stayed available for Tauri build ─────────────
-# These are baked at compile time via option_env! in said-core
-# (crates/core/src/{stt.rs,lib.rs}) so the shipped app ships with working keys —
-# end users never enter API keys. crates/core/build.rs has rerun-if-env-changed
-# directives, so cargo re-bakes when the values change. Pull from .env if not
-# already exported.
-# Only the Deepgram STT key is bundled. Polish runs server-side (Cerebras via the
-# server runtime), so no local LLM/gateway key is baked in. The `|| true` keeps a
-# missing/empty key from aborting the build under `set -euo pipefail` (a failed
-# grep in the command substitution would otherwise kill the whole script).
-if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
-  ok "Deepgram STT key still available for build"
-else
-  warn "DEEPGRAM_API_KEY not set — Cloud dictation will fail until a key is bundled"
 fi
 
 # ── Tauri build ──────────────────────────────────────────────────────────────

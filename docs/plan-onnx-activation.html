@@ -344,7 +344,7 @@ Every edge case. Every learning signal. Every safety gate.</p>
       <br><br>
       <strong>English:</strong> <code>COMMON_WORDS</code> has ~70 words. Misses thousands: "air", "note", "sprint", "dock", "tower", "graph".<br>
       <strong>Hindi:</strong> Only 6 Hindi words in the filter. Misses critical Hinglish words like
-      "bol", "bas", "kya", "dekh", "sun", "chal", "mil" &mdash; all commonly emitted by Deepgram in Hinglish mode.
+      "bol", "bas", "kya", "dekh", "sun", "chal", "mil" &mdash; all commonly emitted by Local speech in Hinglish mode.
       <br><br>
       <strong>Rare Hindi is fine:</strong> Words like "pratigya", "vimarsh", "anushasan" are safe as aliases because
       they almost never appear in casual Hinglish dictation. Only high-frequency conversational Hindi needs blocking.
@@ -379,7 +379,7 @@ Every edge case. Every learning signal. Every safety gate.</p>
     <span class="tag danger">GAP 4</span>
     <div class="title">No empty/junk transcript filtering</div>
     <div class="body">
-      Deepgram sometimes returns empty strings, single characters, or garbled fragments.
+      Local speech sometimes returns empty strings, single characters, or garbled fragments.
       If these get stored as correction pairs (<code>"" &rarr; "AirNote"</code>), they pollute training data.
       <br><br>
       <strong>Current check:</strong> <code>len(token) &lt; 3</code> filter exists but doesn't catch semantic junk.
@@ -431,7 +431,7 @@ Every edge case. Every learning signal. Every safety gate.</p>
       <td><strong>Common word filter (English + Hindi)</strong><br>
         Alias must NOT be a commonly used word in <strong>any language the user speaks</strong>.<br><br>
         <strong>English:</strong> Full <code>/usr/share/dict/words</code> dictionary (~235K words).<br>
-        <strong>Hindi/Hinglish (romanized):</strong> ~120 high-frequency words that Deepgram routinely emits in Hinglish dictation.
+        <strong>Hindi/Hinglish (romanized):</strong> ~120 high-frequency words that Local speech routinely emits in Hinglish dictation.
         Rare/literary Hindi words are fine &mdash; only everyday conversational words are blocked.<br><br>
         <em>Rationale:</em> If "mein" or "bas" or "air" becomes a training positive, the model will
         aggressively replace these extremely common words everywhere. Rare words like "pratigya" or "vimarsh"
@@ -654,11 +654,11 @@ Every edge case. Every learning signal. Every safety gate.</p>
     <div class="action">User ADDED a new word (not in transcript)</div>
     <div class="detail">
       <strong>Detection:</strong> Word in user_kept but not in ai_output and not in transcript<br>
-      <strong>Question:</strong> Did Deepgram drop it?<br>
+      <strong>Question:</strong> Did Local speech drop it?<br>
       <strong>If yes (word is a known vocab term):</strong>
       <ul>
-        <li>Star the term &rarr; add to Deepgram keyterm bias</li>
-        <li>User explicitly chose to type this word Deepgram missed</li>
+        <li>Star the term &rarr; add to Local speech keyterm bias</li>
+        <li>User explicitly chose to type this word Local speech missed</li>
       </ul>
       <strong>If no (completely new word):</strong> Not learnable from a single insertion; no context
     </div>
@@ -686,7 +686,7 @@ Every edge case. Every learning signal. Every safety gate.</p>
 <div class="scenario-grid">
   <div class="scenario">
     <span class="tag edge">EDGE</span>
-    <div class="title">Deepgram returns empty response</div>
+    <div class="title">Local speech returns empty response</div>
     <div class="body">
       User speaks but STT returns ""<br>
       <strong>Gate:</strong> <code>len(token) &lt; 3</code> filter + <code>is_suspicious_token()</code> rejects empty/short tokens<br>
@@ -697,11 +697,11 @@ Every edge case. Every learning signal. Every safety gate.</p>
 
   <div class="scenario">
     <span class="tag edge">EDGE</span>
-    <div class="title">Deepgram drops word entirely</div>
+    <div class="title">Local speech drops word entirely</div>
     <div class="body">
       User says "AirNote is great" &rarr; STT: "is great"<br>
       <strong>ONNX can't help</strong> &mdash; there's no token to score against.<br>
-      <strong>Solution:</strong> If user adds "AirNote" back, and it's already in vocab, star it for Deepgram keyterm bias.
+      <strong>Solution:</strong> If user adds "AirNote" back, and it's already in vocab, star it for Local speech keyterm bias.
       This is the only mechanism that helps with dropped words.
     </div>
   </div>
@@ -804,7 +804,7 @@ Every edge case. Every learning signal. Every safety gate.</p>
       "vimarash" is NOT in English dict, NOT in Hindi common words (it's a rare literary word).<br>
       <code>is_common_any_language("vimarash")</code> = false &rarr; <strong class="ok-text">ALLOWED as training positive</strong><br><br>
       <em>Rare Hindi words are safe because they almost never appear in casual speech.
-      If Deepgram emits "vimarash", it's very likely the user meant "Vimarsh".</em>
+      If Local speech emits "vimarash", it's very likely the user meant "Vimarsh".</em>
     </div>
   </div>
 </div>
@@ -834,7 +834,7 @@ Every edge case. Every learning signal. Every safety gate.</p>
             &bull; <strong>English:</strong> Use <code>/usr/share/dict/words</code> (already loaded!) as a full negative gate.
             Any alias that IS a dictionary word &rarr; skip as positive, add as negative instead.<br>
             &bull; <strong>Hindi/Hinglish (~120 words):</strong> Add a <code>HINDI_COMMON_WORDS</code> set covering
-            everyday conversational romanized Hindi. These are words Deepgram routinely emits in Hinglish mode.
+            everyday conversational romanized Hindi. These are words Local speech routinely emits in Hinglish mode.
             Rare/literary Hindi is fine as aliases &mdash; only high-frequency words are blocked.<br>
             &bull; Combined into one <code>is_common_any_language(token)</code> function used everywhere.<br><br>
             <strong>Cross-term collision gate:</strong> Before adding a positive, check if the alias is closer
@@ -990,10 +990,10 @@ apply_tier2(transcript, &candidates, Some(&model), protected_tokens, &self.polic
       <p><strong>Enhancement:</strong> When a CamelCase term is promoted, automatically create an edit-policy
       rule for its space-split form. Currently this only happens if the user manually edits the split form first.</p>
 
-      <h3>5b. Deepgram drops word entirely</h3>
-      <p>ONNX can't help here &mdash; no token to score. Only Deepgram keyterm biasing can fix this.</p>
+      <h3>5b. Local speech drops word entirely</h3>
+      <p>ONNX can't help here &mdash; no token to score. Only Local speech keyterm biasing can fix this.</p>
       <p><strong>Current:</strong> Only starred terms get biased.</p>
-      <p><strong>Enhancement:</strong> Track "drop rate" per vocab term. If a term is in vocab but Deepgram
+      <p><strong>Enhancement:</strong> Track "drop rate" per vocab term. If a term is in vocab but Local speech
       fails to recognize it in &ge;3 consecutive dictations where the user adds it back, auto-star it
       for keyterm biasing. This closes the loop without biasing everything.</p>
     </div>
@@ -1111,7 +1111,7 @@ apply_tier2(transcript, &candidates, Some(&model), protected_tokens, &self.polic
     <ul>
       <li>4 passes, but only 3 apply corrections</li>
       <li>ONNX scores everything, applies nothing</li>
-      <li>New Deepgram distortion of known word? <strong>No correction until user edits again</strong></li>
+      <li>New Local speech distortion of known word? <strong>No correction until user edits again</strong></li>
       <li>User must teach every single distortion via edit</li>
       <li>Neural model trained but never used &mdash; wasted compute</li>
       <li>All learning goes only to alias table and edit-policy</li>
@@ -1155,7 +1155,7 @@ apply_tier2(transcript, &candidates, Some(&model), protected_tokens, &self.polic
 
 <div class="card">
   <div class="card-title">Day 2 &mdash; Variety</div>
-  <p>Each new distortion Deepgram produces gets caught by either:</p>
+  <p>Each new distortion Local speech produces gets caught by either:</p>
   <ul>
     <li>Exact alias (if proactive distortions predicted it)</li>
     <li>Edit-policy rule (if it's a multi-token variant)</li>

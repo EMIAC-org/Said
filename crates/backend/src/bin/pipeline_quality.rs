@@ -1,6 +1,6 @@
 //! Full-pipeline quality test suite for AirNote.
 //!
-//! Runs real Deepgram transcripts through the REAL selection gates + Groq LLM.
+//! Runs real Speech engine transcripts through the REAL selection gates + Groq LLM.
 //! Vocab entries go through the same phonetic/BM25/anchor gates as production.
 //! Only entries that PASS selection reach the LLM prompt.
 //!
@@ -40,7 +40,6 @@ impl SimVocabTerm {
             meaning: self.meaning.clone(),
             context: self.example_context.clone(),
             resolution,
-            evidence: None,
             stt_aliases: self.stt_aliases.clone(),
         }
     }
@@ -123,7 +122,7 @@ fn simulate_selection(vocab: &[SimVocabTerm], transcript: &str) -> Vec<Selection
                 };
             }
 
-            // Path A2ii: alias SUBSTRING match (Deepgram joins words)
+            // Path A2ii: alias SUBSTRING match (Speech engine joins words)
             let alias_substring = vt.stt_aliases.iter().any(|(alias, _)| {
                 let a = alias.to_ascii_lowercase();
                 if a.len() < 3 {
@@ -617,18 +616,18 @@ fn build_test_cases() -> Vec<TestCase> {
         //  DIVERSE PROPER NOUNS — real-world distortions
         // ═══════════════════════════════════════════════════════════════════
 
-        // ─── Perplexity AI (Deepgram splits it) ─────────────────────────
+        // ─── Perplexity AI (Speech engine splits it) ─────────────────────────
         TestCase {
             id: "DV1",
             category: "diverse_nouns",
-            description: "perplex city → Perplexity (common Deepgram split)",
+            description: "perplex city → Perplexity (common Speech engine split)",
             transcript: "perplex city ai se automation banana hai aur EMIAC mein deploy karna hai",
             must_contain: &["Perplexity"],
             must_not_contain: &["perplex city"],
             available_vocab: vec![perplexity_term(), emiac_term()],
             screen_context: None,
         },
-        // ─── Vipassana (classic Deepgram mishearing) ────────────────────
+        // ─── Vipassana (classic Speech engine mishearing) ────────────────────
         TestCase {
             id: "DV2",
             category: "diverse_nouns",
@@ -639,7 +638,7 @@ fn build_test_cases() -> Vec<TestCase> {
             available_vocab: vec![vipassana_term()],
             screen_context: None,
         },
-        // ─── Razorpay (Deepgram spaces it) ──────────────────────────────
+        // ─── Razorpay (Speech engine spaces it) ──────────────────────────────
         TestCase {
             id: "DV3",
             category: "diverse_nouns",
@@ -650,7 +649,7 @@ fn build_test_cases() -> Vec<TestCase> {
             available_vocab: vec![razorpay_term()],
             screen_context: None,
         },
-        // ─── Kubernetes (completely mangled by Deepgram) ────────────────
+        // ─── Kubernetes (completely mangled by Speech engine) ────────────────
         TestCase {
             id: "DV4",
             category: "diverse_nouns",
@@ -672,7 +671,7 @@ fn build_test_cases() -> Vec<TestCase> {
             available_vocab: vec![zerodha_term()],
             screen_context: None,
         },
-        // ─── Supabase (Deepgram splits it) ──────────────────────────────
+        // ─── Supabase (Speech engine splits it) ──────────────────────────────
         TestCase {
             id: "DV6",
             category: "diverse_nouns",
@@ -739,14 +738,14 @@ fn build_test_cases() -> Vec<TestCase> {
             screen_context: None,
         },
         // ═══════════════════════════════════════════════════════════════════
-        //  REAL DEEPGRAM OUTPUTS — from actual user testing (May 21 2026)
-        //  These are the transcripts Deepgram ACTUALLY produced.
+        //  REAL GATEWAY OUTPUTS — from actual user testing (May 21 2026)
+        //  These are the transcripts Speech engine ACTUALLY produced.
         // ═══════════════════════════════════════════════════════════════════
 
-        // ─── Deepgram joins "yaar" + "miac" into one token ──────────────
+        // ─── Speech engine joins "yaar" + "miac" into one token ──────────────
         TestCase {
             id: "RD1",
-            category: "real_deepgram",
+            category: "real_speech_engine",
             description: "yarmiac (joined token) → should extract Emiac",
             transcript: "yarmiac और macops दोनों का काम pending है बहुत ज़्यादा",
             must_contain: &["Emiac"],
@@ -754,10 +753,10 @@ fn build_test_cases() -> Vec<TestCase> {
             available_vocab: vec![emiac_term(), macobs_term()],
             screen_context: None,
         },
-        // ─── Deepgram outputs mixed Latin+Devanagari ────────────────────
+        // ─── Speech engine outputs mixed Latin+Devanagari ────────────────────
         TestCase {
             id: "RD2",
-            category: "real_deepgram",
+            category: "real_speech_engine",
             description: "meaक (mixed script) → should match Emiac",
             transcript: "meaक technologies में दो हज़ार तक सब complete करना है भाई",
             must_contain: &["Emiac"],
@@ -765,10 +764,10 @@ fn build_test_cases() -> Vec<TestCase> {
             available_vocab: vec![emiac_term()],
             screen_context: None,
         },
-        // ─── Deepgram outputs "macops" (novel distortion of Macobs) ─────
+        // ─── Speech engine outputs "macops" (novel distortion of Macobs) ─────
         TestCase {
             id: "RD3",
-            category: "real_deepgram",
+            category: "real_speech_engine",
             description: "macops → should become Macobs",
             transcript: "macops का quarterly report ready hai kya",
             must_contain: &["Macobs"],
@@ -776,10 +775,10 @@ fn build_test_cases() -> Vec<TestCase> {
             available_vocab: vec![macobs_term()],
             screen_context: None,
         },
-        // ─── Deepgram drops "Emiac" entirely, outputs "mia" ─────────────
+        // ─── Speech engine drops "Emiac" entirely, outputs "mia" ─────────────
         TestCase {
             id: "RD4",
-            category: "real_deepgram",
+            category: "real_speech_engine",
             description: "mia → Emiac (very short distortion)",
             transcript: "mia में काम करता हूं",
             must_contain: &["Emiac"],
@@ -983,13 +982,11 @@ fn make_test_prefs() -> Preferences {
         server_audio_runtime_enabled: false,
         updated_at: 0,
         gateway_api_key: None,
-        deepgram_api_key: None,
         gemini_api_key: None,
         groq_api_key: None,
         cerebras_api_key: None,
         deepinfra_api_key: None,
         llm_provider: "groq".to_string(),
-        stt_provider: "deepgram".to_string(),
     }
 }
 

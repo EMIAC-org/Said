@@ -21,6 +21,7 @@
 **/*.ggml
 
 # Generated Tauri sidecars
+desktop/src-tauri/binaries/airnote-backend-*
 desktop/src-tauri/binaries/whisper-cli-*
 
 # Node / frontend dependencies

@@ -11,7 +11,7 @@ export const ONBOARDING_STEPS: { id: OnboardingStep; label: string }[] = [
   { id: "welcome", label: "Welcome" },
   { id: "account", label: "Account" },
   { id: "permissions", label: "Permissions" },
-  { id: "keys", label: "Speech" },
+  { id: "keys", label: "Model" },
   { id: "hotkey", label: "Hotkey" },
   { id: "test", label: "Try it" },
 ];

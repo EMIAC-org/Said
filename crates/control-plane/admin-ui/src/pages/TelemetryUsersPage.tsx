@@ -144,7 +144,7 @@ export function TelemetryUsersPage() {
                       {pct(u.fallback_rate)}
                     </td>
                     <td className="text-[11px] font-mono px-5 py-3.5 border-b border-border-light text-fg-3">
-                      {u.primary_stt || '—'}
+                      {u.primary_speech || '—'}
                     </td>
                     <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
                       {u.runs > 0 ? pct(u.learning_success_rate) : '—'}

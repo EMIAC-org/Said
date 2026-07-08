@@ -5,8 +5,8 @@ export function PipelineTraceView({ trace }: { trace: T }) {
     <div className="fade-in">
       {/* Row 1: STT + Replacements */}
       <div style={s.row}>
-        <Node num={1} title="Deepgram STT" timing={trace.stt_ms}>
-          <Row label="Transcript"><Mono>{trace.deepgram_raw}</Mono></Row>
+        <Node num={1} title="Local speech STT" timing={trace.stt_ms}>
+          <Row label="Transcript"><Mono>{trace.local_speech_raw}</Mono></Row>
           <Row label="Confidence">
             <Badge c={trace.stt_confidence >= 0.9 ? "green" : trace.stt_confidence >= 0.7 ? "yellow" : "red"}>
               {(trace.stt_confidence * 100).toFixed(1)}%

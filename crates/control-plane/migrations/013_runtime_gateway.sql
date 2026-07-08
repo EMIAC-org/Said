@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS runtime_provider_credentials (
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (scope IN ('user', 'org', 'airnote_managed')),
     CHECK (status IN ('active', 'invalid', 'revoked', 'rate_limited')),
-    CHECK (provider IN ('deepgram', 'groq', 'openai', 'gemini', 'gateway'))
+    CHECK (provider IN ('groq', 'openai', 'gemini', 'gateway'))
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_provider_credentials_account
     ON runtime_provider_credentials (account_id, provider, status, updated_at DESC);

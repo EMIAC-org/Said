@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-pub mod deepgram;
 pub mod dictation_trace;
 pub mod paths;
 pub mod polish;
@@ -13,15 +12,12 @@ pub mod scrub;
 pub mod stt;
 pub mod telemetry;
 pub mod text;
+pub mod transcript;
 
 // ── Gateway constants ─────────────────────────────────────────────────────────
 
 pub const GATEWAY_BASE: &str = "https://gateway.outreachdeal.com";
 pub const VOICE_URL: &str = "https://gateway.outreachdeal.com/v1/voice/polish";
-
-// One build-time switch for the AirNote control-plane used by desktop/server
-// runtime defaults. For this dev-connected desktop build, point at dev.
-pub const AIRNOTE_DEFAULT_CONTROL_PLANE_URL: &str = "https://airnote-dev.103.180.163.41.sslip.io";
 
 // ── Mode registry ─────────────────────────────────────────────────────────────
 
@@ -34,9 +30,9 @@ pub struct Mode {
 }
 
 pub const MODES: &[Mode] = &[Mode {
-    key: "cerebras-gpt-oss",
-    label: "GPT OSS 120B (Cerebras)",
-    model: polish::model::CEREBRAS_POLISH_MODEL_GPT_OSS,
+    key: "cerebras-gemma-4",
+    label: "Gemma 4 31B (Cerebras)",
+    model: polish::model::CEREBRAS_POLISH_MODEL_GEMMA_4,
     icon: "fast",
 }];
 
@@ -56,7 +52,7 @@ pub fn mode_label() -> &'static str {
     MODES[0].label
 }
 
-/// Returns the polish model route (Groq GPT OSS 120B for smart tier).
+/// Returns the polish model route.
 pub fn resolve_model(key_or_model: &str) -> String {
     polish::model::resolve_polish_route(key_or_model).label()
 }

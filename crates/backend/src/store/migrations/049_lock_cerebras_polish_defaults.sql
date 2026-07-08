@@ -1,10 +1,8 @@
--- Lock dictation polish to Cerebras GPT OSS 120B; Turbo Q5 is meetings-only.
+-- Lock dictation polish to Cerebras GPT OSS 120B.
 
 UPDATE preferences
    SET selected_model = 'cerebras-gpt-oss'
  WHERE selected_model IS NOT NULL
    AND selected_model != 'cerebras-gpt-oss';
 
-UPDATE preferences
-   SET stt_provider = 'deepgram'
- WHERE stt_provider = 'whisper_local';
+-- STT provider preference was retired in the local-only speech cleanup.

@@ -200,27 +200,27 @@ const PAIRS: [string, string][] = [
   ['can we move the release to monday morning', 'Can we move the release to Monday morning?'],
 ]
 
-const FAIL_KINDS = ['deepgram_connect_failed', 'empty_transcript', 'polish_failed', 'model_failed']
+const FAIL_KINDS = ['local_speech_failed', 'empty_transcript', 'polish_failed', 'model_failed']
 const MODELS = [
   { name: 'llama-3.1-8b-instant', label: 'Fast', weight: 0.68 },
   { name: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'Smart', weight: 0.32 },
 ]
 
 const VOCAB_TERMS = [
-  ['Macobs', 'brand'], ['Airnote', 'brand'], ['Deepgram', 'brand'], ['Groq', 'brand'],
+  ['Macobs', 'brand'], ['Airnote', 'brand'], ['Local Speech', 'phrase'], ['Groq', 'brand'],
   ['EMIAC', 'acronym'], ['SKU', 'acronym'], ['Hinglish', 'other'], ['Postgres', 'code_identifier'],
-  ['Tauri', 'code_identifier'], ['nova-3', 'code_identifier'], ['rustls', 'code_identifier'],
+  ['Tauri', 'code_identifier'], ['whisper.cpp', 'code_identifier'], ['rustls', 'code_identifier'],
   ['Lark', 'brand'], ['Zoho Books', 'brand'], ['Divo', 'brand'], ['Cerebras', 'brand'],
 ]
 const STT_ALIASES: [string, string][] = [
-  ['mecobs', 'Macobs'], ['air note', 'Airnote'], ['deep gram', 'Deepgram'], ['grok', 'Groq'],
-  ['e miac', 'EMIAC'], ['lurk', 'Lark'], ['devo', 'Divo'], ['nova three', 'nova-3'],
+  ['mecobs', 'Macobs'], ['air note', 'Airnote'], ['local speech', 'Local Speech'], ['grok', 'Groq'],
+  ['e miac', 'EMIAC'], ['lurk', 'Lark'], ['devo', 'Divo'], ['whisper cpp', 'whisper.cpp'],
   ['russ tls', 'rustls'], ['hing lish', 'Hinglish'], ['tau ri', 'Tauri'], ['cerebra', 'Cerebras'],
 ]
 const COMPANY_TERMS = [
   ['Macobs', 'brand', 9], ['Airnote', 'brand', 9], ['EMIAC', 'acronym', 8], ['Divo', 'brand', 7],
   ['Zoho Books', 'brand', 6], ['Lark Suite', 'brand', 6], ['Hinglish', 'other', 5],
-  ['Control Plane', 'phrase', 4], ['BYOK', 'acronym', 5], ['Deepgram', 'brand', 7],
+  ['Control Plane', 'phrase', 4], ['BYOK', 'acronym', 5], ['Local Speech', 'phrase', 7],
 ]
 const COMPANY_ALIASES: [string, string][] = [
   ['mecobs', 'Macobs'], ['air note', 'Airnote'], ['e miac tech', 'EMIAC'],
@@ -247,7 +247,7 @@ function buildStages(rng: () => number, p: { source: string; status: string; lat
   }
   if (p.status === 'failed') {
     const kind = p.error_kind || 'polish_failed'
-    if (kind === 'deepgram_connect_failed') {
+    if (kind === 'local_speech_failed') {
       return [{ stage: 'stt_ws_connect', status: 'error', latency_ms: 6001, error_kind: kind }]
     }
     if (kind === 'empty_transcript') {
@@ -312,9 +312,9 @@ export function getPolishes(accountId: string, limit = 60): RtPolish[] {
     const model = weightedModel(rng)
     const source: RtPolish['source'] = rng() < 0.8 ? 'desktop_voice' : 'runtime_wav_probe'
     const mode: RtPolish['mode'] = rng() < 0.82 ? 'normal_voice' : 'message_polish'
-    const stt = error_kind === 'deepgram_connect_failed' ? 6001 : rangeInt(rng, 320, 1100)
+    const stt = error_kind === 'local_speech_failed' ? 6001 : rangeInt(rng, 320, 1100)
     const polish = failed ? rangeInt(rng, 120, 700) : rangeInt(rng, 260, 1150)
-    const total = error_kind === 'deepgram_connect_failed' ? 6001 : stt + polish + rangeInt(rng, 20, 120)
+    const total = error_kind === 'local_speech_failed' ? 6001 : stt + polish + rangeInt(rng, 20, 120)
     const accepted = !failed && rng() < u.acceptance_rate
     out.push({
       id: `run_${strSeed(accountId + i).toString(16)}`,
@@ -330,7 +330,7 @@ export function getPolishes(accountId: string, limit = 60): RtPolish[] {
       words: output.split(/\s+/).filter(Boolean).length,
       accepted,
       latency: { stt, polish, total },
-      provider: { stt: 'deepgram · nova-3', llm: `groq · ${model.label}` },
+      provider: { stt: 'local · whisper.cpp', llm: `groq · ${model.label}` },
       stages: buildStages(rng, { source, status: failed ? 'failed' : 'completed', latency: { stt, polish, total }, error_kind }),
     })
   }
@@ -410,7 +410,7 @@ export function getLearningEvents(accountId: string, limit = 18): RtLearningEven
   const classes = ['alias_replacement', 'vocab_promotion', 'formatting_only', 'common_word_blocked', 'edit_policy_rule']
   const details = [
     'mecobs → Macobs', 'air note → Airnote', 'formatting-only edit ignored', 'kaisa blocked (common word)',
-    'learned alias devo → Divo', 'e miac → EMIAC', 'reverted nova three → nova-3', 'promoted to personal vocab',
+    'learned alias devo → Divo', 'e miac → EMIAC', 'reverted whisper cpp → whisper.cpp', 'promoted to personal vocab',
   ]
   const n = rangeInt(rng, 8, limit)
   let t = NOW - rangeInt(rng, 10, 120) * 60_000

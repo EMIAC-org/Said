@@ -3,18 +3,14 @@ import { Check, Clock, ExternalLink, Link, Loader2, RotateCcw, X } from "lucide-
 import { openExternal } from "@/lib/invoke";
 import { LarkLogo } from "@/components/LarkLogo";
 import {
-  applyServerUrlConfig,
   completeAuth,
-  DEFAULT_CLOUD_SERVER_URL,
   forgetWorkspaceUrl,
   getConnection,
   getPendingServerUrl,
   getRecentWorkspaceUrls,
-  getServerUrlMode,
   setPendingServerUrl,
   validateServer,
   type EnterpriseConnection,
-  type ServerUrlMode,
 } from "@/lib/enterprise";
 
 type OAuthPhase = "idle" | "waiting" | "submitting" | "error";
@@ -34,6 +30,8 @@ export interface EnterpriseConnectFormProps {
    *  is hidden, the URL is auto-validated, and the form jumps straight to the
    *  Lark sign-in. Used by onboarding so users never type a server URL. */
   lockedServerUrl?: string;
+  /** In locked mode, reveal a small development escape hatch for custom URLs. */
+  allowCustomServerUrl?: boolean;
 }
 
 export function EnterpriseConnectForm({
@@ -43,6 +41,7 @@ export function EnterpriseConnectForm({
   variant = "default",
   onCancel,
   lockedServerUrl,
+  allowCustomServerUrl = false,
 }: EnterpriseConnectFormProps) {
   const [serverUrl, setServerUrl] = useState(initialServerUrl);
   const [validating, setValidating] = useState(false);
@@ -54,11 +53,13 @@ export function EnterpriseConnectForm({
   const [tokenError, setTokenError] = useState("");
   const [showManualToken, setShowManualToken] = useState(false);
   const [recentUrls, setRecentUrls] = useState<string[]>(() => getRecentWorkspaceUrls());
-  // Small custom-URL affordance on the locked (onboarding) connect card.
-  const [showUrlEditor, setShowUrlEditor] = useState(false);
-  const [draftUrl, setDraftUrl] = useState("");
+  const [usingCustomServerUrl, setUsingCustomServerUrl] = useState(false);
   const serverUrlRef = useRef(serverUrl);
   serverUrlRef.current = serverUrl;
+  const effectiveLockedServerUrl =
+    lockedServerUrl && !(allowCustomServerUrl && usingCustomServerUrl)
+      ? lockedServerUrl
+      : undefined;
 
   const stopOAuthListener = useCallback(async () => {
     try {
@@ -89,25 +90,23 @@ export function EnterpriseConnectForm({
     void resetOAuth();
   }, [resetOAuth]);
 
-  // Default = env URL; choosing custom prioritizes + persists it, choosing
-  // default persists that. Either way the choice sticks across restarts (see
-  // enterprise.ts reconcile). Repoints the form + re-validates the chosen server.
-  const applyCustomServer = useCallback(
-    async (mode: ServerUrlMode, url?: string) => {
-      const active = await applyServerUrlConfig(mode, url);
-      setShowUrlEditor(false);
-      setServerUrl(active);
-      setValidated(false);
-      setValidationError("");
-      await resetOAuth();
-      setValidating(true);
-      const ok = await validateServer(active).catch(() => false);
-      setValidating(false);
-      if (ok) setValidated(true);
-      else setValidationError("Couldn't reach that server — check the URL.");
-    },
-    [resetOAuth],
-  );
+  const useCustomServerUrl = useCallback(() => {
+    setUsingCustomServerUrl(true);
+    setValidated(false);
+    setValidationError("");
+    const locked = lockedServerUrl?.trim().replace(/\/+$/, "");
+    const recent = getRecentWorkspaceUrls().find((url) => url !== locked);
+    setServerUrl(recent ?? "");
+    void resetOAuth();
+  }, [lockedServerUrl, resetOAuth]);
+
+  const useDefaultServerUrl = useCallback(() => {
+    if (!lockedServerUrl) return;
+    setUsingCustomServerUrl(false);
+    setValidationError("");
+    setServerUrl(lockedServerUrl.trim().replace(/\/+$/, ""));
+    void resetOAuth();
+  }, [lockedServerUrl, resetOAuth]);
 
   useEffect(() => {
     const conn = getConnection();
@@ -134,9 +133,9 @@ export function EnterpriseConnectForm({
   // Locked server URL (from config/env): pin it, auto-validate, and skip the
   // URL-entry step so the user lands directly on the Lark sign-in.
   useEffect(() => {
-    if (!lockedServerUrl) return;
+    if (!effectiveLockedServerUrl) return;
     let alive = true;
-    const url = lockedServerUrl.trim().replace(/\/+$/, "");
+    const url = effectiveLockedServerUrl.trim().replace(/\/+$/, "");
     setServerUrl(url);
     if (getConnection()) return; // already connected → Lark card already shows
     setValidating(true);
@@ -151,7 +150,7 @@ export function EnterpriseConnectForm({
     return () => {
       alive = false;
     };
-  }, [lockedServerUrl]);
+  }, [effectiveLockedServerUrl]);
 
   const startOAuth = useCallback(async (url: string) => {
     const trimmed = url.trim().replace(/\/+$/, "");
@@ -328,14 +327,30 @@ export function EnterpriseConnectForm({
         </p>
       )}
 
-      {lockedServerUrl && validating && !validated && (
+      {effectiveLockedServerUrl && validating && !validated && (
         <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
           <Loader2 size={14} className="animate-spin" />
           Connecting to AirNote…
         </div>
       )}
 
-      {!lockedServerUrl && (
+      {allowCustomServerUrl && lockedServerUrl && !usingCustomServerUrl && !waitingForBrowser && (
+        <button
+          type="button"
+          onClick={useCustomServerUrl}
+          className="w-full rounded-lg border px-3 py-2.5 transition-colors text-center"
+          style={{ borderColor: "hsl(var(--border))", color: "hsl(var(--foreground))" }}
+        >
+          <span className="block text-[12px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+            Developing against another server?
+          </span>
+          <span className="block text-[12px] font-semibold mt-0.5" style={{ color: "hsl(var(--primary))" }}>
+            Use custom URL →
+          </span>
+        </button>
+      )}
+
+      {!effectiveLockedServerUrl && (
       <div>
         <p className="text-[12px] font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
           <Link size={12} className="text-muted-foreground" />
@@ -367,6 +382,16 @@ export function EnterpriseConnectForm({
               </button>
             )}
             {!validated && <RecentWorkspaces />}
+            {allowCustomServerUrl && lockedServerUrl && (
+              <button
+                type="button"
+                onClick={useDefaultServerUrl}
+                disabled={waitingForBrowser}
+                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Use default AirNote server
+              </button>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
@@ -409,7 +434,7 @@ export function EnterpriseConnectForm({
           {validationError}
         </div>
       )}
-      {lockedServerUrl && validationError && !validated && !validating && (
+      {effectiveLockedServerUrl && validationError && !validated && !validating && (
         <button onClick={() => void handleValidate()} className={connectBtnClass}>
           <RotateCcw size={14} />
           Retry
@@ -568,79 +593,6 @@ export function EnterpriseConnectForm({
               </button>
             )}
           </div>
-        </div>
-      )}
-
-      {/* Small custom-URL escape hatch on the locked (onboarding) card. Default
-          is the env URL; picking custom prioritizes + persists it. */}
-      {lockedServerUrl && !waitingForBrowser && (
-        <div className="pt-1 text-center">
-          {!showUrlEditor ? (
-            <p className="text-[11px] text-muted-foreground">
-              Server:{" "}
-              <span className="font-mono text-foreground/70">
-                {serverUrl.replace(/^https?:\/\//, "")}
-              </span>
-              {" · "}
-              <button
-                type="button"
-                className="underline hover:text-foreground transition-colors"
-                onClick={() => {
-                  setDraftUrl(
-                    getServerUrlMode() === "custom" ? serverUrl : DEFAULT_CLOUD_SERVER_URL,
-                  );
-                  setShowUrlEditor(true);
-                }}
-              >
-                Use custom URL
-              </button>
-              {getServerUrlMode() === "custom" && (
-                <>
-                  {" · "}
-                  <button
-                    type="button"
-                    className="underline hover:text-foreground transition-colors"
-                    onClick={() => void applyCustomServer("default")}
-                  >
-                    Reset to default
-                  </button>
-                </>
-              )}
-            </p>
-          ) : (
-            <div className="flex items-center gap-2 text-left">
-              <input
-                type="url"
-                value={draftUrl}
-                placeholder={DEFAULT_CLOUD_SERVER_URL}
-                disabled={validating}
-                autoFocus
-                onChange={(e) => setDraftUrl(e.target.value)}
-                className="input flex-1 min-w-0 text-[12px] font-mono"
-              />
-              <button
-                type="button"
-                disabled={validating || !draftUrl.trim()}
-                onClick={() => void applyCustomServer("custom", draftUrl)}
-                className="btn-primary !py-1.5 !px-3 !text-[12px] flex items-center gap-1.5 flex-shrink-0"
-              >
-                {validating ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <Check size={12} />
-                )}
-                Use
-              </button>
-              <button
-                type="button"
-                disabled={validating}
-                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
-                onClick={() => setShowUrlEditor(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>

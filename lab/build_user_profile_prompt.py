@@ -54,7 +54,7 @@ CANONICAL_TEXT_REPLACEMENTS = [
     (re.compile(r"\bwebbook\b", re.I), "webhook"),
     (re.compile(r"\bdoctor rebuild\b", re.I), "Docker rebuild"),
     (re.compile(r"\bdeep infra\b", re.I), "DeepInfra"),
-    (re.compile(r"\bdeep braahm\b", re.I), "Deepgram"),
+    (re.compile(r"\bdeep braahm\b", re.I), "Local speech"),
     (re.compile(r"\bcentury mein run ID\b", re.I), "Sentry mein run ID"),
 ]
 
@@ -111,7 +111,7 @@ def build_history_snapshot(
         user = rows(conn, "SELECT id, email, license_tier, created_at FROM local_user WHERE id=?", (user_id,))
         prefs = rows(
             conn,
-            "SELECT selected_model, tone_preset, output_language, learning_enabled, stt_provider FROM preferences WHERE user_id=?",
+            "SELECT selected_model, tone_preset, output_language, learning_enabled, speech_model FROM preferences WHERE user_id=?",
             (user_id,),
         )
         edits = rows(
@@ -286,7 +286,7 @@ Rules:
 - Prefer fewer, higher-confidence entries over a long noisy list.
 - Normalize obvious technical STT garbles to canonical spellings when context supports them:
   SQLite not CQLite, Sentry not century/centuries, Caps Lock not app slot/cabslog,
-  Docker not doctor, webhook not webbook, DeepInfra not deep infra, Deepgram not deep braahm,
+  Docker not doctor, webhook not webbook, DeepInfra not deep infra, Local speech not deep braahm,
   ZooKeeper not zuki/zukeeper, Kafka not kaaf/kaafka.
 - Phrase recoveries must map noisy heard text to a cleaner intended phrase. Do not include no-op mappings.
 

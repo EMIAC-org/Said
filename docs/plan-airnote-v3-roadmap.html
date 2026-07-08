@@ -390,7 +390,7 @@
   <h2><span class="num">1</span> What problem are we solving?</h2>
 
   <p>
-    Speech-to-text (STT) services like Deepgram are great at common English. But they fail predictably on proper nouns, technical terms, brand names, and anything domain-specific. When you say <strong>"Kubernetes"</strong>, Deepgram might output <strong>"cubinatis"</strong> or <strong>"cooper natives"</strong>. When you say <strong>"GitHub"</strong>, it might write <strong>"get hub"</strong>.
+    Speech-to-text (STT) services like Local speech are great at common English. But they fail predictably on proper nouns, technical terms, brand names, and anything domain-specific. When you say <strong>"Kubernetes"</strong>, Local speech might output <strong>"cubinatis"</strong> or <strong>"cooper natives"</strong>. When you say <strong>"GitHub"</strong>, it might write <strong>"get hub"</strong>.
   </p>
 
   <h3>Watch what happens with the word "Kubernetes":</h3>
@@ -401,7 +401,7 @@
       <div class="vj-text">"Deploy Kubernetes to production"</div>
     </div>
     <div class="vj-row">
-      <div class="vj-label">Deepgram hears</div>
+      <div class="vj-label">Local speech hears</div>
       <div class="vj-text heard">"Deploy <del>cubinatis</del> to production"</div>
     </div>
     <div class="vj-row">
@@ -416,7 +416,7 @@
 
   <div class="analogy">
     <div class="analogy-label">Think of it like this</div>
-    AirNote sits between Deepgram and your screen as a <strong>spell-checker tuned to your vocabulary</strong>. Like how Microsoft Word remembers technical words you add to its dictionary, AirNote remembers the words YOU say. The difference: AirNote learns by watching you fix mistakes, not by you adding words manually.
+    AirNote sits between Local speech and your screen as a <strong>spell-checker tuned to your vocabulary</strong>. Like how Microsoft Word remembers technical words you add to its dictionary, AirNote remembers the words YOU say. The difference: AirNote learns by watching you fix mistakes, not by you adding words manually.
   </div>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -432,7 +432,7 @@
   <div class="gap-grid">
     <div class="gap-card" style="border-color: hsla(38 90% 72% / 0.3);">
       <span class="gap-num" style="color: var(--amber);">ACTOR 1</span>
-      <div class="gap-title">Deepgram (the ear)</div>
+      <div class="gap-title">Local speech (the ear)</div>
       <div class="gap-body">
         Cloud STT service. Converts your audio to text. Great at common English, weak at brand names and jargon. Cannot be trained on your voice — it's a black box.
         <div class="gap-example">audio → "I love using <span style="color: var(--red);">git hub</span>"</div>
@@ -443,8 +443,8 @@
       <span class="gap-num" style="color: var(--green);">ACTOR 2</span>
       <div class="gap-title">AirNote (the brain)</div>
       <div class="gap-body">
-        Runs locally on your Mac. Watches what Deepgram outputs, what the LLM polishes, and what you keep. Learns from every edit you make. Stores your vocabulary in a local SQLite database.
-        <div class="gap-example">Deepgram output → <span style="color: var(--green);">AirNote fixes</span> → your screen</div>
+        Runs locally on your Mac. Watches what Local speech outputs, what the LLM polishes, and what you keep. Learns from every edit you make. Stores your vocabulary in a local SQLite database.
+        <div class="gap-example">Local speech output → <span style="color: var(--green);">AirNote fixes</span> → your screen</div>
       </div>
     </div>
 
@@ -484,7 +484,7 @@
     </div>
     <div class="vj-row">
       <div class="vj-label">Step 4 · Next time</div>
-      <div class="vj-text polished">You say "GitHub" → Deepgram outputs "git hub" → AirNote auto-corrects → "GitHub" on screen ✓</div>
+      <div class="vj-text polished">You say "GitHub" → Local speech outputs "git hub" → AirNote auto-corrects → "GitHub" on screen ✓</div>
     </div>
   </div>
 
@@ -545,7 +545,7 @@
       <tr>
         <td><span class="pill green"><span class="pill-dot"></span>Exact</span></td>
         <td>Same garble repeats</td>
-        <td>Deepgram invents a new garble</td>
+        <td>Local speech invents a new garble</td>
         <td>Fastest, zero false-positive risk</td>
       </tr>
       <tr>
@@ -706,11 +706,11 @@
 
     <div class="gap-card">
       <span class="gap-num">GAP 2 · CRITICAL</span>
-      <div class="gap-title">Deepgram drops words entirely</div>
+      <div class="gap-title">Local speech drops words entirely</div>
       <div class="gap-body">
-        When Deepgram outputs <em>nothing</em> for a word, no correction layer can recover it. User has to manually star the term to get keyterm biasing.
-        <div class="gap-example">User says "Anthropic" → Deepgram outputs "" → AirNote can't help</div>
-        <strong>Fix:</strong> Auto-star after 3 consecutive add-backs. Tells Deepgram "listen for this word" automatically.
+        When Local speech outputs <em>nothing</em> for a word, no correction layer can recover it. User has to manually star the term to get keyterm biasing.
+        <div class="gap-example">User says "Anthropic" → Local speech outputs "" → AirNote can't help</div>
+        <strong>Fix:</strong> Auto-star after 3 consecutive add-backs. Tells Local speech "listen for this word" automatically.
       </div>
     </div>
 
@@ -821,7 +821,7 @@
       <div class="phase-title">Edge Cases &amp; Quality</div>
       <p class="dim" style="font-size: 12px;">Close the 5 high-impact gaps. Measurable accuracy lift.</p>
       <ul>
-        <li><strong>Auto-star on drop:</strong> after 3 add-backs of a known term, star it for Deepgram biasing.</li>
+        <li><strong>Auto-star on drop:</strong> after 3 add-backs of a known term, star it for Local speech biasing.</li>
         <li><strong>Adaptive negative sampling:</strong> cap dictionary negatives at 10× positives. Fixes cold-start.</li>
         <li><strong>Real ASR confusion mining:</strong> derive augmentation matrix from actual user aliases, not hardcoded rules.</li>
         <li><strong>Bigram scorer:</strong> separate ONNX model for "New York"-style 2-token corrections.</li>
@@ -963,7 +963,7 @@
       <span class="gap-num" style="color: var(--red);">EDGE 5</span>
       <div class="gap-title">Background noise / partial words</div>
       <div class="gap-body">
-        When Deepgram is uncertain, it emits low-confidence tokens. We sometimes confidently "correct" these into vocab terms when really the audio was unclear.
+        When Local speech is uncertain, it emits low-confidence tokens. We sometimes confidently "correct" these into vocab terms when really the audio was unclear.
         <div class="gap-example">User mumbled something near "Kafka" → we emit "Kafka" when we shouldn't have</div>
       </div>
     </div>
@@ -972,7 +972,7 @@
       <span class="gap-num" style="color: var(--red);">EDGE 6</span>
       <div class="gap-title">Same-vocab homophones</div>
       <div class="gap-body">
-        User has both "Anish" (name) and "Anit" (different person) in vocab. Deepgram outputs something in between. Which one do we pick? Currently it's basically a coin flip.
+        User has both "Anish" (name) and "Anit" (different person) in vocab. Local speech outputs something in between. Which one do we pick? Currently it's basically a coin flip.
         <div class="gap-example">Need user-specific phonetic distinguishers + context</div>
       </div>
     </div>
@@ -1032,7 +1032,7 @@
       <tr>
         <td>Voice quality (whisper/loud)</td>
         <td>Speech with breath / against wind</td>
-        <td>STT-level — needs Deepgram tuning or local model</td>
+        <td>STT-level — needs Local speech tuning or local model</td>
       </tr>
       <tr>
         <td>Long pauses → run-on</td>
@@ -1045,7 +1045,7 @@
   <h3>Why we can fix these systematically (not case-by-case)</h3>
 
   <p>
-    Each edge case looks unique, but most fit into 4 buckets: <strong>token-classification</strong> (number? code? brand? acronym?), <strong>context-awareness</strong> (which homophone in this sentence?), <strong>confidence-thresholding</strong> (was Deepgram unsure?), and <strong>format-normalization</strong> (URLs/emails/paths). Once we build the token classifier in v3, dozens of these collapse into one fix.
+    Each edge case looks unique, but most fit into 4 buckets: <strong>token-classification</strong> (number? code? brand? acronym?), <strong>context-awareness</strong> (which homophone in this sentence?), <strong>confidence-thresholding</strong> (was Local speech unsure?), and <strong>format-normalization</strong> (URLs/emails/paths). Once we build the token classifier in v3, dozens of these collapse into one fix.
   </p>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->

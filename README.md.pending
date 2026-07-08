@@ -62,7 +62,7 @@ Hold Caps Lock anywhere on your Mac. Talk however the words come — English, Hi
 - **Auto-polish** — drops the *"umm"*s, fixes grammar, formats lists. Sounds like you on a good day
 - **Private by default** — no Said server, no telemetry, no analytics. Your audio goes only where your keys say
 - **Works everywhere** — Slack, Cursor, browser, terminal, Notion, anywhere a cursor blinks
-- **Free forever** — bring your own Deepgram and ChatGPT keys (both have generous free tiers)
+- **Free forever** — bring your own Local speech and ChatGPT keys (both have generous free tiers)
 - **Open source, every line** — fork it, audit it, ship it under MIT
 
 ---
@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/EMIAC-org/Said/main/install.sh | ba
 The installer drops a `vp` CLI, a menu-bar status indicator, and a LaunchAgent so Said is ready every time you log in. Three one-time steps:
 
 ```bash
-vp deepgram-key      # save your Deepgram API key
+vp local_speech-key      # save your Local speech API key
 vp auth              # connect ChatGPT for the polish step
 vp permissions       # grant macOS Input Monitoring + Accessibility
 vp                   # start

@@ -85,11 +85,10 @@ export function RunDetailPanel({
           <Field k="paste_ms" v={ms(run.paste_ms)} />
         </FieldGrid>
       </Section>
-      <Section title="STT">
+      <Section title="Speech">
         <FieldGrid>
-          <Field k="stt_provider" v={run.stt_provider || '—'} mono />
-          <Field k="stt_model" v={run.stt_model || '—'} mono />
-          <Field k="stt_path" v={run.stt_path || '—'} mono />
+          <Field k="speech_model" v={run.speech_model || '—'} mono />
+          <Field k="speech_path" v={run.speech_path || '—'} mono />
         </FieldGrid>
       </Section>
       <Section title="Outcome & fallbacks">
@@ -97,8 +96,6 @@ export function RunDetailPanel({
           <Field k="success" v={<Bool v={run.success} />} />
           <Field k="error_code" v={run.error_code || '—'} mono />
           <Field k="used_clipboard_fallback" v={<Bool v={run.used_clipboard_fallback} />} />
-          <Field k="used_ws_pretranscript" v={<Bool v={run.used_ws_pretranscript} />} />
-          <Field k="used_http_stt_fallback" v={<Bool v={run.used_http_stt_fallback} />} />
         </FieldGrid>
       </Section>
       <Section title="Edit watch">

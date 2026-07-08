@@ -27,7 +27,7 @@ export interface VocabRejected {
 
 export interface PipelineTrace {
   // Stage 1: STT
-  deepgram_raw: string;
+  local_speech_raw: string;
   stt_confidence: number;
   stt_ms: number;
 

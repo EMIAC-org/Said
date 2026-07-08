@@ -44,11 +44,8 @@ struct RunSummaryPayload {
     success: bool,
     error_code: Option<String>,
     used_clipboard_fallback: bool,
-    used_ws_pretranscript: bool,
-    used_http_stt_fallback: bool,
-    stt_provider: Option<String>,
-    stt_model: Option<String>,
-    stt_path: Option<String>,
+    speech_model: Option<String>,
+    speech_path: Option<String>,
     edit_detected: bool,
     edit_bucket: String,
     edit_distance_chars: Option<i32>,
@@ -124,11 +121,8 @@ fn row_to_payload(row: &RunSummaryRow) -> RunSummaryPayload {
         success: row.success,
         error_code: row.error_code.clone(),
         used_clipboard_fallback: row.used_clipboard_fallback,
-        used_ws_pretranscript: row.used_ws_pretranscript,
-        used_http_stt_fallback: row.used_http_stt_fallback,
-        stt_provider: row.stt_provider.clone(),
-        stt_model: row.stt_model.clone(),
-        stt_path: row.stt_path.clone(),
+        speech_model: row.speech_model.clone(),
+        speech_path: row.speech_path.clone(),
         edit_detected: row.edit_detected,
         edit_bucket: row.edit_bucket.clone(),
         edit_distance_chars: row.edit_distance_chars,
@@ -213,7 +207,7 @@ pub async fn upload_pending(
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
     let url = format!(
         "{}/v1/runtime/telemetry/batch",
         base_url.trim_end_matches('/')

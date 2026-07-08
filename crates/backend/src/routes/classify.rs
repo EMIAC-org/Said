@@ -125,7 +125,7 @@ fn post_runtime_memory_dirty(state: AppState) {
         let base_url = user
             .enterprise_server_url
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
         let url = format!("{}/v1/runtime/memory/dirty", base_url.trim_end_matches('/'));
         let _ = state
             .http_client
@@ -156,7 +156,7 @@ fn post_runtime_client_event(
         let base_url = user
             .enterprise_server_url
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
         let url = format!(
             "{}/v1/runtime/client-events",
             base_url.trim_end_matches('/')
@@ -256,6 +256,8 @@ pub struct ReviewCandidate {
     pub term_type: String,
     pub learnable: bool,
     pub tag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -871,6 +873,10 @@ async fn classify_inner(
                             term_type: term_type.to_string(),
                             learnable: true,
                             tag: "local_ask".to_string(),
+                            context: change
+                                .context_example
+                                .clone()
+                                .or_else(|| surrounding_sentence(&body.user_kept, corrected)),
                         });
                         info!(
                             "[classify] offering Learn/Skip for name-like {corrected:?} (type={term_type})"
@@ -944,6 +950,9 @@ async fn classify_inner(
                         term_type: term_type.to_string(),
                         learnable: true,
                         tag: tag.to_string(),
+                        context: change.context_example.clone().or_else(|| {
+                            surrounding_sentence(&body.user_kept, canonical_for_policy)
+                        }),
                     },
                 );
                 info!(
@@ -1011,6 +1020,10 @@ async fn classify_inner(
                         term_type: vocabulary::classify_term_type(corrected).to_string(),
                         learnable: false,
                         tag: "added".to_string(),
+                        context: change
+                            .context_example
+                            .clone()
+                            .or_else(|| surrounding_sentence(&body.user_kept, corrected)),
                     });
                 }
             }
@@ -1883,6 +1896,10 @@ fn local_review_candidate_from_change(
         } else {
             "local_deterministic".to_string()
         },
+        context: change
+            .context_example
+            .clone()
+            .or_else(|| surrounding_sentence(user_kept, canonical_for_policy)),
     })
 }
 
@@ -3360,6 +3377,7 @@ mod tests {
             term_type: "brand".to_string(),
             learnable: true,
             tag: "server".to_string(),
+            context: None,
         }];
 
         let added = merge_review_candidates(&mut server, local);
@@ -3386,6 +3404,7 @@ mod tests {
                 term_type: "proper_noun".to_string(),
                 learnable: true,
                 tag: "server_llm".to_string(),
+                context: None,
             }],
             "Lark wiki too",
             "english",
@@ -3432,6 +3451,7 @@ mod tests {
             term_type: "proper_noun".to_string(),
             learnable: true,
             tag: "server_llm".to_string(),
+            context: None,
         };
         assert!(!promotion_gate::is_common_word("Kafka"));
         assert!(!alias_safety::is_common_alias_source("Kafka"));
@@ -3465,6 +3485,7 @@ mod tests {
                     term_type: "proper_noun".to_string(),
                     learnable: true,
                     tag: "server_llm".to_string(),
+                    context: None,
                 },
                 ReviewCandidate {
                     original: "Post grass".to_string(),
@@ -3472,6 +3493,7 @@ mod tests {
                     term_type: "proper_noun".to_string(),
                     learnable: true,
                     tag: "local_token_collapse".to_string(),
+                    context: None,
                 },
             ],
             "Postgres migration check karo",
@@ -3493,6 +3515,7 @@ mod tests {
                     term_type: "brand".to_string(),
                     learnable: true,
                     tag: "local_deterministic".to_string(),
+                    context: None,
                 },
                 ReviewCandidate {
                     original: "Zuki par".to_string(),
@@ -3500,6 +3523,7 @@ mod tests {
                     term_type: "brand".to_string(),
                     learnable: true,
                     tag: "local_token_collapse".to_string(),
+                    context: None,
                 },
             ],
             "ZooKeeper status check karo",

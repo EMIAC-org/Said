@@ -8,27 +8,20 @@ mod browser_context; // opt-in: active browser tab → site host (AppleScript, m
 mod chaos; // env-gated fault injection for torture-testing the resilience paths
 mod desktop;
 mod developer_context;
-mod dg_stream; // P5: Deepgram WebSocket live streaming
 mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostics
+mod dictation_stt;
 mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
+mod local_asr;
 mod meeting_engine;
 mod notch_sidecar;
 mod whisper_dictation_stream; // crash-recovery PCM tap during on-device dictation (batch-only STT)
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
-mod server_runtime_stream;
 mod speaker_suppression;
-mod swift_model;
-#[cfg(target_os = "macos")]
-mod swift_stream;
-#[cfg(target_os = "macos")]
-mod swift_stt_engine;
-#[cfg(target_os = "macos")]
-mod swift_stt_guard;
 mod telemetry;
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -141,6 +134,19 @@ fn run_on_main_guarded(
     app.run_on_main_thread(move || {
         guard_panics(label, f);
     })
+}
+
+#[cfg(target_os = "macos")]
+fn exit_after_shutdown_cleanup(code: i32) -> ! {
+    // whisper.cpp/ggml Metal has process-exit finalizers that can abort inside
+    // ggml_metal_rsets_free after a clean app shutdown. We have already run the
+    // app-owned cleanup before calling this, so skip C/C++ finalizers on macOS.
+    unsafe { libc::_exit(code) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exit_after_shutdown_cleanup(code: i32) -> ! {
+    std::process::exit(code)
 }
 
 fn record_hotkey_label(raw: &str) -> &'static str {
@@ -662,12 +668,8 @@ fn notify_macos(app: &tauri::AppHandle, title: &str, body: &str) {
 
 /// Translate a raw pipeline error string into one short human sentence.
 ///
-/// We never want to surface diagnostic text like "Deepgram error 400:
-/// invalid audio format" or "empty transcript — nothing spoken?" to the
-/// user — those read like log lines.  This function maps the common cases
-/// to plain English and falls back to a generic apology for everything
-/// else.  Keep wording calm and blame-free; no "Error:" prefix, no codes,
-/// no emoji.
+/// Keep raw diagnostic strings out of the UI. This maps common local recording
+/// and polish failures to short, calm user-facing messages.
 fn emit_voice_error_quiet(app: &tauri::AppHandle, raw: &str) {
     tracing::error!("[pipeline] error: {raw}");
     let human = humanize_error(raw);
@@ -691,16 +693,11 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("recording interrupted") {
         return "Recording interrupted".into();
     }
-    if lower.contains("deepgram")
-        && (lower.contains("401") || lower.contains("403") || lower.contains("unauthorized"))
-    {
-        return "Deepgram key invalid".into();
+    if lower.contains("local speech model is required") || lower.contains("speech model") {
+        return "Download the local speech model first".into();
     }
-    if lower.contains("deepgram") && (lower.contains("429") || lower.contains("rate")) {
-        return "STT rate limited".into();
-    }
-    if lower.contains("deepgram") || lower.contains("stt") {
-        return "STT failed — try again".into();
+    if lower.contains("local speech") || lower.contains("transcript") {
+        return "Speech recognition failed — try again".into();
     }
     if lower.contains("openai")
         && (lower.contains("not connected") || lower.contains("401") || lower.contains("403"))
@@ -891,7 +888,6 @@ fn start_backend_watchdog(app: tauri::AppHandle, using_external_backend: bool) {
                 match backend::spawn() {
                     Ok(handle) => {
                         let ep_notifications = handle.endpoint();
-                        let ep_runtime_ws = handle.endpoint();
                         let ep = install_backend_handle(&app, handle);
                         failed_checks = 0;
                         tracing::warn!("[backend-watchdog] backend recovered at {}", ep.url);
@@ -902,7 +898,6 @@ fn start_backend_watchdog(app: tauri::AppHandle, using_external_backend: bool) {
                         );
                         let _ = app.emit("backend-recovered", serde_json::json!({ "url": ep.url }));
                         start_runtime_notification_listener(app.clone(), ep_notifications);
-                        server_runtime_stream::start_persistent_runtime_connection(ep_runtime_ws);
                     }
                     Err(e) => {
                         tracing::error!("[backend-watchdog] respawn failed: {e}");
@@ -934,261 +929,19 @@ struct EditTargetState(Mutex<Option<i32>>);
 /// "MACOBS", the LLM knows "main corps" is likely "MACOBS").
 struct ScreenContextState(Mutex<Option<String>>);
 
-/// P5: Holds the oneshot receiver that delivers the pre-transcript from the
-/// Deepgram WebSocket streaming task.  Replaced on every new recording.
-struct StreamingState(
-    Mutex<Option<tokio::sync::oneshot::Receiver<Option<dg_stream::StreamingTranscript>>>>,
-);
-
-#[derive(Clone)]
-struct SwiftLivePartialSnapshot {
-    recording_id: String,
-    transcript: String,
-}
-
-struct SwiftLivePartialState(Mutex<Option<SwiftLivePartialSnapshot>>);
-
-fn swift_live_partial_to_transcript(text: String) -> dg_stream::StreamingTranscript {
-    let word_count = text.split_whitespace().count();
-    dg_stream::StreamingTranscript {
-        transcript: text.clone(),
-        meta: said_core::deepgram::TranscriptMeta {
-            enriched_transcript: text,
-            confidence: 1.0,
-            mean_word_confidence: 1.0,
-            low_confidence_count: 0,
-            word_count,
-            languages: vec!["hi".to_string()],
-            // Language mode; provenance lives in `origin`.
-            stt_mode: "hi".to_string(),
-            origin: said_core::stt::TranscriptOrigin::SwiftLocalLivePartial,
-        },
-    }
-}
-
-fn whisper_local_to_transcript(text: String) -> dg_stream::StreamingTranscript {
-    let word_count = text.split_whitespace().count();
-    dg_stream::StreamingTranscript {
-        transcript: text.clone(),
-        meta: said_core::deepgram::TranscriptMeta {
-            enriched_transcript: text,
-            confidence: 1.0,
-            mean_word_confidence: 1.0,
-            low_confidence_count: 0,
-            word_count,
-            languages: vec!["hi".to_string()],
-            // Language mode; provenance lives in `origin`.
-            stt_mode: "hi".to_string(),
-            origin: said_core::stt::TranscriptOrigin::WhisperLocal,
-        },
-    }
-}
-
-async fn whisper_local_pre_transcript(
+async fn local_pre_transcript(
     wav: &[u8],
     language: &str,
-) -> Option<dg_stream::StreamingTranscript> {
-    if !meeting_engine::dictation_whisper_model_installed() {
-        return None;
-    }
-    let wav = wav.to_vec();
-    let language = language.to_string();
+) -> Result<dictation_stt::LocalTranscript, String> {
     let started = std::time::Instant::now();
-    let transcript = tokio::task::spawn_blocking(move || {
-        meeting_engine::transcribe_dictation_wav_bytes(&wav, &language)
-    })
-    .await
-    .map_err(|e| format!("spawn failed: {e}"))
-    .and_then(|r| r)
-    .ok()?;
+    let transcript = dictation_stt::transcribe_wav_bytes(wav, language).await?;
     tracing::info!(
-        "[finish] whisper.cpp local STT ready in {}ms chars={} words={}",
+        "[finish] local speech transcript ready in {}ms chars={} words={}",
         started.elapsed().as_millis(),
-        transcript.len(),
-        transcript.split_whitespace().count()
+        transcript.transcript.len(),
+        transcript.transcript.split_whitespace().count()
     );
-    Some(whisper_local_to_transcript(transcript))
-}
-
-fn dictation_live_partial_for_recording(
-    app: &tauri::AppHandle,
-    recording_id: Option<&str>,
-) -> Option<dg_stream::StreamingTranscript> {
-    let snapshot = app
-        .try_state::<SwiftLivePartialState>()?
-        .0
-        .lock()
-        .ok()?
-        .clone()?;
-    if recording_id.is_some_and(|id| id != snapshot.recording_id) {
-        tracing::warn!(
-            "[live_stt] ignoring partial for stale recording id={} expected={:?}",
-            snapshot.recording_id,
-            recording_id
-        );
-        return None;
-    }
-    let text = snapshot.transcript.trim().to_string();
-    if text.is_empty() {
-        return None;
-    }
-    Some(swift_live_partial_to_transcript(text))
-}
-
-fn spawn_dictation_live_partial_listener(
-    app: tauri::AppHandle,
-    recording_id: String,
-    mut live_partial_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-    log_tag: &'static str,
-) {
-    tauri::async_runtime::spawn(async move {
-        let mut last_logged = String::new();
-        while let Some(text) = live_partial_rx.recv().await {
-            let transcript = text.trim().to_string();
-            if transcript.is_empty() {
-                continue;
-            }
-            if let Some(state) = app.try_state::<SwiftLivePartialState>() {
-                if let Ok(mut latest) = state.0.lock() {
-                    *latest = Some(SwiftLivePartialSnapshot {
-                        recording_id: recording_id.clone(),
-                        transcript: transcript.clone(),
-                    });
-                }
-            }
-            if transcript != last_logged {
-                let words = transcript.split_whitespace().count();
-                tracing::info!(
-                    "[{log_tag}] partial id={} chars={} words={} text={:?}",
-                    recording_id,
-                    transcript.len(),
-                    words,
-                    transcript.chars().take(160).collect::<String>()
-                );
-                last_logged = transcript.clone();
-            }
-            emit_voice_status(
-                &app,
-                "live_stt",
-                Some(transcript.as_str()),
-                Some(&recording_id),
-            );
-        }
-    });
-}
-
-struct DeepgramSessionState(dg_stream::SessionSender);
-
-#[cfg(target_os = "macos")]
-struct SwiftSessionState(swift_stream::SessionSender);
-
-#[cfg(target_os = "macos")]
-#[derive(Default)]
-struct SwiftBridgeStopInner {
-    handle: Option<swift_stream::AudioBridgeStopHandle>,
-    pending_stop: Option<(String, String)>,
-}
-
-#[cfg(target_os = "macos")]
-struct SwiftBridgeStopState(Mutex<SwiftBridgeStopInner>);
-
-#[cfg(target_os = "macos")]
-fn store_swift_bridge_stop_handle(
-    app: &tauri::AppHandle,
-    handle: swift_stream::AudioBridgeStopHandle,
-) {
-    let recording_id = handle.recording_id().to_string();
-    let Some(state) = app.try_state::<SwiftBridgeStopState>() else {
-        tracing::warn!("[swift_session] missing bridge stop state id={recording_id}");
-        return;
-    };
-    match state.0.lock() {
-        Ok(mut current) => {
-            if let Some((pending_id, pending_reason)) = current.pending_stop.take() {
-                if pending_id == recording_id {
-                    tracing::info!(
-                        "[swift_session] applying pending bridge stop id={recording_id} reason={pending_reason}"
-                    );
-                    handle.request_stop(&pending_reason);
-                } else {
-                    tracing::warn!(
-                        "[swift_session] dropping stale pending bridge stop pending_id={} new_id={recording_id}",
-                        pending_id
-                    );
-                }
-            }
-            if let Some(previous) = current.handle.replace(handle) {
-                tracing::warn!(
-                    "[swift_session] replaced stale bridge stop handle previous_id={} new_id={recording_id}",
-                    previous.recording_id()
-                );
-            } else {
-                tracing::info!("[swift_session] bridge stop handle stored id={recording_id}");
-            }
-        }
-        Err(_) => {
-            tracing::warn!("[swift_session] bridge stop state poisoned id={recording_id}");
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn request_swift_bridge_stop(app: &tauri::AppHandle, recording_id: Option<&str>, reason: &str) {
-    let Some(state) = app.try_state::<SwiftBridgeStopState>() else {
-        return;
-    };
-    let (handle, queued_pending) = match state.0.lock() {
-        Ok(mut current) => {
-            let matches = current
-                .handle
-                .as_ref()
-                .is_some_and(|handle| recording_id.map_or(true, |id| id == handle.recording_id()));
-            if matches {
-                (current.handle.take(), false)
-            } else {
-                let mut queued_pending = false;
-                if let Some(handle) = current.handle.as_ref() {
-                    tracing::warn!(
-                        "[swift_session] dropping stale bridge stop handle current_id={} expected={:?} reason={reason}",
-                        handle.recording_id(),
-                        recording_id
-                    );
-                    current.handle = None;
-                } else if let Some(id) = recording_id {
-                    current.pending_stop = Some((id.to_string(), reason.to_string()));
-                    tracing::warn!(
-                        "[swift_session] bridge stop handle not ready; queued pending stop id={id} reason={reason}"
-                    );
-                    queued_pending = true;
-                }
-                if current.handle.is_none() && !queued_pending {
-                    if let Some(id) = recording_id {
-                        current.pending_stop = Some((id.to_string(), reason.to_string()));
-                        tracing::warn!(
-                            "[swift_session] bridge stop handle not ready after stale drop; queued pending stop id={id} reason={reason}"
-                        );
-                        queued_pending = true;
-                    }
-                }
-                (None, queued_pending)
-            }
-        }
-        Err(_) => {
-            tracing::warn!(
-                "[swift_session] bridge stop state poisoned expected={:?} reason={reason}",
-                recording_id
-            );
-            (None, false)
-        }
-    };
-    if let Some(handle) = handle {
-        handle.request_stop(reason);
-    } else if !queued_pending {
-        tracing::warn!(
-            "[swift_session] bridge stop handle unavailable expected={:?} reason={reason}",
-            recording_id
-        );
-    }
+    Ok(transcript)
 }
 
 /// Stores the most-recently polished text. Populated after every voice/text polish;
@@ -1404,27 +1157,17 @@ fn restore_speaker_suppression(app: &tauri::AppHandle, reason: &str) {
     }
 }
 
-/// Hot-path cache: language setting + personal vocabulary keyterms.
+/// Hot-path cache: local speech language setting.
 ///
 /// Populated once when the backend becomes ready; refreshed in the background
-/// whenever preferences change or new vocabulary is learned.  The WS recording
-/// task reads from this cache — zero HTTP calls on the recording critical path.
+/// whenever preferences change. The recording finish task reads from this cache
+/// so local transcription does not wait on a preferences request.
 struct HotPathCache(Arc<tokio::sync::RwLock<HotPathCacheInner>>);
 
 #[derive(Default, Clone)]
 struct HotPathCacheInner {
-    /// User's STT language setting (e.g. "hi", "multi", "auto").
+    /// User's speech language setting (e.g. "hi", "multi", "auto").
     language: String,
-    /// Active STT vendor from preferences (`deepgram`).
-    stt_provider: String,
-    /// Saved Deepgram API key from preferences.
-    deepgram_key: String,
-    /// Resolved STT mode sent to Deepgram.
-    stt_mode: String,
-    /// Personal vocabulary terms sent to Deepgram as `keyterm=` biases.
-    keyterms: Vec<String>,
-    /// Trusted upstream replacement rules sent as `replace=`.
-    replacements: Vec<said_core::deepgram::ReplacementRule>,
 }
 
 /// Generation counter for status-bar idle hide timers.
@@ -3274,12 +3017,6 @@ async fn list_polish_models(
 
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
-    provider: String,
-    preferred_provider: String,
-    effective_provider: String,
-    deepgram_configured: bool,
-    swift_installed: bool,
-    swift_ready: bool,
     whisper_installed: bool,
     whisper_ready: bool,
     whisper_vad_installed: bool,
@@ -3287,58 +3024,20 @@ struct SttRuntimeInfo {
 
 #[tauri::command]
 async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeInfo, String> {
-    let swift_installed = swift_model::is_installed();
-    let whisper_installed = meeting_engine::dictation_whisper_model_installed();
-    #[cfg(target_os = "macos")]
-    let swift_ready = swift_installed && swift_stt_engine::is_ready();
-    #[cfg(not(target_os = "macos"))]
-    let swift_ready = false;
-    let whisper_ready = whisper_installed && meeting_engine::dictation_whisper_runtime_ready();
-    let whisper_vad_installed = meeting_engine::silero_vad_model_installed();
+    let whisper_installed = dictation_stt::model_installed();
+    let whisper_ready = whisper_installed && dictation_stt::runtime_ready();
+    let whisper_vad_installed = dictation_stt::vad_installed();
 
     match get_endpoint(&backend) {
-        Ok(ep) => match api::get_preferences(&ep).await {
-            Ok(p) => {
-                let preferred = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
-                let effective = said_core::stt::effective_dictation_provider(
-                    &p.stt_provider,
-                    swift_installed,
-                    whisper_installed,
-                );
-                let has_deepgram =
-                    said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
-                        .is_some();
-                Ok(SttRuntimeInfo {
-                    provider: effective.clone(),
-                    preferred_provider: preferred,
-                    effective_provider: effective,
-                    deepgram_configured: has_deepgram,
-                    swift_installed,
-                    swift_ready,
-                    whisper_installed,
-                    whisper_ready,
-                    whisper_vad_installed,
-                })
-            }
-            Err(_) => Ok(SttRuntimeInfo {
-                provider: "deepgram".into(),
-                preferred_provider: "deepgram".into(),
-                effective_provider: "deepgram".into(),
-                deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
-                swift_installed,
-                swift_ready,
+        Ok(ep) => {
+            let _ = api::get_preferences(&ep).await;
+            Ok(SttRuntimeInfo {
                 whisper_installed,
                 whisper_ready,
                 whisper_vad_installed,
-            }),
-        },
+            })
+        }
         Err(_) => Ok(SttRuntimeInfo {
-            provider: "deepgram".into(),
-            preferred_provider: "deepgram".into(),
-            effective_provider: "deepgram".into(),
-            deepgram_configured: said_core::stt::resolve_deepgram_api_key(None).is_some(),
-            swift_installed,
-            swift_ready,
             whisper_installed,
             whisper_ready,
             whisper_vad_installed,
@@ -3346,83 +3045,20 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
     }
 }
 
-fn hot_cache_effective_stt_provider(app: &tauri::AppHandle) -> String {
-    let raw = app
-        .try_state::<HotPathCache>()
-        .and_then(|hot| {
-            hot.0
-                .try_read()
-                .ok()
-                .map(|guard| guard.stt_provider.clone())
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "deepgram".to_string());
-    said_core::stt::effective_dictation_provider(
-        &raw,
-        swift_model::is_installed(),
-        meeting_engine::dictation_whisper_model_installed(),
-    )
-}
-
-fn deepgram_session_key_for_provider(stt_provider: &str, deepgram_key: &str) -> String {
-    if said_core::stt::is_deepgram(stt_provider) {
-        deepgram_key.to_string()
-    } else {
-        String::new()
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn use_swift_local_stt(app: &tauri::AppHandle) -> bool {
-    said_core::stt::is_swift_local(&hot_cache_effective_stt_provider(app))
-}
-
-fn use_whisper_local_stt(app: &tauri::AppHandle) -> bool {
-    said_core::stt::is_whisper_local(&hot_cache_effective_stt_provider(app))
-        && meeting_engine::dictation_whisper_model_installed()
-}
-
 #[tauri::command]
 async fn patch_preferences(
     backend: State<'_, BackendState>,
     tray_cache: State<'_, TrayCache>,
     hot_cache: State<'_, HotPathCache>,
-    dg_session: State<'_, DeepgramSessionState>,
     app: tauri::AppHandle,
     update: api::PrefsUpdate,
 ) -> Result<api::Preferences, String> {
     tracing::info!(
-        "[patch_prefs] Tauri received: llm_provider={:?} selected_model={:?} tone={:?} stt_provider={:?}",
+        "[patch_prefs] Tauri received: llm_provider={:?} selected_model={:?} tone={:?}",
         update.llm_provider,
         update.selected_model,
-        update.tone_preset,
-        update.stt_provider
+        update.tone_preset
     );
-    #[cfg(target_os = "macos")]
-    if let Some(ref provider) = update.stt_provider {
-        if said_core::stt::is_swift_local(provider) && !swift_model::is_installed() {
-            return Err(
-                "Download the local speech model before enabling local speech recognition"
-                    .to_string(),
-            );
-        }
-    }
-    if let Some(ref provider) = update.stt_provider {
-        if said_core::stt::is_whisper_local(provider)
-            && !meeting_engine::dictation_whisper_model_installed()
-        {
-            return Err(
-                "Download the on-device speech model before enabling local speech recognition"
-                    .to_string(),
-            );
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    if let Some(ref provider) = update.stt_provider {
-        if said_core::stt::is_swift_local(provider) {
-            return Err("This local speech engine is only available on macOS".to_string());
-        }
-    }
     let ep = get_endpoint(&backend)?;
     let result = api::patch_preferences(&ep, update).await;
     match &result {
@@ -3449,57 +3085,10 @@ async fn patch_preferences(
             // Keep hot-path cache in sync — no HTTP needed next recording.
             let mut hot = hot_cache.0.write().await;
             hot.language = p.language.clone();
-            hot.stt_provider = said_core::stt::resolve_provider_from_pref(&p.stt_provider);
-            hot.deepgram_key =
-                said_core::stt::resolve_deepgram_api_key(p.deepgram_api_key.as_deref())
-                    .unwrap_or_default();
             // Let meeting AI use the Groq key saved in Settings → API keys.
             meeting_engine::set_runtime_groq_api_key(p.groq_api_key.clone());
-            #[cfg(target_os = "macos")]
-            if said_core::stt::is_swift_local(&p.stt_provider) && swift_model::is_installed() {
-                let app_clone = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) = tokio::task::spawn_blocking(swift_stt_engine::ensure_running)
-                        .await
-                        .map_err(|e| format!("spawn failed: {e}"))
-                        .and_then(|r| r)
-                    {
-                        tracing::warn!("[swift_stt] warm start failed: {e}");
-                    } else {
-                        tracing::info!("[swift_stt] sidecar warm");
-                    }
-                    let _ = app_clone;
-                });
-            }
         }
         Err(e) => tracing::warn!("[patch_prefs] backend error: {e}"),
-    }
-    if result.is_ok() {
-        let arc = Arc::clone(&hot_cache.0);
-        let session_tx = dg_session.0.clone();
-        let ep2 = ep.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Ok(bias) = api::get_stt_bias(&ep2).await {
-                let mut hot = arc.write().await;
-                hot.stt_mode = bias.stt_mode;
-                hot.keyterms = bias.keyterms;
-                hot.replacements = bias.replacements;
-                let deepgram_key =
-                    deepgram_session_key_for_provider(&hot.stt_provider, &hot.deepgram_key);
-                let session_bias = said_core::deepgram::BiasPackage {
-                    stt_mode: hot.stt_mode.clone(),
-                    keyterms: hot.keyterms.clone(),
-                    replacements: hot.replacements.clone(),
-                };
-                drop(hot);
-                let _ = session_tx
-                    .send(dg_stream::SessionCommand::Reconfigure {
-                        deepgram_key,
-                        bias: session_bias,
-                    })
-                    .await;
-            }
-        });
     }
     result
 }
@@ -3598,50 +3187,12 @@ async fn get_favicon(host: String) -> Option<String> {
 #[tauri::command]
 async fn submit_edit_feedback(
     backend: State<'_, BackendState>,
-    hot_cache: State<'_, HotPathCache>,
-    dg_session: State<'_, DeepgramSessionState>,
     recording_id: String,
     user_kept: String,
     target_app: Option<String>,
 ) -> Result<(), String> {
     let ep = get_endpoint(&backend)?;
-    let result = api::submit_feedback(&ep, &recording_id, &user_kept, target_app.as_deref()).await;
-    // After feedback the backend may have learned new vocabulary — refresh
-    // keyterms in the background so the next recording already has them.
-    if result.is_ok() {
-        let arc = Arc::clone(&hot_cache.0);
-        let session_tx = dg_session.0.clone();
-        let ep2 = ep.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Ok(bias) = api::get_stt_bias(&ep2).await {
-                tracing::debug!(
-                    "[hot_cache] refreshed STT bias after feedback (mode={} keyterms={} replacements={})",
-                    bias.stt_mode,
-                    bias.keyterms.len(),
-                    bias.replacements.len()
-                );
-                let mut hot = arc.write().await;
-                hot.stt_mode = bias.stt_mode;
-                hot.keyterms = bias.keyterms;
-                hot.replacements = bias.replacements;
-                let deepgram_key =
-                    deepgram_session_key_for_provider(&hot.stt_provider, &hot.deepgram_key);
-                let session_bias = said_core::deepgram::BiasPackage {
-                    stt_mode: hot.stt_mode.clone(),
-                    keyterms: hot.keyterms.clone(),
-                    replacements: hot.replacements.clone(),
-                };
-                drop(hot);
-                let _ = session_tx
-                    .send(dg_stream::SessionCommand::Reconfigure {
-                        deepgram_key,
-                        bias: session_bias,
-                    })
-                    .await;
-            }
-        });
-    }
-    result
+    api::submit_feedback(&ep, &recording_id, &user_kept, target_app.as_deref()).await
 }
 
 #[tauri::command]
@@ -3950,12 +3501,40 @@ const QUEUED_FINISH_TIMEOUT_MS: u64 = 2_500;
 const QUEUED_FINISH_POLL_MS: u64 = 25;
 const RELEASE_MIC_CLEANUP_DELAY_MS: u64 = 850;
 const RELEASE_MIC_CLEANUP_RECHECK_MS: u64 = 1_800;
+const DICTATION_RELEASE_TAIL_MS: u64 = 400;
+const DICTATION_RELEASE_TAIL_MAX_MS: u64 = 1_000;
 
 fn now_ms_desktop() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn dictation_release_tail_ms() -> u64 {
+    std::env::var("AIRNOTE_DICTATION_RELEASE_TAIL_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DICTATION_RELEASE_TAIL_MS)
+        .min(DICTATION_RELEASE_TAIL_MAX_MS)
+}
+
+fn maybe_pad_dictation_release(app: &tauri::AppHandle) {
+    let route = app
+        .try_state::<RecordingRouteState>()
+        .and_then(|route| route.0.lock().ok().and_then(|guard| *guard));
+    if route != Some(RecordingRoute::Normal) {
+        return;
+    }
+
+    let tail_ms = dictation_release_tail_ms();
+    if tail_ms == 0 {
+        return;
+    }
+
+    tracing::info!("[record] release tail pad before stop tail_ms={tail_ms}");
+    diag::breadcrumb(format!("release_tail:{tail_ms}ms"));
+    std::thread::sleep(Duration::from_millis(tail_ms));
 }
 
 // Poll cadence and total budget for reading the shared app state from a
@@ -4430,36 +4009,7 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         }
     }
 
-    // Lock and pre-unlock the frontmost app's accessibility tree BEFORE
-    // recording begins. Chrome / Electron need time to build their
-    // Accessibility/UIAutomation cache after the first nudge. By unlocking here
-    // we give the browser the full dictation window (typically 2-10 s) to get
-    // ready, so that post-paste edit detection can read focused-field text.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        if !meeting_capture {
-            let pid = paster::lock_frontmost_app_now();
-            tracing::debug!("[record] locked frontmost app for edit-watch pid={pid:?}");
-            if let Ok(mut target) = app.state::<EditTargetState>().0.lock() {
-                *target = pid;
-            }
-            // Capture the text currently in the focused field. This gives the
-            // polish LLM surrounding context for smarter STT corrections —
-            // e.g. if the field already mentions "MACOBS", the LLM knows
-            // "main corps" in the transcript is likely "MACOBS".
-            let screen_text = match pid {
-                Some(p) => paster::read_focused_value_fast_for_pid(p),
-                None => paster::read_focused_value_fast(),
-            };
-            if let Ok(mut ctx) = app.state::<ScreenContextState>().0.lock() {
-                *ctx = screen_text.filter(|s| !s.trim().is_empty());
-                if let Some(text) = ctx.as_ref() {
-                    tracing::info!("[record] screen context: {} chars", text.len());
-                }
-            }
-        }
-    }
-
+    let arm_started = std::time::Instant::now();
     diag::breadcrumb("start:lock_acquire");
     let (started, level_recv) = match lock_shared(shared, "start_recording") {
         Ok(mut d) => {
@@ -4476,54 +4026,14 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             return;
         }
     };
-    match started {
+
+    let snap = match started {
         Ok(snap) => {
-            let (_session_gen, run_id) = app.state::<RecordingSessionState>().begin();
-            let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
-                RecordingRoute::Divo
-            } else if PROBLEM_START_PENDING.swap(false, Ordering::SeqCst) {
-                RecordingRoute::Problem
-            } else {
-                app.try_state::<MeetingModeState>()
-                    .map(|s| {
-                        if s.capture_enabled() {
-                            RecordingRoute::Meeting
-                        } else {
-                            RecordingRoute::Normal
-                        }
-                    })
-                    .unwrap_or(RecordingRoute::Normal)
-            };
-            if let Ok(mut route_state) = app.state::<RecordingRouteState>().0.lock() {
-                *route_state = Some(route);
-            }
-            let mode = match route {
-                RecordingRoute::Divo => "divo",
-                RecordingRoute::Problem => "developer_problem",
-                RecordingRoute::Meeting => "meeting",
-                RecordingRoute::Normal if said_core::prefs::load().message_polish_mode => {
-                    "message_polish"
-                }
-                RecordingRoute::Normal => "normal_voice",
-            };
-            if let Some(ep) = app
-                .try_state::<BackendState>()
-                .and_then(|b| b.0.lock().ok().and_then(|g| g.clone()))
-            {
-                telemetry::on_run_start(&ep, &run_id, mode, None);
-            }
-            tracing::info!("[record] started — state={}", snap.state);
-            diag::breadcrumb("start:recording");
-            sync_tray(app, &snap);
-            emit_app_state(app, &snap);
-            if app
-                .try_state::<LongDictationState>()
-                .map(|s| s.pending_lock.swap(false, Ordering::SeqCst))
-                .unwrap_or(false)
-            {
-                activate_long_dictation_lock(app);
-            }
-            emit_meeting_stt_status(app);
+            tracing::info!(
+                "[record] audio armed in {}ms",
+                arm_started.elapsed().as_millis()
+            );
+            snap
         }
         Err(e) => {
             diag::breadcrumb("start:failed");
@@ -4538,11 +4048,93 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             );
             return;
         }
+    };
+
+    // Lock and pre-unlock the frontmost app's accessibility tree after audio is
+    // armed. Chrome / Electron still get the whole dictation window to warm up,
+    // while the user's first syllable is already being captured.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        if !meeting_capture {
+            let context_started = std::time::Instant::now();
+            let pid = paster::lock_frontmost_app_now();
+            tracing::debug!("[record] locked frontmost app for edit-watch pid={pid:?}");
+            if let Ok(mut target) = app.state::<EditTargetState>().0.lock() {
+                *target = pid;
+            }
+            // Capture the text currently in the focused field. This gives the
+            // polish LLM surrounding context for smarter STT corrections —
+            // e.g. if the field already mentions "MACOBS", the LLM knows
+            // "main corps" in the transcript is likely "MACOBS".
+            let screen_text = match pid {
+                Some(p) => paster::read_focused_value_fast_for_pid(p),
+                None => paster::read_focused_value_fast(),
+            };
+            if let Ok(mut ctx) = app.state::<ScreenContextState>().0.lock() {
+                *ctx = screen_text.filter(|s| !s.trim().is_empty());
+                if let Some(text) = ctx.as_ref() {
+                    tracing::info!(
+                        "[record] screen context: {} chars in {}ms",
+                        text.len(),
+                        context_started.elapsed().as_millis()
+                    );
+                }
+            }
+        }
+    }
+
+    {
+        let (_session_gen, run_id) = app.state::<RecordingSessionState>().begin();
+        let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
+            RecordingRoute::Divo
+        } else if PROBLEM_START_PENDING.swap(false, Ordering::SeqCst) {
+            RecordingRoute::Problem
+        } else {
+            app.try_state::<MeetingModeState>()
+                .map(|s| {
+                    if s.capture_enabled() {
+                        RecordingRoute::Meeting
+                    } else {
+                        RecordingRoute::Normal
+                    }
+                })
+                .unwrap_or(RecordingRoute::Normal)
+        };
+        if let Ok(mut route_state) = app.state::<RecordingRouteState>().0.lock() {
+            *route_state = Some(route);
+        }
+        let mode = match route {
+            RecordingRoute::Divo => "divo",
+            RecordingRoute::Problem => "developer_problem",
+            RecordingRoute::Meeting => "meeting",
+            RecordingRoute::Normal if said_core::prefs::load().message_polish_mode => {
+                "message_polish"
+            }
+            RecordingRoute::Normal => "normal_voice",
+        };
+        if let Some(ep) = app
+            .try_state::<BackendState>()
+            .and_then(|b| b.0.lock().ok().and_then(|g| g.clone()))
+        {
+            telemetry::on_run_start(&ep, &run_id, mode, None);
+        }
+        tracing::info!("[record] started — state={}", snap.state);
+        diag::breadcrumb("start:recording");
+        sync_tray(app, &snap);
+        emit_app_state(app, &snap);
+        if app
+            .try_state::<LongDictationState>()
+            .map(|s| s.pending_lock.swap(false, Ordering::SeqCst))
+            .unwrap_or(false)
+        {
+            activate_long_dictation_lock(app);
+        }
+        emit_meeting_stt_status(app);
     }
 
     // Drive the floating HUD visualizer from the same microphone samples used
-    // by recording. This stays independent from Deepgram so the UI remains
-    // responsive even if streaming is disabled or falls back to HTTP STT.
+    // by recording. It stays independent from speech recognition so the UI
+    // remains responsive while local ASR runs after release.
     let level_recv = level_recv;
     if let Some(level_recv) = level_recv {
         let app_levels = app.clone();
@@ -4681,7 +4273,6 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
 
     // ── Meeting time ceiling: force-finalize after MEETING_MAX_CHUNK_MS ────────
     // Prevents unbounded RAM accumulation when someone talks non-stop.
-    // Must fire before Deepgram's 45s MAX_STREAMING_DURATION to avoid data loss.
     if let Some(meeting) = app.try_state::<MeetingModeState>() {
         if meeting.capture_enabled() {
             let active = Arc::clone(&meeting.active);
@@ -4712,9 +4303,8 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
         }
     }
 
-    // ── P5: Live STT WS (Deepgram) or chunk drain (batch-only providers) ───────
-    let stt_provider = hot_cache_effective_stt_provider(app);
-    let batch_only_stt = said_core::stt::use_batch_stt_only(&stt_provider);
+    // Keep a local PCM tap for crash recovery. Speech recognition runs once,
+    // locally, after release.
     let chunk_recv = shared.lock().ok().and_then(|mut d| d.take_chunk_receiver());
     if let Some(chunk_recv) = chunk_recv {
         // Crash-safe recovery: capture this dictation's audio to disk so a crash
@@ -4732,10 +4322,10 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
             .and_then(|s| s.current().map(|(_, id)| id))
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-        if use_whisper_local_stt(app) && !is_meeting_capture {
-            if !meeting_engine::silero_vad_model_installed() {
+        if !is_meeting_capture {
+            if !dictation_stt::vad_installed() {
                 tracing::warn!(
-                    "[stt] Silero VAD missing — downloading; whisper runs without VAD until install completes"
+                    "[speech] Silero VAD missing — downloading; local speech runs without VAD until install completes"
                 );
                 let app_vad = app.clone();
                 tauri::async_runtime::spawn(async move {
@@ -4745,193 +4335,12 @@ fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
                     }
                 });
             }
-            tracing::info!(
-                "[stt] provider={stt_provider} — batch-only whisper.cpp on release (no live partials)"
-            );
-            // Clear any stale live partial so the status bar doesn't show one; the
-            // on-device whisper.cpp pass is batch-only (runs once, on release). We
-            // still tap the PCM into the crash-recovery session while recording.
-            if let Some(state) = app.try_state::<SwiftLivePartialState>() {
-                if let Ok(mut latest) = state.0.lock() {
-                    *latest = None;
-                }
-            }
+            tracing::info!("[speech] local batch transcript will run on release");
             whisper_dictation_stream::spawn_dictation_recovery_drain(recording_id, chunk_recv);
             return;
         }
-
-        if batch_only_stt && !is_meeting_capture {
-            tracing::info!(
-                "[stt] provider={stt_provider} — skipping Deepgram WS; backend will batch-STT on release"
-            );
-            dg_stream::spawn_chunk_drain(recording_id.clone(), chunk_recv);
-            return;
-        }
-
-        let streaming_state = app.state::<StreamingState>();
-        let (transcript_tx, transcript_rx) =
-            tokio::sync::oneshot::channel::<Option<dg_stream::StreamingTranscript>>();
-        if let Some(mut g) = streaming_state.0.lock().ok() {
-            *g = Some(transcript_rx);
-        }
-        let utterance_end_tx = app.try_state::<MeetingModeState>().and_then(|meeting| {
-            if !meeting.capture_enabled() {
-                return None;
-            }
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            let active = Arc::clone(&meeting.active);
-            let muted = Arc::clone(&meeting.muted);
-            let expected_generation = meeting.generation.load(Ordering::SeqCst);
-            let generation = Arc::clone(&meeting.generation);
-            let shared = Arc::clone(shared);
-            let app = app.clone();
-            let backend = Arc::clone(&app.state::<BackendState>().0);
-            tauri::async_runtime::spawn(async move {
-                if rx.recv().await.is_some()
-                    && active.load(Ordering::SeqCst)
-                    && !muted.load(Ordering::SeqCst)
-                    && generation.load(Ordering::SeqCst) == expected_generation
-                {
-                    let still_recording = hotkey_current_state(&shared, "meeting utterance end")
-                        == Some(desktop::AppState::Recording);
-                    if still_recording {
-                        tracing::info!("[meeting_mode] Deepgram utterance end — finishing chunk");
-                        do_finish_recording(shared, app, backend);
-                    }
-                }
-            });
-            Some(tx)
-        });
-
-        let backend_for_pe = Arc::clone(&app.state::<BackendState>().0);
-        let use_swift = {
-            #[cfg(target_os = "macos")]
-            {
-                use_swift_local_stt(&app)
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                false
-            }
-        };
-        let backend_ep_for_server_runtime = backend_for_pe.lock().ok().and_then(|g| g.clone());
-        let screen_context_for_server_runtime = app
-            .try_state::<ScreenContextState>()
-            .and_then(|ctx| ctx.0.lock().ok()?.clone());
-        // Focused app locked at record start (same PID the edit-watcher uses) → bundle-id /
-        // exe key, forwarded on voice.start so server polish can inject the app-bucket style.
-        let target_app_for_server_runtime = app
-            .try_state::<EditTargetState>()
-            .and_then(|s| *s.0.lock().ok()?)
-            .and_then(app_identity::app_key_for_pid);
-        let echo_gate = app.try_state::<MeetingModeState>().and_then(|meeting| {
-            if meeting.capture_enabled() {
-                Some(Arc::clone(&meeting.echo_gate))
-            } else {
-                None
-            }
-        });
-
-        if use_swift {
-            #[cfg(target_os = "macos")]
-            {
-                let session_tx = app.state::<SwiftSessionState>().0.clone();
-                let app_for_partials = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let (live_partial_tx, live_partial_rx) =
-                        tokio::sync::mpsc::unbounded_channel::<String>();
-                    if let Some(state) = app_for_partials.try_state::<SwiftLivePartialState>() {
-                        if let Ok(mut latest) = state.0.lock() {
-                            *latest = None;
-                        }
-                    }
-                    spawn_dictation_live_partial_listener(
-                        app_for_partials.clone(),
-                        recording_id.clone(),
-                        live_partial_rx,
-                        "swift_live",
-                    );
-                    // Best-effort vocab biasing for the on-device model. Uses
-                    // .as_ref() so the endpoint stays available for the live
-                    // mirror below; tight timeout means a slow/failed fetch
-                    // never delays dictation start.
-                    let vocab: Vec<String> = match backend_ep_for_server_runtime.as_ref() {
-                        Some(ep) => fetch_stt_keyterms(ep).await,
-                        None => Vec::new(),
-                    };
-                    let start_cmd = swift_stream::SessionCommand::StartRecording {
-                        id: recording_id.clone(),
-                        result_tx: transcript_tx,
-                        pre_embed: None,
-                        utterance_end_tx: None,
-                        live_partial_tx: Some(live_partial_tx),
-                        vocab,
-                    };
-                    if let Err(err) = session_tx.send(start_cmd).await {
-                        if let swift_stream::SessionCommand::StartRecording { result_tx, .. } =
-                            err.0
-                        {
-                            let _ = result_tx.send(None);
-                        }
-                        return;
-                    }
-                    let server_runtime_mirror = backend_ep_for_server_runtime.and_then(|ep| {
-                        server_runtime_stream::maybe_spawn_live_audio_mirror(
-                            recording_id.clone(),
-                            ep,
-                            screen_context_for_server_runtime,
-                            target_app_for_server_runtime,
-                        )
-                    });
-                    let bridge_stop_handle = swift_stream::spawn_audio_bridge_with_echo_gate(
-                        recording_id,
-                        chunk_recv,
-                        session_tx,
-                        echo_gate,
-                        server_runtime_mirror,
-                    );
-                    store_swift_bridge_stop_handle(&app_for_partials, bridge_stop_handle);
-                });
-            }
-        } else {
-            let session_tx = app.state::<DeepgramSessionState>().0.clone();
-            tauri::async_runtime::spawn(async move {
-                let pre_embed_info: Option<(String, String)> =
-                    backend_for_pe.lock().ok().and_then(|g| {
-                        g.as_ref()
-                            .map(|ep| (format!("{}/v1/pre-embed", ep.url), ep.secret.clone()))
-                    });
-                let start_cmd = dg_stream::SessionCommand::StartRecording {
-                    id: recording_id.clone(),
-                    result_tx: transcript_tx,
-                    pre_embed: pre_embed_info,
-                    utterance_end_tx,
-                };
-                if let Err(err) = session_tx.send(start_cmd).await {
-                    if let dg_stream::SessionCommand::StartRecording { result_tx, .. } = err.0 {
-                        let _ = result_tx.send(None);
-                    }
-                    return;
-                }
-                let server_runtime_mirror = backend_ep_for_server_runtime.and_then(|ep| {
-                    server_runtime_stream::maybe_spawn_live_audio_mirror(
-                        recording_id.clone(),
-                        ep,
-                        screen_context_for_server_runtime,
-                        target_app_for_server_runtime,
-                    )
-                });
-                dg_stream::spawn_audio_bridge_with_echo_gate(
-                    recording_id,
-                    chunk_recv,
-                    session_tx,
-                    echo_gate,
-                    server_runtime_mirror,
-                );
-            });
-        }
     } else {
-        tracing::debug!("[dg_stream] no chunk receiver — WS streaming not started");
+        tracing::debug!("[speech] no chunk receiver — local recovery tap not started");
     }
 }
 
@@ -4952,18 +4361,6 @@ fn do_cancel_recording(
         *route = None;
     }
 
-    #[cfg(target_os = "macos")]
-    let cancel_run_id = app
-        .try_state::<RecordingSessionState>()
-        .and_then(|session| session.current().map(|(_, id)| id));
-
-    let _ = app
-        .state::<StreamingState>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|mut g| g.take());
-
     let (stop_rx, snap) = {
         let mut d = match shared.lock() {
             Ok(g) => g,
@@ -4973,13 +4370,7 @@ fn do_cancel_recording(
             return;
         }
         let stop_rx = match d.begin_stop() {
-            Ok((stop_rx, _)) => {
-                #[cfg(target_os = "macos")]
-                if use_swift_local_stt(&app) {
-                    request_swift_bridge_stop(&app, cancel_run_id.as_deref(), reason);
-                }
-                Some(stop_rx)
-            }
+            Ok((stop_rx, _)) => Some(stop_rx),
             Err(e) => {
                 tracing::warn!("[meeting_mode] cancel failed ({reason}): {e}");
                 None
@@ -5047,6 +4438,7 @@ fn do_finish_recording(
     // samples and encode WAV after releasing it. Keep all UI/AppKit work outside
     // this mutex; tray/menu calls can block on macOS and must not freeze hotkeys.
     diag::breadcrumb("finish:enter");
+    maybe_pad_dictation_release(&app);
     let begin_stop = {
         let mut d = match lock_shared(&shared, "finish_recording") {
             Ok(g) => g,
@@ -5078,10 +4470,6 @@ fn do_finish_recording(
 
     let (stop_rx, was_too_short) = match begin_stop {
         Ok((stop_rx, was_too_short, snap)) => {
-            #[cfg(target_os = "macos")]
-            if use_swift_local_stt(&app) {
-                request_swift_bridge_stop(&app, client_run_id.as_deref(), "finish_begin_stop");
-            }
             sync_tray(&app, &snap);
             emit_app_state(&app, &snap);
             (stop_rx, was_too_short)
@@ -5161,15 +4549,6 @@ fn do_finish_recording(
         }
     };
 
-    // ── P5: Take the transcript receiver before spawning the async task ────────
-    // Use ok() so a poisoned mutex from a previous panic doesn't cascade-crash.
-    let transcript_rx = app
-        .state::<StreamingState>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|mut g| g.take());
-
     // Do the async SSE pipeline in a tokio task
     let shared2 = Arc::clone(&shared);
     let app2 = app.clone();
@@ -5177,189 +4556,46 @@ fn do_finish_recording(
 
     tauri::async_runtime::spawn(async move {
         tracing::info!("[finish] pipeline start session={session_tag}");
-        // ── P5: Wait briefly for the Deepgram WS transcript ───────────────────
-        // begin_stop() dropped chunk_tx, which makes the audio bridge send a
-        // Deepgram Finalize command. The persistent WS actor usually returns
-        // quickly; if it is disconnected or reconnecting it sends None so the
-        // backend batch-STT fallback can take over without a long local wait.
-        // Estimate recording duration from WAV size:
-        // 16kHz × 16-bit × mono = 32,000 bytes/sec, plus 44 byte WAV header
-        let wav_duration_s = (wav.len().saturating_sub(44)) as f64 / 32_000.0;
-
-        let message_polish_mode = !is_problem && said_core::prefs::load().message_polish_mode;
-        let stt_provider = hot_cache_effective_stt_provider(&app2);
         let stt_language = app2
             .try_state::<HotPathCache>()
             .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
-        let swift_local_provider = said_core::stt::is_swift_local(&stt_provider);
-        let no_speech_levels = if !message_polish_mode && swift_local_provider {
-            dictation_wav_is_no_speech(&wav)
-        } else {
-            None
-        };
-        let pre_transcript: Option<dg_stream::StreamingTranscript> = if message_polish_mode {
-            tracing::info!("[finish] message polish mode — skipping STT pre-transcript");
-            None
-        } else if let Some(levels) = no_speech_levels {
+
+        let pre_transcript = if let Some(levels) = dictation_wav_is_no_speech(&wav) {
             tracing::warn!(
-                "[finish] no speech energy detected for Swift local run — suppressing STT transcript (peak={:.5}, rms={:.5}, samples={})",
+                "[finish] no speech energy detected — suppressing local transcript (peak={:.5}, rms={:.5}, samples={})",
                 levels.peak,
                 levels.rms,
                 levels.samples,
             );
             None
-        } else if said_core::stt::is_whisper_local(&stt_provider) {
-            if let Some(t) = whisper_local_pre_transcript(&wav, &stt_language).await {
-                Some(t)
-            } else if let Some(t) =
-                dictation_live_partial_for_recording(&app2, client_run_id.as_deref())
-            {
-                tracing::info!(
-                    "[finish] whisper.cpp using live partial fallback ({} chars)",
-                    t.transcript.len()
-                );
-                Some(t)
-            } else {
-                tracing::warn!(
-                    "[finish] whisper.cpp local STT failed — backend will try cloud STT fallback"
-                );
-                None
-            }
-        } else if said_core::stt::use_batch_stt_only(&stt_provider) {
-            tracing::info!(
-                "[finish] batch-only STT (provider={stt_provider}) — skipping WS pre-transcript"
-            );
-            None
-        } else if let Some(rx) = transcript_rx {
-            let wait_start = tokio::time::Instant::now();
-            let swift_local = said_core::stt::is_swift_local(&stt_provider);
-            let swift_live_at_finish = swift_local
-                && dictation_live_partial_for_recording(&app2, client_run_id.as_deref()).is_some();
-            let wait_ms = if swift_local {
-                SWIFT_FINAL_HANDOFF_WAIT_MS
-            } else {
-                2_500
-            };
-            if swift_local {
-                tracing::info!(
-                    "[finish] Swift final handoff wait={}ms live_partial_at_start={} audio={:.1}s",
-                    wait_ms,
-                    swift_live_at_finish,
-                    wav_duration_s
-                );
-            }
-            let try_swift_live_fallback = |reason: &str| -> Option<dg_stream::StreamingTranscript> {
-                if !swift_local {
-                    return None;
-                }
-                let Some(t) = dictation_live_partial_for_recording(&app2, client_run_id.as_deref())
-                else {
-                    tracing::warn!(
-                        "[finish] Swift live partial fallback unavailable after {}ms reason={reason} run_id={:?}",
-                        wait_start.elapsed().as_millis(),
-                        client_run_id.as_deref()
-                    );
-                    return None;
-                };
-                let word_count = if t.meta.word_count > 0 {
-                    t.meta.word_count
-                } else {
-                    t.transcript.split_whitespace().count()
-                };
-                if let Some(reject_reason) =
-                    reject_pre_transcript_reason(&t.transcript, word_count, wav_duration_s)
-                {
-                    tracing::warn!(
-                        "[finish] Swift live partial fallback rejected after {}ms reason={reason} reject={reject_reason} transcript={:?}",
-                        wait_start.elapsed().as_millis(),
-                        t.transcript
-                    );
-                    return None;
-                }
-                tracing::info!(
-                    "[finish] ✓ Swift live partial fallback ready after {}ms reason={reason} ({} chars, {} words, {:.1}s audio): \"{}\"",
-                    wait_start.elapsed().as_millis(),
-                    t.transcript.len(),
-                    word_count,
-                    wav_duration_s,
-                    t.transcript
-                );
-                Some(t)
-            };
-            match tokio::time::timeout(std::time::Duration::from_millis(wait_ms), rx).await {
-                Ok(Ok(Some(t))) if !t.transcript.is_empty() => {
-                    let elapsed_ms = wait_start.elapsed().as_millis();
-                    let word_count = if t.meta.word_count > 0 {
-                        t.meta.word_count
-                    } else {
-                        t.transcript.split_whitespace().count()
-                    };
-                    let expected_min_words = wav_duration_s.max(1.0) as usize;
-                    if let Some(reason) =
-                        reject_pre_transcript_reason(&t.transcript, word_count, wav_duration_s)
-                    {
-                        tracing::warn!(
-                            "[finish] WS transcript rejected after {elapsed_ms}ms ({reason}) — falling back to HTTP STT. transcript={:?}",
-                            t.transcript
-                        );
-                        None
-                    } else if !swift_local
-                        && word_count < expected_min_words
-                        && wav_duration_s > 3.0
-                    {
-                        tracing::warn!(
-                            "[finish] WS transcript too short after {elapsed_ms}ms: {} words for {:.1}s recording (expected >= {}) — falling back to HTTP STT. transcript={:?}",
-                            word_count,
-                            wav_duration_s,
-                            expected_min_words,
-                            t.transcript
-                        );
-                        None
-                    } else {
-                        tracing::info!(
-                            "[finish] ✓ WS pre-transcript ready session={session_tag} after {elapsed_ms}ms ({} chars, {} words, {:.1}s audio): \"{}\"",
-                            t.transcript.len(),
-                            word_count,
-                            wav_duration_s,
-                            t.transcript
-                        );
-                        Some(t)
-                    }
-                }
-                Ok(Ok(Some(_))) => {
-                    tracing::info!(
-                        "[finish] WS transcript empty after {}ms — checking Swift live fallback",
-                        wait_start.elapsed().as_millis()
-                    );
-                    try_swift_live_fallback("empty_ws_transcript")
-                }
-                Ok(Ok(None)) => {
-                    tracing::info!(
-                        "[finish] WS unavailable after {}ms — checking Swift live fallback",
-                        wait_start.elapsed().as_millis()
-                    );
-                    try_swift_live_fallback("ws_unavailable")
-                }
-                Ok(Err(_)) => {
-                    tracing::info!(
-                        "[finish] WS transcript sender dropped after {}ms — checking Swift live fallback",
-                        wait_start.elapsed().as_millis()
-                    );
-                    try_swift_live_fallback("sender_dropped")
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "[finish] WS transcript timed out after {}ms — checking Swift live fallback",
-                        wait_start.elapsed().as_millis()
-                    );
-                    try_swift_live_fallback("ws_timeout")
-                }
-            }
         } else {
-            None
+            match local_pre_transcript(&wav, &stt_language).await {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::warn!("[finish] local speech failed: {e}");
+                    None
+                }
+            }
         };
+
+        if pre_transcript.is_none() {
+            let message = "Local speech recognition failed. Download or repair the local speech model in Settings.";
+            emit_voice_error_quiet(&app2, message);
+            let snap = {
+                let mut d = match shared2.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                d.finish_err(message.to_string())
+            };
+            recovery::clear();
+            sync_tray(&app2, &snap);
+            emit_app_state(&app2, &snap);
+            emit_meeting_stt_status(&app2);
+            return;
+        }
 
         let screen_context = app2
             .try_state::<ScreenContextState>()
@@ -5839,7 +5075,7 @@ async fn run_problem_command(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
     wav: Vec<u8>,
     client_run_id: Option<String>,
-    pre_transcript: Option<dg_stream::StreamingTranscript>,
+    pre_transcript: Option<dictation_stt::LocalTranscript>,
     screen_context: Option<String>,
     app: &tauri::AppHandle,
     edit_target_pid: Option<i32>,
@@ -6106,7 +5342,7 @@ async fn run_voice_polish_sse(
     wav: Vec<u8>,
     target_app: Option<String>,
     client_run_id: Option<String>,
-    pre_transcript: Option<dg_stream::StreamingTranscript>,
+    pre_transcript: Option<dictation_stt::LocalTranscript>,
     repair_mode: Option<String>,
     screen_context: Option<String>,
     message_polish_override: Option<bool>,
@@ -6154,11 +5390,13 @@ async fn run_voice_polish_sse(
     let live_guard2 = live_guard.clone();
     let typed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let typed_text2 = typed_text.clone();
+    let initial_field_read_t0 = std::time::Instant::now();
     let initial_field_text = if suppress_local {
         None
     } else {
         paster::read_focused_value_fast()
     };
+    let initial_field_read_ms = initial_field_read_t0.elapsed().as_millis() as i64;
     let error_target_app = target_app.clone();
     let error_client_run_id = client_run_id.clone();
     let event_client_run_id = client_run_id.clone();
@@ -6175,15 +5413,19 @@ async fn run_voice_polish_sse(
         .unwrap_or(0);
     let pre_transcript_meta = pre_transcript.as_ref().map(|t| {
         format!(
-            "confidence={:.2} mean_word_confidence={:.2} meta_words={} mode={}",
-            t.meta.confidence, t.meta.mean_word_confidence, t.meta.word_count, t.meta.stt_mode
+            "confidence={:.2} mean_word_confidence={:.2} meta_words={} model={} origin={:?}",
+            t.meta.confidence,
+            t.meta.mean_word_confidence,
+            t.meta.word_count,
+            t.meta.model,
+            t.meta.origin,
         )
     });
-    let pipeline_path = if pre_transcript.is_some() {
-        "wav_plus_ws_pretranscript"
-    } else {
-        "wav_requires_backend_stt"
-    };
+    let pre_transcript_duration_ms = pre_transcript
+        .as_ref()
+        .map(|t| t.meta.duration_ms)
+        .unwrap_or(0);
+    let pipeline_path = "local_transcript";
     tracing::info!(
         "[pipeline] backend handoff run_id={} path={} wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} repair_mode={} screen_context_chars={} meta={}",
         client_run_id.as_deref().unwrap_or("none"),
@@ -6213,7 +5455,7 @@ async fn run_voice_polish_sse(
                     format!("\"{}\"", t.transcript)
                 }
             })
-            .unwrap_or_else(|| "none (backend must run STT)".into()),
+            .unwrap_or_else(|| "none (local speech failed)".into()),
     );
     let mut on_polish_event = move |event| {
         match &event {
@@ -6370,7 +5612,6 @@ async fn run_voice_polish_sse(
         }
     };
 
-    let had_ws_pretranscript = pre_transcript.is_some();
     let wav_len = wav.len();
     let target_app_for_telemetry = target_app.clone();
     let mut initial_trace = said_core::dictation_trace::DictationTrace::default();
@@ -6388,6 +5629,7 @@ async fn run_voice_polish_sse(
             "pre_transcript_present": pre_transcript.is_some(),
             "pre_transcript_chars": pre_transcript_chars,
             "pre_transcript_words": pre_transcript_words,
+            "local_asr_ms": pre_transcript_duration_ms,
             "message_polish": message_polish_mode,
             "repair_mode": repair_mode.is_some(),
             "screen_context_chars": screen_context.as_ref().map(|s| s.chars().count()).unwrap_or(0),
@@ -6399,6 +5641,7 @@ async fn run_voice_polish_sse(
         component: "desktop",
         function: "paster::read_focused_value_fast",
         output: initial_field_text.as_deref(),
+        duration_ms: Some(initial_field_read_ms),
         reason: Some("field text before live typing/reconcile"),
         risk: Some("paste_context"),
         metadata: serde_json::json!({
@@ -6408,40 +5651,24 @@ async fn run_voice_polish_sse(
         ..Default::default()
     });
     let initial_trace_json = Some(initial_trace.into_value());
-    let done_result = if let Some(transcript) = pre_transcript {
-        tracing::info!(
-            "[pipeline] fast path: sending WAV + WS transcript to backend (backend should skip HTTP STT unless rescue is triggered)"
-        );
-        api::stream_voice_polish(
-            &ep,
-            wav,
-            target_app,
-            client_run_id.clone(),
-            initial_trace_json.clone(),
-            Some(transcript.transcript),
-            Some(transcript.meta),
-            repair_mode,
-            screen_context,
-            message_polish_mode,
-            &mut on_polish_event,
-        )
-        .await
-    } else {
-        api::stream_voice_polish(
-            &ep,
-            wav,
-            target_app,
-            client_run_id.clone(),
-            initial_trace_json,
-            None,
-            None,
-            repair_mode,
-            screen_context,
-            message_polish_mode,
-            &mut on_polish_event,
-        )
-        .await
+    let Some(transcript) = pre_transcript else {
+        return Err("Local transcript is required before voice polish".into());
     };
+    tracing::info!("[pipeline] sending WAV + local transcript to backend");
+    let done_result = api::stream_voice_polish(
+        &ep,
+        wav,
+        target_app,
+        client_run_id.clone(),
+        initial_trace_json,
+        Some(transcript.transcript),
+        Some(transcript.meta),
+        repair_mode,
+        screen_context,
+        message_polish_mode,
+        &mut on_polish_event,
+    )
+    .await;
     let done = match done_result {
         Ok(d) => d,
         Err(e) => {
@@ -6740,10 +5967,8 @@ async fn run_voice_polish_sse(
         let audio_seconds = wav_len as f64 / (16_000.0 * 2.0);
         let word_count = done.polished.split_whitespace().count() as i32;
         let char_count = done.polished.chars().count() as i32;
-        let stt_provider = hot_cache_effective_stt_provider(app);
-        let stt_model = said_core::stt::telemetry_stt_model(&stt_provider).to_string();
-        let stt_path =
-            said_core::stt::telemetry_stt_path(&stt_provider, had_ws_pretranscript).to_string();
+        let speech_model = said_core::stt::telemetry_speech_model().to_string();
+        let speech_path = said_core::stt::telemetry_speech_path().to_string();
         telemetry::on_pipeline_done(
             &ep,
             run_id,
@@ -6761,11 +5986,8 @@ async fn run_voice_polish_sse(
                 success: !done.polished.is_empty() || output_pasted,
                 error_code: None,
                 used_clipboard_fallback,
-                used_ws_pretranscript: had_ws_pretranscript,
-                used_http_stt_fallback: !had_ws_pretranscript,
-                stt_provider,
-                stt_model,
-                stt_path,
+                speech_model,
+                speech_path,
                 polished_preview: done.polished.clone(),
             },
         );
@@ -7360,77 +6582,6 @@ fn retry_recording(
     )
 }
 
-/// Re-transcribe a saved recording on-device when "Beta Mode" (Swift local) is
-/// the selected STT provider, so ⌃⌥R retry honors the Settings choice instead of
-/// always using the backend's Deepgram STT. Returns the local transcript to hand
-/// the backend as a pre-transcript (so it only polishes), or `None` — for
-/// Deepgram users, an unavailable model, or any failure — so retry transparently
-/// falls back to backend STT.
-#[cfg(target_os = "macos")]
-async fn swift_local_retry_pre_transcript(
-    app: &tauri::AppHandle,
-    backend: &Arc<Mutex<Option<BackendEndpoint>>>,
-    wav: &[u8],
-) -> Option<dg_stream::StreamingTranscript> {
-    if !use_swift_local_stt(app) || !swift_model::is_installed() {
-        return None;
-    }
-    let pcm = wav_to_pcm16(wav)?;
-    if pcm.is_empty() {
-        return None;
-    }
-    let endpoint = backend.lock().ok().and_then(|g| g.clone());
-    let vocab = match endpoint.as_ref() {
-        Some(ep) => fetch_stt_keyterms(ep).await,
-        None => Vec::new(),
-    };
-    let transcript = swift_stream::transcribe_pcm_oneshot(pcm, vocab).await?;
-    tracing::info!(
-        "[retry] Beta Mode local re-transcribe ready chars={} words={}",
-        transcript.transcript.len(),
-        transcript.meta.word_count
-    );
-    Some(transcript)
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn swift_local_retry_pre_transcript(
-    _app: &tauri::AppHandle,
-    _backend: &Arc<Mutex<Option<BackendEndpoint>>>,
-    _wav: &[u8],
-) -> Option<dg_stream::StreamingTranscript> {
-    None
-}
-
-/// Strip the WAV container from a saved recording into raw 16 kHz mono linear16
-/// little-endian PCM for the Swift sidecar. Returns `None` (→ backend STT) if the
-/// audio isn't the recorder's canonical 16 kHz / mono / int16 format.
-#[cfg(target_os = "macos")]
-fn wav_to_pcm16(wav: &[u8]) -> Option<Vec<u8>> {
-    let mut reader = hound::WavReader::new(std::io::Cursor::new(wav)).ok()?;
-    let spec = reader.spec();
-    if spec.channels != 1
-        || spec.sample_rate != 16_000
-        || spec.bits_per_sample != 16
-        || spec.sample_format != hound::SampleFormat::Int
-    {
-        tracing::warn!(
-            "[retry] saved WAV is {}Hz {}ch {}bit — not sidecar-ready, using backend STT",
-            spec.sample_rate,
-            spec.channels,
-            spec.bits_per_sample
-        );
-        return None;
-    }
-    Some(
-        reader
-            .samples::<i16>()
-            .filter_map(Result::ok)
-            .flat_map(i16::to_le_bytes)
-            .collect(),
-    )
-}
-
 fn retry_recording_internal(app: tauri::AppHandle, audio_id: String) {
     retry_recording_internal_with_mode(app, audio_id, None, "internal");
 }
@@ -7480,21 +6631,12 @@ fn retry_recording_spawn(
     let back_arc2 = Arc::clone(&backend);
 
     tauri::async_runtime::spawn(async move {
-        // Honor the Settings STT selection on retry: when Beta Mode (Swift local)
-        // is active, re-transcribe the saved audio on-device and hand the backend
-        // that transcript (so it only polishes). For Deepgram users — or any local
-        // failure — this is None and the backend runs its own STT as before.
-        let stt_provider = hot_cache_effective_stt_provider(&app2);
         let stt_language = app2
             .try_state::<HotPathCache>()
             .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
-        let pre_transcript = if said_core::stt::is_whisper_local(&stt_provider) {
-            whisper_local_pre_transcript(&wav, &stt_language).await
-        } else {
-            swift_local_retry_pre_transcript(&app2, &back_arc2, &wav).await
-        };
+        let pre_transcript = local_pre_transcript(&wav, &stt_language).await.ok();
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
@@ -7562,46 +6704,13 @@ async fn get_pending_edits(
 #[tauri::command]
 async fn resolve_pending_edit(
     backend: State<'_, BackendState>,
-    hot_cache: State<'_, HotPathCache>,
-    dg_session: State<'_, DeepgramSessionState>,
     id: String,
     action: String,
 ) -> Result<(), String> {
     let ep = get_endpoint(&backend)?;
     let result = api::resolve_pending_edit(&ep, &id, &action).await;
-    // "approve" promotes a term into vocabulary — refresh cache immediately.
     if result.is_ok() && action == "approve" {
-        let arc = Arc::clone(&hot_cache.0);
-        let session_tx = dg_session.0.clone();
-        let ep2 = ep.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Ok(bias) = api::get_stt_bias(&ep2).await {
-                tracing::info!(
-                    "[hot_cache] refreshed after pending-edit approval (mode={} keyterms={} replacements={})",
-                    bias.stt_mode,
-                    bias.keyterms.len(),
-                    bias.replacements.len()
-                );
-                let mut hot = arc.write().await;
-                hot.stt_mode = bias.stt_mode;
-                hot.keyterms = bias.keyterms;
-                hot.replacements = bias.replacements;
-                let deepgram_key =
-                    deepgram_session_key_for_provider(&hot.stt_provider, &hot.deepgram_key);
-                let session_bias = said_core::deepgram::BiasPackage {
-                    stt_mode: hot.stt_mode.clone(),
-                    keyterms: hot.keyterms.clone(),
-                    replacements: hot.replacements.clone(),
-                };
-                drop(hot);
-                let _ = session_tx
-                    .send(dg_stream::SessionCommand::Reconfigure {
-                        deepgram_key,
-                        bias: session_bias,
-                    })
-                    .await;
-            }
-        });
+        tracing::info!("[vocabulary] pending edit approved; local ASR has no runtime bias refresh");
     }
     result
 }
@@ -7683,6 +6792,7 @@ async fn confirm_term(
     original: String,
     action: String,
     recording_id: Option<String>,
+    context: Option<String>,
 ) -> Result<(), String> {
     let ep = get_endpoint(&backend)?;
     let body = serde_json::json!({
@@ -7690,6 +6800,7 @@ async fn confirm_term(
         "original": original,
         "action": action,
         "recording_id": recording_id,
+        "context": context,
     });
     let url = format!("{}/v1/confirm-term", ep.url);
     let resp = reqwest::Client::new()
@@ -7719,15 +6830,23 @@ async fn confirm_batch(
     recording_id: Option<String>,
 ) -> Result<api::ConfirmBatchResponse, String> {
     let ep = get_endpoint(&backend)?;
-    let pairs: Vec<(String, String)> = items
+    let request_items: Vec<api::ConfirmBatchRequestItem> = items
         .iter()
         .filter_map(|v| {
             let orig = v.get("original")?.as_str()?.to_string();
             let corr = v.get("corrected")?.as_str()?.to_string();
-            Some((orig, corr))
+            let context = v
+                .get("context")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
+            Some(api::ConfirmBatchRequestItem {
+                original: orig,
+                corrected: corr,
+                context,
+            })
         })
         .collect();
-    let result = api::confirm_batch(&ep, &pairs, recording_id.as_deref()).await?;
+    let result = api::confirm_batch(&ep, &request_items, recording_id.as_deref()).await?;
     let _ = app.emit("vocabulary-changed", ());
     tracing::info!(
         "[confirm-batch] user confirmed {} term(s) server_owned={}: {:?}",
@@ -8331,37 +7450,6 @@ async fn set_app_bucket(
     .await
 }
 
-/// Set (or clear, when `output_language` is None/empty) a bucket's output-language override.
-#[tauri::command]
-async fn set_bucket_language(
-    bucket_key: String,
-    output_language: Option<String>,
-    backend: State<'_, BackendState>,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    let status = api::get_enterprise_status(&ep).await?;
-    let token = status
-        .token
-        .filter(|t| !t.trim().is_empty())
-        .ok_or_else(|| "not signed in to a workspace".to_string())?;
-    let server_url = status
-        .server_url
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "workspace server URL not configured".to_string())?;
-    let lang = output_language
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    api::set_bucket_language(
-        &server_url,
-        &token,
-        status.active_org_id.as_deref(),
-        &bucket_key,
-        lang,
-    )
-    .await
-}
-
 #[tauri::command]
 async fn activate_workspace(
     org_id: String,
@@ -8557,24 +7645,29 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                     .get("recording_id")
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string());
-                let pairs: Vec<(String, String)> = action
+                let request_items: Vec<api::ConfirmBatchRequestItem> = action
                     .get("items")
                     .and_then(|i| i.as_array())
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|v| {
-                                Some((
-                                    v.get("original")?.as_str()?.to_string(),
-                                    v.get("corrected")?.as_str()?.to_string(),
-                                ))
+                                let context = v
+                                    .get("context")
+                                    .and_then(|value| value.as_str())
+                                    .map(|value| value.to_string());
+                                Some(api::ConfirmBatchRequestItem {
+                                    original: v.get("original")?.as_str()?.to_string(),
+                                    corrected: v.get("corrected")?.as_str()?.to_string(),
+                                    context,
+                                })
                             })
                             .collect()
                     })
                     .unwrap_or_default();
-                if !pairs.is_empty() {
+                if !request_items.is_empty() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if api::confirm_batch(&ep, &pairs, recording_id.as_deref())
+                        if api::confirm_batch(&ep, &request_items, recording_id.as_deref())
                             .await
                             .is_ok()
                         {
@@ -8610,7 +7703,7 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
             }
         }
 
-        // retry a failed dictation (honours the selected STT provider)
+        // retry a failed dictation (honours the selected speech model)
         "retry" => {
             let audio_id = notch_str(&action, "audio_id");
             if !audio_id.is_empty() {
@@ -9467,6 +8560,7 @@ async fn watch_for_edit(
                                 "term_type": c.term_type,
                                 "learnable": c.learnable,
                                 "tag": c.tag,
+                                "context": c.context,
                             })
                         })
                         .collect();
@@ -9587,42 +8681,13 @@ async fn watch_for_edit(
                     });
                 }
 
-                // If vocabulary was updated, refresh the hot-path cache now so
-                // the very next recording already uses the newly learned terms.
+                // Local ASR does not have a live provider-bias channel. Learned
+                // terms stay in the vocabulary/profile layer used by polish.
                 if resp.learned && resp.promoted_count > 0 {
-                    let hot_arc = Arc::clone(&app.state::<HotPathCache>().0);
-                    let session_tx = app.state::<DeepgramSessionState>().0.clone();
-                    let ep2 = ep.clone();
-                    tokio::spawn(async move {
-                        if let Ok(bias) = api::get_stt_bias(&ep2).await {
-                            tracing::info!(
-                                "[hot_cache] refreshed after learning — mode={} keyterms={} replacements={}",
-                                bias.stt_mode,
-                                bias.keyterms.len(),
-                                bias.replacements.len()
-                            );
-                            let mut hot = hot_arc.write().await;
-                            hot.stt_mode = bias.stt_mode;
-                            hot.keyterms = bias.keyterms;
-                            hot.replacements = bias.replacements;
-                            let deepgram_key = deepgram_session_key_for_provider(
-                                &hot.stt_provider,
-                                &hot.deepgram_key,
-                            );
-                            let session_bias = said_core::deepgram::BiasPackage {
-                                stt_mode: hot.stt_mode.clone(),
-                                keyterms: hot.keyterms.clone(),
-                                replacements: hot.replacements.clone(),
-                            };
-                            drop(hot);
-                            let _ = session_tx
-                                .send(dg_stream::SessionCommand::Reconfigure {
-                                    deepgram_key,
-                                    bias: session_bias,
-                                })
-                                .await;
-                        }
-                    });
+                    tracing::info!(
+                        "[vocabulary] learned {} promoted term(s); polish profile will pick them up",
+                        resp.promoted_count,
+                    );
                 }
             }
             Err(e) => {
@@ -9974,9 +9039,10 @@ fn main() {
     // 1. Load env vars from .env files
     said_core::load_env();
 
+    const DEFAULT_DIAGNOSTICS_BASE: &str = "https://airnote.emiactech.com";
     let diagnostics_base = std::env::var("AIRNOTE_DIAGNOSTICS_URL")
         .or_else(|_| std::env::var("AIRNOTE_CONTROL_PLANE_URL"))
-        .unwrap_or_else(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+        .unwrap_or_else(|_| DEFAULT_DIAGNOSTICS_BASE.to_string());
     said_core::reporter::configure(&diagnostics_base);
     said_core::reporter::set_phase("starting");
 
@@ -10104,23 +9170,6 @@ fn main() {
                     // NSPanel, so we no longer switch the whole app to Accessory.
                     app.set_activation_policy(tauri::ActivationPolicy::Regular);
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
-
-                    // Make the main window the KEY window on launch. Tauri shows
-                    // it (visible:true), but macOS does not always make a
-                    // freshly-launched binary's window *key* — a cold Finder
-                    // double-click, or `tauri dev` from a terminal, leaves the
-                    // launching app frontmost. A non-key NSWindow does not deliver
-                    // the first click to its content (acceptsFirstMouse == NO by
-                    // default): the click is spent activating the window instead,
-                    // so every onboarding button feels dead until the window is
-                    // manually focused. Force activation now, then re-assert once
-                    // after the window has realized to win the presentation race.
-                    activate_airnote(app.handle(), "startup");
-                    let delayed = app.handle().clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        activate_airnote(&delayed, "startup-reassert");
-                    });
                 }
 
                 // Crash recovery: repair WAV headers for any meeting interrupted
@@ -10142,6 +9191,9 @@ fn main() {
                             meeting_engine::ensure_bundled_silero_vad();
                             // Ensure a model is selected if any is installed.
                             meeting_engine::ensure_active_model_sync();
+                            // Warm dictation's in-process ASR worker so the
+                            // first real utterance avoids a fresh model load.
+                            local_asr::prewarm_default_language();
                             recovery_handle
                                 .state::<meeting_engine::MeetingEngineState>()
                                 .requeue_interrupted_meetings();
@@ -10227,16 +9279,12 @@ fn main() {
                 } else {
                     backend_guard::reap_previous();
                 }
-                #[cfg(target_os = "macos")]
-                swift_stt_guard::reap_previous();
                 match backend::spawn() {
                     Ok(handle) => {
                         // Extract all endpoint clones BEFORE storing (move) the handle.
                         let ep  = handle.endpoint();
-                        let ep2 = handle.endpoint();
                         let ep_recovery = handle.endpoint();
                         let ep_notifications = handle.endpoint();
-                        let ep_runtime_ws = handle.endpoint();
                         // Store the full handle so Drop kills the child on app exit.
                         // Without this the child outlives the app (zombie leak).
                         let _ = install_backend_handle(app.handle(), handle);
@@ -10246,7 +9294,6 @@ fn main() {
                             app.handle().clone(),
                             ep_notifications,
                         );
-                        server_runtime_stream::start_persistent_runtime_connection(ep_runtime_ws);
 
                         // ── Crash recovery ─────────────────────────────────────
                         // If a previous run died mid-dictation, its audio is still on
@@ -10297,11 +9344,7 @@ fn main() {
                         // menu already shows the correct model checkmark.
                         let app_h = app.handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            // Fetch prefs + STT bias in parallel — both needed at startup.
-                            let (prefs_res, stt_bias_res) = tokio::join!(
-                                api::get_preferences(&ep),
-                                api::get_stt_bias(&ep),
-                            );
+                            let prefs_res = api::get_preferences(&ep).await;
                             if let Ok(prefs) = &prefs_res {
                                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                                 hotkey::set_record_hotkey(parse_record_hotkey(&prefs.record_hotkey));
@@ -10324,115 +9367,13 @@ fn main() {
                                 .ok()
                                 .map(|p| p.language.clone())
                                 .unwrap_or_default();
-                            let deepgram_key = said_core::stt::resolve_deepgram_api_key(
-                                prefs_res
-                                    .as_ref()
-                                    .ok()
-                                    .and_then(|p| p.deepgram_api_key.as_deref()),
-                            )
-                            .unwrap_or_default();
                             // Seed meeting AI's Groq key from Settings → API keys.
                             meeting_engine::set_runtime_groq_api_key(
                                 prefs_res.as_ref().ok().and_then(|p| p.groq_api_key.clone()),
                             );
-                            let stt_bias = stt_bias_res.unwrap_or_default();
-                            tracing::info!(
-                                "[hot_cache] seeded mode={} keyterms={} replacements={}",
-                                stt_bias.stt_mode,
-                                stt_bias.keyterms.len(),
-                                stt_bias.replacements.len()
-                            );
                             let hot = app_h.state::<HotPathCache>();
-                            let stt_provider = prefs_res
-                                .as_ref()
-                                .ok()
-                                .map(|p| {
-                                    said_core::stt::resolve_provider_from_pref(&p.stt_provider)
-                                })
-                                .unwrap_or_else(|| "deepgram".to_string());
                             let mut c = hot.0.write().await;
                             c.language = language;
-                            c.stt_provider = stt_provider;
-                            c.deepgram_key = deepgram_key.clone();
-                            c.stt_mode = stt_bias.stt_mode.clone();
-                            c.keyterms = stt_bias.keyterms.clone();
-                            c.replacements = stt_bias.replacements.clone();
-
-                            // Configure the persistent Deepgram session actor.
-                            let bias = said_core::deepgram::BiasPackage {
-                                stt_mode: c.stt_mode.clone(),
-                                keyterms: c.keyterms.clone(),
-                                replacements: c.replacements.clone(),
-                            };
-                            let session_deepgram_key =
-                                deepgram_session_key_for_provider(&c.stt_provider, &deepgram_key);
-                            drop(c);
-                            let dg_session = app_h.state::<DeepgramSessionState>();
-                            let _ = dg_session
-                                .0
-                                .send(dg_stream::SessionCommand::Reconfigure {
-                                    deepgram_key: session_deepgram_key,
-                                    bias,
-                                })
-                                .await;
-                            #[cfg(target_os = "macos")]
-                            if prefs_res.as_ref().is_ok_and(|p| {
-                                said_core::stt::is_swift_local(&p.stt_provider)
-                                    && swift_model::is_installed()
-                            }) {
-                                let _ = tokio::task::spawn_blocking(swift_stt_engine::ensure_running)
-                                    .await;
-                            }
-                        });
-
-                        // ── Periodic cache refresh every 5 minutes ────────────
-                        // Belt-and-suspenders: even if an event-driven refresh
-                        // fails (network blip, task panic), the cache catches up
-                        // within 5 minutes.
-                        let app_h = app.handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            let mut interval = tokio::time::interval(
-                                std::time::Duration::from_secs(300)
-                            );
-                            interval.tick().await; // skip the immediate first tick
-                            loop {
-                                interval.tick().await;
-                                match api::get_stt_bias(&ep2).await {
-                                    Ok(bias) => {
-                                        tracing::debug!(
-                                            "[hot_cache] periodic refresh — mode={} keyterms={} replacements={}",
-                                            bias.stt_mode,
-                                            bias.keyterms.len(),
-                                            bias.replacements.len()
-                                        );
-                                        let hot_state = app_h.state::<HotPathCache>();
-                                        let mut hot = hot_state.0.write().await;
-                                        hot.stt_mode = bias.stt_mode;
-                                        hot.keyterms = bias.keyterms;
-                                        hot.replacements = bias.replacements;
-                                        let deepgram_key =
-                                            deepgram_session_key_for_provider(&hot.stt_provider, &hot.deepgram_key);
-                                        let session_bias = said_core::deepgram::BiasPackage {
-                                            stt_mode: hot.stt_mode.clone(),
-                                            keyterms: hot.keyterms.clone(),
-                                            replacements: hot.replacements.clone(),
-                                        };
-                                        drop(hot);
-                                        let dg_session =
-                                            app_h.state::<DeepgramSessionState>();
-                                        let _ = dg_session
-                                            .0
-                                            .send(dg_stream::SessionCommand::Reconfigure {
-                                                deepgram_key,
-                                                bias: session_bias,
-                                            })
-                                            .await;
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("[hot_cache] periodic refresh failed: {e}");
-                                    }
-                                }
-                            }
                         });
                     }
                     Err(e) => {
@@ -10469,8 +9410,6 @@ fn main() {
                             if cleanup_owned_backend {
                                 backend_guard::kill_from_pid_file();
                             }
-                            #[cfg(target_os = "macos")]
-                            swift_stt_guard::kill_from_pid_file();
                             app_handle.exit(0);
                         }
                     });
@@ -11202,12 +10141,9 @@ fn main() {
         .manage(EditWatcherState(Mutex::new(None)))
         .manage(EditTargetState(Mutex::new(None)))
         .manage(ScreenContextState(Mutex::new(None)))
-        .manage(StreamingState(Mutex::new(None)))
-        .manage(SwiftLivePartialState(Mutex::new(None)))
         .manage(RecordingRouteState(Mutex::new(None)))
         .manage(PendingProblemState(Mutex::new(None)))
         .manage(divo::DivoState::new())
-        .manage(DeepgramSessionState(dg_stream::DeepgramSession::spawn()))
         .manage(PerformanceState(Mutex::new(sysinfo::System::new_all())))
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
         .manage(LatestResult(std::sync::Arc::new(Mutex::new(None))))
@@ -11223,12 +10159,6 @@ fn main() {
         .manage(meeting_engine::MeetingEngineState::new())
         .manage(speaker_suppression::SpeakerSuppressionGuard::new())
         .manage(LongDictationState::new());
-    #[cfg(target_os = "macos")]
-    let builder = builder.manage(SwiftSessionState(swift_stream::SwiftSession::spawn()));
-    #[cfg(target_os = "macos")]
-    let builder = builder.manage(SwiftBridgeStopState(Mutex::new(
-        SwiftBridgeStopInner::default(),
-    )));
     let app_result = builder
         .invoke_handler(tauri::generate_handler![
             bootstrap,
@@ -11261,10 +10191,6 @@ fn main() {
             get_preferences,
             list_polish_models,
             get_stt_runtime,
-            swift_model::swift_stt_model_status,
-            swift_model::swift_stt_download_model,
-            swift_model::swift_stt_cancel_download,
-            swift_model::swift_stt_delete_model,
             patch_preferences,
             get_history,
             get_app_icon,
@@ -11298,7 +10224,6 @@ fn main() {
             get_profile_insights,
             get_app_buckets,
             set_app_bucket,
-            set_bucket_language,
             activate_workspace,
             deactivate_workspace,
             get_device_id,
@@ -11373,8 +10298,6 @@ fn main() {
             meeting_engine::download_dictation_model,
             meeting_engine::dictation_model_status,
             meeting_engine::delete_dictation_model,
-            meeting_engine::apex_model_status,
-            meeting_engine::delete_apex_model,
             meeting_engine::reclaim_old_models,
             meeting_engine::meeting_download_silero_vad_model,
             meeting_engine::meeting_delete_silero_vad_model,
@@ -11464,18 +10387,12 @@ fn main() {
                 // tearing down the backend — otherwise an active recording is
                 // abandoned with a stale header and the whisper child orphans.
                 app.state::<meeting_engine::MeetingEngineState>().shutdown();
-                // Kill the Python Swift-STT sidecar too — otherwise every quit
-                // orphans a ~1.5GB Whisper process (they accumulate across runs).
-                // macOS-only: the swift_stt_engine module is gated to macOS, so
-                // the call must be too or Windows fails to compile.
-                #[cfg(target_os = "macos")]
-                swift_stt_engine::shutdown();
                 if let Ok(mut guard) = app.state::<BackendHandleState>().0.lock() {
                     drop(guard.take());
                 }
                 backend_guard::clear_pid_file();
-                #[cfg(target_os = "macos")]
-                swift_stt_guard::clear_pid_file();
+                tracing::info!("[main] shutdown cleanup complete — exiting process");
+                exit_after_shutdown_cleanup(0);
             }
             _ => {}
         });

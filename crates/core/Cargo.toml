@@ -20,7 +20,5 @@ sentry             = { workspace = true }
 sentry-tracing     = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = "0.3"
-ureq               = { version = "3", default-features = false, features = ["rustls"] }
-# RNNoise denoiser (BSD-3). default-features off drops the CLI/train deps
-# (clap/hound/dasp) — we only need the `DenoiseState` library + built-in model.
 nnnoiseless        = { version = "0.5.2", default-features = false }
+ureq               = { version = "3", default-features = false, features = ["rustls"] }

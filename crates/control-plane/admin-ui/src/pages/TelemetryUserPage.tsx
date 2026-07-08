@@ -15,33 +15,6 @@ import type {
   TelemetryUserProfile,
 } from '../types'
 
-interface UserKnowledge {
-  run_stats: {
-    run_count: number
-    skipped_count: number
-    last_run_at: string | null
-    last_run_outcome: string | null
-  }
-  batch: {
-    total: number
-    applied: number
-    skipped: number
-    failed: number
-    avg_latency_ms: number | null
-    token_total: number | null
-  }
-  knowledge: { background: string | null; domains: string[]; focus_areas: string[] }
-  buckets: { bucket_key: string; version: number; style: string[] }[]
-}
-
-const KB_BUCKET_LABELS: Record<string, string> = {
-  coding: 'Coding',
-  messaging: 'Messaging',
-  work_tracker: 'Work & Tasks',
-  formal_writing: 'Formal Writing',
-  default: 'General',
-}
-
 function AuthBadge({ source, lark }: { source: string; lark: boolean }) {
   const isLark = lark || source === 'lark'
   return (
@@ -190,26 +163,16 @@ export function TelemetryUserPage() {
   const modeFilter = searchParams.get('mode') || 'all'
   const tabParam = searchParams.get('tab')
   const initialTab =
-    tabParam === 'memory'
-      ? 'memory'
-      : tabParam === 'dictation'
-        ? 'dictation'
-        : tabParam === 'knowledge'
-          ? 'knowledge'
-          : 'telemetry'
+    tabParam === 'memory' ? 'memory' : tabParam === 'dictation' ? 'dictation' : 'telemetry'
 
   const [profile, setProfile] = useState<TelemetryUserProfile | null>(null)
   const [runs, setRuns] = useState<TelemetryRun[]>([])
   const [runsTotal, setRunsTotal] = useState(0)
   const [runsOffset, setRunsOffset] = useState(0)
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
-  const [innerTab, setInnerTab] = useState<'telemetry' | 'memory' | 'dictation' | 'knowledge'>(
-    initialTab,
-  )
+  const [innerTab, setInnerTab] = useState<'telemetry' | 'memory' | 'dictation'>(initialTab)
   const [memory, setMemory] = useState<TelemetryUserMemory | null>(null)
   const [memoryLoading, setMemoryLoading] = useState(false)
-  const [kb, setKb] = useState<UserKnowledge | null>(null)
-  const [kbLoading, setKbLoading] = useState(false)
   const [dictationFocusKey, setDictationFocusKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [runsLoading, setRunsLoading] = useState(false)
@@ -262,16 +225,7 @@ export function TelemetryUserPage() {
       .finally(() => setMemoryLoading(false))
   }, [orgId, accountId, innerTab])
 
-  useEffect(() => {
-    if (!orgId || !accountId || innerTab !== 'knowledge') return
-    setKbLoading(true)
-    apiJson<UserKnowledge>(`/v1/orgs/${orgId}/telemetry/users/${accountId}/knowledge`)
-      .then(setKb)
-      .catch(() => setKb(null))
-      .finally(() => setKbLoading(false))
-  }, [orgId, accountId, innerTab])
-
-  const switchTab = (tab: 'telemetry' | 'memory' | 'dictation' | 'knowledge') => {
+  const switchTab = (tab: 'telemetry' | 'memory' | 'dictation') => {
     setInnerTab(tab)
     const p = new URLSearchParams(searchParams)
     if (tab === 'telemetry') p.delete('tab')
@@ -369,7 +323,6 @@ export function TelemetryUserPage() {
         {(
           [
             ['telemetry', 'Telemetry'],
-            ['knowledge', 'Knowledge base'],
             ['memory', 'Vocab & memory'],
             ['dictation', 'Dictation'],
           ] as const
@@ -525,7 +478,7 @@ export function TelemetryUserPage() {
                         <td className="text-[12px] px-4 py-2 border-b border-border-light font-mono">{a.transcript_form}</td>
                         <td className="text-[12px] px-4 py-2 border-b border-border-light font-mono">{a.correct_form}</td>
                         <td className="text-[11px] px-4 py-2 border-b border-border-light">{a.safety_status}</td>
-                        <td className="text-[11px] px-4 py-2 border-b border-border-light font-mono">{a.learned_stt_provider || '—'}</td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light font-mono">{a.learned_speech_model || '—'}</td>
                         <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">{a.positive_count}</td>
                       </tr>
                     ))}
@@ -575,93 +528,6 @@ export function TelemetryUserPage() {
             </div>
           </>
         )
-      ) : innerTab === 'knowledge' ? (
-        kbLoading ? (
-          <Loading />
-        ) : !kb ? (
-          <div className="card p-6 text-[13px] text-fg-3">
-            No knowledge base learned for this user yet.
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-4 gap-3 mb-4">
-              <TelemetryStatCard
-                label="Learn runs"
-                value={String(kb.run_stats.run_count)}
-                sub={`${kb.run_stats.skipped_count} skipped`}
-              />
-              <TelemetryStatCard
-                label="Applied"
-                value={String(kb.batch.applied)}
-                sub={`${kb.batch.skipped} skipped · ${kb.batch.failed} failed`}
-              />
-              <TelemetryStatCard
-                label="Avg run"
-                value={kb.batch.avg_latency_ms != null ? ms(kb.batch.avg_latency_ms) : '—'}
-                sub="deepseek latency"
-              />
-              <TelemetryStatCard
-                label="Tokens"
-                value={kb.batch.token_total != null ? kb.batch.token_total.toLocaleString() : '—'}
-                sub="deepseek total"
-              />
-            </div>
-
-            <div className="card p-4 mb-4">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-3 mb-2">
-                Knowledge base
-              </div>
-              {kb.knowledge.background ? (
-                <p className="text-[13px] text-fg leading-relaxed mb-3">
-                  {kb.knowledge.background}
-                </p>
-              ) : (
-                <p className="text-[13px] text-fg-3 mb-3">No background learned yet.</p>
-              )}
-              {(kb.knowledge.domains.length > 0 || kb.knowledge.focus_areas.length > 0) && (
-                <div className="flex flex-wrap gap-1.5">
-                  {[...kb.knowledge.domains, ...kb.knowledge.focus_areas].map((t, i) => (
-                    <span
-                      key={`${t}-${i}`}
-                      className="text-[11px] px-2 py-0.5 rounded-md bg-surface-4 text-fg-3"
-                    >
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="card p-4">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-3 mb-3">
-                Style by context
-              </div>
-              {kb.buckets.filter(b => b.style.length > 0).length === 0 ? (
-                <p className="text-[13px] text-fg-3">No per-app style learned yet.</p>
-              ) : (
-                <div className="space-y-3">
-                  {kb.buckets
-                    .filter(b => b.style.length > 0)
-                    .map(b => (
-                      <div key={b.bucket_key} className="rounded-lg p-3 bg-surface-2">
-                        <div className="text-[13px] font-medium text-fg mb-1.5">
-                          {KB_BUCKET_LABELS[b.bucket_key] ?? b.bucket_key}{' '}
-                          <span className="text-[11px] text-fg-3">v{b.version}</span>
-                        </div>
-                        <ul className="space-y-1">
-                          {b.style.map((s, i) => (
-                            <li key={i} className="text-[12px] text-fg-3">
-                              · {s}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-          </>
-        )
       ) : (
         <>
       <div className="grid grid-cols-4 gap-3 mb-4">
@@ -692,7 +558,7 @@ export function TelemetryUserPage() {
         <TelemetryStatCard
           label="Fallback rate"
           value={pct(profile.quality.fallback_rate)}
-          sub="clipboard or HTTP STT"
+          sub="clipboard fallback"
         />
         <TelemetryStatCard
           label="Latency p50 / p95"
@@ -781,14 +647,14 @@ export function TelemetryUserPage() {
         </div>
       </div>
 
-      {profile.stt?.by_provider?.length ? (
+      {profile.speech?.by_model?.length ? (
         <div className="card p-4 mb-4">
-          <SectionLabel>STT provider mix</SectionLabel>
+          <SectionLabel>speech model mix</SectionLabel>
           <div className="grid grid-cols-2 gap-4 text-[12px]">
             <div className="space-y-1.5">
-              {profile.stt.by_provider.map(row => (
-                <div key={row.stt_provider} className="flex justify-between">
-                  <span className="font-mono text-fg-2">{row.stt_provider}</span>
+              {profile.speech.by_model.map(row => (
+                <div key={row.speech_model} className="flex justify-between">
+                  <span className="font-mono text-fg-2">{row.speech_model}</span>
                   <span className="tabular-nums">
                     {row.count} ({row.share}%)
                   </span>
@@ -796,9 +662,9 @@ export function TelemetryUserPage() {
               ))}
             </div>
             <div className="space-y-1.5">
-              {(profile.stt.latency_by_provider || []).map(row => (
-                <div key={row.stt_provider} className="flex justify-between text-fg-3">
-                  <span className="font-mono">{row.stt_provider} transcribe</span>
+              {(profile.speech.latency_by_model || []).map(row => (
+                <div key={row.speech_model} className="flex justify-between text-fg-3">
+                  <span className="font-mono">{row.speech_model} transcribe</span>
                   <span className="tabular-nums">
                     {ms(row.transcribe_p50)} / {ms(row.transcribe_p95)}
                   </span>

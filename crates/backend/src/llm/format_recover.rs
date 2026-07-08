@@ -957,8 +957,8 @@ mod tests {
     #[test]
     fn ident_underscore_chain() {
         assert_eq!(
-            recover("Set DEEPGRAM underscore API underscore KEY now."),
-            "Set DEEPGRAM_API_KEY now."
+            recover("Set GATEWAY underscore API underscore KEY now."),
+            "Set GATEWAY_API_KEY now."
         );
     }
 
@@ -973,8 +973,8 @@ mod tests {
     #[test]
     fn env_var_equals() {
         assert_eq!(
-            recover("Set DEEPGRAM_API_KEY equals abc123 in the config."),
-            "Set DEEPGRAM_API_KEY=abc123 in the config."
+            recover("Set GATEWAY_API_KEY equals abc123 in the config."),
+            "Set GATEWAY_API_KEY=abc123 in the config."
         );
     }
 
@@ -993,7 +993,7 @@ mod tests {
             "HATPS://religwav.com",
             "Anish Suman 2305@gmail.com",
             "Open localhost colon 3000 slash api slash health.",
-            "Set DEEPGRAM underscore API underscore KEY equals abc123.",
+            "Set GATEWAY underscore API underscore KEY equals abc123.",
             "Run dot slash script slash dev dot sh please.",
         ];
         for c in cases {
@@ -1051,8 +1051,8 @@ mod tests {
             ("Add a slash at the end.", "Add a slash at the end."),
             // ── Identifiers ─────────────────────────────────────────
             (
-                "Set DEEPGRAM underscore API underscore KEY now.",
-                "Set DEEPGRAM_API_KEY now.",
+                "Set GATEWAY underscore API underscore KEY now.",
+                "Set GATEWAY_API_KEY now.",
             ),
             // ── Env vars ────────────────────────────────────────────
             ("Set API_KEY equals abc123.", "Set API_KEY=abc123."),

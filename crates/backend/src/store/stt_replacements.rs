@@ -12,6 +12,8 @@
 //! The phonetic pass catches small STT variations ("aiden" / "aidan" / "ate-n")
 //! that the exact pass would miss without exploding the table size.
 
+use std::collections::{HashMap, HashSet};
+
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -283,7 +285,7 @@ pub fn is_plausible_alias(transcript_form: &str, correct_form: &str) -> bool {
     }
 
     // Gibberish source words (not in any dictionary) are genuine STT
-    // distortions — Deepgram made up a nonsense word. Allow these
+    // distortions — the speech engine produced a nonsense word. Allow these
     // regardless of phonetic similarity. The real gate for "mac" → "EMIAC"
     // is `is_in_dictionary("mac")` in the caller, not phonetic similarity.
     if from.is_ascii()
@@ -306,7 +308,7 @@ pub fn is_plausible_alias(transcript_form: &str, correct_form: &str) -> bool {
         return best_sim >= 0.40 || (first_match && best_sim >= 0.30);
     }
 
-    // Mixed-script aliases are common because Deepgram can emit Devanagari
+    // Mixed-script aliases are common because the speech engine can emit Devanagari
     // around an English proper noun ("मैं Corps" → "MACOBS"). Keep those
     // allowed; the unrelated-alias pollution we are blocking here is the
     // pure ASCII multi-word case ("urban aura" → "Macobs").
@@ -452,7 +454,7 @@ fn enforce_alias_cap(pool: &DbPool, user_id: &str, correct_form: &str) {
 ///     region. Future runs that go through identical polish behaviour will
 ///     match this exact form.
 ///
-///   • `transcript_window` — what Deepgram (or any STT) actually emitted.
+///   • `transcript_window` — what the speech engine actually emitted.
 ///     Future runs in which polish behaves differently — or in which we
 ///     bypass polish entirely (debug, alt models) — will match this.
 ///
@@ -1095,10 +1097,33 @@ pub fn apply_exact_safe(transcript: &str, rules: &[SttReplacement]) -> ApplyResu
             traces: vec![],
         };
     }
-    let safe: Vec<SttReplacement> = rules
+    let transcript_first_words: HashSet<String> = split_chunks(transcript)
+        .iter()
+        .map(|chunk| word_core(chunk).to_ascii_lowercase())
+        .filter(|word| !word.is_empty())
+        .collect();
+    if transcript_first_words.is_empty() {
+        return ApplyResult {
+            text: transcript.to_string(),
+            matches: vec![],
+            traces: vec![],
+        };
+    }
+    let safe: Vec<&SttReplacement> = rules
         .iter()
         .filter(|r| {
             if r.transcript_form.trim().len() < 2 {
+                return false;
+            }
+            let Some(first_word) = r
+                .transcript_form
+                .split_whitespace()
+                .next()
+                .map(|word| word.to_ascii_lowercase())
+            else {
+                return false;
+            };
+            if !transcript_first_words.contains(&first_word) {
                 return false;
             }
             if crate::llm::alias_safety::is_common_alias_source(&r.transcript_form)
@@ -1114,9 +1139,123 @@ pub fn apply_exact_safe(transcript: &str, rules: &[SttReplacement]) -> ApplyResu
             }
             true
         })
-        .cloned()
         .collect();
-    apply_inner(transcript, &safe, false)
+    apply_exact_indexed(transcript, &safe)
+}
+
+struct ExactIndexedRule<'a> {
+    words: Vec<String>,
+    rule: &'a SttReplacement,
+}
+
+fn apply_exact_indexed<'a>(transcript: &str, rules: &[&'a SttReplacement]) -> ApplyResult {
+    if rules.is_empty() {
+        return ApplyResult {
+            text: transcript.to_string(),
+            matches: vec![],
+            traces: vec![],
+        };
+    }
+
+    let mut by_first_word: HashMap<String, Vec<ExactIndexedRule<'a>>> = HashMap::new();
+    for rule in rules {
+        let words: Vec<String> = rule
+            .transcript_form
+            .split_whitespace()
+            .map(|w| w.to_ascii_lowercase())
+            .collect();
+        let Some(first) = words.first().filter(|w| !w.is_empty()).cloned() else {
+            continue;
+        };
+        by_first_word
+            .entry(first)
+            .or_default()
+            .push(ExactIndexedRule { words, rule });
+    }
+
+    if by_first_word.is_empty() {
+        return ApplyResult {
+            text: transcript.to_string(),
+            matches: vec![],
+            traces: vec![],
+        };
+    }
+
+    for candidates in by_first_word.values_mut() {
+        candidates.sort_by(|a, b| b.words.len().cmp(&a.words.len()));
+    }
+
+    let chunks: Vec<&str> = split_chunks(transcript);
+    let cores: Vec<String> = chunks
+        .iter()
+        .map(|c| word_core(c).to_ascii_lowercase())
+        .collect();
+
+    let mut out = String::with_capacity(transcript.len());
+    let mut matches = Vec::new();
+    let mut i = 0;
+    while i < chunks.len() {
+        if cores[i].is_empty() {
+            out.push_str(chunks[i]);
+            i += 1;
+            continue;
+        }
+
+        let mut matched = None;
+        if let Some(candidates) = by_first_word.get(&cores[i]) {
+            for candidate in candidates {
+                let n = candidate.words.len();
+                if i + n > chunks.len() {
+                    continue;
+                }
+                let mut ok = true;
+                let mut consumed = 0;
+                let mut k = i;
+                while consumed < n && k < chunks.len() {
+                    if cores[k].is_empty() {
+                        k += 1;
+                        continue;
+                    }
+                    if cores[k] != candidate.words[consumed] {
+                        ok = false;
+                        break;
+                    }
+                    consumed += 1;
+                    k += 1;
+                }
+                if ok && consumed == n {
+                    matched = Some((candidate.rule, k));
+                    break;
+                }
+            }
+        }
+
+        if let Some((rule, end)) = matched {
+            let first = chunks[i];
+            let last = chunks[end - 1];
+            let (lead, _) = split_punct(first);
+            let (_, trail) = split_punct_trailing(last);
+            out.push_str(lead);
+            out.push_str(&rule.correct_form);
+            out.push_str(trail);
+            matches.push(AppliedMatch {
+                transcript_form: rule.transcript_form.clone(),
+                correct_form: rule.correct_form.clone(),
+                kind: MatchKind::Exact,
+            });
+            i = end;
+            continue;
+        }
+
+        out.push_str(chunks[i]);
+        i += 1;
+    }
+
+    ApplyResult {
+        text: out,
+        matches,
+        traces: vec![],
+    }
 }
 
 fn apply_inner(transcript: &str, rules: &[SttReplacement], allow_phonetic: bool) -> ApplyResult {
@@ -1232,9 +1371,9 @@ fn apply_inner(transcript: &str, rules: &[SttReplacement], allow_phonetic: bool)
                 }
             }
             // Second phonetic fallback: match against the CORRECT_FORM.
-            // Deepgram distorts the same word differently each time
+            // Speech engines can distort the same word differently each time
             // (e.g. "Emiac" → "MEAH" first time, "MEX" second time).
-            // We store a rule for (MEAH→Emiac) but next time Deepgram says "MEX"
+            // We store a rule for (MEAH→Emiac) but next time speech says "MEX"
             // which doesn't match "MEAH" phonetically. However "MEX" DOES
             // phonetically resemble "Emiac" (the correct_form). So we try
             // matching the transcript token against correct_form too.
@@ -1652,6 +1791,25 @@ mod tests {
         let rules = vec![b, a]; // sorted by weight DESC by load_all
         let out = apply("I use written daily", &rules);
         assert_eq!(out, "I use Wisp daily");
+    }
+
+    #[test]
+    fn exact_index_preserves_longest_match_behavior() {
+        let rules = vec![rule("mac", "WRONG"), rule("mac ops", "MACOBS")];
+        let refs = rules.iter().collect::<Vec<_>>();
+        let result = apply_exact_indexed("mac ops shipped", &refs);
+        assert_eq!(result.text, "MACOBS shipped");
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].transcript_form, "mac ops");
+    }
+
+    #[test]
+    fn exact_safe_indexed_path_preserves_punctuation() {
+        let rules = vec![rule("macops", "MACOBS")];
+        let result = apply_exact_safe("check macops, please", &rules);
+        assert_eq!(result.text, "check MACOBS, please");
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].kind, MatchKind::Exact);
     }
 
     // ── pool-backed tests ──────────────────────────────────────────────────────

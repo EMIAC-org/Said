@@ -13,12 +13,7 @@ function formatSize(bytes: number): string {
   return "—";
 }
 
-/**
- * "Free up space by removing the old model" affordance, shared by onboarding and
- * Settings. Only render this once the NEW model is verified installed — the
- * backend `reclaim_old_models` command additionally refuses to run otherwise, so
- * the old model is never deleted before the new one is good.
- */
+/** Free up space by removing unsupported extra speech models. */
 export function ReclaimOldModelsRow({
   reclaiming,
   result,
@@ -37,8 +32,8 @@ export function ReclaimOldModelsRow({
         <Check size={13} />
         <span>
           {result.removed.length > 0
-            ? `Old model removed${freed ? ` — freed ${freed}` : ""}.`
-            : "Already clean — no old models to remove."}
+            ? `Extra speech models removed${freed ? ` — freed ${freed}` : ""}.`
+            : "Already clean — no extra speech models to remove."}
         </span>
       </div>
     );
@@ -48,7 +43,7 @@ export function ReclaimOldModelsRow({
       <div className="onb-reclaim-main">
         <div className="onb-reclaim-copy">
           <Trash2 size={13} />
-          <span>Free up space by removing the old model you no longer need.</span>
+          <span>Free up space by removing extra speech models you no longer need.</span>
         </div>
         <button
           type="button"

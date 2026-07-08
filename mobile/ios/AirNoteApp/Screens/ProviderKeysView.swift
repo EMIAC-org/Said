@@ -1,10 +1,9 @@
 import AirNoteShared
 import SwiftUI
 
-/// Bring-your-own-key screen: the user pastes their Deepgram (speech-to-text) and
-/// Groq (AI polish) keys, which are saved to the server vault (encrypted) under
-/// their account — the same model the desktop app uses. Once both exist,
-/// dictation turns on automatically.
+/// Bring-your-own-key screen: the user pastes their cloud polish keys, which are
+/// saved to the server vault (encrypted) under their account. Speech recognition
+/// stays local.
 struct ProviderKeysView: View {
     @EnvironmentObject private var env: AppEnvironment
 
@@ -14,15 +13,6 @@ struct ProviderKeysView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     intro
-                    ProviderKeyCard(
-                        provider: "deepgram",
-                        name: "Deepgram",
-                        role: "Speech-to-text",
-                        badge: "D",
-                        color: Color(red: 0.04, green: 0.55, blue: 0.54),
-                        getKeyURL: URL(string: "https://console.deepgram.com/signup")!,
-                        placeholder: "Paste your Deepgram key"
-                    )
                     ProviderKeyCard(
                         provider: "groq",
                         name: "Groq",
@@ -59,10 +49,10 @@ struct ProviderKeysView: View {
         AirNoteCard {
             VStack(alignment: .leading, spacing: 8) {
                 AirNoteSectionLabel(text: "Connect your voice")
-                Text("Two free keys power AirNote")
+                Text("Local speech, cloud polish")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(AirNoteDesign.foreground)
-                Text("Add your own Deepgram and Groq keys — both have free tiers that cover daily use. A Gemini key is optional and sharpens how AirNote learns your words. Keys are stored encrypted on AirNote's servers under your account and used only for you.")
+                Text("Speech recognition stays on this device. Add your Groq key for polish; a Gemini key is optional and sharpens how AirNote learns your words. Keys are stored encrypted on AirNote's servers under your account and used only for you.")
                     .font(.caption)
                     .foregroundStyle(AirNoteDesign.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -71,7 +61,7 @@ struct ProviderKeysView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(AirNoteDesign.success)
                 } else {
-                    Label("Dictation needs BOTH a Deepgram and a Groq key. Add them below to turn it on.", systemImage: "exclamationmark.triangle.fill")
+                    Label("Dictation needs a Groq polish key. Add it below to turn it on.", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(AirNoteDesign.warning)
                         .fixedSize(horizontal: false, vertical: true)

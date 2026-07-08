@@ -6,8 +6,6 @@ use crate::{
     store::{prefs::get_prefs, stt_replacements, vocab_embeddings, vocabulary},
 };
 
-use super::bias;
-
 pub async fn run_pending_alias_reviews(state: AppState, limit: usize) {
     if crate::legacy_learning::legacy_table_writes_frozen() {
         debug!("[alias-review] skipped — legacy learning writes frozen");
@@ -58,7 +56,7 @@ async fn review_one_alias(
         return;
     };
 
-    let deterministic = bias::deterministic_export_tier(&canonical, &rule);
+    let deterministic = stt_replacements::ExportTier::LocalOnly;
     if rule.review_status == stt_replacements::ReviewStatus::Blocked
         && rule.export_tier == stt_replacements::ExportTier::Blocked
     {

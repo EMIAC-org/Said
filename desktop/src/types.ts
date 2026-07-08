@@ -56,14 +56,7 @@ export interface AppSnapshot {
 
 // ── Backend types (mirrored from airnote-backend) ────────────────────────────
 
-/** STT provider from preferences plus key readiness (for API key section). */
 export interface SttRuntimeInfo {
-  provider: string;
-  preferred_provider: string;
-  effective_provider: string;
-  deepgram_configured: boolean;
-  swift_installed: boolean;
-  swift_ready: boolean;
   whisper_installed: boolean;
   whisper_ready: boolean;
   whisper_vad_installed: boolean;
@@ -85,15 +78,12 @@ export interface Preferences {
   server_audio_runtime_enabled: boolean;
   // API keys stored in SQLite — never leave the device
   gateway_api_key:    string | null;
-  deepgram_api_key:   string | null;
   gemini_api_key:     string | null;
   groq_api_key:       string | null;
   cerebras_api_key:   string | null;
   deepinfra_api_key:  string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider:       string;
-  /** STT routing: "deepgram" | "swift_local" | "whisper_local" */
-  stt_provider:       string;
 }
 
 export interface PrefsUpdate {
@@ -111,15 +101,12 @@ export interface PrefsUpdate {
   server_audio_runtime_enabled?: boolean;
   // API keys — set to null to clear
   gateway_api_key?:    string | null;
-  deepgram_api_key?:   string | null;
   gemini_api_key?:     string | null;
   groq_api_key?:       string | null;
   cerebras_api_key?:   string | null;
   deepinfra_api_key?:  string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider?:       string;
-  /** STT routing: "deepgram" | "swift_local" | "whisper_local" */
-  stt_provider?:       string;
 }
 
 export interface PolishModelEntry {

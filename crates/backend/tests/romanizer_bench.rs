@@ -50,7 +50,7 @@ const MIXED_HINGLISH: &[&str] = &[
     "Server को restart karo, bahut धीमा chal raha hai.",
     "उसने कहा ki woh nahi aayega, so we should plan without him.",
     "Main office जा raha hoon, तुम bhi aao if possible.",
-    "Deepgram का API key expire हो gaya, naya generate karo.",
+    "Speech engine का API key expire हो gaya, naya generate karo.",
     "Recording भेजना meeting का। Emiac Technologies की meeting में.",
     "अभी तो काम चल रहा है but we need more resources.",
     "कृपया ध्यान दें: this is very important for the project.",

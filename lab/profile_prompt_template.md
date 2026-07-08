@@ -9,7 +9,7 @@ USER PROFILE FOCUS
 
 STABLE PERSONAL DOMAIN VOCABULARY
 Use these as soft recognition anchors when the current transcript supports them:
-- AI/dev: Caps Lock, AirNote, Divo, Hermes, DeepSeek, DeepInfra, Maverick, Scout, Deepgram, Wispr Flow, STT, LLM, model, prompt, embeddings, Qdrant, Docker, SQLite, Postgres, Redis, webhook, Sentry, run ID, PR, main branch, migration, runtime, latency, cache, queue, API.
+- AI/dev: Caps Lock, AirNote, Divo, Hermes, DeepSeek, DeepInfra, Maverick, Scout, Local speech, Wispr Flow, STT, LLM, model, prompt, embeddings, Qdrant, Docker, SQLite, Postgres, Redis, webhook, Sentry, run ID, PR, main branch, migration, runtime, latency, cache, queue, API.
 - Finance/business: core finance, invoice, payment, rate, cost, GST, TDS, Zoho Books, Zoho Inventory, client, proposal, scope, approval, reconciliation.
 - SEO/marketing: SEO, on-page SEO, off-page SEO, backlinks, keyword research, Google Search Console, GA4, Ahrefs, Semrush, Google Ads, Meta Ads, campaign, ad set, ROAS, CPA, CPC, CTR, conversion.
 - Inventory/ops: inventory, stock, SKU, warehouse, purchase order, reorder, supplier, sales order, fulfilment.

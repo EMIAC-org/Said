@@ -533,7 +533,7 @@
         <div class="eyebrow">Tier 2 local learning, explained simply</div>
         <h1>We are not training a big brain. We are teaching a small scorer.</h1>
         <p>
-          Said listens through Deepgram, then locally fixes high-confidence custom-word mistakes before LLM polish.
+          Said listens through Local speech, then locally fixes high-confidence custom-word mistakes before LLM polish.
           The ML part is a <strong>supervised correction scorer</strong>: it learns from examples like
           <code>macops -> Macobs</code> and rejects tempting mistakes like <code>dock -> Docker</code>.
         </p>
@@ -605,8 +605,8 @@
         <div class="section-num">02 / Runtime pipeline</div>
         <h2>Where the learning sits in Said</h2>
         <p>
-          The scorer does not replace Deepgram and it does not replace the LLM. It sits between them.
-          Deepgram gives raw text. Local learning repairs protected words. The LLM then polishes cleaner text.
+          The scorer does not replace Local speech and it does not replace the LLM. It sits between them.
+          Local speech gives raw text. Local learning repairs protected words. The LLM then polishes cleaner text.
         </p>
       </div>
 
@@ -618,7 +618,7 @@
         </div>
         <div class="node">
           <div class="kicker">Step 2</div>
-          <div class="title">Deepgram STT</div>
+          <div class="title">Local speech STT</div>
           <div class="body">Outputs honest raw transcript, often garbling custom terms.</div>
         </div>
         <div class="node alias">
@@ -876,7 +876,7 @@
           <div class="step-num">1</div>
           <div class="step-body">
             <h3>User says a sentence</h3>
-            <p>Example: "macops ka data bhejo". Deepgram may output <code>macops</code> or <code>mecobs</code>.</p>
+            <p>Example: "macops ka data bhejo". Local speech may output <code>macops</code> or <code>mecobs</code>.</p>
           </div>
         </div>
         <div class="step">

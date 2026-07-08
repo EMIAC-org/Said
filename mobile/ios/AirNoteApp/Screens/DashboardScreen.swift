@@ -148,7 +148,7 @@ struct DashboardScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text(env.dictationAvailable
                      ? "English, Hindi, or Hinglish — polished on AirNote's servers."
-                     : "Add your Deepgram + Groq keys to turn on dictation.")
+                     : "Add your Groq polish key to turn on dictation.")
                     .font(.subheadline)
                     .foregroundStyle(AirNoteDesign.muted)
                 Button {
@@ -233,7 +233,7 @@ struct DashboardScreen: View {
                     Text("Connect your voice")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AirNoteDesign.foreground)
-                    Text("Add your free Deepgram + Groq keys to start dictating.")
+                    Text("Add your Groq key to polish locally transcribed speech.")
                         .font(.caption)
                         .foregroundStyle(AirNoteDesign.muted)
                 }

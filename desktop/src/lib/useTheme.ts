@@ -1,98 +1,68 @@
 import { useCallback, useEffect, useState } from "react";
 
-/** The two concrete palettes the app can render. */
 export type Theme = "dark" | "light";
-
-/** What the user actually *chose*. `"system"` follows the OS appearance live;
- *  `"dark"` / `"light"` pin a palette regardless of the OS. */
-export type ThemePreference = "system" | "dark" | "light";
+export type ThemePreference = Theme | "system";
 
 const STORAGE_KEY = "vp-theme";
 
-/** Read the OS appearance. Works in both the macOS WKWebView and the Windows
- *  WebView2 runtime (both honour `prefers-color-scheme`). Falls back to dark
- *  when `matchMedia` is unavailable (very old runtime / SSR). */
-export function systemTheme(): Theme {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return "dark";
-  }
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+function systemTheme(): Theme {
+  if (typeof window === "undefined" || !window.matchMedia) return "dark";
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
-/** The saved preference. Absent / unrecognised → `"system"` so a brand-new
- *  user (who never picked a theme) simply follows their OS. */
-export function readPreference(): ThemePreference {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    if (v === "dark" || v === "light" || v === "system") return v;
-  } catch { /* ignore */ }
-  return "system";
+function isThemePreference(value: string | null | undefined): value is ThemePreference {
+  return value === "dark" || value === "light" || value === "system";
 }
 
-/** Collapse a preference into the concrete palette to render. */
-function resolve(pref: ThemePreference): Theme {
-  return pref === "system" ? systemTheme() : pref;
+function resolveTheme(preference: ThemePreference): Theme {
+  return preference === "system" ? systemTheme() : preference;
 }
 
 /**
- * Theme controller. Splits the user's *preference* (`system | dark | light`)
- * from the *resolved* palette (`dark | light`) that actually paints.
- *
- * - When the preference is `"system"`, the resolved theme tracks the OS and
- *   updates live via the `prefers-color-scheme` media query — no reload needed
- *   when the user flips macOS/Windows appearance.
- * - The resolved theme is written to `document.documentElement.dataset.theme`;
- *   the *preference* is persisted to localStorage.
- * - The initial paint is bootstrapped by a small inline script in index.html
- *   (no-flash) that runs the same resolution before React mounts.
+ * Read/write theme to localStorage and `document.documentElement.dataset.theme`.
+ * The initial value is ALSO synced from a small inline script in index.html
+ * (no-flash bootstrap). Defaults to the system appearance.
  */
 export function useTheme(): {
-  /** The palette currently painting. */
-  theme:      Theme;
-  /** The user's stored choice (drives the Appearance picker selection). */
+  theme:  Theme;
   preference: ThemePreference;
-  /** Pin a concrete palette (Dark / Warm Paper). */
-  setTheme:      (t: Theme) => void;
-  /** Set any preference, including `"system"` (Follow system). */
-  setPreference: (p: ThemePreference) => void;
-  /** Topbar Sun/Moon — flips the *resolved* palette into an explicit choice. */
   toggle: () => void;
+  setTheme: (t: ThemePreference) => void;
 } {
-  const [preference, setPreferenceState] = useState<ThemePreference>(readPreference);
-  const [theme, setResolved] = useState<Theme>(() => resolve(readPreference()));
-
-  // Apply + persist whenever the preference changes.
-  useEffect(() => {
-    const applied = resolve(preference);
-    setResolved(applied);
-    if (typeof document !== "undefined") {
-      document.documentElement.dataset.theme = applied;
+  const [preference, setPreference] = useState<ThemePreference>(() => {
+    if (typeof localStorage === "undefined") return "system";
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      return isThemePreference(stored) ? stored : "system";
+    } catch {
+      return "system";
     }
-    try { localStorage.setItem(STORAGE_KEY, preference); } catch { /* ignore */ }
-  }, [preference]);
+  });
+  const [theme, setResolvedTheme] = useState<Theme>(() => {
+    if (typeof document === "undefined") return resolveTheme(preference);
+    const bootstrapped = document.documentElement.dataset.theme;
+    return bootstrapped === "light" || bootstrapped === "dark" ? bootstrapped : resolveTheme(preference);
+  });
 
-  // Live-follow the OS while the preference is "system".
   useEffect(() => {
-    if (preference !== "system") return;
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => {
-      // Another useTheme instance may have switched to an explicit palette;
-      // re-read the stored choice so we never override it from a stale "system".
-      if (readPreference() !== "system") return;
-      const applied: Theme = mq.matches ? "dark" : "light";
-      setResolved(applied);
-      document.documentElement.dataset.theme = applied;
+    const apply = () => {
+      const resolved = resolveTheme(preference);
+      setResolvedTheme(resolved);
+      document.documentElement.dataset.theme = resolved;
     };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
+
+    apply();
+    try { localStorage.setItem(STORAGE_KEY, preference); } catch { /* ignore */ }
+
+    if (preference !== "system" || !window.matchMedia) return;
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
   }, [preference]);
 
-  const setPreference = useCallback((p: ThemePreference) => setPreferenceState(p), []);
-  const setTheme      = useCallback((t: Theme) => setPreferenceState(t), []);
   const toggle = useCallback(() => {
-    setPreferenceState(theme === "dark" ? "light" : "dark");
-  }, [theme]);
+    setPreference((current) => (resolveTheme(current) === "dark" ? "light" : "dark"));
+  }, []);
 
-  return { theme, preference, setTheme, setPreference, toggle };
+  return { theme, preference, toggle, setTheme: setPreference };
 }

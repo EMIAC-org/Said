@@ -15,7 +15,7 @@
 --    next time they're upserted.  Going forward, every promotion records
 --    the user's `output_language` at the time of the edit so we can filter
 --    the keyterms slate by language at recording time (no more Devanagari
---    leaking into English-mode Deepgram requests).
+--    leaking into English-mode speech hints).
 
 -- ── Pending promotions queue ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pending_promotions (

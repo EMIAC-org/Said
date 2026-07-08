@@ -17,6 +17,7 @@ use crate::{
     },
 };
 
+const DEFAULT_CONTROL_PLANE_URL: &str = "https://airnote.emiactech.com";
 const SYNC_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -330,7 +331,7 @@ fn resolve_auth(state: &AppState) -> Option<AuthContext> {
         .map(str::to_string)
         .or_else(|| std::env::var("AIRNOTE_CONTROL_PLANE_URL").ok())
         .or_else(|| std::env::var("CLOUD_API_URL").ok())
-        .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+        .unwrap_or_else(|| DEFAULT_CONTROL_PLANE_URL.to_string());
     Some(AuthContext {
         token,
         server_url,
@@ -412,13 +413,6 @@ fn extract_error_message(body: &str, status: u16) -> String {
 
 fn provider_secrets(prefs: &Preferences) -> Vec<ProviderSecret> {
     let mut out = Vec::new();
-    if let Some(secret) = clean_secret(prefs.deepgram_api_key.as_deref()) {
-        out.push(ProviderSecret {
-            provider: "deepgram",
-            display_name: "Deepgram API key",
-            secret,
-        });
-    }
     if let Some(secret) = clean_secret(prefs.groq_api_key.as_deref()) {
         out.push(ProviderSecret {
             provider: "groq",
@@ -479,19 +473,16 @@ mod tests {
             server_audio_runtime_enabled: false,
             updated_at: 0,
             gateway_api_key: Some("gsk_test_gateway_key_1234567890".into()),
-            deepgram_api_key: Some("dg_test".into()),
             gemini_api_key: None,
             groq_api_key: None,
             cerebras_api_key: None,
             deepinfra_api_key: None,
             llm_provider: "groq".into(),
-            stt_provider: "deepgram".into(),
         };
         let providers: Vec<&str> = provider_secrets(&prefs)
             .iter()
             .map(|p| p.provider)
             .collect();
-        assert!(providers.contains(&"deepgram"));
         assert!(providers.contains(&"groq"));
         assert!(providers.contains(&"gateway"));
     }

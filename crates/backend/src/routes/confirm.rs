@@ -9,9 +9,215 @@ use tracing::{info, warn};
 
 use crate::{
     AppState,
-    llm::{alias_safety, promotion_gate},
-    store::{prefs::get_prefs, stt_replacements, tier2_edit_policy, users, vocab_fts, vocabulary},
+    embedder::gemini,
+    llm::{alias_safety, meaning, promotion_gate},
+    store::{
+        openai_oauth, prefs::get_prefs, stt_replacements, tier2_edit_policy, users,
+        vocab_embeddings, vocab_fts, vocabulary,
+    },
 };
+
+const VOCAB_CONTEXT_MAX_CHARS: usize = 500;
+
+fn clean_vocab_context(context: Option<&str>) -> Option<String> {
+    let raw = context?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.chars().count() > VOCAB_CONTEXT_MAX_CHARS {
+        Some(
+            raw.chars()
+                .take(VOCAB_CONTEXT_MAX_CHARS)
+                .collect::<String>()
+                + "…",
+        )
+    } else {
+        Some(raw.to_string())
+    }
+}
+
+fn groq_key_for_learning(prefs: Option<&crate::store::prefs::Preferences>) -> String {
+    prefs
+        .and_then(|p| p.groq_api_key.clone())
+        .or_else(|| std::env::var("GROQ_API_KEY").ok())
+        .or_else(|| {
+            // Only pass true Groq keys to the Groq endpoint. Generic gateway or
+            // Cerebras keys belong to the server-runtime fallback below.
+            std::env::var("GATEWAY_API_KEY")
+                .ok()
+                .filter(|key| key.trim_start().starts_with("gsk_"))
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Deserialize)]
+struct RuntimeMeaningResponse {
+    meaning: String,
+}
+
+async fn generate_meaning_via_runtime(
+    state: &AppState,
+    user_id: &str,
+    term: &str,
+    context: &str,
+) -> Option<String> {
+    let Some(user) = users::get_user(&state.pool, user_id) else {
+        return None;
+    };
+    let Some(token) = user.cloud_token.filter(|value| !value.trim().is_empty()) else {
+        info!("[vocab-meaning] skipped runtime meaning for {term:?} — no cloud token");
+        return None;
+    };
+    let base_url = user
+        .enterprise_server_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
+    let url = format!(
+        "{}/v1/runtime/learning/meaning",
+        base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "term": term,
+        "context": context,
+        "selected_model": said_core::polish::model::DEFAULT_POLISH_MODEL_KEY,
+    });
+    match state
+        .http_client
+        .post(url)
+        .bearer_auth(token)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(12))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<RuntimeMeaningResponse>().await
+        {
+            Ok(parsed) if !parsed.meaning.trim().is_empty() => Some(parsed.meaning),
+            Ok(_) => {
+                warn!("[vocab-meaning] runtime returned empty meaning for {term:?}");
+                None
+            }
+            Err(err) => {
+                warn!("[vocab-meaning] runtime meaning parse failed for {term:?}: {err}");
+                None
+            }
+        },
+        Ok(resp) => {
+            let status = resp.status();
+            let preview = resp.text().await.unwrap_or_default();
+            warn!(
+                "[vocab-meaning] runtime meaning failed for {term:?}: {status} {}",
+                said_core::text::truncate_utf8(&preview, 180)
+            );
+            None
+        }
+        Err(err) => {
+            warn!("[vocab-meaning] runtime meaning request failed for {term:?}: {err}");
+            None
+        }
+    }
+}
+
+fn schedule_vocab_artifacts(
+    state: AppState,
+    user_id: String,
+    term: String,
+    context: Option<String>,
+) {
+    let Some(context) = context else {
+        info!("[vocab-meaning] skipped {term:?} — no example context");
+        return;
+    };
+    tokio::spawn(async move {
+        let _guard = crate::bg_task_guard();
+        if state.watchdog.is_shedding() {
+            info!("[vocab-meaning] skipped {term:?} — watchdog shedding load");
+            return;
+        }
+
+        vocab_fts::upsert(&state.pool, &user_id, &term, Some(&context));
+
+        let prefs = get_prefs(&state.pool, &user_id);
+        let gemini_key = prefs
+            .as_ref()
+            .and_then(|p| p.gemini_api_key.clone())
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+            .unwrap_or_default();
+        let embed_text = format!("{term}. {context}");
+        if !gemini_key.trim().is_empty() {
+            if let Some(embedding) =
+                gemini::embed(&state.http_client, &state.pool, &embed_text, &gemini_key).await
+            {
+                vocab_embeddings::record_example_and_recentre(
+                    &state.pool,
+                    &user_id,
+                    &term,
+                    &embedding,
+                    &embed_text,
+                );
+            }
+        }
+
+        let example_count = vocabulary::bump_examples_since_meaning(&state.pool, &user_id, &term);
+        if !vocabulary::meaning_needs_refresh(&state.pool, &user_id, &term) {
+            info!(
+                "[vocab-meaning] deferred refresh for {term:?} — examples_since_meaning={example_count}"
+            );
+            return;
+        }
+
+        let groq_key = groq_key_for_learning(prefs.as_ref());
+        let openai_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+        let codex_token = openai_oauth::get_token(&state.pool, &user_id);
+        let codex_access_token = codex_token
+            .as_ref()
+            .map(|token| token.access_token.as_str());
+        let current = vocabulary::get_meaning(&state.pool, &user_id, &term);
+        let examples = {
+            let stored = vocab_embeddings::support_example_texts(&state.pool, &user_id, &term, 4);
+            if stored.is_empty() {
+                vec![context.clone()]
+            } else {
+                stored
+            }
+        };
+
+        let generated_local = if let Some(current_meaning) = current.as_deref() {
+            meaning::refine(
+                &state.http_client,
+                &groq_key,
+                &openai_key,
+                codex_access_token,
+                &term,
+                current_meaning,
+                &examples,
+            )
+            .await
+        } else {
+            meaning::generate_initial(
+                &state.http_client,
+                &groq_key,
+                &openai_key,
+                codex_access_token,
+                &term,
+                examples.first().map(String::as_str).unwrap_or(&context),
+            )
+            .await
+        };
+        let generated = if generated_local.is_some() {
+            generated_local
+        } else {
+            generate_meaning_via_runtime(&state, &user_id, &term, &context).await
+        };
+
+        if let Some(new_meaning) = generated.filter(|value| !value.trim().is_empty()) {
+            if vocabulary::update_meaning(&state.pool, &user_id, &term, &new_meaning) {
+                crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
+                refresh_local_profile_summary(&state, "vocab_meaning");
+            }
+        }
+    });
+}
 
 fn hash_text(text: &str) -> String {
     let mut hasher = Sha256::new();
@@ -108,7 +314,7 @@ fn post_runtime_memory_dirty(state: AppState) {
         let base_url = user
             .enterprise_server_url
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
         let url = format!("{}/v1/runtime/memory/dirty", base_url.trim_end_matches('/'));
         let _ = state
             .http_client
@@ -139,7 +345,7 @@ fn post_runtime_client_event(
         let base_url = user
             .enterprise_server_url
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+            .unwrap_or_else(|| "https://airnote.emiactech.com".to_string());
         let url = format!(
             "{}/v1/runtime/client-events",
             base_url.trim_end_matches('/')
@@ -197,6 +403,8 @@ pub struct ConfirmBody {
     pub original: String,
     pub action: String,
     pub recording_id: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -253,6 +461,7 @@ pub async fn confirm_term(
             .unwrap_or_default();
 
         // ── Promote to vocabulary ────────────────────────────────────────────
+        let example_context = clean_vocab_context(body.context.as_deref());
         vocabulary::upsert_for_language_with_context(
             &state.pool,
             user_id,
@@ -260,7 +469,7 @@ pub async fn confirm_term(
             1.0,
             "confirmed",
             &language,
-            None,
+            example_context.as_deref(),
         );
 
         let alias_safe = if body.original.trim().is_empty() {
@@ -353,6 +562,12 @@ pub async fn confirm_term(
         // ── Invalidate lexicon cache ─────────────────────────────────────────
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
         refresh_local_profile_summary(&state, "confirm_term");
+        schedule_vocab_artifacts(
+            state.clone(),
+            user_id.to_string(),
+            body.term.clone(),
+            example_context,
+        );
 
         // ── Trigger retrain ─────────────────────────────────────────────────
         crate::routes::classify::schedule_retrain_public(state.clone());
@@ -536,6 +751,8 @@ pub struct ConfirmBatchBody {
 pub struct ConfirmBatchItem {
     pub original: String,
     pub corrected: String,
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -661,6 +878,7 @@ pub async fn confirm_batch(
         // Promote or refresh vocabulary. Alias learning must still run when
         // the term already exists; review cards are commonly used to teach a
         // new distortion of a known term.
+        let example_context = clean_vocab_context(item.context.as_deref());
         let inserted_or_updated = vocabulary::upsert_for_language_with_context(
             &state.pool,
             user_id,
@@ -668,10 +886,10 @@ pub async fn confirm_batch(
             1.0,
             "confirmed",
             &language,
-            None,
+            example_context.as_deref(),
         );
 
-        vocab_fts::upsert(&state.pool, user_id, corrected, None);
+        vocab_fts::upsert(&state.pool, user_id, corrected, example_context.as_deref());
 
         if alias_safe {
             // Record edit-policy rule
@@ -747,6 +965,12 @@ pub async fn confirm_batch(
             if !learned_terms.iter().any(|term| term == corrected) {
                 learned_terms.push(corrected.to_string());
             }
+            schedule_vocab_artifacts(
+                state.clone(),
+                user_id.to_string(),
+                corrected.to_string(),
+                example_context,
+            );
         }
 
         info!(

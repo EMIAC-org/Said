@@ -563,7 +563,7 @@ Network is needed for:
 
 Takeaway for Said:
 
-- Already needed for Deepgram, Gemini, Groq, OpenAI/Gateway, app auth, and local backend.
+- Already needed for Local speech, Gemini, Groq, OpenAI/Gateway, app auth, and local backend.
 - Keep permission/capability docs clear if we package with sandbox constraints later.
 
 ## Keychain / CloudKit / Notifications

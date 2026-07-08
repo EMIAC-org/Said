@@ -3,9 +3,9 @@
 //! Receives a multipart form with:
 //!   audio        — WAV bytes  (required)
 //!   target_app   — bundle-id of the focused app  (optional)
-//!   pre_transcript — transcript already obtained via Deepgram WS streaming  (optional, P5)
+//!   pre_transcript — local ASR transcript from the desktop  (required)
 //!
-//! Pipeline: auth → load prefs → STT → evidence collection → dynamic prompt →
+//! Pipeline: auth → load prefs → local transcript → evidence collection → dynamic prompt →
 //!           LLM stream → post-LLM passes → SSE.
 
 use axum::{
@@ -17,18 +17,15 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
-use base64::{Engine as _, engine::general_purpose};
-use futures::{SinkExt, StreamExt};
-use said_core::deepgram::{BiasPackage, TranscriptMeta};
+use futures::StreamExt;
+use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message as WsMessage, client::IntoClientRequest},
-};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -50,15 +47,91 @@ const LIVE_TOKEN_MIN_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
 const LIVE_TOKEN_MIN_CHARS: usize = 18;
 const LIVE_TOKEN_MAX_CHARS: usize = 64;
 const LIVE_TOKEN_HARD_MAX_CHARS: usize = 96;
-const SERVER_RUNTIME_VOICE_WAV_JSON_LIMIT_BYTES: usize = 24 * 1024 * 1024;
-const SERVER_RUNTIME_VOICE_WAV_JSON_OVERHEAD_BYTES: usize = 4 * 1024;
+const BACKEND_AI_PAYLOAD_LOG_ENV: &str = "AIRNOTE_BACKEND_AI_PAYLOAD_LOG";
+const BACKEND_AI_PAYLOAD_LOG_PATH_ENV: &str = "AIRNOTE_BACKEND_AI_PAYLOAD_LOG_PATH";
 
-fn base64_encoded_len(bytes: usize) -> usize {
-    bytes.div_ceil(3) * 4
+fn backend_ai_payload_log_enabled() -> bool {
+    matches!(
+        std::env::var(BACKEND_AI_PAYLOAD_LOG_ENV)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
-fn estimated_runtime_voice_wav_json_bytes(wav_bytes: usize) -> usize {
-    base64_encoded_len(wav_bytes).saturating_add(SERVER_RUNTIME_VOICE_WAV_JSON_OVERHEAD_BYTES)
+fn backend_ai_payload_log_path() -> PathBuf {
+    std::env::var(BACKEND_AI_PAYLOAD_LOG_PATH_ENV)
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("airnote-backend-ai-payloads.jsonl"))
+}
+
+async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest) {
+    if !backend_ai_payload_log_enabled() {
+        return;
+    }
+
+    let path = backend_ai_payload_log_path();
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+            warn!(
+                "[voice] backend AI payload log failed to create parent path={}: {err}",
+                path.display()
+            );
+            return;
+        }
+    }
+
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let line = json!({
+        "kind": "backend_to_control_plane_voice_polish_stream",
+        "unix_ms": unix_ms,
+        "url": url,
+        "client_run_id": &req.client_run_id,
+        "selected_model": &req.selected_model,
+        "output_language": &req.output_language,
+        "target_app": &req.target_app,
+        "screen_context": &req.screen_context,
+        "safe_vocab_terms": &req.safe_vocab_terms,
+        "recent_speech_hints": &req.recent_speech_hints,
+        "transcript": &req.transcript,
+    })
+    .to_string();
+
+    match tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await
+    {
+        Ok(mut file) => {
+            if let Err(err) = file.write_all(format!("{line}\n").as_bytes()).await {
+                warn!(
+                    "[voice] backend AI payload log write failed path={}: {err}",
+                    path.display()
+                );
+            } else {
+                info!(
+                    "[voice] backend AI payload log wrote path={} run_id={} transcript_chars={} vocab_terms={} recent_speech_hints={}",
+                    path.display(),
+                    req.client_run_id.as_deref().unwrap_or("none"),
+                    req.transcript.chars().count(),
+                    req.safe_vocab_terms.len(),
+                    req.recent_speech_hints.len()
+                );
+            }
+        }
+        Err(err) => warn!(
+            "[voice] backend AI payload log open failed path={}: {err}",
+            path.display()
+        ),
+    }
 }
 
 fn voice_error_code_for(message: &str, explicit: Option<&str>) -> String {
@@ -80,8 +153,7 @@ fn voice_error_code_for(message: &str, explicit: Option<&str>) -> String {
         || lower.contains("connection")
     {
         "runtime_network_error".to_string()
-    } else if lower.contains("server audio runtime")
-        || lower.contains("server runtime")
+    } else if lower.contains("server runtime")
         || lower.contains("service unavailable")
         || lower.contains("internal error")
     {
@@ -115,8 +187,7 @@ fn voice_error_owned_by_airnote(code: &str, message: &str) -> bool {
             | "runtime_network_error"
             | "server_runtime_failed"
             | "voice_pipeline_failed"
-    ) || lower.contains("server audio runtime")
-        || lower.contains("sse stream ended")
+    ) || lower.contains("sse stream ended")
 }
 
 fn voice_error_payload(
@@ -363,24 +434,22 @@ use crate::{
     llm::{
         openai_codex,
         prompt::{
-            VocabEntry, VocabResolution, build_user_message_with_hints,
-            build_voice_repair_system_prompt, build_voice_repair_user_message,
-            default_voice_prompt_template, render_voice_system_prompt_template_with_profile,
-            selected_vocab_terms_to_entries_with_aliases,
+            VocabEntry, build_user_message_with_hints, build_voice_repair_system_prompt,
+            build_voice_repair_user_message, default_voice_prompt_template,
+            render_voice_system_prompt_template_with_profile_and_recent,
+            resolved_vocab_terms_to_entries_with_aliases,
         },
         script,
         stream_safety::{
             STREAM_RESET_SENTINEL, StreamProvider, StreamSafetyFilter, scrub_polished_output,
         },
+        vocab_resolver,
     },
     store::{
         company_vocab,
         history::{InsertRecording, insert_recording},
-        openai_oauth, stt_replacements,
-        vectors::retrieve_similar,
-        vocab_embeddings, vocabulary,
+        openai_oauth, stt_replacements, vocab_embeddings, vocabulary,
     },
-    stt::bias as stt_bias,
 };
 
 fn invalidate_openai_session_on_auth_error(
@@ -395,46 +464,6 @@ fn invalidate_openai_session_on_auth_error(
     openai_oauth::delete_token(pool, user_id);
     warn!("[voice] invalidated stored OpenAI OAuth token after auth failure");
     true
-}
-
-fn vocab_trace_terms(terms: &[vocabulary::VocabTerm]) -> Vec<Value> {
-    terms
-        .iter()
-        .take(30)
-        .map(|term| {
-            json!({
-                "term": term.term,
-                "source": term.source,
-                "term_type": term.term_type,
-                "weight": term.weight,
-                "use_count": term.use_count,
-                "has_example_context": term.example_context.as_ref().is_some_and(|s| !s.trim().is_empty()),
-                "has_meaning": term.meaning.as_ref().is_some_and(|s| !s.trim().is_empty()),
-            })
-        })
-        .collect()
-}
-
-fn vocab_trace_selections(selections: &[vocab_embeddings::VocabSelection]) -> Vec<Value> {
-    selections
-        .iter()
-        .take(30)
-        .map(|selection| {
-            json!({
-                "term": selection.term.term,
-                "source": selection.term.source,
-                "term_type": selection.term.term_type,
-                "weight": selection.term.weight,
-                "use_count": selection.term.use_count,
-                "has_example_context": selection.term.example_context.as_ref().is_some_and(|s| !s.trim().is_empty()),
-                "has_meaning": selection.term.meaning.as_ref().is_some_and(|s| !s.trim().is_empty()),
-                "tier": selection.tier.as_str(),
-                "reason": selection.reason,
-                "evidence": selection.evidence,
-                "score": selection.score,
-            })
-        })
-        .collect()
 }
 
 #[derive(Debug)]
@@ -457,28 +486,14 @@ struct ServerRuntimeVoiceRequest {
     selected_model: String,
     screen_context: Option<String>,
     safe_vocab_terms: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    vocab_hints: Vec<ServerRuntimeVocabHint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    recent_speech_hints: Vec<String>,
     /// Focused-app key (bundle-id / exe). Lets the server pick the per-app profile
     /// bucket. The learned profile now lives server-side, so the client no longer
     /// ships `client_profile_markdown` — the server injects its own KB.
     #[serde(skip_serializing_if = "Option::is_none")]
     target_app: Option<String>,
     client_run_id: Option<String>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct ServerRuntimeVocabHint {
-    term: String,
-    tier: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    evidence: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    meaning: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    context: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    term_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -497,36 +512,14 @@ struct ServerRuntimeLatency {
     total: i64,
 }
 
-#[derive(Debug, Serialize)]
-struct ServerRuntimeVoiceWavRequest {
-    wav_b64: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mode: Option<String>,
-    output_language: String,
-    selected_model: String,
-    screen_context: Option<String>,
-    safe_vocab_terms: Vec<String>,
-    client_run_id: Option<String>,
-    recording_id: Option<String>,
-    platform: Option<String>,
-    app_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stt_provider: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ServerRuntimeVoiceWavResponse {
-    transcript: String,
-    output: String,
-    model_used: String,
-    latency_ms: ServerRuntimeAudioLatency,
-}
-
-#[derive(Debug, Deserialize)]
-struct ServerRuntimeAudioLatency {
-    stt: i64,
-    polish: i64,
-    total: i64,
+#[derive(Debug, Clone, Default)]
+struct ServerRuntimeTraceMeta {
+    roundtrip_ms: u64,
+    server_total_ms: u64,
+    server_prompt_ms: i64,
+    server_model_ms: i64,
+    first_token_ms: Option<u128>,
+    token_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -572,7 +565,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     let request_start = Instant::now();
     let mut wav_data: Vec<u8> = Vec::new();
     let mut target_app: Option<String> = None;
-    let mut pre_transcript: Option<String> = None; // P5: from Deepgram WS
+    let mut pre_transcript: Option<String> = None;
     let mut pre_transcript_meta: Option<TranscriptMeta> = None;
     let mut repair_mode: Option<String> = None;
     let mut screen_context: Option<String> = None;
@@ -661,6 +654,21 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
         client_run_id.as_deref().unwrap_or("none"),
     );
 
+    if pre_transcript
+        .as_deref()
+        .is_none_or(|t| t.trim().is_empty())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error_code": "local_transcript_required",
+                "message": "local speech transcript is required before voice polish"
+            })
+            .to_string(),
+        )
+            .into_response();
+    }
+
     polish_with_input(
         state,
         VoicePolishInput {
@@ -714,11 +722,11 @@ pub async fn polish_transcript(
 }
 
 pub async fn problem_transcribe(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let start = Instant::now();
-    let mut wav_data: Vec<u8> = Vec::new();
+    let mut _audio_seen = false;
     let mut pre_transcript: Option<String> = None;
     let mut pre_transcript_meta: Option<TranscriptMeta> = None;
     let mut client_run_id: Option<String> = None;
@@ -727,7 +735,7 @@ pub async fn problem_transcribe(
         match field.name() {
             Some("audio") => {
                 match field.bytes().await {
-                    Ok(b) => wav_data = b.to_vec(),
+                    Ok(b) => _audio_seen = !b.is_empty(),
                     Err(e) => {
                         warn!("[problem] failed to read audio field: {e}");
                         return (
@@ -755,143 +763,39 @@ pub async fn problem_transcribe(
         }
     }
 
-    if wav_data.is_empty() && pre_transcript.is_none() {
+    if pre_transcript
+        .as_deref()
+        .is_none_or(|t| t.trim().is_empty())
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error_code": "empty_audio",
-                "message": "audio or pre_transcript is required"
+                "error_code": "local_transcript_required",
+                "message": "local speech transcript is required"
             })),
         )
             .into_response();
     }
 
-    let user_id = state.default_user_id.as_str().to_string();
-    let pool = state.pool.clone();
-    let prefs = match crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error_code": "preferences_not_found",
-                    "message": "preferences not found"
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    let stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
-    let selected = said_core::stt::SttProvider::parse(&stt_provider);
-    let pre_origin = pre_transcript_meta
-        .as_ref()
-        .map(|m| m.origin)
-        .unwrap_or_default();
-    // The retry/problem path runs no on-device engine, so a local provider with
-    // no usable inbound transcript resolves to the Deepgram safety net.
-    let plan =
-        said_core::stt::decide_stt_plan(selected, pre_transcript.is_some(), pre_origin, false);
-    let use_inbound = matches!(
-        plan,
-        said_core::stt::SttPlan::UseInboundLocal | said_core::stt::SttPlan::UseInboundCloudWs
-    );
-    let inbound_pre_transcript = pre_transcript.is_some();
-    let pre_transcript = if use_inbound { pre_transcript } else { None };
-    let deepgram_key = said_core::stt::resolve_deepgram_api_key(prefs.deepgram_api_key.as_deref())
-        .unwrap_or_default();
-    let stt_bias_package = tokio::task::spawn_blocking({
-        let pool = pool.clone();
-        let user_id = user_id.clone();
-        let language = prefs.language.clone();
-        let output_language = prefs.output_language.clone();
-        move || stt_bias::build_bias_package(&pool, &user_id, &language, &output_language)
-    })
-    .await
-    .unwrap_or_else(|_| BiasPackage::default());
-    let audio_seconds = wav_duration_seconds(&wav_data);
-
-    info!(
-        "[problem] transcribe start run_id={} provider={} wav_bytes={} audio_seconds={:.2} inbound_pre_transcript={} using_pre_transcript={}",
-        client_run_id.as_deref().unwrap_or("none"),
-        stt_provider,
-        wav_data.len(),
-        audio_seconds,
-        inbound_pre_transcript,
-        pre_transcript.is_some(),
-    );
-
-    let chosen = if let Some(t) = pre_transcript {
-        let plain = strip_confidence_markers(&t);
-        let ws_meta = pre_transcript_meta.unwrap_or_else(|| TranscriptMeta {
-            enriched_transcript: t.clone(),
-            confidence: 0.95,
-            mean_word_confidence: 0.95,
-            word_count: plain.split_whitespace().count(),
-            stt_mode: stt_bias_package.stt_mode.clone(),
-            ..TranscriptMeta::default()
-        });
-        let primary = TranscriptCandidate {
-            transcript: plain,
-            meta: TranscriptMeta {
-                enriched_transcript: t,
-                ..ws_meta
-            },
-            source: "problem_ws".to_string(),
-        };
-        match maybe_rescue_transcript(
-            &state.http_client,
-            &stt_provider,
-            &deepgram_key,
-            wav_data,
-            audio_seconds,
-            &stt_bias_package,
-            Some(primary),
-        )
-        .await
-        {
-            Ok((candidate, _)) => candidate,
-            Err(e) => {
-                warn!("[problem] STT rescue failed: {e}");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({"error_code": "stt_failed", "message": e})),
-                )
-                    .into_response();
-            }
-        }
-    } else {
-        // No usable inbound transcript. For a local provider this is the
-        // genuine-failure safety net (no on-device engine here) → Deepgram.
-        if selected.is_local() {
-            warn!(
-                "[problem] local STT produced no usable transcript (provider={}, plan={:?}) — using Deepgram fallback run_id={}",
-                stt_provider,
-                plan,
-                client_run_id.as_deref().unwrap_or("none"),
-            );
-        }
-        match maybe_rescue_transcript(
-            &state.http_client,
-            &stt_provider,
-            &deepgram_key,
-            wav_data,
-            audio_seconds,
-            &stt_bias_package,
-            None,
-        )
-        .await
-        {
-            Ok((candidate, _)) => candidate,
-            Err(e) => {
-                warn!("[problem] STT failed: {e}");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({"error_code": "stt_failed", "message": e})),
-                )
-                    .into_response();
-            }
-        }
+    let transcript_input = pre_transcript.unwrap_or_default();
+    let transcript_plain = strip_confidence_markers(&transcript_input);
+    let word_count = transcript_plain.split_whitespace().count();
+    let meta = pre_transcript_meta.unwrap_or_else(|| TranscriptMeta {
+        enriched_transcript: transcript_input.clone(),
+        confidence: 0.95,
+        mean_word_confidence: 0.95,
+        word_count,
+        origin: TranscriptOrigin::DictationLocal,
+        model: said_core::stt::telemetry_speech_model().to_string(),
+        ..TranscriptMeta::default()
+    });
+    let chosen = TranscriptCandidate {
+        transcript: transcript_plain,
+        meta: TranscriptMeta {
+            enriched_transcript: transcript_input,
+            ..meta
+        },
+        source: "problem_local".to_string(),
     };
 
     let transcript = chosen.transcript.trim().to_string();
@@ -1185,8 +1089,9 @@ async fn run_server_runtime_voice_stream(
     screen_context: Option<String>,
     vocab_entries: Vec<VocabEntry>,
     target_app: Option<String>,
+    recent_speech_hints: Vec<String>,
     token_tx: mpsc::Sender<String>,
-) -> Result<(crate::llm::PolishResult, String), String> {
+) -> Result<(crate::llm::PolishResult, String, ServerRuntimeTraceMeta), String> {
     let setup_start = Instant::now();
     let Some(user) = crate::store::users::get_user(&pool, &user_id) else {
         return Err("local user not found".to_string());
@@ -1200,49 +1105,11 @@ async fn run_server_runtime_voice_stream(
         .enterprise_server_url
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or(said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL)
+        .unwrap_or("https://airnote.emiactech.com")
         .to_string();
 
-    let vocab_hints = vocab_entries
+    let safe_vocab_terms = vocab_entries
         .iter()
-        .filter_map(|entry| {
-            let term = entry.term.trim();
-            if term.is_empty() {
-                return None;
-            }
-            Some(ServerRuntimeVocabHint {
-                term: term.to_string(),
-                tier: match entry.resolution {
-                    VocabResolution::Resolved => "apply",
-                    VocabResolution::Candidate => "suggest",
-                }
-                .to_string(),
-                evidence: entry
-                    .evidence
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
-                meaning: entry
-                    .meaning
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
-                context: entry
-                    .context
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
-                term_type: entry.term_type.clone(),
-            })
-        })
-        .take(20)
-        .collect::<Vec<_>>();
-    let safe_vocab_terms = vocab_hints
-        .iter()
-        .filter(|hint| hint.tier == "apply")
         .map(|entry| entry.term.trim().to_string())
         .filter(|term| !term.is_empty())
         .take(20)
@@ -1254,7 +1121,7 @@ async fn run_server_runtime_voice_stream(
         selected_model,
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
-        vocab_hints,
+        recent_speech_hints,
         target_app,
         client_run_id: client_run_id
             .filter(|s| !s.trim().is_empty())
@@ -1267,7 +1134,7 @@ async fn run_server_runtime_voice_stream(
     );
     let start = Instant::now();
     info!(
-        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} target_app={} screen_context_chars={} setup_ms={}",
+        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} recent_speech_hints={} target_app={} screen_context_chars={} setup_ms={}",
         req.client_run_id.as_deref().unwrap_or("none"),
         url,
         req.transcript.chars().count(),
@@ -1275,6 +1142,7 @@ async fn run_server_runtime_voice_stream(
         req.selected_model,
         req.output_language,
         req.safe_vocab_terms.len(),
+        req.recent_speech_hints.len(),
         req.target_app.as_deref().unwrap_or("none"),
         req.screen_context
             .as_ref()
@@ -1282,6 +1150,8 @@ async fn run_server_runtime_voice_stream(
             .unwrap_or(0),
         setup_start.elapsed().as_millis(),
     );
+
+    write_backend_ai_payload_log(&url, &req).await;
 
     let resp = crate::cp_client::with_org_context(
         http_client
@@ -1396,6 +1266,14 @@ async fn run_server_runtime_voice_stream(
         parsed.output.chars().count(),
         measured_ms.saturating_sub(server_ms),
     );
+    let trace_meta = ServerRuntimeTraceMeta {
+        roundtrip_ms: measured_ms,
+        server_total_ms: server_ms,
+        server_prompt_ms: parsed.latency_ms.prompt,
+        server_model_ms: parsed.latency_ms.model,
+        first_token_ms,
+        token_count,
+    };
 
     Ok((
         crate::llm::PolishResult {
@@ -1403,6 +1281,7 @@ async fn run_server_runtime_voice_stream(
             polish_ms,
         },
         format!("server-runtime:{}", parsed.model_used),
+        trace_meta,
     ))
 }
 
@@ -1455,370 +1334,14 @@ async fn run_local_voice_polish_no_stream(
     result.map(|r| (r, route.label()))
 }
 
-async fn run_server_runtime_voice_wav_probe(
-    http_client: &reqwest::Client,
-    pool: &crate::store::DbPool,
-    user_id: &str,
-    wav_data: &[u8],
-    output_language: &str,
-    selected_model: &str,
-    screen_context: Option<&str>,
-    safe_vocab_terms: Vec<String>,
-    stt_provider: &str,
-    recording_id: Option<&str>,
-    mode: &str,
-    client_run_id: Option<&str>,
-) -> Result<
-    (
-        String,
-        crate::llm::PolishResult,
-        String,
-        ServerRuntimeAudioLatency,
-    ),
-    String,
-> {
-    let Some(user) = crate::store::users::get_user(pool, user_id) else {
-        return Err("local user not found".to_string());
-    };
-    let token = user
-        .cloud_token
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "server audio runtime requires AirNote sign-in".to_string())?;
-    let base_url = user
-        .enterprise_server_url
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL)
-        .to_string();
-
-    let encoded_len = base64_encoded_len(wav_data.len());
-    let estimated_json_bytes = estimated_runtime_voice_wav_json_bytes(wav_data.len());
-    info!(
-        "[voice] server audio runtime payload mode={} wav_bytes={} wav_b64_bytes={} estimated_json_bytes={} limit_bytes={}",
-        mode,
-        wav_data.len(),
-        encoded_len,
-        estimated_json_bytes,
-        SERVER_RUNTIME_VOICE_WAV_JSON_LIMIT_BYTES,
-    );
-    if estimated_json_bytes > SERVER_RUNTIME_VOICE_WAV_JSON_LIMIT_BYTES {
-        return Err(format!(
-            "server audio runtime request too large: wav_bytes={} estimated_json_bytes={} limit_bytes={}",
-            wav_data.len(),
-            estimated_json_bytes,
-            SERVER_RUNTIME_VOICE_WAV_JSON_LIMIT_BYTES
-        ));
-    }
-
-    let req = ServerRuntimeVoiceWavRequest {
-        wav_b64: general_purpose::STANDARD.encode(wav_data),
-        mode: if mode.trim().is_empty() || mode == "normal_voice" {
-            None
-        } else {
-            Some(mode.to_string())
-        },
-        output_language: output_language.to_string(),
-        selected_model: selected_model.to_string(),
-        screen_context: screen_context.map(|s| s.chars().take(500).collect()),
-        safe_vocab_terms,
-        client_run_id: client_run_id
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_string)
-            .or_else(|| Some(Uuid::new_v4().to_string())),
-        recording_id: recording_id.map(str::to_string),
-        platform: Some(std::env::consts::OS.to_string()),
-        app_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
-        stt_provider: Some(stt_provider.to_string()),
-    };
-
-    let url = format!("{}/v1/runtime/voice/wav", base_url.trim_end_matches('/'));
-    let start = Instant::now();
-    let request_timeout = if mode == "message_polish" {
-        std::time::Duration::from_secs(90)
-    } else {
-        std::time::Duration::from_secs(45)
-    };
-    let resp = crate::cp_client::with_org_context(
-        http_client
-            .post(&url)
-            .bearer_auth(token)
-            .json(&req)
-            .timeout(request_timeout),
-        Some(&user),
-    )
-    .send()
-    .await
-    .map_err(|e| {
-        format!(
-            "server audio runtime request failed: {e}; wav_bytes={} estimated_json_bytes={}",
-            wav_data.len(),
-            estimated_json_bytes
-        )
-    })?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        warn!(
-            "[voice] server audio runtime non-success mode={} status={} wav_bytes={} estimated_json_bytes={} body={}",
-            mode,
-            status,
-            wav_data.len(),
-            estimated_json_bytes,
-            said_core::text::truncate_utf8(&body, 240),
-        );
-        return Err(format!(
-            "server audio runtime returned {status}: {}",
-            said_core::text::truncate_utf8(&body, 240)
-        ));
-    }
-
-    let parsed = resp
-        .json::<ServerRuntimeVoiceWavResponse>()
-        .await
-        .map_err(|e| format!("server audio runtime response parse failed: {e}"))?;
-    let measured_ms = start.elapsed().as_millis() as u64;
-    let server_ms = parsed.latency_ms.total.max(0) as u64;
-    let polish_ms = measured_ms.max(server_ms);
-
-    Ok((
-        parsed.transcript,
-        crate::llm::PolishResult {
-            polished: parsed.output,
-            polish_ms,
-        },
-        if mode == "message_polish" {
-            format!("server-message-polish-audio:{}", parsed.model_used)
-        } else {
-            format!("server-audio-runtime:{}", parsed.model_used)
-        },
-        parsed.latency_ms,
-    ))
-}
-
-async fn run_server_runtime_voice_ws_probe(
-    pool: &crate::store::DbPool,
-    user_id: &str,
-    wav_data: &[u8],
-    output_language: &str,
-    selected_model: &str,
-    screen_context: Option<&str>,
-    safe_vocab_terms: Vec<String>,
-    stt_provider: &str,
-) -> Result<
-    (
-        String,
-        crate::llm::PolishResult,
-        String,
-        ServerRuntimeAudioLatency,
-    ),
-    String,
-> {
-    let Some(user) = crate::store::users::get_user(pool, user_id) else {
-        return Err("local user not found".to_string());
-    };
-    let token = user
-        .cloud_token
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "server audio runtime requires AirNote sign-in".to_string())?;
-    let base_url = user
-        .enterprise_server_url
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL)
-        .to_string();
-
-    let wav = extract_pcm16_wav(wav_data)?;
-    let ws_url = build_server_runtime_ws_url(&base_url, &token);
-    let mut request = ws_url
-        .into_client_request()
-        .map_err(|e| format!("server audio runtime WS URL failed: {e}"))?;
-    request.headers_mut().insert(
-        "User-Agent",
-        "AirNote local backend server-audio-runtime-probe"
-            .parse()
-            .map_err(|e| format!("server audio runtime WS header failed: {e}"))?,
-    );
-
-    let start = Instant::now();
-    let (socket, _) = connect_async(request)
-        .await
-        .map_err(|e| format!("server audio runtime WS connect failed: {e}"))?;
-    let (mut sink, mut stream) = socket.split();
-    let trace_id = Uuid::new_v4().to_string();
-    let start_msg = json!({
-        "type": "voice.start",
-        "run_id": trace_id,
-        "mode": "normal_voice",
-        "selected_model": selected_model,
-        "output_language": output_language,
-        "stt_provider": stt_provider,
-        "source": "local_backend_ws_probe",
-        "platform": std::env::consts::OS,
-        "app_version": option_env!("CARGO_PKG_VERSION"),
-        "screen_context": screen_context.map(|s| s.chars().take(500).collect::<String>()),
-        "safe_vocab_terms": safe_vocab_terms,
-        "audio": {
-            "encoding": "linear16",
-            "sample_rate": wav.sample_rate,
-            "channels": 1,
-        }
-    });
-    sink.send(WsMessage::Text(start_msg.to_string()))
-        .await
-        .map_err(|e| format!("server audio runtime WS start failed: {e}"))?;
-
-    let frame_bytes = ((wav.sample_rate as usize * 2) / 10).max(2);
-    for chunk in wav.pcm.chunks(frame_bytes) {
-        sink.send(WsMessage::Binary(chunk.to_vec()))
-            .await
-            .map_err(|e| format!("server audio runtime WS audio send failed: {e}"))?;
-    }
-    sink.send(WsMessage::Text(
-        json!({"type": "audio.end", "run_id": trace_id}).to_string(),
-    ))
-    .await
-    .map_err(|e| format!("server audio runtime WS end failed: {e}"))?;
-
-    let mut transcript = String::new();
-    let mut output = None;
-    let mut model_used = "server-audio-runtime:ws".to_string();
-    let mut server_latency: Option<ServerRuntimeAudioLatency> = None;
-    let first_transcript_deadline =
-        tokio::time::Instant::now() + tokio::time::Duration::from_secs(20);
-    let overall_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(55);
-    let mut saw_transcript = false;
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= overall_deadline {
-            return Err(format!(
-                "server audio runtime WS timed out waiting for done trace_id={trace_id}"
-            ));
-        }
-        if !saw_transcript && now >= first_transcript_deadline {
-            return Err(format!(
-                "server audio runtime WS first_transcript_timeout trace_id={trace_id}"
-            ));
-        }
-
-        let next_deadline = if saw_transcript {
-            overall_deadline
-        } else if first_transcript_deadline < overall_deadline {
-            first_transcript_deadline
-        } else {
-            overall_deadline
-        };
-        let remaining = next_deadline.saturating_duration_since(now);
-        let maybe_msg = tokio::time::timeout(remaining, stream.next())
-            .await
-            .map_err(|_| {
-                if saw_transcript {
-                    format!(
-                        "server audio runtime WS timed out waiting for done trace_id={trace_id}"
-                    )
-                } else {
-                    format!("server audio runtime WS first_transcript_timeout trace_id={trace_id}")
-                }
-            })?;
-        let Some(msg) = maybe_msg else {
-            break;
-        };
-        let msg = msg.map_err(|e| format!("server audio runtime WS read failed: {e}"))?;
-        let text = match msg {
-            WsMessage::Text(text) => text,
-            WsMessage::Close(_) => break,
-            _ => continue,
-        };
-        let value: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("server audio runtime WS JSON failed: {e}"))?;
-        match value.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-            "transcript.partial" => {
-                saw_transcript = true;
-            }
-            "transcript.final" => {
-                saw_transcript = true;
-                if let Some(t) = value.get("text").and_then(|v| v.as_str()) {
-                    transcript = t.to_string();
-                }
-            }
-            "runtime.done" => {
-                output = value
-                    .get("output")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string);
-                server_latency = value.get("latency_ms").cloned().and_then(|latency| {
-                    serde_json::from_value::<ServerRuntimeAudioLatency>(latency).ok()
-                });
-                if let Some(model) = value
-                    .get("model_used")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| value.get("model").and_then(|v| v.as_str()))
-                {
-                    model_used = format!("server-audio-runtime:{model}");
-                }
-                break;
-            }
-            "runtime.error" => {
-                let error_kind = value
-                    .get("error_kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown_runtime_error");
-                let status = value.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
-                let message = value
-                    .get("message")
-                    .or_else(|| value.get("error"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("server runtime websocket error");
-                return Err(format!(
-                    "server audio runtime WS returned {error_kind} status={status} trace_id={trace_id}: {}",
-                    said_core::text::truncate_utf8(&message, 240)
-                ));
-            }
-            _ => {}
-        }
-    }
-
-    let output = output
-        .ok_or_else(|| format!("server audio runtime WS ended without done trace_id={trace_id}"))?;
-    let measured_total_ms = start.elapsed().as_millis() as i64;
-    let latency = server_latency.unwrap_or(ServerRuntimeAudioLatency {
-        stt: 0,
-        polish: measured_total_ms,
-        total: measured_total_ms,
-    });
-    Ok((
-        transcript,
-        crate::llm::PolishResult {
-            polished: output,
-            polish_ms: latency.polish.max(0) as u64,
-        },
-        model_used,
-        latency,
-    ))
-}
-
 struct PcmWav {
     pcm: Vec<u8>,
     sample_rate: u32,
 }
 
-fn build_server_runtime_ws_url(base_url: &str, token: &str) -> String {
-    let base = base_url.trim_end_matches('/');
-    let ws_base = if let Some(rest) = base.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else if let Some(rest) = base.strip_prefix("http://") {
-        format!("ws://{rest}")
-    } else {
-        format!("wss://{base}")
-    };
-    format!("{ws_base}/v1/runtime/voice/ws?token={token}")
-}
-
 fn extract_pcm16_wav(wav: &[u8]) -> Result<PcmWav, String> {
     if wav.len() < 44 || wav.get(0..4) != Some(b"RIFF") || wav.get(8..12) != Some(b"WAVE") {
-        return Err("server audio runtime WS requires a RIFF/WAVE file".to_string());
+        return Err("RIFF/WAVE audio is required".to_string());
     }
 
     let mut offset = 12usize;
@@ -2087,30 +1610,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     let Some(prefs_for_guard) = prefs_opt.as_ref() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let stt_provider_for_guard = crate::routes::key_guard::effective_stt_provider(prefs_for_guard);
-    // Two providers only: Deepgram (cloud) runs on-device with a build-bundled
-    // key, so its STT key is always present; local Swift needs no key at all.
-    // The Deepgram check below therefore only ever trips in a dev build that was
-    // compiled without bundling a key.
-    let local_stt_selected = said_core::stt::is_swift_local(&stt_provider_for_guard);
-    let require_stt_key = !message_polish_mode && pre_transcript.is_none() && !local_stt_selected;
     info!(
-        "[voice] key guard require_stt_key={} pre_transcript_present={} message_polish={} prefs_stt_provider={}",
-        require_stt_key,
+        "[voice] key guard pre_transcript_present={} message_polish={}",
         pre_transcript.is_some(),
         message_polish_mode,
-        prefs_for_guard.stt_provider,
     );
-    let missing = if message_polish_mode {
-        Vec::new()
-    } else {
-        crate::routes::key_guard::missing_voice_api_keys(
-            &pool,
-            &user_id,
-            prefs_for_guard,
-            require_stt_key,
-        )
-    };
+    let missing =
+        crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard);
     if !missing.is_empty() {
         let message = "API keys required";
         let payload = voice_error_payload(
@@ -2185,10 +1691,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
         };
 
-        let deepgram_key = said_core::stt::resolve_deepgram_api_key(prefs.deepgram_api_key.as_deref())
-            .unwrap_or_default();
-        let stt_provider = crate::routes::key_guard::effective_stt_provider(&prefs);
-        let stt_api_key = deepgram_key.as_str();
         let gemini_key = prefs.gemini_api_key.clone()
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
             .unwrap_or_default();
@@ -2206,23 +1708,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
             .unwrap_or_default();
 
-        let stt_bias_package = tokio::task::spawn_blocking({
-            let pool = pool.clone();
-            let user_id = user_id.clone();
-            let language = prefs.language.clone();
-            let output_language = prefs.output_language.clone();
-            move || stt_bias::build_bias_package(&pool, &user_id, &language, &output_language)
-        })
-        .await
-        .unwrap_or_else(|_| BiasPackage::default());
         info!(
-            "[voice] SSE stream start after_pre_stream={}ms selected_model={} output_language={} server_runtime={} server_audio_runtime={} stt_provider={} wav_bytes={} audio_seconds={:.2} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} client_run_id={}",
+            "[voice] SSE stream start after_pre_stream={}ms selected_model={} output_language={} server_runtime={} wav_bytes={} audio_seconds={:.2} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} client_run_id={}",
             pre_stream_start.elapsed().as_millis(),
             prefs.selected_model,
             prefs.output_language,
             prefs.server_runtime_enabled,
-            prefs.server_audio_runtime_enabled,
-            stt_provider,
             wav_data.len(),
             audio_secs,
             pre_transcript.is_some(),
@@ -2238,187 +1729,66 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // ── Pipeline-start summary ───────────────────────────────────────────────
         let bg_active = crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
         info!(
-            "[pipeline] start — learning={} vocab={} stt_rules={} keyterms={} replacements={} bg_tasks={}",
+            "[pipeline] start — learning={} vocab={} stt_rules={} bg_tasks={}",
             if prefs.learning_enabled { "ON" } else { "OFF" },
             vocab_full.len(),
             stt_replacement_rules.len(),
-            stt_bias_package.keyterms.len(),
-            stt_bias_package.replacements.len(),
             bg_active,
         );
-        if !stt_bias_package.keyterms.is_empty() {
-            info!("[pipeline] keyterms={:?}", stt_bias_package.keyterms);
+
+        let Some(local_transcript) = pre_transcript.clone().filter(|t| !t.trim().is_empty()) else {
+            yield Ok(voice_run_failed_event(
+                &pool,
+                &voice_run_id,
+                "local speech transcript is required before voice polish",
+                aid,
+                Some("local_transcript_required"),
+            ));
+            return;
+        };
+        let stt_transcript_raw = strip_confidence_markers(&local_transcript);
+        if stt_transcript_raw.trim().is_empty() {
+            yield Ok(voice_run_failed_event(
+                &pool,
+                &voice_run_id,
+                "no speech detected — try speaking again",
+                aid,
+                Some("no_speech_detected"),
+            ));
+            return;
         }
+        let word_count = stt_transcript_raw.split_whitespace().count();
+        let local_meta = pre_transcript_meta.clone().unwrap_or_else(|| TranscriptMeta {
+            enriched_transcript: local_transcript.clone(),
+            confidence: 0.95,
+            mean_word_confidence: 0.95,
+            word_count,
+            model: said_core::stt::telemetry_speech_model().to_string(),
+            origin: TranscriptOrigin::DictationLocal,
+            ..TranscriptMeta::default()
+        });
+        let enriched_raw = if local_meta.enriched_transcript.trim().is_empty() {
+            local_transcript.clone()
+        } else {
+            local_meta.enriched_transcript.clone()
+        };
+        let stt_confidence = if local_meta.confidence > 0.0 {
+            local_meta.confidence
+        } else {
+            0.95
+        };
+        let transcribe_ms = local_meta.duration_ms as i64;
+        let audio_seconds = audio_secs;
+        info!(
+            "[voice] local transcript accepted chars={} words={} confidence={:.2} model={} origin={:?}",
+            stt_transcript_raw.chars().count(),
+            word_count,
+            stt_confidence,
+            local_meta.model,
+            local_meta.origin,
+        );
 
         if message_polish_mode {
-            if wav_data.is_empty() {
-                yield Ok(voice_run_failed_event(
-                    &pool,
-                    &voice_run_id,
-                    "no audio captured for message polish mode",
-                    aid,
-                    Some("no_audio_captured"),
-                ));
-                return;
-            }
-
-            yield Ok(Event::default().event("status")
-                .data(json!({"phase": "server_transcribing"}).to_string()));
-
-            let server_recording_id = Uuid::new_v4().to_string();
-            let stt_provider_for_server = crate::routes::key_guard::effective_stt_provider(&prefs);
-            let server_audio_result = run_server_runtime_voice_wav_probe(
-                &http_client,
-                &pool,
-                &user_id,
-                &wav_data,
-                "english",
-                &prefs.selected_model,
-                screen_context.as_deref(),
-                Vec::new(),
-                &stt_provider_for_server,
-                Some(&server_recording_id),
-                "message_polish",
-                client_run_id.as_deref(),
-            )
-            .await;
-
-            match server_audio_result {
-                Ok((server_transcript, server_result, server_model, server_latency)) => {
-                    let total_ms = total_start.elapsed().as_millis() as i64;
-                    let word_count = server_result.polished.split_whitespace().count() as i64;
-                    let audio_secs = wav_duration_secs(&wav_data);
-
-                    let pool2 = pool.clone();
-                    let id2 = server_recording_id.clone();
-                    let uid2 = user_id.clone();
-                    let t2 = server_transcript.clone();
-                    let p2 = server_result.polished.clone();
-                    let ta2 = target_app.clone();
-                    let model2 = server_model.clone();
-                    let aid2 = saved_audio_id.clone();
-                    let crid2 = client_run_id.clone();
-                    let run_id2 = voice_run_id.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let rec = InsertRecording {
-                            id: &id2,
-                            user_id: &uid2,
-                            transcript: &t2,
-                            polished: &p2,
-                            word_count,
-                            recording_seconds: if audio_secs > 0.0 { audio_secs } else { estimated_secs(word_count) },
-                            model_used: &model2,
-                            confidence: None,
-                            transcribe_ms: Some(server_latency.stt),
-                            embed_ms: Some(0),
-                            polish_ms: Some(server_latency.polish),
-                            target_app: ta2.as_deref(),
-                            source: "server_message_polish_audio",
-                            audio_id: aid2.as_deref(),
-                            enriched_transcript: Some(&t2),
-                            raw_transcript: Some(&t2),
-                            local_corrected_transcript: None,
-                            polished_output: Some(&p2),
-                            trace_json: None,
-                        };
-                        crate::observability::after_recording_insert(
-                            &pool2,
-                            &uid2,
-                            &rec,
-                            crate::observability::observability_extras(crid2.as_deref()),
-                        );
-                        if insert_recording(&pool2, rec).is_some() {
-                            let _ = crate::store::voice_runs::mark_voice_run_completed(
-                                &pool2,
-                                &run_id2,
-                                &id2,
-                                None,
-                            );
-                        }
-                    });
-
-                    yield Ok(Event::default().event("done").data(
-                        json!({
-                            "recording_id": server_recording_id,
-                            "transcript": server_transcript,
-                            "audio_id": saved_audio_id,
-                            "source": "server_message_polish_audio",
-                            "target_app": target_app,
-                            "output_language": "english",
-                            "polished": server_result.polished,
-                            "model_used": server_model,
-                            "confidence": null,
-                            "latency_ms": {
-                                "transcribe": server_latency.stt,
-                                "embed": 0,
-                                "retrieve": 0,
-                                "polish": server_latency.polish,
-                                "total": total_ms,
-                            },
-                            "examples_used": 0,
-                            "server_message_polish_audio": true,
-                        }).to_string()
-                    ));
-                    return;
-                }
-                Err(e) => {
-                    warn!("[voice] server message-polish audio failed: {e}");
-                    let lower = e.to_ascii_lowercase();
-                    if lower.contains("request too large")
-                        || lower.contains("payload too large")
-                        || lower.contains("length limit exceeded")
-                    {
-                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, Some("audio_payload_too_large")));
-                        return;
-                    }
-                    if !crate::routes::key_guard::missing_message_polish_voice_keys(&prefs).is_empty() {
-                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
-                        return;
-                    }
-                    warn!("[voice] falling back to local STT + server message polish");
-                }
-            }
-
-            yield Ok(Event::default().event("status")
-                .data(json!({"phase": "transcribing"}).to_string()));
-
-            let stt_result = run_batch_transcript(
-                &http_client,
-                &stt_provider,
-                stt_api_key,
-                wav_data.clone(),
-                stt_bias_package.clone(),
-                "message_polish:batch".to_string(),
-            ).await;
-
-            let (stt_transcript_raw, transcribe_ms) = match stt_result {
-                Ok(candidate) => {
-                    let ms = total_start.elapsed().as_millis() as i64;
-                    info!(
-                        "[voice] message-polish batch STT={}ms ({} words)",
-                        ms,
-                        candidate.meta.word_count,
-                    );
-                    (candidate.transcript, ms)
-                }
-                Err(e) => {
-                    warn!("[voice] message-polish batch STT error: {e}");
-                    yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
-                    return;
-                }
-            };
-
-            if stt_transcript_raw.trim().is_empty() {
-                yield Ok(voice_run_failed_event(
-                    &pool,
-                    &voice_run_id,
-                    "no speech detected — try speaking again",
-                    aid,
-                    Some("no_speech_detected"),
-                ));
-                return;
-            }
-
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "message_polishing", "transcript": stt_transcript_raw}).to_string()));
 
@@ -2463,7 +1833,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             target_app: ta2.as_deref(),
                             source: "voice",
                             audio_id: aid2.as_deref(),
-                            enriched_transcript: None,
+                            enriched_transcript: Some(&t2),
                             raw_transcript: Some(&t2),
                             local_corrected_transcript: None,
                             polished_output: Some(&p2),
@@ -2514,212 +1884,18 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
             return;
         }
-
-
-        // ── STEP 1: STT ───────────────────────────────────────────────────────────
-        info!("[voice] stt_provider={stt_provider:?}");
-        let audio_seconds = wav_duration_seconds(&wav_data);
-        // Typed STT decision (said_core::stt::decide_stt_plan): a transcript from
-        // the selected local engine is authoritative; cloud Deepgram is reached
-        // only when a local provider genuinely produced nothing.
-        let selected = said_core::stt::SttProvider::parse(&stt_provider);
-        let pre_origin = pre_transcript_meta
-            .as_ref()
-            .map(|m| m.origin)
-            .unwrap_or_default();
-        let local_batch_available =
-            cfg!(feature = "local-stt") && selected == said_core::stt::SttProvider::WhisperLocal;
-        let plan = said_core::stt::decide_stt_plan(
-            selected,
-            pre_transcript.is_some(),
-            pre_origin,
-            local_batch_available,
-        );
-        let use_inbound = matches!(
-            plan,
-            said_core::stt::SttPlan::UseInboundLocal | said_core::stt::SttPlan::UseInboundCloudWs
-        );
-        let pre_transcript = if use_inbound { pre_transcript } else { None };
-        info!(
-            "[voice] stt decision provider={} plan={:?} pre_origin={:?} using_pre_transcript={} local_batch_available={} wav_bytes={} audio_seconds={:.2}",
-            stt_provider,
-            plan,
-            pre_origin,
-            pre_transcript.is_some(),
-            local_batch_available,
-            wav_data.len(),
-            audio_seconds,
-        );
-        let (stt_transcript_raw, enriched_raw, stt_confidence, transcribe_ms) = if let Some(t) = pre_transcript {
-            let stt_start = Instant::now();
-            let plain = strip_confidence_markers(&t);
-            let ws_meta = pre_transcript_meta.unwrap_or_else(|| TranscriptMeta {
-                enriched_transcript: t.clone(),
-                confidence: 0.95,
-                mean_word_confidence: 0.95,
-                word_count: plain.split_whitespace().count(),
-                stt_mode: stt_bias_package.stt_mode.clone(),
-                ..TranscriptMeta::default()
-            });
-            let primary = TranscriptCandidate {
-                transcript: plain,
-                meta: TranscriptMeta {
-                    enriched_transcript: t.clone(),
-                    ..ws_meta.clone()
-                },
-                source: "ws".to_string(),
-            };
-            let (chosen, rescue_ms) = match maybe_rescue_transcript(
-                &http_client,
-                &stt_provider,
-                stt_api_key,
-                wav_data.clone(),
-                audio_seconds,
-                &stt_bias_package,
-                Some(primary),
-            )
-            .await {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("[voice] STT error: {e}");
-                    yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
-                    return;
-                }
-            };
-            info!(
-                "[voice] stt path=ws_pretranscript chosen_source={} rescue_triggered={} decision_ms={} transcript_chars={} words={} confidence={:.2}",
-                chosen.source,
-                rescue_ms > 0,
-                stt_start.elapsed().as_millis(),
-                chosen.transcript.chars().count(),
-                chosen.meta.word_count,
-                chosen.meta.confidence,
-            );
-            let ms = total_start.elapsed().as_millis() as i64;
-            info!(
-                "[timing] STT={}ms (WS pre-transcript{} {} words)",
-                ms,
-                if rescue_ms > 0 { " + rescue" } else { "" },
-                chosen.meta.word_count,
-            );
-            (
-                chosen.transcript,
-                chosen.meta.enriched_transcript.clone(),
-                chosen.meta.confidence,
-                ms,
-            )
-        } else {
-            let stt_start = Instant::now();
-            info!(
-                "[voice] stt path=batch start provider={} plan={:?} wav_bytes={} audio_seconds={:.2}",
-                stt_provider,
-                plan,
-                wav_data.len(),
-                audio_seconds,
-            );
-            yield Ok(Event::default().event("status")
-                .data(json!({"phase": "transcribing"}).to_string()));
-
-            // On-device whisper.cpp first when the plan calls for it (release
-            // builds with the `local-stt` feature). On ANY failure we fall
-            // through to the Deepgram safety net below rather than erroring —
-            // local-first, cloud as the genuine-failure fallback.
-            let local_tuple: Option<(String, String, f64, i64)> =
-                if matches!(plan, said_core::stt::SttPlan::LocalOnDeviceBatch) {
-                    #[cfg(feature = "local-stt")]
-                    {
-                        let wav = wav_data.clone();
-                        match tokio::task::spawn_blocking(move || {
-                            crate::stt::whisper::transcribe_wav(&wav, "hi")
-                        })
-                        .await
-                        {
-                            Ok(Ok(r)) => {
-                                let ms = total_start.elapsed().as_millis() as i64;
-                                info!(
-                                    "[timing] STT={}ms (whisper_local on-device, {} words, conf={:.2})",
-                                    ms, r.word_count, r.confidence
-                                );
-                                Some((r.transcript.clone(), r.enriched_transcript, r.confidence, ms))
-                            }
-                            Ok(Err(e)) => {
-                                warn!("[voice] whisper_local STT error: {e} — using Deepgram fallback");
-                                None
-                            }
-                            Err(e) => {
-                                warn!("[voice] whisper_local task failed: {e} — using Deepgram fallback");
-                                None
-                            }
-                        }
-                    }
-                    #[cfg(not(feature = "local-stt"))]
-                    {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-            if let Some(tuple) = local_tuple {
-                tuple
-            } else {
-                // Cloud Deepgram: the normal path for a Deepgram user, OR the
-                // genuine-failure safety net when a local provider produced no
-                // usable transcript. The bundled key means credentials always exist.
-                if selected.is_local() {
-                    warn!(
-                        "[voice] local STT produced no usable transcript (provider={}, plan={:?}) — using Deepgram fallback",
-                        stt_provider, plan,
-                    );
-                }
-                match maybe_rescue_transcript(
-                    &http_client,
-                    &stt_provider,
-                    stt_api_key,
-                    wav_data.clone(),
-                    audio_seconds,
-                    &stt_bias_package,
-                    None,
-                )
-                .await {
-                    Ok((chosen, _rescue_ms)) => {
-                        let ms = total_start.elapsed().as_millis() as i64;
-                        info!(
-                            "[timing] STT={}ms ({}, {} words, conf={:.2}, decision_ms={})",
-                            ms,
-                            chosen.source,
-                            chosen.meta.word_count,
-                            chosen.meta.confidence,
-                            stt_start.elapsed().as_millis(),
-                        );
-                        (
-                            chosen.transcript,
-                            chosen.meta.enriched_transcript.clone(),
-                            chosen.meta.confidence,
-                            ms,
-                        )
-                    }
-                    Err(e) => {
-                        warn!("[voice] STT error: {e}");
-                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, e, aid, None));
-                        return;
-                    }
-                }
-            }
-        };
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "stt.selected_transcript",
             component: "backend",
-            function: "routes::voice::maybe_rescue_transcript",
+            function: "desktop::local_asr",
             output: Some(&stt_transcript_raw),
             duration_ms: Some(transcribe_ms),
-            reason: Some("transcript selected for polish"),
+            reason: Some("local speech transcript selected for polish"),
             risk: Some("stt_selection"),
             metadata: json!({
-                "provider": stt_provider.as_str(),
-                "plan": format!("{:?}", plan),
-                "pre_origin": format!("{:?}", pre_origin),
-                "using_pre_transcript": use_inbound,
+                "provider": "local_whisper",
+                "model": local_meta.model,
+                "origin": format!("{:?}", local_meta.origin),
                 "confidence": stt_confidence,
                 "audio_seconds": audio_seconds,
             }),
@@ -2733,7 +1909,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let (stt_transcript, enriched_for_hints, alias_result) = {
             let pool_t = pool.clone();
             let uid_t = user_id.clone();
+            let number_t0 = Instant::now();
             let numeric_t = crate::number_format::apply(&stt_transcript_raw);
+            let number_ms = number_t0.elapsed().as_millis() as i64;
             let original_transcript = numeric_t.clone();
             let rules_t = stt_replacement_rules.clone();
             let vocab_t = vocab_full.clone();
@@ -2749,11 +1927,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 function: "number_format::apply",
                 input: Some(&stt_transcript_raw),
                 output: Some(&numeric_t),
+                duration_ms: Some(number_ms),
                 reason: Some("normalize spoken numbers before prompt"),
                 risk: Some("pre_model_mutation"),
                 metadata: json!({}),
                 ..Default::default()
             });
+            let tier2_t0 = Instant::now();
             let evidence = tokio::task::spawn_blocking(move || {
                 crate::tier2::collect_evidence_with_store(
                     &pool_t,
@@ -2770,6 +1950,23 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     matches: vec![],
                     traces: vec![],
                 }
+            });
+            let tier2_ms = tier2_t0.elapsed().as_millis() as i64;
+            dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+                stage: "pre_llm.tier2_evidence",
+                component: "backend",
+                function: "tier2::collect_evidence_with_store",
+                input: Some(&original_transcript),
+                output: Some(&original_transcript),
+                duration_ms: Some(tier2_ms),
+                reason: Some("collect read-only alias/vocabulary evidence before prompt"),
+                risk: Some("prompt_context_bias"),
+                metadata: json!({
+                    "matches": evidence.matches.len(),
+                    "evidence_items": evidence.evidence.len(),
+                    "trace_items": evidence.traces.len(),
+                }),
+                ..Default::default()
             });
             if !evidence.matches.is_empty() {
                 info!(
@@ -2792,66 +1989,58 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // ── STEP 2: Embed cache lookup only ───────────────────────────────────────
         // Never wait on a fresh Gemini call in the dictation hot path. The desktop's
         // /v1/pre-embed hook populates this cache opportunistically for future runs.
+        // The cached vector is only used to narrow vocabulary candidates; full
+        // past-edit RAG examples are intentionally not injected into voice prompts.
         let embed_t0 = tokio::time::Instant::now();
         let embedding = gemini::cached(&pool, &stt_transcript).await;
         let embed_ms = embed_t0.elapsed().as_millis() as i64;
         info!("[timing] embed={}ms ({})", embed_ms, if embedding.is_some() { "cache-hit" } else { "cache-miss/nonblocking" });
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "context.embed_cache_lookup",
+            component: "backend",
+            function: "gemini::cached",
+            input: Some(&stt_transcript),
+            output: Some(&stt_transcript),
+            duration_ms: Some(embed_ms),
+            reason: Some("look up cached transcript embedding for vocab relevance without blocking"),
+            risk: Some("prompt_context_bias"),
+            metadata: json!({
+                "cache_hit": embedding.is_some(),
+            }),
+            ..Default::default()
+        });
 
-        // ── STEP 3: RAG retrieval — k-NN over preference_vectors ──────────────────
-        let rag_examples = match &embedding {
-            Some(emb) => {
-                let emb_clone = emb.clone();
-                let pool_rag  = pool.clone();
-                let uid_rag   = user_id.clone();
-                tokio::task::spawn_blocking(move || {
-                    retrieve_similar(&pool_rag, &uid_rag, &emb_clone, 5, 0.65)
-                }).await.unwrap_or_default()
-            }
-            None => vec![],
-        };
-        let rag_ms: u128 = 0; // included in embed_ms above
-        let examples_used = rag_examples.len();
-        info!("[rag] {} example(s) retrieved", examples_used);
-
-        // ── STEP 4: Tiered vocabulary retrieval ───────────────────────────────────
-        // Select only transcript-evidenced vocabulary. APPLY entries are exact /
-        // split / approved-alias matches; SUGGEST entries are near-surface matches
-        // that the polish model must judge from context.
-        let embedding_cache_hit = embedding.is_some();
-        let (resolved_transcript, vocab_entries, vocab_trace_metadata): (
-            String,
-            Vec<VocabEntry>,
-            Value,
-        ) = {
+        // ── STEP 3: Relevance-aware vocabulary slice ──────────────────────────────
+        // Use the transcript embedding to pick the vocab entries that match
+        // what the user actually said. Skip flooding the prompt with all 200
+        // vocab rows — pick starred + top-weight + top-relevance (deduped,
+        // capped at 25). Falls back to starred + top-weight when no embedding.
+        let vocab_t0 = Instant::now();
+        let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = {
             let pool_v   = pool.clone();
             let uid_v    = user_id.clone();
             let lang_v   = prefs.output_language.clone();
             let emb_v    = embedding.clone();
             let txt_v = alias_result.text.clone();
-            let selected_vocab = tokio::task::spawn_blocking(move || {
-                vocab_embeddings::select_for_prompt_with_tiers(
-                    &pool_v,
-                    &uid_v,
-                    &lang_v,
-                    emb_v.as_deref(),
-                    Some(&txt_v),
-                    8,
-                    12,
-                    40,
-                    0.55,
+            let mut chosen = tokio::task::spawn_blocking(move || {
+                vocab_embeddings::select_for_prompt(
+                    &pool_v, &uid_v, &lang_v, emb_v.as_deref(), Some(&txt_v),
                 )
             }).await.unwrap_or_default();
-            let company_terms_available = vocab_full.iter().filter(|t| t.source == "company").count();
-            let selector_terms = vocab_trace_selections(&selected_vocab);
-            let apply_count = selected_vocab
-                .iter()
-                .filter(|s| s.tier == vocab_embeddings::VocabSelectionTier::Apply)
-                .count();
-            let suggest_count = selected_vocab
-                .iter()
-                .filter(|s| s.tier == vocab_embeddings::VocabSelectionTier::Suggest)
-                .count();
-            // Load safe STT aliases for prompt rendering.
+            // Company terms are not embedded in the local personal-vector index.
+            // Include the highest-priority company entries in the resolver
+            // candidate set so fresh enterprise installs get day-one value.
+            for term in vocab_full.iter().filter(|t| t.source == "company") {
+                if chosen.len() >= 25 {
+                    break;
+                }
+                if !chosen.iter().any(|t| t.term.eq_ignore_ascii_case(&term.term)) {
+                    chosen.push(term.clone());
+                }
+            }
+            // Load safe STT aliases for prompt rendering. These are displayed
+            // only for terms the resolver admits below; Tier 2 now carries
+            // protected-term evidence through polish and mutates only at the end.
             let alias_map: std::collections::HashMap<String, Vec<(String, i64)>> = {
                 let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
                     std::collections::HashMap::new();
@@ -2865,88 +2054,54 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 map
             };
 
-            if selected_vocab.is_empty() {
+            if chosen.is_empty() {
                 info!(
                     "[voice] vocab selector picked 0/{} entries — no transcript evidence",
                     vocab_full.len(),
                 );
-                let metadata = json!({
-                    "embedding_cache_hit": embedding_cache_hit,
-                    "saved_terms_total": vocab_full.len(),
-                    "stt_replacement_rules": stt_replacement_rules.len(),
-                    "company_terms_available": company_terms_available,
-                    "company_terms_added_count": 0,
-                    "company_terms_added": [],
-                    "selector_terms": [],
-                    "apply_terms_count": 0,
-                    "suggest_terms_count": 0,
-                    "sent_to_prompt_count": 0,
-                    "dropped_candidate_count": 0,
-                    "apply_terms": [],
-                    "suggest_terms": [],
-                    "sent_to_prompt_terms": [],
-                    "selected_terms": 0,
-                    "terms": [],
-                });
-                (alias_result.text.clone(), vec![], metadata)
+                (alias_result.text.clone(), vec![])
             } else {
-                info!(
-                    "[voice] vocab selector picked apply={} suggest={} total={} saved={}",
-                    apply_count,
-                    suggest_count,
-                    selected_vocab.len(),
-                    vocab_full.len(),
+                let resolve_t0 = Instant::now();
+                let resolved = vocab_resolver::resolve_for_prompt(
+                    &alias_result.text,
+                    &chosen,
+                    &vocab_full,
+                    &alias_result,
                 );
-                let apply_terms = selected_vocab
-                    .iter()
-                    .filter(|s| s.tier == vocab_embeddings::VocabSelectionTier::Apply)
-                    .map(|s| s.term.term.clone())
-                    .collect::<Vec<_>>();
-                let suggest_terms = selected_vocab
-                    .iter()
-                    .filter(|s| s.tier == vocab_embeddings::VocabSelectionTier::Suggest)
-                    .map(|s| s.term.term.clone())
-                    .collect::<Vec<_>>();
-                let sent_to_prompt_terms = selected_vocab
-                    .iter()
-                    .map(|s| s.term.term.clone())
-                    .collect::<Vec<_>>();
-                let metadata = json!({
-                    "embedding_cache_hit": embedding_cache_hit,
-                    "saved_terms_total": vocab_full.len(),
-                    "stt_replacement_rules": stt_replacement_rules.len(),
-                    "company_terms_available": company_terms_available,
-                    "company_terms_added_count": 0,
-                    "company_terms_added": [],
-                    "selector_terms": selector_terms,
-                    "apply_terms_count": apply_count,
-                    "suggest_terms_count": suggest_count,
-                    "sent_to_prompt_count": selected_vocab.len(),
-                    "dropped_candidate_count": 0,
-                    "apply_terms": apply_terms,
-                    "suggest_terms": suggest_terms,
-                    "sent_to_prompt_terms": sent_to_prompt_terms,
-                    "selected_terms": selected_vocab.len(),
-                    "terms": selected_vocab.iter().take(20).map(|s| s.term.term.clone()).collect::<Vec<_>>(),
-                });
-                let entries = selected_vocab_terms_to_entries_with_aliases(
-                    selected_vocab,
+                let resolve_ms = resolve_t0.elapsed().as_millis() as i64;
+                info!(
+                    "[voice] vocab resolver={}ms alias_matches={} context_matches={} resolved={} candidates={}",
+                    resolve_ms,
+                    resolved.alias_match_count,
+                    resolved.context_match_count,
+                    resolved.resolved_terms.len(),
+                    resolved.candidate_terms.len(),
+                );
+                let entries = resolved_vocab_terms_to_entries_with_aliases(
+                    resolved.resolved_terms,
                     &alias_map,
                 );
-                (alias_result.text.clone(), entries, metadata)
+                (resolved.transcript, entries)
             }
         };
+        let vocab_ms = vocab_t0.elapsed().as_millis() as i64;
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "vocab.select_for_prompt",
+            stage: "vocab.resolve_for_prompt",
             component: "backend",
-            function: "vocab_embeddings::select_for_prompt_with_tiers",
+            function: "vocab_resolver::resolve_for_prompt",
             input: Some(&stt_transcript),
             output: Some(&resolved_transcript),
+            duration_ms: Some(vocab_ms),
             reason: Some("select memory/vocabulary candidates for prompt"),
             risk: Some("prompt_context_bias"),
-            metadata: vocab_trace_metadata,
+            metadata: json!({
+                "candidate_terms_total": vocab_full.len(),
+                "selected_terms": vocab_entries.len(),
+                "terms": vocab_entries.iter().take(20).map(|v| v.term.clone()).collect::<Vec<_>>(),
+            }),
             ..Default::default()
         });
+        let profile_summary_t0 = Instant::now();
         let client_profile_summary = {
             let pool_profile = pool.clone();
             let uid_profile = user_id.clone();
@@ -2956,6 +2111,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .await
             .unwrap_or(None)
         };
+        let profile_summary_ms = profile_summary_t0.elapsed().as_millis() as i64;
         let client_profile_markdown = client_profile_summary
             .as_ref()
             .map(|summary| summary.profile_markdown.as_str());
@@ -2971,6 +2127,70 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 .unwrap_or(0),
             client_profile_markdown.is_some(),
         );
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "prompt.profile_summary",
+            component: "backend",
+            function: "profile_summary::ensure_current",
+            input: Some(&resolved_transcript),
+            output: Some(&resolved_transcript),
+            duration_ms: Some(profile_summary_ms),
+            reason: Some("load the local learned profile used as prompt context"),
+            risk: Some("prompt_context_bias"),
+            metadata: json!({
+                "profile_version": client_profile_version,
+                "profile_chars": client_profile_markdown.map(|p| p.chars().count()).unwrap_or(0),
+                "injected": client_profile_markdown.is_some(),
+            }),
+            ..Default::default()
+        });
+        let recent_hints_t0 = Instant::now();
+        let recent_speech_hints = {
+            let pool_recent = pool.clone();
+            let uid_recent = user_id.clone();
+            let run_recent = voice_run_id.clone();
+            let app_recent = target_app.clone();
+            tokio::task::spawn_blocking(move || {
+                let transcripts = crate::store::voice_runs::recent_successful_normal_transcripts_for_app(
+                    &pool_recent,
+                    &uid_recent,
+                    app_recent.as_deref(),
+                    &run_recent,
+                    crate::store::now_ms(),
+                    crate::recent_speech_context::RECENT_SPEECH_TTL_MS,
+                    crate::recent_speech_context::RECENT_SPEECH_RUN_LIMIT,
+                );
+                crate::recent_speech_context::extract_recent_speech_hints(&transcripts)
+            })
+            .await
+            .unwrap_or_default()
+        };
+        let recent_hints_ms = recent_hints_t0.elapsed().as_millis() as i64;
+        info!(
+            "[voice] recent speech hints loaded in {}ms app={} hints={} terms={:?}",
+            recent_hints_ms,
+            target_app.as_deref().unwrap_or("none"),
+            recent_speech_hints.len(),
+            recent_speech_hints
+        );
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "context.recent_speech_hints",
+            component: "backend",
+            function: "recent_speech_context::extract_recent_speech_hints",
+            input: Some(&resolved_transcript),
+            output: Some(&resolved_transcript),
+            duration_ms: Some(recent_hints_ms),
+            reason: Some("load short-lived same-app terms for spelling disambiguation"),
+            risk: Some("prompt_context_bias"),
+            metadata: json!({
+                "target_app": target_app.as_deref(),
+                "hint_count": recent_speech_hints.len(),
+                "hints": &recent_speech_hints,
+                "ttl_ms": crate::recent_speech_context::RECENT_SPEECH_TTL_MS,
+                "run_limit": crate::recent_speech_context::RECENT_SPEECH_RUN_LIMIT,
+            }),
+            ..Default::default()
+        });
+        let prompt_build_t0 = Instant::now();
         let low_conf = keep_low_confidence_markers(&enriched_for_hints, 80.0);
         let low_conf_ref = if low_conf != resolved_transcript {
             Some(low_conf.as_str())
@@ -2983,43 +2203,53 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             low_conf_ref,
         );
 
-        let server_runtime_forced = crate::store::prefs::server_runtime_forced();
         let prompt_body = default_voice_prompt_template();
         let relevant_corrections = crate::store::corrections::filter_relevant(
             &word_corrections, &resolved_transcript, 2, 10,
         );
-        let mut base_system_prompt = render_voice_system_prompt_template_with_profile(
+        let mut base_system_prompt = render_voice_system_prompt_template_with_profile_and_recent(
             &prompt_body,
             &prefs,
-            &rag_examples,
+            &[],
             &relevant_corrections,
             &vocab_entries,
             client_profile_markdown,
+            &recent_speech_hints,
         );
+        let prompt_build_ms = prompt_build_t0.elapsed().as_millis() as i64;
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: if server_runtime_forced {
-                "fallback_prompt.build"
-            } else {
-                "prompt.build"
-            },
+            stage: "prompt.build",
             component: "backend",
-            function: "render_voice_system_prompt_template_with_profile",
+            function: "render_voice_system_prompt_template_with_profile_and_recent",
             input: Some(&resolved_transcript),
             output: Some(&base_system_prompt),
-            reason: Some(if server_runtime_forced {
-                "local fallback prompt prepared; primary server-runtime prompt is built in control-plane"
-            } else {
-                "system prompt rendered with profile, memory, and examples"
-            }),
+            duration_ms: Some(prompt_build_ms),
+            reason: Some("system prompt rendered with typed compact context"),
             risk: Some("prompt_context_bias"),
             metadata: json!({
-                "active_polish_path": if server_runtime_forced { "server_runtime" } else { "local_backend" },
-                "fallback_only": server_runtime_forced,
                 "profile_version": client_profile_version,
                 "profile_chars": client_profile_markdown.map(|p| p.chars().count()).unwrap_or(0),
-                "rag_examples": rag_examples.len(),
+                "past_edit_examples": 0,
+                "past_edit_examples_disabled": true,
                 "corrections": relevant_corrections.len(),
                 "vocab_entries": vocab_entries.len(),
+                "recent_speech_hints": recent_speech_hints.len(),
+            }),
+            ..Default::default()
+        });
+
+        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+            stage: "prompt.history_examples",
+            component: "backend",
+            function: "disabled",
+            input: Some(&resolved_transcript),
+            output: Some(&resolved_transcript),
+            duration_ms: Some(0),
+            reason: Some("dynamic full-text examples disabled for hallucination resistance"),
+            risk: Some("prompt_context_bias"),
+            metadata: json!({
+                "fewshot_examples": 0,
+                "disabled": true,
             }),
             ..Default::default()
         });
@@ -3055,21 +2285,15 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
         }
 
+        let prompt_final_t0 = Instant::now();
         if let Some(ref ctx) = screen_context {
-            let trimmed: String = ctx.chars().take(500).collect();
-            if !trimmed.trim().is_empty() {
+            let block = said_core::polish::prompt::render_screen_context_block(ctx);
+            if !block.is_empty() {
                 info!(
                     "[voice] screen context: {} chars",
-                    trimmed.len()
+                    ctx.chars().count().min(said_core::polish::prompt::SCREEN_CONTEXT_MAX_CHARS)
                 );
-                base_system_prompt.push_str(&format!(
-                    "\n\nSCREEN CONTEXT (text already in the user's app):\n\
-                     \"{trimmed}\"\n\n\
-                     Use screen context to pick the right word when two sound alike — \
-                     if the field already names a product, person, or acronym, prefer that \
-                     spelling over phonetically similar STT guesses. \
-                     Only use as a tiebreaker — transcript words come first.\n"
-                ));
+                base_system_prompt.push_str(&block);
             }
         }
 
@@ -3082,24 +2306,15 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             base_system_prompt
         };
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: if server_runtime_forced {
-                "fallback_prompt.final"
-            } else {
-                "prompt.final"
-            },
+            stage: "prompt.final",
             component: "backend",
             function: "routes::voice::system_prompt",
             input: Some(&resolved_transcript),
             output: Some(&system_prompt),
-            reason: Some(if server_runtime_forced {
-                "local fallback prompt prepared; primary server-runtime prompt is built and sent by control-plane"
-            } else {
-                "final system prompt sent to polish model"
-            }),
+            duration_ms: Some(prompt_final_t0.elapsed().as_millis() as i64),
+            reason: Some("final system prompt sent to polish model"),
             risk: Some("prompt_context_bias"),
             metadata: json!({
-                "active_polish_path": if server_runtime_forced { "server_runtime" } else { "local_backend" },
-                "fallback_only": server_runtime_forced,
                 "prompt_chars": system_prompt.chars().count(),
                 "screen_context": screen_context.as_ref().is_some_and(|s| !s.trim().is_empty()),
                 "repair_mode": repair_mode.as_deref(),
@@ -3112,7 +2327,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let groq_key_for_recovery = groq_key.clone();
         let llm_start = Instant::now();
         let mut saw_script_rewrite = false;
-        let (mut llm_result, actual_model_used, stream_filter) = if server_runtime_forced {
+        let (mut llm_result, actual_model_used, stream_filter, server_runtime_trace) = if crate::store::prefs::server_runtime_forced() {
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "server_polishing", "transcript": &resolved_transcript}).to_string()));
             info!("[timing] LLM start — provider=server_runtime selected_model={:?}", prefs.selected_model);
@@ -3128,11 +2343,15 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 screen_context.clone(),
                 vocab_entries.clone(),
                 target_app.clone(),
+                recent_speech_hints.clone(),
                 token_tx,
             ));
 
-            let mut stream_filter =
-                StreamSafetyFilter::new(StreamProvider::Groq, &resolved_transcript);
+            let server_route = crate::llm::polish_dispatch::voice_polish_route(&prefs.selected_model);
+            let mut stream_filter = StreamSafetyFilter::new(
+                StreamProvider::from_llm_provider(server_route.provider),
+                &resolved_transcript,
+            );
             let mut token_coalescer = LiveTokenCoalescer::new();
 
             while let Some(raw_token) = token_rx.recv().await {
@@ -3167,12 +2386,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }
 
             match runtime_task.await {
-                Ok(Ok((result, model))) => {
+                Ok(Ok((result, model, trace_meta))) => {
                     info!(
                         "[voice] server runtime stream returned {} chars using {model}",
                         result.polished.len()
                     );
-                    (result, model, stream_filter)
+                    (result, model, stream_filter, Some(trace_meta))
                 }
                 Ok(Err(e)) => {
                     warn!("[voice] server runtime stream failed; falling back to local polish: {e}");
@@ -3207,6 +2426,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                                     StreamProvider::from_llm_provider(&fallback_provider),
                                     &resolved_transcript,
                                 ),
+                                None,
                             )
                         }
                         Err(local_e) => {
@@ -3262,6 +2482,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                                     StreamProvider::from_llm_provider(&fallback_provider),
                                     &resolved_transcript,
                                 ),
+                                None,
                             )
                         }
                         Err(local_e) => {
@@ -3441,7 +2662,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                                 "latency_ms": {
                                     "transcribe": transcribe_ms,
                                     "embed":      embed_ms,
-                                    "retrieve":   rag_ms,
+                                    "retrieve":   0,
                                     "polish":     0,
                                     "total":      total_ms,
                                 },
@@ -3460,7 +2681,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     return;
                 }
             };
-            (llm_result, actual_model_used, stream_filter)
+            (llm_result, actual_model_used, stream_filter, None)
         };
 
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
@@ -3476,6 +2697,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 "model": actual_model_used.as_str(),
                 "stream_safety_live_disabled": stream_filter.live_disabled(),
                 "stream_safety_unsafe": stream_filter.saw_unsafe_content(),
+                "server_runtime": server_runtime_trace.as_ref().map(|m| json!({
+                    "roundtrip_ms": m.roundtrip_ms,
+                    "server_total_ms": m.server_total_ms,
+                    "server_prompt_ms": m.server_prompt_ms,
+                    "server_model_ms": m.server_model_ms,
+                    "first_token_ms": m.first_token_ms,
+                    "token_count": m.token_count,
+                })),
             }),
         });
 
@@ -3484,6 +2713,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // e.g. "[main60%]" with no '?'). Strip any survivors before this
         // text reaches the user, the paste path, or the DB.
         let before_confidence_strip = llm_result.polished.clone();
+        let confidence_strip_t0 = Instant::now();
         let scrubbed = strip_confidence_markers(&llm_result.polished);
         if scrubbed != llm_result.polished {
             warn!(
@@ -3492,12 +2722,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             );
             llm_result.polished = scrubbed;
         }
+        let confidence_strip_ms = confidence_strip_t0.elapsed().as_millis() as i64;
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "post_llm.strip_confidence_markers",
             component: "backend",
             function: "routes::voice::strip_confidence_markers",
             input: Some(&before_confidence_strip),
             output: Some(&llm_result.polished),
+            duration_ms: Some(confidence_strip_ms),
             reason: Some("remove leaked confidence markers"),
             risk: Some("post_model_mutation"),
             metadata: json!({}),
@@ -3505,6 +2737,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         });
 
         let before_stream_scrub = llm_result.polished.clone();
+        let stream_scrub_t0 = Instant::now();
         let scrubbed = scrub_polished_output(
             &llm_result.polished,
             &resolved_transcript,
@@ -3518,12 +2751,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             );
             llm_result.polished = scrubbed;
         }
+        let stream_scrub_ms = stream_scrub_t0.elapsed().as_millis() as i64;
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "post_llm.scrub_polished_output",
             component: "backend",
             function: "stream_safety::scrub_polished_output",
             input: Some(&before_stream_scrub),
             output: Some(&llm_result.polished),
+            duration_ms: Some(stream_scrub_ms),
             reason: Some("remove prompt/transcript leakage"),
             risk: Some("post_model_mutation"),
             metadata: json!({
@@ -3533,6 +2768,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         });
 
         let before_devanagari_recovery = llm_result.polished.clone();
+        let devanagari_recovery_t0 = Instant::now();
         if enforce_roman_hinglish && script::contains_devanagari(&llm_result.polished) {
             let romanized = match crate::llm::devanagari_recovery::recover(
                 &http_client, &groq_key_for_recovery, &llm_result.polished,
@@ -3564,12 +2800,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 }
             }
         };
+        let devanagari_recovery_ms = devanagari_recovery_t0.elapsed().as_millis() as i64;
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "post_llm.devanagari_recovery",
             component: "backend",
             function: "devanagari_recovery::recover",
             input: Some(&before_devanagari_recovery),
             output: Some(&llm_result.polished),
+            duration_ms: Some(devanagari_recovery_ms),
             reason: Some("preserve roman Hinglish output mode"),
             risk: Some("post_model_mutation"),
             metadata: json!({
@@ -3578,27 +2816,31 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ..Default::default()
         });
 
-        // This used to strip non-Latin characters after the model, but it also
-        // removed valid formatter output such as currency symbols. Keep it
-        // trace-only; Devanagari is handled by the safer recovery stage above.
+        // Defense: strip any non-Latin script hallucinations (katakana, CJK, etc)
         let before_non_latin_strip = llm_result.polished.clone();
-        let would_strip_non_latin = enforce_roman_hinglish
-            .then(|| script::strip_non_latin_scripts(&llm_result.polished))
-            .filter(|stripped| stripped != &llm_result.polished);
+        let non_latin_strip_t0 = Instant::now();
+        if enforce_roman_hinglish {
+            let stripped = script::strip_non_latin_scripts(&llm_result.polished);
+            if stripped != llm_result.polished {
+                warn!(
+                    "[voice] stripped non-Latin hallucination: {} → {} chars",
+                    llm_result.polished.len(),
+                    stripped.len(),
+                );
+                llm_result.polished = stripped;
+            }
+        }
+        let non_latin_strip_ms = non_latin_strip_t0.elapsed().as_millis() as i64;
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "post_llm.strip_non_latin",
             component: "backend",
             function: "script::strip_non_latin_scripts",
             input: Some(&before_non_latin_strip),
             output: Some(&llm_result.polished),
-            reason: Some("disabled: destructive non-Latin stripping is trace-only"),
-            risk: Some("trace_only_would_mutate"),
-            metadata: json!({
-                "disabled": true,
-                "enforce_roman_hinglish": enforce_roman_hinglish,
-                "would_have_triggered": would_strip_non_latin.is_some(),
-                "would_have_output_chars": would_strip_non_latin.as_ref().map(|s| s.chars().count()),
-            }),
+            duration_ms: Some(non_latin_strip_ms),
+            reason: Some("remove non-Latin script hallucinations"),
+            risk: Some("post_model_mutation"),
+            metadata: json!({ "enforce_roman_hinglish": enforce_roman_hinglish }),
             ..Default::default()
         });
 
@@ -3619,6 +2861,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             function: "routes::voice::content_drop_guard",
             input: Some(&before_content_guard),
             output: Some(&llm_result.polished),
+            duration_ms: Some(0),
             reason: Some("trace-only: short model output is monitored, not overwritten"),
             risk: Some("post_model_observer"),
             metadata: json!({
@@ -3640,6 +2883,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             function: "number_format::apply",
             input: Some(&before_number_final),
             output: Some(&llm_result.polished),
+            duration_ms: Some(0),
             reason: Some("disabled: preserve model-formatted numbers"),
             risk: Some("post_model_observer"),
             metadata: json!({ "disabled": true }),
@@ -3653,6 +2897,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             function: "format_recover::recover_emails_with_candidates",
             input: Some(&before_email_recover),
             output: Some(&llm_result.polished),
+            duration_ms: Some(0),
             reason: Some("disabled: preserve model-formatted emails"),
             risk: Some("post_model_observer"),
             metadata: json!({ "disabled": true }),
@@ -3666,6 +2911,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             function: "stt_replacements::apply_exact_safe",
             input: Some(&before_exact_alias),
             output: Some(&llm_result.polished),
+            duration_ms: Some(0),
             reason: Some("disabled: aliases are prompt evidence, not final rewrite rules"),
             risk: Some("post_model_observer"),
             metadata: json!({ "disabled": true }),
@@ -3676,8 +2922,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         // against any live-streamed tokens for the current recording.
 
         let word_count = llm_result.polished.split_whitespace().count() as i64;
-        info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms rag={}ms llm={}ms",
-            llm_ms, total_ms, transcribe_ms, embed_ms, rag_ms, llm_ms);
+        info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms vocab={}ms llm={}ms",
+            llm_ms, total_ms, transcribe_ms, embed_ms, vocab_ms, llm_ms);
 
         let recording_id = Uuid::new_v4().to_string();
         let post_llm_mutations = dictation_trace
@@ -3821,11 +3067,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 "latency_ms": {
                     "transcribe": transcribe_ms,
                     "embed":      embed_ms,
-                    "retrieve":   rag_ms,
+                    "retrieve":   0,
                     "polish":     llm_ms,
                     "total":      total_ms,
                 },
-                "examples_used": examples_used,
+                "examples_used": 0,
             })
             .to_string()
         ));
@@ -3841,16 +3087,6 @@ struct TranscriptCandidate {
     transcript: String,
     meta: TranscriptMeta,
     source: String,
-}
-
-#[derive(Debug, Clone)]
-struct QualityAssessment {
-    score: f64,
-    poor: bool,
-    mostly_hindi: bool,
-    code_switch_hint: bool,
-    protected_hits: usize,
-    too_short: bool,
 }
 
 fn derive_repair_hints(
@@ -3962,296 +3198,6 @@ fn normalize_token(token: &str) -> String {
         .to_ascii_lowercase()
 }
 
-async fn maybe_rescue_transcript(
-    client: &reqwest::Client,
-    provider: &str,
-    api_key: &str,
-    wav_data: Vec<u8>,
-    audio_seconds: f64,
-    bias: &BiasPackage,
-    primary_ws: Option<TranscriptCandidate>,
-) -> Result<(TranscriptCandidate, i64), String> {
-    if let Some(primary) = primary_ws {
-        // Local STT (Swift/whisper.cpp) is authoritative — never rescue it via the
-        // cloud. Local stays local: if a local engine produced this transcript, we
-        // keep it as-is rather than silently round-tripping to OpenRouter.
-        if !said_core::stt::is_deepgram(provider) {
-            info!(
-                "[stt] local provider={} pre-transcript accepted without cloud rescue",
-                provider
-            );
-            return Ok((primary, 0));
-        }
-        let primary_quality = assess_candidate(&primary, audio_seconds, bias);
-        let Some(rescue_mode) = rescue_mode_for(&primary_quality, &primary.meta.stt_mode) else {
-            info!(
-                "[stt] ws_pretranscript accepted without rescue source={} score={:.2} poor={} protected_hits={} too_short={}",
-                primary.source,
-                primary_quality.score,
-                primary_quality.poor,
-                primary_quality.protected_hits,
-                primary_quality.too_short,
-            );
-            return Ok((primary, 0));
-        };
-        if wav_data.is_empty() {
-            info!(
-                "[stt] ws_pretranscript rescue skipped because wav is empty source={} rescue_mode={}",
-                primary.source, rescue_mode,
-            );
-            return Ok((primary, 0));
-        }
-        info!(
-            "[stt] ws_pretranscript rescue triggered source={} rescue_mode={} score={:.2} poor={} protected_hits={} too_short={}",
-            primary.source,
-            rescue_mode,
-            primary_quality.score,
-            primary_quality.poor,
-            primary_quality.protected_hits,
-            primary_quality.too_short,
-        );
-        let rescue = run_batch_transcript(
-            client,
-            provider,
-            api_key,
-            wav_data,
-            with_mode(bias, &rescue_mode),
-            format!("rescue:{rescue_mode}"),
-        )
-        .await?;
-        let rescue_quality = assess_candidate(&rescue, audio_seconds, bias);
-        let chosen = choose_candidate(primary, primary_quality, rescue, rescue_quality);
-        return Ok((chosen, 1));
-    }
-
-    let primary = run_batch_transcript(
-        client,
-        provider,
-        api_key,
-        wav_data.clone(),
-        bias.clone(),
-        format!("batch:{}", bias.stt_mode),
-    )
-    .await?;
-    let primary_quality = assess_candidate(&primary, audio_seconds, bias);
-    let Some(rescue_mode) = rescue_mode_for(&primary_quality, &bias.stt_mode) else {
-        info!(
-            "[stt] batch_primary accepted without rescue source={} score={:.2} poor={} protected_hits={} too_short={}",
-            primary.source,
-            primary_quality.score,
-            primary_quality.poor,
-            primary_quality.protected_hits,
-            primary_quality.too_short,
-        );
-        return Ok((primary, 0));
-    };
-    info!(
-        "[stt] batch_primary rescue triggered source={} rescue_mode={} score={:.2} poor={} protected_hits={} too_short={}",
-        primary.source,
-        rescue_mode,
-        primary_quality.score,
-        primary_quality.poor,
-        primary_quality.protected_hits,
-        primary_quality.too_short,
-    );
-    let rescue = run_batch_transcript(
-        client,
-        provider,
-        api_key,
-        wav_data,
-        with_mode(bias, &rescue_mode),
-        format!("rescue:{rescue_mode}"),
-    )
-    .await?;
-    let rescue_quality = assess_candidate(&rescue, audio_seconds, bias);
-    let chosen = choose_candidate(primary, primary_quality, rescue, rescue_quality);
-    Ok((chosen, 1))
-}
-
-fn with_mode(bias: &BiasPackage, stt_mode: &str) -> BiasPackage {
-    let mut next = bias.clone();
-    next.stt_mode = stt_mode.to_string();
-    next
-}
-
-async fn run_batch_transcript(
-    client: &reqwest::Client,
-    _provider: &str,
-    _api_key: &str,
-    wav_data: Vec<u8>,
-    bias: BiasPackage,
-    source: String,
-) -> Result<TranscriptCandidate, String> {
-    let start = Instant::now();
-    info!(
-        "[stt] batch_http request source={} wav_bytes={} stt_mode={} keyterms={} replacements={} backend=openrouter_whisper",
-        source,
-        wav_data.len(),
-        bias.stt_mode,
-        bias.keyterms.len(),
-        bias.replacements.len(),
-    );
-    // Cloud dictation = OpenRouter Whisper Large V3 Turbo (batch). This is the
-    // only cloud STT for dictation; Deepgram is no longer used here.
-    let or_key = crate::stt::openrouter_qwen_asr::resolve_api_key()
-        .ok_or_else(|| "OPENROUTER_API_KEY is not set".to_string())?;
-    let result =
-        crate::stt::openrouter_qwen_asr::transcribe(client, &or_key, wav_data, &bias).await?;
-    let meta = result.meta();
-    info!(
-        "[stt] batch_http done source={} elapsed_ms={} words={} confidence={:.2}",
-        source,
-        start.elapsed().as_millis(),
-        meta.word_count,
-        meta.confidence,
-    );
-    Ok(TranscriptCandidate {
-        transcript: result.transcript,
-        meta,
-        source,
-    })
-}
-
-fn choose_candidate(
-    primary: TranscriptCandidate,
-    primary_quality: QualityAssessment,
-    rescue: TranscriptCandidate,
-    rescue_quality: QualityAssessment,
-) -> TranscriptCandidate {
-    info!(
-        "[voice] transcript quality primary(score={:.2}, poor={}, protected_hits={}, too_short={}) rescue(score={:.2}, poor={}, protected_hits={}, too_short={})",
-        primary_quality.score,
-        primary_quality.poor,
-        primary_quality.protected_hits,
-        primary_quality.too_short,
-        rescue_quality.score,
-        rescue_quality.poor,
-        rescue_quality.protected_hits,
-        rescue_quality.too_short,
-    );
-    if rescue_quality.score > primary_quality.score + 0.5 {
-        info!("[voice] rescue transcript won over primary");
-        rescue
-    } else {
-        primary
-    }
-}
-
-fn rescue_mode_for(quality: &QualityAssessment, current_mode: &str) -> Option<String> {
-    if !quality.poor {
-        return None;
-    }
-    match current_mode {
-        "multi" if quality.mostly_hindi => Some("hi".to_string()),
-        "hi" if quality.code_switch_hint => Some("multi".to_string()),
-        _ => None,
-    }
-}
-
-fn assess_candidate(
-    candidate: &TranscriptCandidate,
-    audio_seconds: f64,
-    bias: &BiasPackage,
-) -> QualityAssessment {
-    let word_count = if candidate.meta.word_count > 0 {
-        candidate.meta.word_count
-    } else {
-        candidate.transcript.split_whitespace().count()
-    };
-    let mean_confidence = if candidate.meta.mean_word_confidence > 0.0 {
-        candidate.meta.mean_word_confidence
-    } else if candidate.meta.confidence > 0.0 {
-        candidate.meta.confidence
-    } else {
-        0.75
-    };
-    let low_conf_ratio = if word_count == 0 {
-        1.0
-    } else {
-        candidate.meta.low_confidence_count as f64 / word_count as f64
-    };
-    let expected_min_words = if audio_seconds > 3.0 {
-        (audio_seconds / 2.0).max(1.0) as usize
-    } else {
-        0
-    };
-    let too_short = expected_min_words > 0 && word_count < expected_min_words;
-    let protected_hits = count_protected_hits(&candidate.transcript, bias);
-    let has_ascii = candidate
-        .transcript
-        .chars()
-        .any(|c| c.is_ascii_alphabetic());
-    let devanagari_chars = candidate
-        .transcript
-        .chars()
-        .filter(|c| ('\u{0900}'..='\u{097F}').contains(c))
-        .count();
-    let alpha_chars = candidate
-        .transcript
-        .chars()
-        .filter(|c| c.is_alphabetic())
-        .count()
-        .max(1);
-    let mostly_hindi = candidate
-        .meta
-        .languages
-        .iter()
-        .all(|lang| lang.starts_with("hi"))
-        || (devanagari_chars as f64 / alpha_chars as f64) > 0.55;
-    let code_switch_hint = candidate
-        .meta
-        .languages
-        .iter()
-        .any(|lang| lang.starts_with("en"))
-        || (has_ascii && devanagari_chars > 0)
-        || protected_hits > 0;
-    let score = protected_hits as f64 * 2.0 + mean_confidence * 2.0
-        - low_conf_ratio * 2.0
-        - if too_short { 2.0 } else { 0.0 }
-        + if candidate.meta.languages.len() > 1 {
-            0.5
-        } else {
-            0.0
-        };
-    let poor = too_short
-        || mean_confidence < 0.65
-        || (mean_confidence < 0.8 && low_conf_ratio > 0.35)
-        || score < 1.0;
-    QualityAssessment {
-        score,
-        poor,
-        mostly_hindi,
-        code_switch_hint,
-        protected_hits,
-        too_short,
-    }
-}
-
-fn count_protected_hits(transcript: &str, bias: &BiasPackage) -> usize {
-    let lower = transcript.to_ascii_lowercase();
-    let mut hits = 0usize;
-    for keyterm in &bias.keyterms {
-        if !keyterm.is_empty() && lower.contains(&keyterm.to_ascii_lowercase()) {
-            hits += 1;
-        }
-    }
-    for replacement in &bias.replacements {
-        if let Some(canonical) = replacement.replace.as_deref() {
-            if !canonical.is_empty() && lower.contains(&canonical.to_ascii_lowercase()) {
-                hits += 1;
-            }
-        }
-    }
-    hits
-}
-
-fn wav_duration_seconds(wav_data: &[u8]) -> f64 {
-    if wav_data.len() <= 44 {
-        return 0.0;
-    }
-    (wav_data.len().saturating_sub(44)) as f64 / 32_000.0
-}
-
 fn llm_debug_enabled() -> bool {
     std::env::var("SAID_LLM_DEBUG")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -4291,7 +3237,7 @@ fn scrub_repair_output(text: &str, transcript: &str) -> String {
 }
 
 /// Strip high-confidence markers but KEEP markers below `threshold` so the
-/// LLM can see which words Deepgram was unsure about and use context to fix them.
+/// LLM can see which words ASR was unsure about and use context to fix them.
 pub fn keep_low_confidence_markers(s: &str, threshold: f64) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();

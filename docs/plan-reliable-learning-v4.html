@@ -694,12 +694,12 @@
       <div class="card-icon" style="background: rgba(243,139,168,0.12);">&#x26A0;</div>
       <div>
         <div class="card-title">Problem 2: Passive Distortion Collection</div>
-        <div class="card-subtitle">System waits for each Deepgram variant organically</div>
+        <div class="card-subtitle">System waits for each Local speech variant organically</div>
       </div>
     </div>
     <p>
       After learning "AirNote", the system only knows the <em>exact</em> STT distortion from that one recording
-      (e.g., <code>"air note"</code>). Next time Deepgram says <code>"airnot"</code> or <code>"airnaught"</code> &mdash;
+      (e.g., <code>"air note"</code>). Next time Local speech says <code>"airnot"</code> or <code>"airnaught"</code> &mdash;
       unrecognised. The user must correct again, and again, for each new distortion.
     </p>
     <p>
@@ -737,7 +737,7 @@
       </div>
     </div>
     <p>
-      When a word is already in vocabulary and the user corrects it again (new Deepgram distortion),
+      When a word is already in vocabulary and the user corrects it again (new Local speech distortion),
       the system bumps the weight but <strong>doesn't store the new distortion as an alias</strong>.
       The user keeps correcting the same word for different STT mishearings, but only the original
       alias persists.
@@ -1004,7 +1004,7 @@ Recording 2: "airr note" <span style="color:var(--accent-green);">&#x2713;</span
 
   <p>
     When a word is promoted to vocabulary, spawn a background task that <strong>pre-generates</strong>
-    7&ndash;8 likely Deepgram distortions and seeds them as STT aliases. Each distortion is guarded
+    7&ndash;8 likely Local speech distortions and seeds them as STT aliases. Each distortion is guarded
     against being a common Hindi/English word.
   </p>
 
@@ -1044,7 +1044,7 @@ Recording 2: "airr note" <span style="color:var(--accent-green);">&#x2713;</span
       <div class="callout-icon">&#x2728;</div>
       <div>
         <strong>Key insight:</strong> "airnote" (joined) is 100% deterministic for "AirNote" because
-        no common Hindi or English word matches "airnote". This single alias covers Deepgram's most
+        no common Hindi or English word matches "airnote". This single alias covers Local speech's most
         common failure mode (stripping spaces from compound words).
       </div>
     </div>
@@ -1081,12 +1081,12 @@ Recording 2: "airr note" <span style="color:var(--accent-green);">&#x2713;</span
       <tr>
         <td>Observed (user correction)</td>
         <td><code>1.0</code></td>
-        <td>Ground truth &mdash; this is what Deepgram actually said</td>
+        <td>Ground truth &mdash; this is what Local speech actually said</td>
       </tr>
       <tr>
         <td>Proactive (generated)</td>
         <td><code>0.6</code></td>
-        <td>Speculative &mdash; might not be a real Deepgram distortion</td>
+        <td>Speculative &mdash; might not be a real Local speech distortion</td>
       </tr>
       <tr>
         <td>Re-correction (self-upgrade)</td>
@@ -1263,7 +1263,7 @@ Recording 2: "airr note" <span style="color:var(--accent-green);">&#x2713;</span
 
   <p>
     When a word is <strong>already in vocabulary</strong> and the user corrects it again, the system
-    currently bumps the weight. It should also <strong>capture the new Deepgram distortion</strong> as
+    currently bumps the weight. It should also <strong>capture the new Local speech distortion</strong> as
     an alias and optionally trigger a quick retrain.
   </p>
 
@@ -1439,7 +1439,7 @@ Recording 2: "airr note" <span style="color:var(--accent-green);">&#x2713;</span
   <div class="diagram">
                     ┌─────────────────────────────────────────────────────────┐
                     │                    RECORDING                           │
-                    │  User speaks → Deepgram STT → LLM polish → HID paste  │
+                    │  User speaks → Local speech STT → LLM polish → HID paste  │
                     └────────────────────────┬────────────────────────────────┘
                                              │
                     ┌────────────────────────▼────────────────────────────────┐

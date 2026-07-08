@@ -96,21 +96,6 @@ pub async fn stream_polish_routed(
             )
             .await
         }
-        "openrouter" => {
-            // The PRIMARY polish path runs on the control-plane, which serves the
-            // Gemma model through OpenRouter. This local dispatch is only the
-            // OFFLINE fallback and the desktop ships no OpenRouter key, so degrade
-            // gracefully to the previous prod model (Cerebras gpt-oss) here.
-            cerebras::stream_polish(
-                client,
-                cerebras_key,
-                said_core::polish::model::CEREBRAS_POLISH_MODEL_GPT_OSS,
-                system_prompt,
-                user_message,
-                token_tx,
-            )
-            .await
-        }
         _ => {
             gateway::stream_polish(
                 client,

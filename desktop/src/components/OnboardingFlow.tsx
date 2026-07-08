@@ -11,6 +11,7 @@ import {
   Wifi,
   LogOut,
   Loader2,
+  Sparkles,
   ExternalLink,
   X,
 } from "lucide-react";
@@ -21,7 +22,7 @@ import type { EnterpriseConnection } from "@/lib/enterprise";
 import {
   getConnection,
   completeEmailAuth,
-  getActiveServerUrl,
+  DEFAULT_CLOUD_SERVER_URL,
   loadSavedAuthMode,
 } from "@/lib/enterprise";
 import type { AppSnapshot, Preferences } from "@/types";
@@ -31,7 +32,6 @@ import {
 } from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 import { ReclaimOldModelsRow, type ReclaimResult } from "@/components/ReclaimOldModelsRow";
-import { CopyableError, describeError } from "@/components/CopyableError";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
@@ -143,6 +143,7 @@ export function OnboardingFlow({
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
   const [userNavigatedManually, setUserNavigatedManually] = useState(false);
   const resumeSynced = useRef(false);
+  const silentLegacyModelCleanupDone = useRef(false);
 
   const [progress, setProgress] = useState<OnboardingProgress>(() =>
     computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
@@ -197,7 +198,7 @@ export function OnboardingFlow({
 
   const refreshDictationModel = useCallback(async () => {
     try {
-      const status = await invoke<DictationModelStatus>("apex_model_status");
+      const status = await invoke<DictationModelStatus>("dictation_model_status");
       setDictationModel(status);
       if (status.installed) onLocalModelReady?.();
       return status;
@@ -210,6 +211,16 @@ export function OnboardingFlow({
   useEffect(() => {
     void refreshDictationModel();
   }, [refreshDictationModel]);
+
+  useEffect(() => {
+    if (silentLegacyModelCleanupDone.current || !dictationModel) return;
+    silentLegacyModelCleanupDone.current = true;
+    void invoke<ReclaimResult>("reclaim_old_models")
+      .then((result) => {
+        if (result.removed.length > 0) void refreshDictationModel();
+      })
+      .catch(() => {});
+  }, [dictationModel, refreshDictationModel]);
 
   useEffect(() => {
     const unlistenP = listen<DictationDownloadProgress>("meeting-model-download", (event) => {
@@ -414,7 +425,7 @@ export function OnboardingFlow({
     setPersonalError("");
     try {
       const conn = await completeEmailAuth(
-        getActiveServerUrl(),
+        DEFAULT_CLOUD_SERVER_URL,
         trimmedEmail,
         password,
         emailSignup,
@@ -458,7 +469,7 @@ export function OnboardingFlow({
 
   // "Try it" live feedback. The polished text is typed straight into the focused
   // textarea (that's the real pipeline confirmation → `dictationTried`), but a
-  // failure — mic silence, empty STT, no internet on cloud — would otherwise be a
+  // failure — mic silence or empty local speech — would otherwise be a
   // silent empty box. Surface phase + errors so the user always knows what
   // happened. Only active on the test step.
   useEffect(() => {
@@ -499,29 +510,6 @@ export function OnboardingFlow({
     };
   }, [step]);
 
-  // No API keys are collected anymore — they're bundled into the build. This
-  // step records which speech engine the user wants.
-  const chooseCloudEngine = useCallback(async () => {
-    setKeySaving(true);
-    setKeyError("");
-    try {
-      const updated = await patchPreferences(
-        { stt_provider: "deepgram" },
-        { throwOnError: true },
-      );
-      if (!updated) {
-        throw new Error("AirNote could not save cloud speech recognition.");
-      }
-      setPrefs(updated);
-      advanceToNextUndone(completedThroughCurrentStep());
-    } catch (e) {
-      console.error("[onboarding] chooseCloudEngine (Use cloud) failed:", e);
-      setKeyError(describeError(e) || "Couldn't save your choice. Try again.");
-    } finally {
-      setKeySaving(false);
-    }
-  }, [advanceToNextUndone, completedThroughCurrentStep]);
-
   const chooseLocalEngine = useCallback(async () => {
     if (!dictationModelInstalled) {
       setKeyError("Download the local model first, then continue.");
@@ -530,23 +518,11 @@ export function OnboardingFlow({
     setKeySaving(true);
     setKeyError("");
     try {
-      const updated = await patchPreferences(
-        { stt_provider: "whisper_local" },
-        { throwOnError: true },
-      );
-      if (!updated) {
-        throw new Error("AirNote could not save on-device speech recognition.");
-      }
-      setPrefs(updated);
       onLocalModelReady?.();
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
-      const detail = describeError(e);
-      // Full detail to the console/log AND to the visible copyable box, so a
-      // failure on another user's Mac (e.g. the sidecar PATCH /v1/preferences
-      // being unreachable) is exactly diagnosable instead of a dead button.
-      console.error("[onboarding] chooseLocalEngine (Use AirNote Native) failed:", e);
-      setKeyError(detail || "Couldn't save your choice. Try again.");
+      const message = e instanceof Error ? e.message : String(e);
+      setKeyError(message || "Couldn't save your choice. Try again.");
     } finally {
       setKeySaving(false);
     }
@@ -557,7 +533,7 @@ export function OnboardingFlow({
     setDictationError("");
     setKeyError("");
     try {
-      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
+      await invoke("download_dictation_model");
       const status = await refreshDictationModel();
       if (status?.installed) onLocalModelReady?.();
     } catch (e) {
@@ -573,9 +549,7 @@ export function OnboardingFlow({
     setDictationDownload(null);
   }, []);
 
-  // Reclaim old-model disk. Gated on the new model being installed (UI-side) and
-  // additionally guarded backend-side — never deletes the old model before the
-  // new one is verified. Best-effort: a failure leaves everything intact.
+  // Reclaim extra speech-model disk. Oriserve and Silero VAD are preserved.
   const handleReclaimOldModels = useCallback(async () => {
     setReclaiming(true);
     setReclaimError("");
@@ -613,8 +587,8 @@ export function OnboardingFlow({
         title="Welcome to AirNote."
         subtitle={
           isWindows
-            ? "A two-minute setup. Create your account, grant microphone access, choose on-device or cloud speech recognition, pick a dictation key — then you’ll never type by hand again."
-            : "A two-minute setup. Create your account, grant three permissions, choose on-device or cloud speech recognition, pick a dictation key — then you’ll never type by hand again."
+            ? "A two-minute setup. Create your account, grant microphone access, install the local speech model, pick a dictation key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant three permissions, install the local speech model, pick a dictation key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -625,7 +599,7 @@ export function OnboardingFlow({
         brandQuote={
           isWindows
             ? "It’s like typing, except your brain is the keyboard."
-            : "Local speech recognition first. Cloud STT only if you choose it later."
+            : "Local speech recognition runs on this device."
         }
         bottomNote={<span>{isWindows ? "Windows 10/11" : "macOS 14+"}</span>}
         {...navProps}
@@ -844,17 +818,24 @@ export function OnboardingFlow({
             <EnterpriseConnectForm
               compact
               variant="onboarding"
-              lockedServerUrl={getActiveServerUrl()}
+              lockedServerUrl={DEFAULT_CLOUD_SERVER_URL}
+              allowCustomServerUrl
               onConnected={setWorkspacePreview}
               onCancel={workspaceBack}
             />
-            {workspaceOnly && (
+            {!enterpriseRequired && (
               <button
                 type="button"
-                className="text-[11px] text-center text-muted-foreground hover:text-foreground transition-colors"
+                className="w-full rounded-lg border px-3 py-2.5 transition-colors text-center"
+                style={{ borderColor: "hsl(var(--border))", color: "hsl(var(--foreground))" }}
                 onClick={workspaceBack}
               >
-                Sign in with email instead
+                <span className="block text-[12px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  Not using Lark?
+                </span>
+                <span className="block text-[12px] font-semibold mt-0.5" style={{ color: "hsl(var(--primary))" }}>
+                  Continue with email →
+                </span>
               </button>
             )}
           </div>
@@ -899,7 +880,7 @@ export function OnboardingFlow({
           <PermRow
             icon={<Mic size={15} />}
             title="Microphone"
-            desc="Capture audio while you dictate with your hotkey."
+            desc="Capture audio while you hold the hotkey."
             granted={micGranted}
             onAllow={onMicrophone}
             onOpenSettings={() => void invoke("open_microphone_settings")}
@@ -948,8 +929,7 @@ export function OnboardingFlow({
   }
 
   // ── Step 4: Speech recognition engine ────────────────────────────────────
-  // On-device whisper.cpp vs Cloud Deepgram. No API keys are collected here;
-  // cloud credentials are server-managed.
+  // On-device whisper.cpp is required before dictation can run.
   if (step === "keys") {
     const dictationDownloadPct =
       dictationDownload && dictationDownload.total > 0
@@ -960,39 +940,51 @@ export function OnboardingFlow({
       <OnboardingShell
         step={stepIndex}
         totalSteps={totalSteps}
-        eyebrow="Speech recognition"
-        title="Choose how AirNote hears you"
-        subtitle="Two ways to transcribe your voice. Pick either — you can switch any time in Settings."
-        brandTagline="On-device for accuracy, or cloud for speed. Your call."
-        brandKicker="Your choice"
-        brandQuote={`Local runs entirely on this ${deviceName} and works offline. Cloud is instant, with nothing to download.`}
+        eyebrow="Local model"
+        title={dictationModelInstalled ? "Local speech model is ready." : "Install the local speech model."}
+        subtitle={
+          dictationModelInstalled
+            ? `AirNote found ${NEW_MODEL_NAME} on this ${deviceName}. Continue when you're ready.`
+            : `AirNote transcribes on this ${deviceName}. Download the model before dictation can run.`
+        }
+        brandTagline={`On-device keeps your voice on this ${deviceName}.`}
+        brandKicker="Recommended · on-device"
+        brandQuote={`The local model transcribes Hinglish right on your ${deviceName} — private, works offline, no per-use cost.`}
         topRight={<span>{stepLabel(step)}</span>}
         onBack={goBack}
         {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
-          {/* Option A — On-device. Neutral, equal weight with cloud. */}
           <div
             className="rounded-xl p-4"
-            style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
+            style={{
+              border: "1px solid hsl(var(--primary) / 0.45)",
+              background: "hsl(var(--primary) / 0.06)",
+            }}
           >
             <div className="flex items-center justify-between mb-1.5 gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <span
                   className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
-                  style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
+                  style={{ background: "hsl(var(--primary))", color: "white" }}
                 >
-                  <Cpu size={13} />
+                  <Sparkles size={13} />
                 </span>
                 <p className="text-[13.5px] font-semibold text-foreground truncate">
-                  {NEW_MODEL_NAME}
+                Install {NEW_MODEL_NAME}
                 </p>
               </div>
-              <span className="text-[11px] text-muted-foreground shrink-0">On-device · better accuracy</span>
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
+                style={{ background: "hsl(var(--primary) / 0.18)", color: "hsl(var(--primary))" }}
+              >
+                Recommended
+              </span>
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Best Hinglish accuracy. One-time {NEW_MODEL_SIZE_HINT} download, then runs fully
-              offline on this {deviceName} — private, no per-use cost.
+              Hinglish speech recognition, running entirely on this {deviceName}. Strong on
+              Hindi-English code-switching — and your voice never leaves the device. Private,
+              offline, no per-use cost.
             </p>
             <DictationModelCard
               modelName={NEW_MODEL_NAME}
@@ -1015,56 +1007,24 @@ export function OnboardingFlow({
               />
             )}
 
-            {dictationModelInstalled && (
-              <button
-                onClick={() => void chooseLocalEngine()}
-                disabled={keySaving}
-                className="btn-primary btn-lg w-full mt-3"
-              >
-                {keySaving ? "Saving…" : `Use ${NEW_MODEL_NAME}`}
-                {!keySaving && <ArrowRight size={14} />}
-              </button>
-            )}
-          </div>
-
-          {/* Option B — Cloud. Neutral, equal weight with on-device. */}
-          <div
-            className="rounded-xl p-4"
-            style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
-          >
-            <div className="flex items-center justify-between mb-1.5 gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
-                  style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--foreground))" }}
-                >
-                  <Wifi size={13} />
-                </span>
-                <p className="text-[13.5px] font-semibold text-foreground truncate">
-                  Cloud Whisper
-                </p>
-              </div>
-              <span className="text-[11px] text-muted-foreground shrink-0">Fast · lightweight</span>
-            </div>
-            <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Whisper Large V3 Turbo, streamed from the cloud. Lightweight with decent quality for
-              most tasks. Nothing to download; needs internet while you dictate.
-            </p>
             <button
-              onClick={() => void chooseCloudEngine()}
-              disabled={keySaving}
-              className="btn-primary btn-lg w-full"
+              onClick={() => void chooseLocalEngine()}
+              disabled={keySaving || !dictationModelInstalled}
+              className="btn-primary btn-lg w-full mt-3"
             >
-              {keySaving ? "Saving…" : "Use Cloud Whisper"}
-              {!keySaving && <ArrowRight size={14} />}
+              {keySaving
+                ? "Saving…"
+                : dictationModelInstalled
+                  ? "Continue"
+                  : `Download ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
+              {!keySaving && dictationModelInstalled && <ArrowRight size={14} />}
             </button>
           </div>
 
           {keyError && (
-            <CopyableError
-              title="Couldn't switch to AirNote Native — exact error:"
-              detail={keyError}
-            />
+            <p className="text-[12px] text-center" style={{ color: "hsl(var(--destructive))" }}>
+              {keyError}
+            </p>
           )}
         </div>
       </OnboardingShell>
@@ -1133,8 +1093,8 @@ export function OnboardingFlow({
           <ErrorNotice error={testError} />
           {testNoAudio && !testError && (
             <p className="onb-try-warn">
-              Didn’t catch anything — click into the box above, then {isToggle ? "tap" : "hold"} the
-              key and speak a little louder.
+              Didn’t catch anything — click into the box above, then hold the key and speak a
+              little louder.
             </p>
           )}
         </div>
@@ -1168,11 +1128,7 @@ export function OnboardingFlow({
       totalSteps={totalSteps}
       eyebrow="Hotkey"
       title="Pick your dictation key."
-      subtitle={
-        selectedMode === "toggle"
-          ? `Tap ${selected.label} once to start dictating, tap again to stop — no holding. Pick a modifier or Fn instead to switch to hold-to-talk. Change it any time.`
-          : `Press and hold ${selected.label} while you speak, then release. Pick Caps Lock instead to tap on and off. Change it any time.`
-      }
+      subtitle="Press the key you want to hold — any modifier, Caps Lock, or Fn. You can change it any time."
       brandTagline="One key to dictate. Your thumb learns it in a day."
       brandKicker="Pro tip"
       brandQuote="Most users settle on Caps Lock — it’s right under your finger."

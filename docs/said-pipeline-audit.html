@@ -129,7 +129,7 @@
       <a class="nav-link" href="#s0"><span class="num">0</span>App boot</a>
       <a class="nav-link" href="#s1"><span class="num">1</span>Hotkey hold</a>
       <a class="nav-link" href="#s2"><span class="num">2</span>Start recording</a>
-      <a class="nav-link" href="#s3"><span class="num">3</span>Deepgram WS</a>
+      <a class="nav-link" href="#s3"><span class="num">3</span>Local speech WS</a>
       <a class="nav-link" href="#s4"><span class="num">4</span>Finish + SSE</a>
       <a class="nav-link" href="#s5"><span class="num">5</span>Backend polish</a>
       <a class="nav-link" href="#s6"><span class="num">6</span>Tier 2 (4-pass)</a>
@@ -158,7 +158,7 @@
         <div class="flow">
 <span class="label">DESKTOP (Tauri)</span>
   Caps Lock <span class="arrow">↓</span> hotkey::start_hold_listener
-  <span class="arrow">↓</span> do_start_recording → cpal 16kHz + dg_stream WS
+  <span class="arrow">↓</span> do_start_recording → cpal 16kHz + local_asr WS
   Caps Lock release <span class="arrow">↓</span> do_finish_recording → WAV + transcript
   <span class="arrow">↓</span> run_voice_polish_sse → POST /v1/voice/polish (SSE)
   <span class="arrow">↓</span> paster::type_text (live) or paste (fallback)
@@ -166,7 +166,7 @@
 
 <span class="label">BACKEND (said-backend Axum)</span>
   polish_with_input:
-    STT (WS pre-transcript or Deepgram HTTP)
+    STT (local transcript or Local speech HTTP)
     <span class="arrow">→</span> tier2::correct_with_store (4 passes)
     <span class="arrow">→</span> embed cache + vocab RAG + prompt build
     <span class="arrow">→</span> Groq/Gateway LLM stream + Hinglish guards
@@ -188,12 +188,12 @@
         </div>
         <div class="card">
           <pre class="pseudo"><span class="cm">// Once at launch</span>
-<span class="fn">DeepgramSession::spawn</span>()           <span class="cm">→ persistent WS actor (dg_stream.rs)</span>
+<span class="fn">Local speechSession::spawn</span>()           <span class="cm">→ persistent WS actor (local_asr.rs)</span>
 <span class="fn">BackendHandle::spawn</span>()             <span class="cm">→ said-backend sidecar, poll /v1/health</span>
 <span class="fn">hotkey::start_hold_listener</span>(on_press, on_release)
   <span class="cm">macOS: CGEventTap (Input Monitoring perm)</span>
   <span class="cm">Windows: WH_KEYBOARD_LL hook</span>
-<span class="io">OUT:</span> DeepgramSessionState, BackendEndpoint, hotkey tap running</pre>
+<span class="io">OUT:</span> Local speechSessionState, BackendEndpoint, hotkey tap running</pre>
         </div>
       </section>
 
@@ -233,7 +233,7 @@
 <span class="fn">DesktopApp::start_recording</span>()              <span class="cm">crates/recorder — cpal 16kHz PCM</span>
   <span class="io">OUT:</span> ChunkReceiver, LevelReceiver, StopReceiver
 
-<span class="fn">DeepgramSession::StartRecording</span>          <span class="cm">send to dg_stream actor</span>
+<span class="fn">Local speechSession::StartRecording</span>          <span class="cm">send to local_asr actor</span>
 <span class="fn">spawn_audio_bridge</span>(chunk_recv → WS)        <span class="cm">PCM flows while key held</span>
 
 <span class="fn">emit</span>("app-state") + voice-level HUD at 30fps</pre>
@@ -244,7 +244,7 @@
       <section id="s3">
         <div class="stage-header">
           <div class="stage-badge" style="background:rgba(34,211,238,0.15);color:var(--stage-stt)">3</div>
-          <div><h2>Deepgram streaming STT</h2><p style="color:var(--text-muted);margin:0">desktop/src-tauri/src/dg_stream.rs</p></div>
+          <div><h2>Local speech streaming STT</h2><p style="color:var(--text-muted);margin:0">desktop/src-tauri/src/local_asr.rs</p></div>
         </div>
         <div class="card">
           <table>
@@ -255,7 +255,7 @@
             <tr><td>Keep-alive</td><td>4s</td><td>Idle WS primer to stay warm</td></tr>
           </table>
           <pre class="pseudo"><span class="kw">WHILE</span> recording:
-  Audio chunks → resample 16kHz → Deepgram nova-3 WS
+  Audio chunks → resample 16kHz → Local speech whisper.cpp WS
   <span class="kw">ON</span> is_final transcript part → append to parts[]
 
 <span class="kw">ON</span> Finalize:
@@ -280,7 +280,7 @@
 <span class="cm">// WS transcript quality gate</span>
 await transcript_rx <span class="kw">with</span> timeout 2500ms
 <span class="gate">IF</span> word_count ≥ max(1, duration_seconds) → use pre_transcript
-<span class="kw">ELSE</span> → None (backend falls back to HTTP Deepgram batch)
+<span class="kw">ELSE</span> → None (backend falls back to HTTP Local speech batch)
 
 <span class="fn">run_voice_polish_sse</span>(wav, pre_transcript, screen_context):
   multipart POST → <span class="path">/v1/voice/polish</span>
@@ -306,14 +306,14 @@ await transcript_rx <span class="kw">with</span> timeout 2500ms
           <ul>
             <li><code>vocabulary::top_terms(user, 100)</code></li>
             <li><code>get_prefs_cached</code> (30s TTL) + <code>get_lexicon_cached</code> (60s TTL)</li>
-            <li><code>key_guard::missing_voice_api_keys</code> → 400 if Deepgram/Gateway missing</li>
+            <li><code>key_guard::missing_voice_api_keys</code> → 400 if Local speech/Gateway missing</li>
           </ul>
           <pre class="pseudo"><span class="cm">── STEP 1: STT ──</span>
 <span class="gate">IF</span> pre_transcript present:
   strip [word?XX%] markers
   maybe_rescue_transcript(WS candidate)     <span class="cm">rescue if quality gate fails</span>
 <span class="kw">ELSE</span>:
-  deepgram::transcribe(wav, bias_package)   <span class="cm">HTTP batch, 30s timeout</span>
+  local_speech::transcribe(wav, bias_package)   <span class="cm">HTTP batch, 30s timeout</span>
 stt_bias::build_bias_package → keyterms + replace from vocab (starred-only biasing)
 
 <span class="cm">── STEP 2: Tier 2 correction (see stage 6) ──</span>
@@ -398,7 +398,7 @@ vocab_embeddings::bump_last_used(surfaced terms)</pre>
           <div><h2>LLM polish + output guards</h2><p style="color:var(--text-muted);margin:0">voice.rs stream + llm/script.rs + llm/prompt.rs</p></div>
         </div>
         <div class="card">
-          <pre class="pseudo"><span class="cm">// Provider routing (prefs.stt_provider / llm prefs)</span>
+          <pre class="pseudo"><span class="cm">// Provider routing (prefs.speech_model / llm prefs)</span>
 default: Gateway → Groq llama-3.3-70b
 fallbacks: groq direct, gemini_direct, openai_codex (OAuth), cerebras
 
@@ -550,7 +550,7 @@ changes = deterministic_classify_hunks(hunks)   <span class="cm">no LLM classifi
             <tr>
               <td><code>POST /v1/text/polish</code></td>
               <td>Text-only polish (no STT)</td>
-              <td>Same tier2 + LLM path, skips recorder/Deepgram</td>
+              <td>Same tier2 + LLM path, skips recorder/Local speech</td>
             </tr>
             <tr>
               <td>Meeting mode</td>
@@ -576,7 +576,7 @@ changes = deterministic_classify_hunks(hunks)   <span class="cm">no LLM classifi
             <table>
               <tr><th>Path</th><th>Why skipped</th></tr>
               <tr><td><code>whisper_local</code> STT</td><td>Feature gate <code>local-stt</code> — not in standard builds</td></tr>
-              <tr><td><code>groq_whisper</code> STT provider</td><td>Only if user sets pref — default is Deepgram</td></tr>
+              <tr><td><code>local_whisper</code> STT provider</td><td>Only if user sets pref — default is Local speech</td></tr>
               <tr><td>Keystroke-only capture</td><td>AX empty → watcher returns before keystroke path</td></tr>
               <tr><td>Clipboard capture in edit watcher</td><td>Intentionally removed (ax_unreadable → skip learning)</td></tr>
               <tr><td>LLM 4-way classifier</td><td>Replaced by deterministic_classify_hunks in classify hot path</td></tr>

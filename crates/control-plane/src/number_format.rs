@@ -160,18 +160,9 @@ static BLOCKLIST: Lazy<[&'static str; 12]> = Lazy::new(|| {
 });
 
 /// Apply deterministic number/unit normalization to `text`.
-///
-/// Also strips stray leading/trailing ellipsis artifacts some STT engines emit
-/// ("...And jo speed hai") — a light edge-only cleanup, see
-/// [`said_core::text::strip_edge_ellipses`].
 pub fn apply(text: &str) -> String {
     if text.trim().is_empty() {
         return text.to_string();
-    }
-    let stripped = said_core::text::strip_edge_ellipses(text);
-    let text = stripped.as_str();
-    if text.is_empty() {
-        return String::new();
     }
     let lower = text.to_ascii_lowercase();
     let blocked = blocked_spans(&lower);

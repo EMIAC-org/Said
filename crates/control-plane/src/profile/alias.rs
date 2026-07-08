@@ -2,7 +2,7 @@
 //!
 //! Examples of valid multi-word recoveries (generated later by DeepSeek):
 //! - `n 10` -> `n8n`
-//! - `deep gram` -> `Deepgram`
+//! - `super base` -> `Supabase`
 //!
 //! Hard rule: never alias common Hinglish/Hindi/English words.
 
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn accepts_multi_word_product_alias() {
         assert!(validate_alias_candidate(&alias("n 10", "n8n")).is_ok());
-        assert!(validate_alias_candidate(&alias("deep gram", "Deepgram")).is_ok());
+        assert!(validate_alias_candidate(&alias("super base", "Supabase")).is_ok());
     }
 
     #[test]

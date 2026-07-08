@@ -10,20 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use clap::{Parser, Subcommand};
-use futures::{SinkExt, StreamExt};
 use reqwest::Client;
-use said_backend::{
-    llm::{openai_codex, prompt::build_user_message},
-    stt::deepgram,
-};
-use said_recorder::{AudioRecorder, ChunkReceiver, SAMPLE_RATE, resample_to_16k};
+use said_backend::llm::{openai_codex, prompt::build_user_message};
+use said_recorder::AudioRecorder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
-};
+use tokio::sync::mpsc;
 use tracing::{error, warn};
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -55,12 +47,6 @@ enum Commands {
     Auth,
     /// Show standalone config status.
     Status,
-    /// Save or clear the Deepgram API key in the standalone config file.
-    DeepgramKey {
-        key: Option<String>,
-        #[arg(long)]
-        clear: bool,
-    },
     /// Remove the locally stored OpenAI OAuth token.
     DisconnectOpenai,
     /// Open the macOS permission panes needed for hotkey + paste.
@@ -77,7 +63,6 @@ struct StoredOpenAiToken {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StandaloneConfig {
-    deepgram_api_key: Option<String>,
     openai: Option<StoredOpenAiToken>,
     language: String,
     output_language: String,
@@ -88,7 +73,6 @@ struct StandaloneConfig {
 impl Default for StandaloneConfig {
     fn default() -> Self {
         Self {
-            deepgram_api_key: None,
             openai: None,
             language: "auto".into(),
             output_language: "hinglish".into(),
@@ -106,7 +90,6 @@ struct AppCtx {
 
 struct RunnerState {
     recorder: Option<AudioRecorder>,
-    transcript_rx: Option<oneshot::Receiver<String>>,
     processing: bool,
     policy: learning::RuntimePolicy,
     watch_generation: u64,
@@ -124,7 +107,6 @@ async fn main() -> Result<(), String> {
         Commands::Run => run_listener(ctx).await,
         Commands::Auth => connect_openai(&ctx).await,
         Commands::Status => show_status(&ctx),
-        Commands::DeepgramKey { key, clear } => set_deepgram_key(&ctx, key, clear),
         Commands::DisconnectOpenai => disconnect_openai(&ctx),
         Commands::Permissions => {
             said_paster::request_input_monitoring();
@@ -230,20 +212,7 @@ fn show_status(ctx: &AppCtx) -> Result<(), String> {
     println!("AirNote standalone status");
     println!("─────────────────────────────");
     println!("Config    : {}", ctx.config_path.display());
-    println!(
-        "Deepgram  : {}",
-        if cfg
-            .deepgram_api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .is_some()
-        {
-            "configured"
-        } else {
-            "missing"
-        }
-    );
+    println!("Speech    : desktop local model required");
     match cfg.openai {
         Some(tok) if tok.expires_at > now => println!("OpenAI    : connected"),
         Some(_) => println!("OpenAI    : expired (run `airnote auth`)"),
@@ -265,30 +234,6 @@ fn show_status(ctx: &AppCtx) -> Result<(), String> {
             "missing"
         }
     );
-    Ok(())
-}
-
-fn set_deepgram_key(ctx: &AppCtx, key: Option<String>, clear: bool) -> Result<(), String> {
-    let mut cfg = load_config(ctx)?;
-    if clear {
-        cfg.deepgram_api_key = None;
-        save_config(ctx, &cfg)?;
-        println!("Deepgram key cleared.");
-        return Ok(());
-    }
-
-    let value = match key {
-        Some(v) => v,
-        None => prompt_line("Deepgram API key: ")?,
-    };
-    let trimmed = value.trim().to_string();
-    if trimmed.is_empty() {
-        return Err("Deepgram key cannot be empty".into());
-    }
-
-    cfg.deepgram_api_key = Some(trimmed);
-    save_config(ctx, &cfg)?;
-    println!("Deepgram key saved.");
     Ok(())
 }
 
@@ -396,15 +341,6 @@ async fn connect_openai(ctx: &AppCtx) -> Result<(), String> {
 
 async fn run_listener(ctx: AppCtx) -> Result<(), String> {
     let cfg = load_config(&ctx)?;
-    if cfg
-        .deepgram_api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_none()
-    {
-        return Err("Deepgram key missing. Run `airnote deepgram-key` first.".into());
-    }
     if cfg.openai.is_none() {
         return Err("OpenAI token missing. Run `airnote auth` first.".into());
     }
@@ -428,7 +364,6 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
 
     let state = Arc::new(Mutex::new(RunnerState {
         recorder: None,
-        transcript_rx: None,
         processing: false,
         policy: learning::RuntimePolicy::new(),
         watch_generation: 0,
@@ -466,14 +401,9 @@ async fn run_listener(ctx: AppCtx) -> Result<(), String> {
 fn start_recording(
     state: &Arc<Mutex<RunnerState>>,
     ctx: &AppCtx,
-    rt: &tokio::runtime::Handle,
+    _rt: &tokio::runtime::Handle,
 ) -> Result<(), String> {
-    let cfg = load_config(ctx)?;
-    let deepgram_key = cfg
-        .deepgram_api_key
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "Deepgram key missing".to_string())?;
+    let _cfg = load_config(ctx)?;
 
     let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
     if guard.processing || guard.recorder.is_some() {
@@ -485,23 +415,7 @@ fn start_recording(
 
     let mut recorder = AudioRecorder::new();
     recorder.start()?;
-    let chunk_recv = recorder.take_chunk_receiver();
-    let (tx, rx) = oneshot::channel::<String>();
 
-    if let Some(chunk_recv) = chunk_recv {
-        let key = deepgram_key;
-        let language = cfg.language.clone();
-        rt.spawn(async move {
-            let transcript = stream_to_deepgram_ws(chunk_recv, &key, &language)
-                .await
-                .unwrap_or_default();
-            let _ = tx.send(transcript);
-        });
-    } else {
-        let _ = tx.send(String::new());
-    }
-
-    guard.transcript_rx = Some(rx);
     guard.recorder = Some(recorder);
     println!("Recording...");
     Ok(())
@@ -512,20 +426,20 @@ fn finish_recording(
     ctx: &AppCtx,
     rt: &tokio::runtime::Handle,
 ) -> Result<(), String> {
-    let (wav, rx_opt) = {
+    let wav = {
         let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
         let Some(mut recorder) = guard.recorder.take() else {
             return Ok(());
         };
         let wav = recorder.stop();
         guard.processing = true;
-        (wav, guard.transcript_rx.take())
+        wav
     };
 
     let state2 = Arc::clone(state);
     let ctx2 = ctx.clone();
     rt.spawn(async move {
-        let result = process_recording(ctx2, wav, rx_opt, state2.clone()).await;
+        let result = process_recording(ctx2, wav, state2.clone()).await;
         if let Err(e) = result {
             eprintln!("processing failed: {e}");
             error!("[airnote] processing failed: {e}");
@@ -540,19 +454,16 @@ fn finish_recording(
 
 async fn process_recording(
     ctx: AppCtx,
-    wav: Option<Vec<u8>>,
-    rx_opt: Option<oneshot::Receiver<String>>,
+    _wav: Option<Vec<u8>>,
     state: Arc<Mutex<RunnerState>>,
 ) -> Result<(), String> {
-    let wav = wav.ok_or_else(|| "no audio captured".to_string())?;
     let cfg = load_config(&ctx)?;
-    let deepgram_key = cfg
-        .deepgram_api_key
-        .clone()
+    let transcript = std::env::var("AIRNOTE_PRE_TRANSCRIPT")
+        .ok()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "Deepgram key missing".to_string())?;
-
-    let transcript = await_transcript_or_batch(&ctx, &cfg, &deepgram_key, wav, rx_opt).await?;
+        .ok_or_else(|| {
+            "Standalone CLI audio transcription is local-only now. Use the desktop app local speech model, or set AIRNOTE_PRE_TRANSCRIPT for text polish testing.".to_string()
+        })?;
     println!("Transcript: {transcript}");
 
     let access_token = ensure_openai_access_token(&ctx).await?;
@@ -567,37 +478,6 @@ async fn process_recording(
     println!("Polished: {polished}");
     spawn_learning_watch(state, ctx, cfg, transcript, polished);
     Ok(())
-}
-
-async fn await_transcript_or_batch(
-    ctx: &AppCtx,
-    cfg: &StandaloneConfig,
-    deepgram_key: &str,
-    wav: Vec<u8>,
-    rx_opt: Option<oneshot::Receiver<String>>,
-) -> Result<String, String> {
-    let pre_transcript = if let Some(rx) = rx_opt {
-        match tokio::time::timeout(Duration::from_secs(4), rx).await {
-            Ok(Ok(t)) if !t.trim().is_empty() => Some(t),
-            _ => None,
-        }
-    } else {
-        None
-    };
-
-    if let Some(t) = pre_transcript {
-        let plain = strip_confidence_markers(&t);
-        if !plain.trim().is_empty() {
-            return Ok(plain);
-        }
-    }
-
-    let bias = said_core::deepgram::BiasPackage {
-        stt_mode: said_core::deepgram::resolve_stt_mode(&cfg.language),
-        ..Default::default()
-    };
-    let dg = deepgram::transcribe(&ctx.http, deepgram_key, wav, &bias).await?;
-    Ok(dg.transcript)
 }
 
 async fn ensure_openai_access_token(ctx: &AppCtx) -> Result<String, String> {
@@ -702,144 +582,6 @@ async fn stream_polish_and_paste(
     Ok(result.polished)
 }
 
-async fn stream_to_deepgram_ws(
-    chunk_recv: ChunkReceiver,
-    deepgram_key: &str,
-    language: &str,
-) -> Option<String> {
-    let lang = if language.is_empty() || language == "auto" {
-        "hi"
-    } else {
-        language
-    };
-    let url = format!(
-        "wss://api.deepgram.com/v1/listen?model=nova-3&language={lang}&smart_format=true&encoding=linear16&sample_rate={SAMPLE_RATE}&channels=1&interim_results=true&endpointing=1000&utterance_end_ms=2000"
-    );
-
-    let mut req = url.into_client_request().ok()?;
-    req.headers_mut().insert(
-        "Authorization",
-        format!("Token {deepgram_key}").parse().ok()?,
-    );
-
-    let (ws, _) = connect_async(req).await.ok()?;
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
-    let (async_tx, mut async_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-    let native_rate = chunk_recv.native_rate;
-    let sync_rx = chunk_recv.rx;
-
-    std::thread::spawn(move || {
-        while let Ok(chunk_f32) = sync_rx.recv() {
-            let resampled = resample_to_16k(&chunk_f32, native_rate);
-            let pcm_bytes: Vec<u8> = resampled
-                .iter()
-                .flat_map(|&s| ((s.clamp(-1.0, 1.0) * 32_767.0) as i16).to_le_bytes())
-                .collect();
-            if async_tx.blocking_send(pcm_bytes).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut transcript_parts: Vec<String> = Vec::new();
-    let mut keepalive = tokio::time::interval(Duration::from_secs(8));
-    keepalive.tick().await;
-    loop {
-        tokio::select! {
-            chunk = async_rx.recv() => {
-                match chunk {
-                    Some(pcm) => {
-                        if ws_tx.send(Message::Binary(pcm)).await.is_err() {
-                            return None;
-                        }
-                        keepalive.reset();
-                    }
-                    None => {
-                        let _ = ws_tx.send(Message::Text(r#"{"type":"CloseStream"}"#.into())).await;
-                        break;
-                    }
-                }
-            }
-            _ = keepalive.tick() => {
-                let _ = ws_tx.send(Message::Text(r#"{"type":"KeepAlive"}"#.into())).await;
-            }
-            msg = ws_rx.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                            if v["type"].as_str().unwrap_or("") == "Results"
-                                && v["is_final"].as_bool().unwrap_or(false)
-                            {
-                                let enriched = enrich_from_words(&v["channel"]["alternatives"][0]["words"]);
-                                if !enriched.is_empty() {
-                                    transcript_parts.push(enriched);
-                                }
-                            }
-                        }
-                    }
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // Key released → wait for Deepgram to close (or timeout at 3s).
-    let drain_deadline = Instant::now() + Duration::from_millis(3000);
-    while Instant::now() < drain_deadline {
-        let remaining = drain_deadline.saturating_duration_since(Instant::now());
-        match tokio::time::timeout(remaining, ws_rx.next()).await {
-            Ok(Some(Ok(Message::Text(text)))) => {
-                if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                    if v["type"].as_str().unwrap_or("") == "Results"
-                        && v["is_final"].as_bool().unwrap_or(false)
-                    {
-                        let enriched = enrich_from_words(&v["channel"]["alternatives"][0]["words"]);
-                        if !enriched.is_empty() {
-                            transcript_parts.push(enriched);
-                        }
-                    }
-                }
-            }
-            Ok(Some(Ok(Message::Close(_)))) | Ok(None) => break,
-            Ok(Some(Err(_))) => break,
-            Ok(Some(Ok(_))) => {}
-            Err(_) => break,
-        }
-    }
-
-    let joined = transcript_parts.join(" ").trim().to_string();
-    if joined.is_empty() {
-        None
-    } else {
-        Some(joined)
-    }
-}
-
-fn enrich_from_words(words: &Value) -> String {
-    let Some(arr) = words.as_array() else {
-        return String::new();
-    };
-    let mut out = Vec::with_capacity(arr.len());
-    for w in arr {
-        let display = w["punctuated_word"]
-            .as_str()
-            .or_else(|| w["word"].as_str())
-            .unwrap_or("");
-        if display.is_empty() {
-            continue;
-        }
-        let conf = w["confidence"].as_f64().unwrap_or(1.0);
-        if conf < 0.85 {
-            out.push(format!("[{}?{:.0}%]", display, conf * 100.0));
-        } else {
-            out.push(display.to_string());
-        }
-    }
-    out.join(" ")
-}
-
 fn build_minimal_system_prompt(cfg: &StandaloneConfig, policy_block: Option<&str>) -> String {
     let tone = match cfg.tone_preset.as_str() {
         "professional" => "Tone: professional and clear.",
@@ -870,31 +612,6 @@ fn build_minimal_system_prompt(cfg: &StandaloneConfig, policy_block: Option<&str
          Preserve the speaker's Hindi-English mix unless the output-language reminder in the user message says otherwise.\n\
          Output only the polished text once. No markdown. No commentary. No alternatives."
     )
-}
-
-fn strip_confidence_markers(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0usize;
-    while i < chars.len() {
-        if chars[i] == '[' {
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != ']' {
-                j += 1;
-            }
-            if j < chars.len() {
-                let inside: String = chars[i + 1..j].iter().collect();
-                if let Some((word, _pct)) = inside.rsplit_once('?') {
-                    out.push_str(word);
-                    i = j + 1;
-                    continue;
-                }
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
 }
 
 fn prompt_line(prompt: &str) -> Result<String, String> {

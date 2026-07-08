@@ -63,8 +63,8 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14m-7-7l7 7-7 7"/></svg>
       </div>
       <div class="arch-box">
-        <h5>Deepgram STT</h5>
-        <p>nova-3 streaming</p>
+        <h5>Local speech STT</h5>
+        <p>whisper.cpp streaming</p>
         <p>Pre-warmed WebSocket</p>
       </div>
       <div class="arch-arrow">
@@ -196,7 +196,7 @@
         <table>
           <tr><td>Shell</td><td>Tauri v2 (Rust + React)</td></tr>
           <tr><td>Audio</td><td>CoreAudio (mac) / WASAPI (win)</td></tr>
-          <tr><td>STT</td><td>Deepgram nova-3 (streaming)</td></tr>
+          <tr><td>STT</td><td>Local speech whisper.cpp (streaming)</td></tr>
           <tr><td>Meeting WS</td><td>tungstenite (Rust client)</td></tr>
           <tr><td>Notifications</td><td>Native OS notifications</td></tr>
           <tr><td>Local DB</td><td>SQLite (personal history)</td></tr>
@@ -243,7 +243,7 @@
           <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">What stays on the device</h4>
           <ul style="font-size: 13px; color: var(--fg-muted); line-height: 2;">
             <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> Raw audio — never sent to the server</li>
-            <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> API keys (Deepgram, Groq)</li>
+            <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> API keys (Local speech, Groq)</li>
             <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> Personal dictation history</li>
             <li style="display: flex; gap: 8px;"><span style="color: var(--green);">&#10003;</span> Learning pipeline corrections</li>
           </ul>

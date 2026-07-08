@@ -450,18 +450,9 @@ private struct VoiceKeysStep: View {
         OnboardingScaffold(
             eyebrow: "Voice keys",
             title: "Connect your voice",
-            subtitle: "Add your own Deepgram and Groq keys so AirNote can transcribe and polish. Both have free tiers — stored encrypted on AirNote's servers under your account."
+            subtitle: "Speech recognition stays local. Add your Groq key so AirNote can polish text in the cloud."
         ) {
             VStack(spacing: 12) {
-                ProviderKeyCard(
-                    provider: "deepgram",
-                    name: "Deepgram",
-                    role: "Speech-to-text",
-                    badge: "D",
-                    color: Color(red: 0.04, green: 0.55, blue: 0.54),
-                    getKeyURL: URL(string: "https://console.deepgram.com/signup")!,
-                    placeholder: "Paste your Deepgram key"
-                )
                 ProviderKeyCard(
                     provider: "groq",
                     name: "Groq",

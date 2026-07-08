@@ -21,6 +21,7 @@ pub mod legacy_learning;
 pub mod llm;
 pub mod number_format;
 pub mod observability;
+pub mod recent_speech_context;
 pub mod routes;
 pub mod store;
 pub mod stt;
@@ -261,28 +262,7 @@ pub fn router_with_state(state: AppState) -> Router {
     // Public routes (no auth)
     let public = Router::new()
         .route("/v1/health", get(routes::health::handler))
-        .route("/v1/health/ping", get(routes::health::ping))
-        .route("/v1/lab/trace", post(routes::lab::trace))
-        .route(
-            "/v1/lab/number-format",
-            get(routes::lab::number_format_page).post(routes::lab::number_format),
-        )
-        .route(
-            "/v1/lab/formatting",
-            get(routes::lab::number_format_page).post(routes::lab::local_formatting),
-        )
-        .route(
-            "/v1/lab/chaos/tokio-starve",
-            post(routes::lab::chaos_tokio_starve),
-        )
-        .route(
-            "/v1/lab/chaos/pool-exhaust",
-            post(routes::lab::chaos_pool_exhaust),
-        )
-        .route(
-            "/v1/lab/chaos/sse-stall",
-            post(routes::lab::chaos_sse_stall),
-        );
+        .route("/v1/health/ping", get(routes::health::ping));
 
     // Authenticated routes (require shared-secret bearer)
     let authenticated = Router::new()
@@ -406,7 +386,6 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
         .route("/v1/polish/models", get(routes::polish_models::list_models))
         .route("/v1/corrections", get(routes::prefs::get_corrections))
-        .route("/v1/stt/bias", get(routes::stt::get_bias))
         .route("/v1/tier2/status", get(routes::tier2::status))
         .route(
             "/v1/telemetry/runs/:run_id",

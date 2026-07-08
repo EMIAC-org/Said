@@ -70,9 +70,10 @@ async fn main() {
     // ── Load env vars ─────────────────────────────────────────────────────────
     said_core::load_env();
 
+    const DEFAULT_DIAGNOSTICS_BASE: &str = "https://airnote.emiactech.com";
     let diagnostics_base = std::env::var("AIRNOTE_DIAGNOSTICS_URL")
         .or_else(|_| std::env::var("AIRNOTE_CONTROL_PLANE_URL"))
-        .unwrap_or_else(|_| said_core::AIRNOTE_DEFAULT_CONTROL_PLANE_URL.to_string());
+        .unwrap_or_else(|_| DEFAULT_DIAGNOSTICS_BASE.to_string());
     said_core::reporter::configure(&diagnostics_base);
     said_core::reporter::set_phase("backend_starting");
 
@@ -191,6 +192,8 @@ async fn main() {
     };
 
     info!("airnote-backend listening on http://{addr}");
+
+    tokio::task::spawn_blocking(said_backend::tier2::warm_runtime_caches);
 
     // Warm the on-device whisper.cpp model in the background, AFTER the listener
     // is up, so /v1/health is reachable immediately (no respawn loop). The load
@@ -325,10 +328,23 @@ async fn main() {
     }
 
     info!("airnote-backend stopped");
+    exit_after_shutdown_cleanup(0);
 }
 
 fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
+#[cfg(target_os = "macos")]
+fn exit_after_shutdown_cleanup(code: i32) -> ! {
+    // whisper.cpp/ggml Metal can abort from C/C++ process-exit finalizers after
+    // normal shutdown. The backend has already stopped serving before this point.
+    unsafe { libc::_exit(code) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exit_after_shutdown_cleanup(code: i32) -> ! {
+    std::process::exit(code)
 }
 
 #[cfg(target_os = "macos")]
@@ -359,7 +375,7 @@ fn start_parent_death_watch() {
 
         if rc > 0 {
             info!("[parent-watch] parent pid={parent_pid} exited — shutting down backend");
-            std::process::exit(0);
+            exit_after_shutdown_cleanup(0);
         }
     });
 
@@ -368,7 +384,7 @@ fn start_parent_death_watch() {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if unsafe { libc::getppid() } == 1 {
                 info!("[parent-watch] backend reparented to launchd — shutting down");
-                std::process::exit(0);
+                exit_after_shutdown_cleanup(0);
             }
         }
     });

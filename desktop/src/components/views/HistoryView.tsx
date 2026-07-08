@@ -7,22 +7,13 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Recording } from "@/types";
 import {
   deleteRecording,
+  listHistory,
   getAppIcon,
   downloadRecordingAudio as saveRecordingAudio,
   getRecordingAudioBytes,
   exportHistory,
   revealDownloadedFile,
 } from "@/lib/invoke";
-import {
-  clearHistoryCached,
-  getHistorySnapshot,
-  insertHistoryCached,
-  loadMoreHistoryCache,
-  refreshHistoryCache,
-  removeHistoryCached,
-  replaceHistoryCached,
-  subscribeHistory,
-} from "@/lib/historyUiCache";
 import { friendlyError } from "@/lib/friendlyError";
 
 // App-icon cache shared across all rows: app_key → data URL (or null miss).
@@ -56,12 +47,7 @@ function formatDuration(seconds: number | null | undefined): string {
 function formatModel(model: string | null | undefined): string {
   if (!model) return "";
   const m = model.toLowerCase();
-  if (m.includes("apex")) return "AirNote Native";
   if (m.includes("oriserve")) return "Hinglish (Oriserve)";
-  // Cloud dictation = OpenRouter Whisper Large V3 Turbo. Legacy nova/deepgram
-  // entries also surface under the current cloud label.
-  if (m.includes("openrouter") || m.includes("nova") || m.includes("deepgram"))
-    return "Cloud Whisper";
   if (m.includes("whisper")) return "Whisper";
   if (m.includes("groq") || m.includes("llama")) return "Groq";
   if (m.includes("sarvam")) return "Sarvam";
@@ -584,63 +570,53 @@ function Skeleton() {
 const PAGE_SIZE = 50;
 
 export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSuccess?: (path: string) => void; refreshKey?: number }) {
-  const initialHistory = getHistorySnapshot();
-  const [recordings, setRecordings] = useState<Recording[]>(() => initialHistory.data ?? []);
-  const [loading, setLoading] = useState(() => initialHistory.data === undefined);
+  const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState("all");
-  const [refreshing, setRefreshing] = useState(() => initialHistory.refreshing);
+  const [refreshing, setRefreshing] = useState(false);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [hasMore, setHasMore] = useState(() => initialHistory.hasMore);
-  const [loadingMore, setLoadingMore] = useState(() => initialHistory.loadingMore);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const { toasts, push, dismiss } = useToasts();
   const pendingDeletes = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; commit: () => void }>());
-  const lastRefreshKey = useRef(refreshKey);
 
-  const applyCacheSnapshot = useCallback(() => {
-    const snapshot = getHistorySnapshot();
-    if (snapshot.data !== undefined) {
-      setRecordings(snapshot.data ?? []);
-      setLoading(false);
-    }
-    setRefreshing(snapshot.refreshing);
-    setLoadingMore(snapshot.loadingMore);
-    setHasMore(snapshot.hasMore);
-  }, []);
-
-  const loadHistory = useCallback(async (force = false) => {
+  const loadHistory = useCallback(async (soft = false) => {
+    if (soft) setRefreshing(true);
     try {
-      await refreshHistoryCache(PAGE_SIZE, { force });
+      const recs = await listHistory(PAGE_SIZE);
+      setRecordings(recs);
+      setHasMore(recs.length >= PAGE_SIZE);
     } finally {
-      applyCacheSnapshot();
+      setLoading(false);
+      setRefreshing(false);
     }
-  }, [applyCacheSnapshot]);
+  }, []);
 
   // Optimistic "load older": fetch the next page using the oldest loaded row as
   // the cursor and append it. Recordings come back newest-first, so the tail is
   // the oldest we currently hold.
   const loadMore = useCallback(async () => {
+    setLoadingMore(true);
     try {
-      await loadMoreHistoryCache(PAGE_SIZE);
+      const oldest = recordings[recordings.length - 1]?.timestamp_ms;
+      const older = await listHistory(PAGE_SIZE, oldest);
+      if (older.length > 0) {
+        setRecordings((prev) => {
+          const seen = new Set(prev.map((r) => r.id));
+          return [...prev, ...older.filter((r) => !seen.has(r.id))];
+        });
+      }
+      setHasMore(older.length >= PAGE_SIZE);
     } finally {
-      applyCacheSnapshot();
+      setLoadingMore(false);
     }
-  }, [applyCacheSnapshot]);
+  }, [recordings]);
 
-  useEffect(() => {
-    const unsubscribe = subscribeHistory(applyCacheSnapshot);
-    applyCacheSnapshot();
-    return unsubscribe;
-  }, [applyCacheSnapshot]);
-
-  useEffect(() => {
-    const force = lastRefreshKey.current !== refreshKey;
-    lastRefreshKey.current = refreshKey;
-    void loadHistory(force);
-  }, [loadHistory, refreshKey]);
+  useEffect(() => { void loadHistory(); }, [loadHistory, refreshKey]);
   useEffect(() => () => {
     stopSharedAudio();
     // Flush pending deletes so a delete made just before leaving still persists
@@ -684,13 +660,11 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
   function handleDelete(rec: Recording) {
     if (playingId === rec.id) { stopSharedAudio(); setPlayingId(null); }
     setRecordings((prev) => prev.filter((r) => r.id !== rec.id));
-    removeHistoryCached(rec.id);
     const commit = () => {
       pendingDeletes.current.delete(rec.id);
       deleteRecording(rec.id).catch(() => {
         push({ kind: "error", title: "Couldn’t delete", sub: "It’s back in your history.", duration: 4000 });
         setRecordings((prev) => insertSorted(prev, rec));
-        insertHistoryCached(rec);
       });
     };
     const timer = setTimeout(commit, 5000);
@@ -703,7 +677,6 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
           const e = pendingDeletes.current.get(rec.id);
           if (e) { clearTimeout(e.timer); pendingDeletes.current.delete(rec.id); }
           setRecordings((prev) => insertSorted(prev, rec));
-          insertHistoryCached(rec);
         },
       },
     });
@@ -716,7 +689,6 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
     if (snapshot.length === 0) return;
     if (playingId) { stopSharedAudio(); setPlayingId(null); }
     setRecordings([]);
-    clearHistoryCached();
     const commit = () => {
       pendingDeletes.current.delete("__all__");
       void Promise.allSettled(snapshot.map((r) => deleteRecording(r.id))).then((res) => {
@@ -737,7 +709,6 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
           const e = pendingDeletes.current.get("__all__");
           if (e) { clearTimeout(e.timer); pendingDeletes.current.delete("__all__"); }
           setRecordings(snapshot);
-          replaceHistoryCached(snapshot);
         },
       },
     });

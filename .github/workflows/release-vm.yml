@@ -154,7 +154,6 @@ jobs:
         if: matrix.platform == 'darwin'
         shell: bash
         env:
-          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY_1 || secrets.DEEPGRAM_API_KEY }}
         run: |
           cargo build -p said --release --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/airnote airnote-${{ matrix.target }}
@@ -165,7 +164,6 @@ jobs:
         shell: bash
         timeout-minutes: 12
         env:
-          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY_1 || secrets.DEEPGRAM_API_KEY }}
         run: |
           cargo build -p said-backend --release --target ${{ matrix.target }}
           mkdir -p desktop/src-tauri/binaries
@@ -299,7 +297,6 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         env:
-          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY_1 || secrets.DEEPGRAM_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

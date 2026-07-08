@@ -1,8 +1,7 @@
 #![cfg(feature = "local-stt")]
 //! Local STT via whisper.cpp — offline, no API key required.
 //!
-//! Accepts 16 kHz mono PCM (WAV or raw f32) and returns a transcript
-//! matching the same `TranscriptResult` interface as Deepgram.
+//! Accepts 16 kHz mono PCM (WAV or raw f32) and returns a local transcript.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -13,11 +12,21 @@ use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadParams,
 };
 
-use super::deepgram::{LOW_CONFIDENCE_THRESHOLD, TranscriptResult};
-
 static WHISPER_CTX: OnceCell<Mutex<WhisperContext>> = OnceCell::new();
 
 const WHISPER_SAMPLE_RATE: usize = 16_000;
+const LOW_CONFIDENCE_THRESHOLD: f64 = 0.70;
+
+pub struct TranscriptResult {
+    pub transcript: String,
+    pub enriched_transcript: String,
+    pub confidence: f64,
+    pub uncertain_count: usize,
+    pub mean_word_confidence: f64,
+    pub word_count: usize,
+    pub languages: Vec<String>,
+    pub stt_mode: String,
+}
 
 pub fn ensure_model_loaded(model_path: &str) -> Result<(), String> {
     WHISPER_CTX.get_or_try_init(|| {
@@ -36,12 +45,13 @@ pub fn ensure_model_loaded(model_path: &str) -> Result<(), String> {
 }
 
 pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptResult, String> {
-    // Dictation feeds raw 16 kHz audio straight to whisper — matching the
-    // known-good 2.4.1 / Jun-27 baseline (which had no conditioning at all).
-    // The old `condition_16k` loudness normalization (up to 8× gain, noise floor
-    // 0.001) amplified the noise floor on quiet/noisy clips and — with VAD also
-    // off — drove whisper to mis-transcribe ("hears something else"). Silence/noise
-    // hallucination is handled by re-enabled Silero VAD below, not by pre-gain.
+    // Whole-utterance conditioning: DC/high-pass + loudness normalize just before
+    // inference; whisper.cpp's Silero VAD then runs inside `full()`. Length is
+    // preserved, so downstream math is unchanged.
+    let mut conditioned = audio_f32.to_vec();
+    said_core::preprocess::condition_16k(&mut conditioned);
+    let audio_f32: &[f32] = &conditioned;
+
     let ctx_mutex = WHISPER_CTX
         .get()
         .ok_or("whisper model not loaded — call ensure_model_loaded first")?;
@@ -89,25 +99,20 @@ pub fn transcribe_pcm(audio_f32: &[f32], language: &str) -> Result<TranscriptRes
     params.set_print_special(false);
     params.set_n_threads(4);
 
-    // Dictation policy: Silero VAD ON by default — restored to the 2.4.1 / Jun-27
-    // baseline. whisper.cpp runs voice-activity detection first and only transcribes
-    // detected speech, which kills the silence/noise "phantom fluent text on pauses"
-    // hallucination (dropped onset + invented prefix + drift to unrelated text).
-    // Disabling it (the `condition_16k` + no-VAD experiment) regressed dictation.
-    // Force it off with AIRNOTE_DICTATION_VAD=0 if ever needed.
-    let vad_on = std::env::var("AIRNOTE_DICTATION_VAD")
-        .map(|v| !matches!(v.trim(), "0" | "false" | "off"))
-        .unwrap_or(true);
+    // Silero VAD gate: when the model is present, whisper.cpp runs voice-activity
+    // detection first and only transcribes detected speech. This kills the
+    // silence/noise hallucination seen on longer dictations (the "phantom"
+    // fluent text on pauses). Best-effort — skipped if the model isn't installed.
     let vad_path = said_core::paths::silero_vad_model_path();
-    if vad_on && vad_path.is_file() {
+    if vad_path.is_file() {
         if let Some(p) = vad_path.to_str() {
             params.set_vad_model_path(Some(p));
             params.set_vad_params(WhisperVadParams::new());
             params.enable_vad(true);
-            debug!("[whisper] Silero VAD enabled for dictation ({p})");
+            debug!("[whisper] Silero VAD enabled ({p})");
         }
     } else {
-        debug!("[whisper] Silero VAD off for dictation (AIRNOTE_DICTATION_VAD=0 or model absent)");
+        debug!("[whisper] Silero VAD model absent — running without VAD gate");
     }
 
     let t0 = std::time::Instant::now();

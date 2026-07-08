@@ -48,11 +48,11 @@ CATEGORIES = [
 # Injected through the exact `sanitize_profile_markdown` wrapper the server uses.
 PROFILES: dict[str, str | None] = {
     "none": None,
-    "thin": "Terms: Deepgram",
+    "thin": "Terms: Local speech",
     "good_dev": (
         "Role: developer / founder building a dictation app.\n"
-        "Terms: Deepgram, n8n, SQLite, Sentry, webhook, Docker, Kafka, ZooKeeper, Tauri, Axum\n"
-        "STT: deep gram -> Deepgram; web book -> webhook; cee q lite -> SQLite"
+        "Terms: Local speech, n8n, SQLite, Sentry, webhook, Docker, Kafka, ZooKeeper, Tauri, Axum\n"
+        "STT: local speech -> Local speech; web book -> webhook; cee q lite -> SQLite"
     ),
     "good_biz": (
         "Role: ecommerce operator running ads and inventory.\n"
@@ -74,14 +74,14 @@ CASES: list[dict] = [
         "id": "short-01",
         "category": "short",
         "profile": "none",
-        "transcript": "deep gram API key save nahin ho raha bhai",
-        "expected": "Deepgram API key save nahin ho raha bhai.",
-        "must_contain": ["Deepgram", "bhai"],
-        "must_not_contain": ["deep gram"],
+        "transcript": "local speech API key save nahin ho raha bhai",
+        "expected": "Local speech API key save nahin ho raha bhai.",
+        "must_contain": ["Local speech", "bhai"],
+        "must_not_contain": ["local speech"],
         "final_marker": "raha",
         "is_question": False,
         "is_command": False,
-        "notes": "common correction deep gram->Deepgram WITHOUT profile; keep 'bhai'.",
+        "notes": "common correction local speech->Local speech WITHOUT profile; keep 'bhai'.",
     },
     {
         "id": "short-02",
@@ -128,7 +128,7 @@ CASES: list[dict] = [
         "category": "long",
         "profile": "good_dev",
         "transcript": (
-            "okay so aaj ka plan ye hai ki pehle main deep gram ka streaming wala "
+            "okay so aaj ka plan ye hai ki pehle main local speech ka streaming wala "
             "issue dekhunga jahan web socket 12 second tak stall ho raha hai phir "
             "uske baad SQLite migration jo pending hai 043 wali usko apply karunga "
             "aur agar time bacha to sentry mein jo naya error aa raha hai panic in "
@@ -138,7 +138,7 @@ CASES: list[dict] = [
             "karni padegi warna staging pe purana build chal raha hoga"
         ),
         "expected": (
-            "Okay, so aaj ka plan ye hai ki pehle main Deepgram ka streaming wala "
+            "Okay, so aaj ka plan ye hai ki pehle main Local speech ka streaming wala "
             "issue dekhunga jahan WebSocket 12 second tak stall ho raha hai, phir "
             "uske baad SQLite migration jo pending hai (043 wali) usko apply karunga, "
             "aur agar time bacha to Sentry mein jo naya error aa raha hai (panic in "
@@ -148,7 +148,7 @@ CASES: list[dict] = [
             "karni padegi warna staging pe purana build chal raha hoga."
         ),
         "must_contain": [
-            "Deepgram", "WebSocket", "SQLite", "043", "Sentry", "n8n",
+            "Local speech", "WebSocket", "SQLite", "043", "Sentry", "n8n",
             "webhook", "retry backoff", "Docker", "12",
         ],
         "must_not_contain": ["webbook"],
@@ -494,23 +494,23 @@ CASES: list[dict] = [
         "id": "prof-01a",
         "category": "profile",
         "profile": "none",
-        "transcript": "deep gram ka latency thoda high hai aaj",
-        "expected": "Deepgram ka latency thoda high hai aaj.",
-        "must_contain": ["Deepgram", "latency"],
-        "must_not_contain": ["deep gram"],
+        "transcript": "local speech ka latency thoda high hai aaj",
+        "expected": "Local speech ka latency thoda high hai aaj.",
+        "must_contain": ["Local speech", "latency"],
+        "must_not_contain": ["local speech"],
         "final_marker": "aaj",
         "is_question": False,
         "is_command": False,
-        "notes": "baseline: even with NO profile, strong phonetic+domain context recovers Deepgram.",
+        "notes": "baseline: even with NO profile, strong phonetic+domain context recovers Local speech.",
     },
     {
         "id": "prof-01b",
         "category": "profile",
         "profile": "good_dev",
-        "transcript": "deep gram ka latency thoda high hai aaj",
-        "expected": "Deepgram ka latency thoda high hai aaj.",
-        "must_contain": ["Deepgram", "latency"],
-        "must_not_contain": ["deep gram"],
+        "transcript": "local speech ka latency thoda high hai aaj",
+        "expected": "Local speech ka latency thoda high hai aaj.",
+        "must_contain": ["Local speech", "latency"],
+        "must_not_contain": ["local speech"],
         "final_marker": "aaj",
         "is_question": False,
         "is_command": False,
@@ -520,14 +520,14 @@ CASES: list[dict] = [
         "id": "prof-01c",
         "category": "profile",
         "profile": "misleading",
-        "transcript": "deep gram ka latency thoda high hai aaj",
-        "expected": "Deepgram ka latency thoda high hai aaj.",
+        "transcript": "local speech ka latency thoda high hai aaj",
+        "expected": "Local speech ka latency thoda high hai aaj.",
         "must_contain": ["latency"],
         "must_not_contain": ["Kafka", "ZooKeeper", "Sentry", "Cassandra"],
         "final_marker": "aaj",
         "is_question": False,
         "is_command": False,
-        "notes": "misleading profile (no Deepgram, has Kafka etc.) must NOT inject its terms here.",
+        "notes": "misleading profile (no Local speech, has Kafka etc.) must NOT inject its terms here.",
     },
     {
         "id": "prof-02",
@@ -809,7 +809,7 @@ CASES: list[dict] = [
         "notes": "dangling 'kyunki' (because) baits an invented reason.",
     },
     # ── 13. Hard STT garbles — dense, multi-clause, many recoveries per line ──
-    # Realistic Deepgram-on-Hinglish-dev-speech mishearings, several per sentence,
+    # Realistic Local speech-on-Hinglish-dev-speech mishearings, several per sentence,
     # with real person/product names embedded so the over-correction guardrail is
     # stressed under the SAME load as recovery. must_not_contain = the garble forms
     # (leaving them = under-recovery) + the names that must NOT be tech-ified.

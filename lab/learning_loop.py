@@ -88,7 +88,7 @@ PROTECTED_HINTS = {
     "claude",
     "clickup",
     "codex",
-    "deepgram",
+    "local_speech",
     "docker",
     "desktop",
     "divo",
