@@ -13,7 +13,8 @@
 //   v2 → adds the hotkey step (pick any modifier / Caps Lock / Fn) after the model.
 //   v3 → adds the optional "browser context" step (macOS) after the hotkey.
 //   v4 → re-shows the model step after the update-gate cleanup fix.
-export const MIGRATION_VERSION = 4;
+//   v5 → re-shows the model step and silently removes unsupported old STT models.
+export const MIGRATION_VERSION = 5;
 
 const STORAGE_KEY = "said:migration-done";
 

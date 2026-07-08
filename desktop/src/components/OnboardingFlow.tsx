@@ -213,7 +213,7 @@ export function OnboardingFlow({
   }, [refreshDictationModel]);
 
   useEffect(() => {
-    if (silentLegacyModelCleanupDone.current || !dictationModel || dictationModel.installed) return;
+    if (silentLegacyModelCleanupDone.current || !dictationModel) return;
     silentLegacyModelCleanupDone.current = true;
     void invoke<ReclaimResult>("reclaim_old_models")
       .then((result) => {

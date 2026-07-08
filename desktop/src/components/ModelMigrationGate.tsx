@@ -6,7 +6,7 @@ import {
   getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
 } from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
-import { ReclaimOldModelsRow, type ReclaimResult } from "@/components/ReclaimOldModelsRow";
+import type { ReclaimResult } from "@/components/ReclaimOldModelsRow";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
@@ -52,9 +52,6 @@ export function ModelMigrationGate({
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [reclaiming, setReclaiming] = useState(false);
-  const [reclaimResult, setReclaimResult] = useState<ReclaimResult | null>(null);
-  const [reclaimError, setReclaimError] = useState("");
   const [recordHotkey, setRecordHotkey] = useState("caps_lock");
   const [modelChecked, setModelChecked] = useState(false);
   const mounted = useRef(true);
@@ -94,7 +91,7 @@ export function ModelMigrationGate({
   }, [refresh]);
 
   useEffect(() => {
-    if (silentLegacyModelCleanupDone.current || !modelChecked || installed) return;
+    if (silentLegacyModelCleanupDone.current || !modelChecked) return;
     silentLegacyModelCleanupDone.current = true;
     void invoke<ReclaimResult>("reclaim_old_models")
       .then((result) => {
@@ -124,26 +121,13 @@ export function ModelMigrationGate({
   const startDownload = useCallback(async () => {
     setBusy(true);
     setError("");
-    setReclaimError("");
-    setReclaimResult(null);
     try {
       await invoke("download_dictation_model");
       const status = await refresh();
       if (!status?.installed) {
         throw new Error(`${NEW_MODEL_NAME} did not install correctly.`);
       }
-
-      // Best-effort disk reclaim after the new model is verified. Failure here
-      // should not block the user from continuing with the updated model.
-      if (mounted.current) setReclaiming(true);
-      try {
-        const result = await invoke<ReclaimResult>("reclaim_old_models");
-        if (mounted.current) setReclaimResult(result);
-      } catch (e) {
-        if (mounted.current) setReclaimError(friendlyError(e));
-      } finally {
-        if (mounted.current) setReclaiming(false);
-      }
+      await invoke<ReclaimResult>("reclaim_old_models").catch(() => null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg !== "cancelled") setError(friendlyError(msg));
@@ -155,18 +139,6 @@ export function ModelMigrationGate({
   const cancelDownload = useCallback(async () => {
     await invoke("meeting_cancel_model_download", { name: NEW_MODEL_FILE }).catch(() => {});
     setDownload(null);
-  }, []);
-
-  const reclaim = useCallback(async () => {
-    setReclaiming(true);
-    setReclaimError("");
-    try {
-      setReclaimResult(await invoke<ReclaimResult>("reclaim_old_models"));
-    } catch (e) {
-      setReclaimError(friendlyError(e));
-    } finally {
-      setReclaiming(false);
-    }
   }, []);
 
   const pct =
@@ -301,15 +273,6 @@ export function ModelMigrationGate({
             <div className="mig-bar">
               <div style={{ width: `${Math.max(4, pct ?? 0)}%` }} />
             </div>
-          )}
-
-          {installed && (
-            <ReclaimOldModelsRow
-              reclaiming={reclaiming}
-              result={reclaimResult}
-              error={reclaimError}
-              onReclaim={() => void reclaim()}
-            />
           )}
 
           <ErrorNotice error={error} onRetry={() => void startDownload()} className="mt-2" />
