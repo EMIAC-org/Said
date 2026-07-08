@@ -1,8 +1,7 @@
 #![cfg(feature = "local-stt")]
 //! Local STT via whisper.cpp — offline, no API key required.
 //!
-//! Accepts 16 kHz mono PCM (WAV or raw f32) and returns a transcript
-//! matching the same `TranscriptResult` interface as Deepgram.
+//! Accepts 16 kHz mono PCM (WAV or raw f32) and returns a local transcript.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -13,11 +12,21 @@ use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadParams,
 };
 
-use super::deepgram::{LOW_CONFIDENCE_THRESHOLD, TranscriptResult};
-
 static WHISPER_CTX: OnceCell<Mutex<WhisperContext>> = OnceCell::new();
 
 const WHISPER_SAMPLE_RATE: usize = 16_000;
+const LOW_CONFIDENCE_THRESHOLD: f64 = 0.70;
+
+pub struct TranscriptResult {
+    pub transcript: String,
+    pub enriched_transcript: String,
+    pub confidence: f64,
+    pub uncertain_count: usize,
+    pub mean_word_confidence: f64,
+    pub word_count: usize,
+    pub languages: Vec<String>,
+    pub stt_mode: String,
+}
 
 pub fn ensure_model_loaded(model_path: &str) -> Result<(), String> {
     WHISPER_CTX.get_or_try_init(|| {

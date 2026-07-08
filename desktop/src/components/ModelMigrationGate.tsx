@@ -73,7 +73,7 @@ export function ModelMigrationGate({
   }, []);
 
   const refresh = useCallback(async () => {
-    const s = await invoke<ModelStatus>("apex_model_status").catch((e) => {
+    const s = await invoke<ModelStatus>("dictation_model_status").catch((e) => {
       if (mounted.current) setError(friendlyError(e));
       return null;
     });
@@ -116,7 +116,7 @@ export function ModelMigrationGate({
     setReclaimError("");
     setReclaimResult(null);
     try {
-      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
+      await invoke("download_dictation_model");
       const status = await refresh();
       if (!status?.installed) {
         throw new Error(`${NEW_MODEL_NAME} did not install correctly.`);
@@ -240,13 +240,12 @@ export function ModelMigrationGate({
     <div className="onb-error-screen">
       <div className="mig-card">
         <div className="mig-badge">
-          <Sparkles size={12} /> New in this update
+          <Sparkles size={12} /> Local speech model
         </div>
         <h2 className="mig-title">Meet {NEW_MODEL_NAME}</h2>
         <p className="mig-desc">
-          AirNote now ships our best on-device Hinglish model — sharper on Hindi-English
-          code-switching, fully private, works offline, with no per-use cost. Install it to
-          upgrade your dictation and meetings, or keep your current setup.
+          AirNote uses one on-device Hinglish model for dictation and meetings. It stays
+          private, works offline, and has no per-use cost. Install it to enable local speech.
         </p>
 
         <div className="mig-model">

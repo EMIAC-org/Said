@@ -117,10 +117,6 @@ pub fn spawn() -> Result<BackendHandle, String> {
             std::env::var("GATEWAY_API_KEY").unwrap_or_default(),
         )
         .env(
-            "DEEPGRAM_API_KEY",
-            std::env::var("DEEPGRAM_API_KEY").unwrap_or_default(),
-        )
-        .env(
             "GEMINI_API_KEY",
             std::env::var("GEMINI_API_KEY").unwrap_or_default(),
         )

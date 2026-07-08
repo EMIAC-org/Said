@@ -5,7 +5,6 @@ Uses batch/async APIs (transcript quality). Live WS providers are included
 when a sync REST path exists; otherwise async upload+poll.
 
 Env keys (all optional except you need at least one):
-  DEEPGRAM_API_KEY
   GROQ_API_KEY
   OPENAI_API_KEY
   SARVAM_API_KEY
@@ -183,72 +182,6 @@ def poll_until(
             raise RuntimeError(err or f"job failed: {status}")
         time.sleep(interval_s)
     raise TimeoutError("polling timed out")
-
-
-def run_deepgram(wav: Path, duration_s: float, model: str, language: str) -> Result:
-    key = os.environ.get("DEEPGRAM_API_KEY", "").strip()
-    if not key:
-        return Result("deepgram", False, skipped=True, error="DEEPGRAM_API_KEY missing")
-    params = {
-        "model": model,
-        "language": language,
-        "smart_format": "false",
-        "punctuate": "false",
-        "numerals": "false",
-    }
-    url = "https://api.deepgram.com/v1/listen?" + urllib.parse.urlencode(params)
-    data = wav.read_bytes()
-    t0 = time.perf_counter()
-    status, payload = http_json(
-        "POST",
-        url,
-        {
-            "Authorization": f"Token {key}",
-            "Content-Type": "audio/wav",
-        },
-        data,
-        timeout=180,
-    )
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-    if status >= 400:
-        return Result(f"deepgram:{language}", False, latency_ms=latency_ms, error=str(payload)[:500])
-    alt = payload.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0]
-    text = alt.get("transcript") or ""
-    return Result(
-        f"deepgram:{model}:{language}",
-        bool(text),
-        transcript=text,
-        latency_ms=latency_ms,
-        model=model,
-        error="" if text else "empty transcript",
-    )
-
-
-def run_groq_whisper(wav: Path, duration_s: float) -> Result:
-    key = os.environ.get("GROQ_API_KEY", "").strip()
-    if not key:
-        return Result("groq_whisper", False, skipped=True, error="GROQ_API_KEY missing")
-    body, boundary = multipart_body(
-        [("model", "whisper-large-v3-turbo"), ("language", "hi"), ("response_format", "json")],
-        [("file", wav.name, wav.read_bytes(), "audio/wav")],
-    )
-    t0 = time.perf_counter()
-    status, payload = http_json(
-        "POST",
-        "https://api.groq.com/openai/v1/audio/transcriptions",
-        {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "User-Agent": "curl/8.7.1",
-        },
-        body,
-        timeout=180,
-    )
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-    if status >= 400:
-        return Result("groq_whisper", False, latency_ms=latency_ms, error=str(payload)[:500])
-    text = (payload.get("text") or "").strip()
-    return Result("groq_whisper", bool(text), transcript=text, latency_ms=latency_ms, model="whisper-large-v3-turbo")
 
 
 def run_openai_transcribe(wav: Path, duration_s: float, model: str) -> Result:
@@ -589,9 +522,6 @@ def run_competition(audio_files: List[Path], out_dir: Path) -> int:
     work_dir.mkdir(exist_ok=True)
 
     runners: List[Tuple[str, Callable[[Path, float], Result]]] = [
-        ("deepgram:nova-3:multi", lambda w, d: run_deepgram(w, d, "nova-3", "multi")),
-        ("deepgram:nova-3:hi", lambda w, d: run_deepgram(w, d, "nova-3", "hi")),
-        ("groq_whisper", run_groq_whisper),
         ("gpt-4o-transcribe", lambda w, d: run_openai_transcribe(w, d, "gpt-4o-transcribe")),
         ("gpt-4o-mini-transcribe", lambda w, d: run_openai_transcribe(w, d, "gpt-4o-mini-transcribe")),
         ("whisper-1", lambda w, d: run_openai_transcribe(w, d, "whisper-1")),

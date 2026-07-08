@@ -258,8 +258,28 @@ pub fn build_voice_system_prompt(
     safe_vocab_terms: &[String],
     profile_markdown: Option<&str>,
 ) -> String {
+    build_voice_system_prompt_with_recent(
+        output_language,
+        tone_preset,
+        custom_prompt,
+        screen_context,
+        safe_vocab_terms,
+        profile_markdown,
+        &[],
+    )
+}
+
+pub fn build_voice_system_prompt_with_recent(
+    output_language: &str,
+    tone_preset: &str,
+    custom_prompt: Option<&str>,
+    screen_context: Option<&str>,
+    safe_vocab_terms: &[String],
+    profile_markdown: Option<&str>,
+    recent_speech_hints: &[String],
+) -> String {
     use said_core::polish::prompt::{
-        VocabEntry, VocabResolution, build_system_prompt_with_profile,
+        VocabEntry, VocabResolution, build_system_prompt_with_profile_and_recent_speech,
     };
     use said_core::polish::types::PolishPrefs;
 
@@ -292,22 +312,20 @@ pub fn build_voice_system_prompt(
         })
         .collect();
 
-    let mut prompt = build_system_prompt_with_profile(
+    let mut prompt = build_system_prompt_with_profile_and_recent_speech(
         &prefs,
         &[],
         &[],
         &vocab_entries,
         profile_markdown,
+        recent_speech_hints,
         |_| false,
     );
 
     if let Some(ctx) = screen_context {
-        let trimmed = ctx.trim();
-        if !trimmed.is_empty() {
-            let clipped: String = trimmed.chars().take(400).collect();
-            prompt.push_str(&format!(
-                "\n\nSCREEN CONTEXT: \"{clipped}\"\nUse only as a tiebreaker for names or terms. Transcript words come first. Never use screen context to omit, shorten, or replace transcript clauses."
-            ));
+        let block = said_core::polish::prompt::render_screen_context_block(ctx);
+        if !block.is_empty() {
+            prompt.push_str(&block);
         }
     }
 

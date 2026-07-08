@@ -1,0 +1,1 @@
+-- retired: speech recognition is local-only and has no provider preference

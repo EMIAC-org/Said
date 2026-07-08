@@ -80,7 +80,7 @@ DEV_VOCAB: list[VocabTerm] = [
 ]
 
 # Aliases: simulating 1-2 user corrections per term.
-# These are what Deepgram actually outputs and the user corrected.
+# These are what Local speech actually outputs and the user corrected.
 DEV_ALIASES: list[AliasRule] = [
     # AirNote — user corrected "air note" (2 corrections)
     AliasRule("airnote", "AirNote", 1.0, 2, "approved"),
@@ -170,7 +170,7 @@ TEST_BATTERY: list[TestCase] = [
     TestCase("mecobs", "Macobs", "new_distortion", "vowel swap"),
     TestCase("macobs", None, "identity", "case-insensitive identity of Macobs"),
     TestCase("makobs", "Macobs", "new_distortion", "consonant swap"),
-    TestCase("cubernetis", "Kubernetes", "new_distortion", "common Deepgram garble"),
+    TestCase("cubernetis", "Kubernetes", "new_distortion", "common Local speech garble"),
     TestCase("kubernetis", "Kubernetes", "new_distortion", "k→c swap"),
     TestCase("chatgbt", "ChatGPT", "new_distortion", "p→b swap"),
     TestCase("chatjpd", "ChatGPT", "new_distortion", "consonant softening"),

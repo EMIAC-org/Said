@@ -28,8 +28,6 @@ CREATE INDEX IF NOT EXISTS idx_org_usage_daily_org_date
 
 CREATE TABLE IF NOT EXISTS org_runtime_settings (
     org_id                      UUID PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
-    stt_provider                TEXT,
-    enforce_stt_provider        BOOLEAN NOT NULL DEFAULT FALSE,
     server_runtime_enabled      BOOLEAN,
     enforce_server_runtime      BOOLEAN NOT NULL DEFAULT FALSE,
     allowed_models_json         JSONB NOT NULL DEFAULT '[]'::jsonb,

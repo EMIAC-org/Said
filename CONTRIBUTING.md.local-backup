@@ -33,7 +33,7 @@ The Rust toolchain pin includes `rustfmt` and `clippy`, so first-run `cargo` cal
 
 ```
 crates/
-  core           shared types + Deepgram bias model
+  core           shared types + Local speech bias model
   recorder       CoreAudio capture + ring buffer
   paster         Accessibility-driven cursor paste
   hotkey         Caps Lock / global hotkey via CGEventTap

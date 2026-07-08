@@ -1,6 +1,6 @@
 //! POST /v1/text/polish
 //!
-//! Same pipeline as /v1/voice/polish but skips Deepgram.
+//! Same polish pipeline as /v1/voice/polish for already-transcribed text.
 //! Body: { "text": "...", "target_app"?: "..." }
 //! Response: SSE stream identical to voice/polish.
 

@@ -279,6 +279,54 @@ pub fn retryable_failed_audio_ids(pool: &DbPool, cutoff_ms: i64) -> Vec<String> 
         .unwrap_or_default()
 }
 
+pub fn recent_successful_normal_transcripts_for_app(
+    pool: &DbPool,
+    user_id: &str,
+    target_app: Option<&str>,
+    exclude_run_id: &str,
+    now_ms: i64,
+    ttl_ms: i64,
+    limit: usize,
+) -> Vec<String> {
+    let Some(app) = target_app.map(str::trim).filter(|app| !app.is_empty()) else {
+        return Vec::new();
+    };
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let conn = match pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Vec::new(),
+    };
+    let cutoff_ms = now_ms.saturating_sub(ttl_ms.max(0));
+    let mut stmt = match conn.prepare(
+        "SELECT pre_transcript
+           FROM voice_runs
+          WHERE user_id = ?1
+            AND run_id != ?2
+            AND mode = 'normal'
+            AND target_app = ?3
+            AND status = 'completed'
+            AND completed_successfully = 1
+            AND pre_transcript IS NOT NULL
+            AND TRIM(pre_transcript) != ''
+            AND COALESCE(completed_at_ms, updated_at_ms) >= ?4
+          ORDER BY COALESCE(completed_at_ms, updated_at_ms) DESC
+          LIMIT ?5",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Vec::new(),
+    };
+
+    stmt.query_map(
+        params![user_id, exclude_run_id, app, cutoff_ms, limit as i64],
+        |row| row.get::<_, String>(0),
+    )
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
+}
+
 const SELECT_COLS: &str = "run_id, user_id, audio_id, mode, target_app, status,
     wav_bytes, duration_ms, pre_transcript, recording_id, error_code, error_message,
     retryable, owned_by_airnote, attempt_count, completed_successfully, paste_success,
@@ -437,5 +485,124 @@ mod tests {
         .unwrap();
         let ids = retryable_failed_audio_ids(&pool, now_ms() - 1_000);
         assert_eq!(ids, vec!["audio-3".to_string()]);
+    }
+
+    #[test]
+    fn recent_context_transcripts_are_same_app_normal_successful_and_fresh() {
+        let (pool, user_id) = pool();
+        let now = now_ms();
+        let ttl = 10 * 60 * 1000;
+
+        fn complete(
+            pool: &DbPool,
+            user_id: &str,
+            run_id: &str,
+            mode: &str,
+            app: &str,
+            transcript: &str,
+            completed_at_ms: i64,
+        ) {
+            create_voice_run_captured(
+                pool,
+                CapturedVoiceRun {
+                    run_id,
+                    user_id,
+                    audio_id: Some(run_id),
+                    mode,
+                    target_app: Some(app),
+                    wav_bytes: 100,
+                    duration_ms: 500,
+                    pre_transcript: Some(transcript),
+                },
+            )
+            .unwrap();
+            mark_voice_run_completed_unlinked(pool, run_id).unwrap();
+            pool.get()
+                .unwrap()
+                .execute(
+                    "UPDATE voice_runs
+                        SET completed_at_ms = ?2,
+                            updated_at_ms = ?2
+                      WHERE run_id = ?1",
+                    params![run_id, completed_at_ms],
+                )
+                .unwrap();
+        }
+
+        complete(
+            &pool,
+            &user_id,
+            "same-newer",
+            "normal",
+            "com.test.app",
+            "recent speech hints",
+            now - 1_000,
+        );
+        complete(
+            &pool,
+            &user_id,
+            "same-older",
+            "normal",
+            "com.test.app",
+            "current transcript wins",
+            now - 2_000,
+        );
+        complete(
+            &pool,
+            &user_id,
+            "other-app",
+            "normal",
+            "com.other.app",
+            "different app context",
+            now - 500,
+        );
+        complete(
+            &pool,
+            &user_id,
+            "message-mode",
+            "message_polish",
+            "com.test.app",
+            "different mode context",
+            now - 500,
+        );
+        complete(
+            &pool,
+            &user_id,
+            "old",
+            "normal",
+            "com.test.app",
+            "old context",
+            now - ttl - 1_000,
+        );
+
+        let transcripts = recent_successful_normal_transcripts_for_app(
+            &pool,
+            &user_id,
+            Some("com.test.app"),
+            "current-run",
+            now,
+            ttl,
+            2,
+        );
+
+        assert_eq!(
+            transcripts,
+            vec![
+                "recent speech hints".to_string(),
+                "current transcript wins".to_string()
+            ]
+        );
+        assert!(
+            recent_successful_normal_transcripts_for_app(
+                &pool,
+                &user_id,
+                None,
+                "current-run",
+                now,
+                ttl,
+                2,
+            )
+            .is_empty()
+        );
     }
 }

@@ -30,4 +30,4 @@ CREATE INDEX IF NOT EXISTS idx_alias_safety_audit_account
     ON alias_safety_audit (account_id, created_at DESC);
 
 ALTER TABLE personal_stt_replacements
-    ADD COLUMN IF NOT EXISTS learned_stt_provider TEXT;
+    ADD COLUMN IF NOT EXISTS learned_speech_model TEXT;

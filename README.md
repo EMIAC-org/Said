@@ -101,9 +101,9 @@ A hand-written 80-glyph Devanagari→Roman romanizer ([`script.rs`](crates/backe
 
 **~150–400 ms time-to-first-token** measured through Groq's LPU hardware ([`groq.rs:4`](crates/backend/src/llm/groq.rs)). Polished text streams into your focused field token-by-token while you're still letting go of the key.
 
-The Deepgram WebSocket is **pre-warmed at the start of recording** ([`dg_stream.rs:42`](crates/core/src/dg_stream.rs)) so the TLS handshake never sits in your hot path.
+Local whisper.cpp speech recognition runs on-device first; the backend only receives transcript text for polishing.
 
-Free means free: bring your own Deepgram key (generous free tier) and sign in with the ChatGPT account you already have.
+Free means free: install the local speech model and sign in with the ChatGPT account you already have for polish.
 
 </td>
 <td width="33%" valign="top">
@@ -177,10 +177,10 @@ Receipts in code, not marketing — see [`script.rs`](crates/backend/src/llm/scr
 ## How it works
 
 ```
-   Caps Lock           Deepgram nova-3              Groq / Codex
-   ─────────           ────────────────             ────────────
-   hold to record  ──► streamed STT     ──► polish (LLM, streaming)
-                       (pre-warmed WS)              │
+   Caps Lock           local whisper.cpp           Groq / Codex
+   ─────────           ─────────────────           ────────────
+   hold to record  ──► local transcript ──► polish (LLM, streaming)
+                                                    │
                                                     ▼
                                               type into focused field
                                                     │
@@ -200,8 +200,8 @@ Receipts in code, not marketing — see [`script.rs`](crates/backend/src/llm/scr
 Six components, all in this repo:
 
 - [**`crates/hotkey`**](crates/hotkey) — global Caps Lock listener (CGEventTap), hold-to-talk or push-to-toggle.
-- [**`crates/recorder`**](crates/recorder) — CoreAudio capture, streamed straight to STT at 16 kHz.
-- [**`crates/core`**](crates/core) — Deepgram WebSocket client with 15-second pre-warm window.
+- [**`crates/recorder`**](crates/recorder) — CoreAudio/WASAPI capture at 16 kHz.
+- [**`crates/core`**](crates/core) — shared speech transcript metadata and polish helpers.
 - [**`crates/backend`**](crates/backend) — local Axum daemon. SQLite (20 migrations), 7 vocabulary-related tables, 256-d embeddings, the learning pipeline, prefs.
 - [**`crates/paster`**](crates/paster) — Accessibility-API typing into the focused field, with edit-watch.
 - [**`desktop/`**](desktop) — Tauri shell, React UI, menu-bar tray, 39 commands.
@@ -218,10 +218,7 @@ After install:
    ```bash
    said auth
    ```
-2. **Add a Deepgram key** (free tier covers normal use):
-   ```bash
-   said deepgram-key
-   ```
+2. **Install or verify the local speech model** in onboarding/settings.
 3. **Grant the three macOS permissions** Said opens for you:
    ```bash
    said permissions
@@ -248,8 +245,8 @@ If you'd rather use a different key, switch the hotkey under Settings or in [`cr
 ## Requirements
 
 - macOS 13 (Ventura) or later — Apple Silicon or Intel
-- A Deepgram account (free tier is plenty) **or** the env vars to route through your own gateway
-- A ChatGPT account, **or** any of: Groq API key, Gemini API key, OpenAI API key
+- The local speech model installed by onboarding/settings
+- A ChatGPT account, **or** any configured text-polish gateway/provider key
 
 See [`.env.example`](.env.example) for the full list of optional configuration.
 

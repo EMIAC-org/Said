@@ -1179,7 +1179,7 @@ interface MeetingsViewProps {
   onOpenWorkspaces?: () => void;
 }
 
-// The one and only meeting transcription model — the new on-device model (Apex),
+// The one and only meeting transcription model: Oriserve Hinglish,
 // shared with dictation. There is no model picker; first run downloads this and
 // nothing else. Renamed in one place via `@/lib/onDeviceModel`.
 const MEETING_MODEL_NAME = NEW_MODEL_FILE;

@@ -99,7 +99,7 @@ Good profile_markdown_patch example:
 Background: User appears to be a developer/business operator shipping AirNote-style software and client-facing automations.
 Focus areas: software releases, local STT, LLM polish, Docker/SQLite/Sentry, Google Ads, inventory and finance ops.
 Speech style: Mixes Hinglish with developer/business English; usually wants natural but clear work-ready text.
-Stable vocabulary: AirNote, Caps Lock, Deepgram, DeepSeek, Docker, SQLite, Sentry, webhook, PR, main branch.
+Stable vocabulary: AirNote, Caps Lock, Local Speech, DeepSeek, Docker, SQLite, Sentry, webhook, PR, main branch.
 STT recovery: doctor rebuild → Docker rebuild; CQLite migration → SQLite migration; webbook retry → webhook retry.
 Recent context: Testing dictation quality, profile-biased prompts, runtime latency, and local Swift STT.
 
@@ -130,7 +130,7 @@ Output STRICT JSON only:
 Hard rules:
 1. Aliases are only for STT hearing/spelling recovery of approved brands, tools, acronyms, product names, code identifiers, proper nouns, or rare phrases.
 2. NEVER alias common Hinglish/Hindi/English words by themselves: kaam, main, mein, kya, time, hello, bhai, app, call, message, meeting, detail, issue, etc.
-3. Multi-word non-common heard forms are allowed when evidence supports them, e.g. "n 10" -> "n8n", "deep gram" -> "Deepgram".
+3. Multi-word non-common heard forms are allowed when evidence supports them, e.g. "n 10" -> "n8n", "super base" -> "Supabase".
 4. Do not create aliases for grammar, tone, translation, style, or normal wording.
 5. Require high confidence and same-phrase evidence. Do not propose an alias merely because the approved term is in the user's profile.
 6. Do not create broad aliases that could turn unrelated company/person/product names into developer terms like Kafka, ZooKeeper, Sentry, crash, Docker, SQLite, etc.

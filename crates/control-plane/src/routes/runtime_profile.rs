@@ -381,7 +381,8 @@ pub async fn get_app_buckets(
 
     let mut apps = Vec::with_capacity(rows.len());
     for (app_key, count) in rows {
-        let (bucket, source) = profile::bucket::resolve_bucket_with_source(&state.db, &app_key).await;
+        let (bucket, source) =
+            profile::bucket::resolve_bucket_with_source(&state.db, &app_key).await;
         apps.push(AppBucketRow {
             app_key,
             bucket_key: bucket.as_key().to_string(),

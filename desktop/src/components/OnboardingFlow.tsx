@@ -197,7 +197,7 @@ export function OnboardingFlow({
 
   const refreshDictationModel = useCallback(async () => {
     try {
-      const status = await invoke<DictationModelStatus>("apex_model_status");
+      const status = await invoke<DictationModelStatus>("dictation_model_status");
       setDictationModel(status);
       if (status.installed) onLocalModelReady?.();
       return status;
@@ -458,7 +458,7 @@ export function OnboardingFlow({
 
   // "Try it" live feedback. The polished text is typed straight into the focused
   // textarea (that's the real pipeline confirmation → `dictationTried`), but a
-  // failure — mic silence, empty STT, no internet on cloud — would otherwise be a
+  // failure — mic silence or empty local speech — would otherwise be a
   // silent empty box. Surface phase + errors so the user always knows what
   // happened. Only active on the test step.
   useEffect(() => {
@@ -499,29 +499,6 @@ export function OnboardingFlow({
     };
   }, [step]);
 
-  // No API keys are collected anymore — they're bundled into the build. This
-  // step records which speech engine the user wants.
-  const chooseCloudEngine = useCallback(async () => {
-    setKeySaving(true);
-    setKeyError("");
-    try {
-      const updated = await patchPreferences(
-        { stt_provider: "deepgram" },
-        { throwOnError: true },
-      );
-      if (!updated) {
-        throw new Error("AirNote could not save cloud speech recognition.");
-      }
-      setPrefs(updated);
-      advanceToNextUndone(completedThroughCurrentStep());
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setKeyError(message || "Couldn't save your choice. Try again.");
-    } finally {
-      setKeySaving(false);
-    }
-  }, [advanceToNextUndone, completedThroughCurrentStep]);
-
   const chooseLocalEngine = useCallback(async () => {
     if (!dictationModelInstalled) {
       setKeyError("Download the local model first, then continue.");
@@ -530,14 +507,6 @@ export function OnboardingFlow({
     setKeySaving(true);
     setKeyError("");
     try {
-      const updated = await patchPreferences(
-        { stt_provider: "whisper_local" },
-        { throwOnError: true },
-      );
-      if (!updated) {
-        throw new Error("AirNote could not save on-device speech recognition.");
-      }
-      setPrefs(updated);
       onLocalModelReady?.();
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
@@ -553,7 +522,7 @@ export function OnboardingFlow({
     setDictationError("");
     setKeyError("");
     try {
-      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
+      await invoke("download_dictation_model");
       const status = await refreshDictationModel();
       if (status?.installed) onLocalModelReady?.();
     } catch (e) {
@@ -569,9 +538,7 @@ export function OnboardingFlow({
     setDictationDownload(null);
   }, []);
 
-  // Reclaim old-model disk. Gated on the new model being installed (UI-side) and
-  // additionally guarded backend-side — never deletes the old model before the
-  // new one is verified. Best-effort: a failure leaves everything intact.
+  // Reclaim extra speech-model disk. Oriserve and Silero VAD are preserved.
   const handleReclaimOldModels = useCallback(async () => {
     setReclaiming(true);
     setReclaimError("");
@@ -609,8 +576,8 @@ export function OnboardingFlow({
         title="Welcome to AirNote."
         subtitle={
           isWindows
-            ? "A two-minute setup. Create your account, grant microphone access, choose on-device or cloud speech recognition, pick a dictation key — then you’ll never type by hand again."
-            : "A two-minute setup. Create your account, grant three permissions, choose on-device or cloud speech recognition, pick a dictation key — then you’ll never type by hand again."
+            ? "A two-minute setup. Create your account, grant microphone access, install the local speech model, pick a dictation key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant three permissions, install the local speech model, pick a dictation key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -621,7 +588,7 @@ export function OnboardingFlow({
         brandQuote={
           isWindows
             ? "It’s like typing, except your brain is the keyboard."
-            : "Local speech recognition first. Cloud STT only if you choose it later."
+            : "Local speech recognition runs on this device."
         }
         bottomNote={<span>{isWindows ? "Windows 10/11" : "macOS 14+"}</span>}
         {...navProps}
@@ -944,8 +911,7 @@ export function OnboardingFlow({
   }
 
   // ── Step 4: Speech recognition engine ────────────────────────────────────
-  // On-device whisper.cpp vs Cloud Deepgram. No API keys are collected here;
-  // cloud credentials are server-managed.
+  // On-device whisper.cpp is required before dictation can run.
   if (step === "keys") {
     const dictationDownloadPct =
       dictationDownload && dictationDownload.total > 0
@@ -957,9 +923,9 @@ export function OnboardingFlow({
         step={stepIndex}
         totalSteps={totalSteps}
         eyebrow="Speech recognition"
-        title="How should AirNote hear you?"
-        subtitle={`Run speech recognition on this ${deviceName}, or in the cloud. You can switch any time in Settings.`}
-        brandTagline={`On-device keeps your voice on this ${deviceName}. Cloud is instant with nothing to download.`}
+        title="Install the local speech model."
+        subtitle={`AirNote transcribes on this ${deviceName}. The model is required before dictation can run.`}
+        brandTagline={`On-device keeps your voice on this ${deviceName}.`}
         brandKicker="Recommended · on-device"
         brandQuote={`The local model transcribes Hinglish right on your ${deviceName} — private, works offline, no per-use cost.`}
         topRight={<span>{stepLabel(step)}</span>}
@@ -967,7 +933,6 @@ export function OnboardingFlow({
         {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
-          {/* New on-device model — the glorified default */}
           <div
             className="rounded-xl p-4"
             style={{
@@ -984,18 +949,18 @@ export function OnboardingFlow({
                   <Sparkles size={13} />
                 </span>
                 <p className="text-[13.5px] font-semibold text-foreground truncate">
-                  Meet {NEW_MODEL_NAME}
+                Install {NEW_MODEL_NAME}
                 </p>
               </div>
               <span
                 className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
                 style={{ background: "hsl(var(--primary) / 0.18)", color: "hsl(var(--primary))" }}
               >
-                New · Recommended
+                Recommended
               </span>
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Our best Hinglish speech model, running entirely on this {deviceName}. Sharper on
+              Hinglish speech recognition, running entirely on this {deviceName}. Strong on
               Hindi-English code-switching — and your voice never leaves the device. Private,
               offline, no per-use cost.
             </p>
@@ -1031,30 +996,6 @@ export function OnboardingFlow({
                   ? `Use ${NEW_MODEL_NAME}`
                   : `Download ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
               {!keySaving && dictationModelInstalled && <ArrowRight size={14} />}
-            </button>
-          </div>
-
-          {/* Cloud (Deepgram) — a clean alternative, never forced */}
-          <div
-            className="rounded-xl p-4"
-            style={{ border: "1px solid hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
-          >
-            <p className="text-[13px] font-semibold text-foreground mb-1.5">Prefer the cloud?</p>
-            <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Deepgram runs in the cloud — instant, nothing to download. Needs an internet
-              connection while you dictate. You can switch either way any time in Settings.
-            </p>
-            <button
-              onClick={() => void chooseCloudEngine()}
-              disabled={keySaving}
-              className="w-full rounded-xl px-4 py-2.5 text-[13px] font-medium border transition-colors disabled:opacity-50"
-              style={{
-                borderColor: "hsl(var(--surface-3))",
-                background: "hsl(var(--surface-3))",
-                color: "hsl(var(--foreground))",
-              }}
-            >
-              {keySaving ? "Saving…" : "Use cloud (Deepgram) instead"}
             </button>
           </div>
 

@@ -57,13 +57,11 @@ mod tests {
             server_audio_runtime_enabled: false,
             updated_at: 0,
             gateway_api_key: None,
-            deepgram_api_key: None,
             gemini_api_key: None,
             groq_api_key: None,
             cerebras_api_key: None,
             deepinfra_api_key: None,
             llm_provider: "groq".into(),
-            stt_provider: "deepgram".into(),
         }
     }
 
@@ -99,13 +97,11 @@ pub async fn list_models(
             server_audio_runtime_enabled: false,
             updated_at: 0,
             gateway_api_key: None,
-            deepgram_api_key: None,
             gemini_api_key: None,
             groq_api_key: None,
             cerebras_api_key: None,
             deepinfra_api_key: None,
             llm_provider: "groq".into(),
-            stt_provider: "deepgram".into(),
         });
 
     let models = said_core::polish::model::list_polish_models(query.beta)

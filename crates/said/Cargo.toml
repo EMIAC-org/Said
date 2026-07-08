@@ -18,13 +18,11 @@ workspace = true
 [dependencies]
 clap               = { version = "4", features = ["derive"] }
 dirs               = "5"
-futures            = "0.3"
 reqwest            = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 sha2               = "0.10"
 tokio              = { workspace = true }
-tokio-tungstenite  = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 rustls             = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tracing            = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

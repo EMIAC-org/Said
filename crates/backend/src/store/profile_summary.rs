@@ -328,7 +328,7 @@ fn infer_domains(snapshot: &SourceSnapshot) -> String {
             "webhook",
             "api",
             "stt",
-            "deepgram",
+            "speech_engine",
             "deepseek",
             "maverick",
             "scout",

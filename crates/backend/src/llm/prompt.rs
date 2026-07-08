@@ -20,7 +20,7 @@ pub use said_core::polish::prompt::{
     build_refine_last_transform_user_message, build_tray_format_user_message,
     build_tray_system_prompt, build_tray_user_message, build_user_message,
     build_user_message_with_hints, build_voice_repair_system_prompt,
-    build_voice_repair_user_message, default_voice_prompt_template, format_fewshot_block,
+    build_voice_repair_user_message, default_voice_prompt_template,
 };
 pub use said_core::polish::types::PolishPrefs;
 
@@ -127,6 +127,27 @@ pub fn render_voice_system_prompt_template_with_profile(
         &to_core_corrections(corrections),
         vocabulary_entries,
         profile_markdown,
+        is_common,
+    )
+}
+
+pub fn render_voice_system_prompt_template_with_profile_and_recent(
+    template: &str,
+    prefs: &Preferences,
+    rag_examples: &[RagExample],
+    corrections: &[Correction],
+    vocabulary_entries: &[VocabEntry],
+    profile_markdown: Option<&str>,
+    recent_speech_hints: &[String],
+) -> String {
+    said_core::polish::prompt::render_voice_system_prompt_template_with_recent_speech(
+        template,
+        &to_polish_prefs(prefs),
+        rag_examples,
+        &to_core_corrections(corrections),
+        vocabulary_entries,
+        profile_markdown,
+        recent_speech_hints,
         is_common,
     )
 }

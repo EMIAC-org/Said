@@ -2,7 +2,7 @@
 --
 -- Goal:
 --   • Keep the hot path deterministic.
---   • Persist a compact alias trust lifecycle for exported Deepgram bias.
+--   • Persist a compact alias trust lifecycle for exported speech hints.
 --   • Add lightweight edit-event metadata so vector learning can dedupe and
 --     skip low-information corrections without changing runtime retrieval.
 

@@ -181,7 +181,7 @@ pub fn looks_like_user_addition(polish: &str, user_kept: &str) -> bool {
 }
 
 /// True if `term` is a common Hindi/English word that should never be
-/// learned as vocabulary. These are high-frequency words that Deepgram
+/// learned as vocabulary. These are high-frequency words that speech engines
 /// sometimes distorts and the user "corrects" — but the correction is
 /// just normal speech, not a proper noun or brand name.
 pub fn is_common_word(term: &str) -> bool {

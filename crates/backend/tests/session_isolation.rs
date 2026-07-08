@@ -3,7 +3,7 @@
 //! AirNote's most common hang/bleed failure mode: a rapid sequence of Caps Lock
 //! press/release cycles causes transcript N to carry over into recording N+1.
 //! The root fix is that every recording cycle generates a fresh, globally-unique
-//! `recording_id` and the dg_stream actor binds its state to that ID.
+//! `recording_id` and the local speech session binds its state to that ID.
 //!
 //! What is automated here:
 //!   • ID uniqueness — 1 000 UUIDs generated sequentially have zero collisions.
@@ -53,7 +53,7 @@ fn recording_ids_are_valid_uuid_v4() {
 //
 // The full hotkey stress (50 rapid Caps Lock cycles) cannot be driven from a unit
 // test because it requires the Tauri runtime, CGEventTap permission, and a live
-// Deepgram connection.  The harness below is the scriptable equivalent: it generates
+// Speech engine connection.  The harness below is the scriptable equivalent: it generates
 // 50 (id, start_time) pairs and verifies no two consecutive pairs share an ID.
 
 /// Simulate 50 rapid recording starts and verify each gets a distinct ID.

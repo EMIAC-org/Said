@@ -1,4 +1,4 @@
-//! Optional audio conditioning for the on-device Whisper (Oriserve Apex) path.
+//! Optional audio conditioning for the on-device Whisper/Oriserve path.
 //!
 //! Always applied on the BATCH local-whisper path (whole-utterance). The
 //! realtime streaming resamplers in `said-recorder` are deliberately left

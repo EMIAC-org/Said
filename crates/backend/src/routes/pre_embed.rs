@@ -1,10 +1,10 @@
 //! POST /v1/pre-embed
 //!
-//! Speculative embedding — fired by Tauri the moment the user stops speaking
-//! (CloseStream sent to Deepgram), while the 500ms drain window is still open.
+//! Speculative embedding — fired by Tauri the moment the local transcript is
+//! available, while the polish request is still being prepared.
 //!
 //! Returns 202 immediately; embedding runs fire-and-forget in the background.
-//! When the full /v1/voice/polish request arrives ~500ms later, the embedding
+//! When the full /v1/voice/polish request arrives shortly after, the embedding
 //! is already in the SQLite cache → 0ms embed wait instead of 250–300ms.
 
 use axum::{Json, extract::State, http::StatusCode};

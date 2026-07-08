@@ -18,20 +18,11 @@ python3 tools/stt-bench/run.py \
   --terms EMIAC,Macobs,Kubernetes,n8n,Perplexity,Claude,JavaScript
 ```
 
-Run Deepgram raw mode over the latest 10 WAVs, using `DEEPGRAM_API_KEY` from `.env`:
+Run local Whisper vs Apple SpeechAnalyzer over the latest WAV:
 
 ```bash
 python3 tools/stt-bench/run.py \
-  --providers deepgram_raw \
-  --latest 10 \
-  --terms EMIAC,Macobs,Kubernetes,n8n,Perplexity,Claude,JavaScript
-```
-
-Run Deepgram vs Apple SpeechAnalyzer over the latest WAV:
-
-```bash
-python3 tools/stt-bench/run.py \
-  --providers deepgram_raw,apple_speech \
+  --providers whisper_cpp,apple_speech \
   --latest 1 \
   --apple-speech-locale en-US \
   --terms EMIAC,Macobs,Kubernetes,n8n,Perplexity,Claude,JavaScript
@@ -115,6 +106,28 @@ For benchmark fixtures with reference speaker segments, add:
   --metrics-out /path/to/final-diarization.metrics.json
 ```
 
+Run the lightweight sherpa-onnx diarization benchmark over retained meeting
+audio:
+
+```bash
+python3 -m venv /tmp/airnote-diarization-venv
+/tmp/airnote-diarization-venv/bin/python -m pip install -r tools/stt-bench/requirements-diarization.txt
+
+/tmp/airnote-diarization-venv/bin/python tools/stt-bench/sherpa_onnx_diarize.py \
+  --latest 3 \
+  --max-duration-secs 900
+```
+
+By default it reads the app's light model files from:
+
+- `~/Library/Application Support/VoicePolish/models/diarization/segmentation-3.0.onnx`
+- `~/Library/Application Support/VoicePolish/models/diarization/wespeaker_en_voxceleb_resnet34_LM.onnx`
+
+It writes `summary.json` plus per-meeting diarization JSON under
+`tools/stt-bench/results/sherpa-onnx-<timestamp>/`. This benchmark has no
+speaker ground truth by default, so it reports runtime, real-time factor,
+detected speaker count, turn count, and speech coverage rather than DER.
+
 The reconciler preserves ASR text segments and assigns speakers by diarization
 overlap. If Sortformer misses a region, the text remains in the final transcript
 with an unassigned/provisional speaker label. In track-wise meeting mode, obvious
@@ -163,7 +176,7 @@ Each run writes:
 For stricter tests, pass a JSONL manifest:
 
 ```bash
-python3 tools/stt-bench/run.py --manifest tools/stt-bench/manifest.example.jsonl --providers deepgram_raw
+python3 tools/stt-bench/run.py --manifest tools/stt-bench/manifest.example.jsonl --providers whisper_cpp
 ```
 
 Each line can use a full path, filename, or audio id:

@@ -66,7 +66,7 @@ function relativeTime(ms: number | null | undefined): string {
 // ── The honest status model ───────────────────────────────────────────────────
 // A term's real runtime effect, in priority order:
 //   correcting — has ≥1 active learned alias → rewrites mishearings post-LLM
-//   starred    — sent to Deepgram as a keyterm (only helps the cloud STT path)
+//   starred    — pinned as an important local speech/polish hint
 //   glossary   — has a meaning → fed to the polish LLM as a soft hint
 //   idle       — known term, but nothing is correcting or biasing yet
 
@@ -81,7 +81,7 @@ interface TermInfo {
 
 const STATUS_META: Record<StatusKey, { label: string; color: string; bg: string; blurb: string }> = {
   correcting: { label: "Correcting", color: "hsl(150 60% 58%)", bg: "hsl(150 60% 50% / 0.14)", blurb: "Auto-fixes STT mishearings in your dictation" },
-  starred:    { label: "Biases STT",  color: "hsl(var(--chip-amber-fg))", bg: "hsl(var(--chip-amber-bg))", blurb: "Sent to cloud STT as a keyterm (Deepgram path only)" },
+  starred:    { label: "Pinned hint",  color: "hsl(var(--chip-amber-fg))", bg: "hsl(var(--chip-amber-bg))", blurb: "Kept prominent for local speech and polish hints" },
   glossary:   { label: "Glossary hint", color: "hsl(var(--chip-blue-fg))", bg: "hsl(var(--chip-blue-bg))", blurb: "Given to the polish model as a soft hint" },
   idle:       { label: "Idle", color: "hsl(var(--muted-foreground))", bg: "hsl(var(--surface-4))", blurb: "Known, but not correcting or biasing yet — correct it once in use to teach a fix" },
 };
@@ -735,7 +735,7 @@ export function VocabularyView() {
     setRows((prev) => prev.map((r) => r.term === row.term ? { ...r, source: wasStarred ? "manual" : "starred", weight: wasStarred ? 1.5 : 3.0 } : r));
     try {
       await starVocabularyTerm(row.term);
-      if (!wasStarred) push({ kind: "success", title: `Pinned “${row.term}”`, sub: "Now sent to cloud STT as a keyterm (Deepgram path).", duration: 3500 });
+      if (!wasStarred) push({ kind: "success", title: `Pinned “${row.term}”`, sub: "Kept prominent for local speech and polish hints.", duration: 3500 });
     } catch (err) {
       await refresh();
       push({ kind: "error", title: "Couldn’t update that word", sub: friendlyError(err), duration: 5000 });

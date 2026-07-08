@@ -193,6 +193,8 @@ async fn main() {
 
     info!("airnote-backend listening on http://{addr}");
 
+    tokio::task::spawn_blocking(said_backend::tier2::warm_runtime_caches);
+
     // Warm the on-device whisper.cpp model in the background, AFTER the listener
     // is up, so /v1/health is reachable immediately (no respawn loop). The load
     // is CPU-blocking, so it runs on the blocking pool; `ensure_model_loaded`

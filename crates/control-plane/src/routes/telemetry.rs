@@ -46,13 +46,8 @@ pub struct RunSummaryIn {
     pub error_code: Option<String>,
     #[serde(default)]
     pub used_clipboard_fallback: bool,
-    #[serde(default)]
-    pub used_ws_pretranscript: bool,
-    #[serde(default)]
-    pub used_http_stt_fallback: bool,
-    pub stt_provider: Option<String>,
-    pub stt_model: Option<String>,
-    pub stt_path: Option<String>,
+    pub speech_model: Option<String>,
+    pub speech_path: Option<String>,
     #[serde(default)]
     pub edit_detected: bool,
     pub edit_bucket: Option<String>,
@@ -157,16 +152,15 @@ pub async fn batch_ingest(
                 account_id, org_id, run_id, recording_id, device_id, mode, target_app, platform,
                 app_version, machine_class, audio_seconds, word_count, char_count, transcribe_ms,
                 embed_ms, polish_ms, total_ms, paste_ms, success, error_code,
-                used_clipboard_fallback, used_ws_pretranscript, used_http_stt_fallback,
-                stt_provider, stt_model, stt_path,
-                edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
+                used_clipboard_fallback, speech_model, speech_path, edit_detected, edit_bucket,
+                edit_distance_chars, edit_distance_words,
                 accepted_as_is, deleted_entire_output, re_recorded_quickly, learning_candidate,
                 learning_modal_shown, learning_confirmed, learning_dismissed, server_learning_saved,
                 server_learning_blocked, has_numbers, has_currency, has_percent, has_email, has_url,
                 has_code_like_terms, mixed_language, protected_term_hit, client_version, event_at
             ) VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
-                $24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49
+                $24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46
             )
             ON CONFLICT (account_id, run_id) DO NOTHING",
         )
@@ -191,11 +185,8 @@ pub async fn batch_ingest(
         .bind(run.success)
         .bind(&run.error_code)
         .bind(run.used_clipboard_fallback)
-        .bind(run.used_ws_pretranscript)
-        .bind(run.used_http_stt_fallback)
-        .bind(&run.stt_provider)
-        .bind(&run.stt_model)
-        .bind(&run.stt_path)
+        .bind(&run.speech_model)
+        .bind(&run.speech_path)
         .bind(run.edit_detected)
         .bind(edit_bucket)
         .bind(run.edit_distance_chars)
@@ -461,7 +452,7 @@ pub async fn org_analytics(
     .await
     .unwrap_or_default();
 
-    let stt_rows = fetch_stt_breakdown(&state.db, org_id, None, since)
+    let speech_rows = fetch_speech_breakdown(&state.db, org_id, None, since)
         .await
         .unwrap_or_default();
 
@@ -477,7 +468,7 @@ pub async fn org_analytics(
         },
         "quality": quality_json(&totals),
         "latency_ms": latency_json(&latency),
-        "stt": stt_breakdown_json(&stt_rows),
+        "speech": speech_breakdown_json(&speech_rows),
     })))
 }
 
@@ -522,7 +513,7 @@ async fn fetch_run_totals(
             END), 0)::bigint AS accepted,
             COALESCE(SUM(CASE WHEN edit_detected THEN 1 ELSE 0 END), 0)::bigint AS edits,
             COALESCE(SUM(CASE WHEN edit_bucket IN ('medium','heavy','full_replace') THEN 1 ELSE 0 END), 0)::bigint AS heavy_edits,
-            COALESCE(SUM(CASE WHEN used_clipboard_fallback OR used_http_stt_fallback THEN 1 ELSE 0 END), 0)::bigint AS fallbacks,
+            COALESCE(SUM(CASE WHEN used_clipboard_fallback THEN 1 ELSE 0 END), 0)::bigint AS fallbacks,
             COALESCE(SUM(CASE WHEN learning_candidate THEN 1 ELSE 0 END), 0)::bigint AS learning_candidates,
             COALESCE(SUM(CASE WHEN server_learning_saved THEN 1 ELSE 0 END), 0)::bigint AS learning_saved,
             COALESCE(SUM(CASE WHEN learning_modal_shown THEN 1 ELSE 0 END), 0)::bigint AS learning_modal_shown,
@@ -642,32 +633,29 @@ fn latency_json(latency: &LatencyPercentiles) -> Value {
     })
 }
 
-fn stt_short_label(provider: &str) -> &str {
-    match provider {
-        "deepgram" => "DG",
-        other => other,
-    }
+fn speech_short_label(model: &str) -> &str {
+    model
 }
 
-fn primary_stt_label(provider: &str, share_pct: f64) -> String {
-    format!("{} {:.0}%", stt_short_label(provider), share_pct)
+fn primary_speech_label(model: &str, share_pct: f64) -> String {
+    format!("{} {:.0}%", speech_short_label(model), share_pct)
 }
 
-async fn fetch_stt_breakdown(
+async fn fetch_speech_breakdown(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Option<Uuid>,
     since: DateTime<Utc>,
 ) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT COALESCE(stt_provider, 'unknown') AS stt_provider,
-                COALESCE(stt_path, 'unknown') AS stt_path,
+        "SELECT COALESCE(speech_model, 'unknown') AS speech_model,
+                COALESCE(speech_path, 'unknown') AS speech_path,
                 COUNT(*)::bigint
            FROM runtime_telemetry_runs
           WHERE org_id = $1 AND event_at >= $2
             AND ($3::uuid IS NULL OR account_id = $3)
-            AND stt_provider IS NOT NULL
-          GROUP BY stt_provider, stt_path
+            AND speech_model IS NOT NULL
+          GROUP BY speech_model, speech_path
           ORDER BY COUNT(*) DESC",
     )
     .bind(org_id)
@@ -677,28 +665,28 @@ async fn fetch_stt_breakdown(
     .await
 }
 
-fn stt_breakdown_json(rows: &[(String, String, i64)]) -> Value {
-    let by_provider_path: Vec<Value> = rows
+fn speech_breakdown_json(rows: &[(String, String, i64)]) -> Value {
+    let by_model_path: Vec<Value> = rows
         .iter()
-        .map(|(provider, path, count)| {
+        .map(|(model, path, count)| {
             json!({
-                "stt_provider": provider,
-                "stt_path": path,
+                "speech_model": model,
+                "speech_path": path,
                 "count": count,
             })
         })
         .collect();
-    let mut provider_totals: std::collections::BTreeMap<String, i64> =
+    let mut model_totals: std::collections::BTreeMap<String, i64> =
         std::collections::BTreeMap::new();
-    for (provider, _, count) in rows {
-        *provider_totals.entry(provider.clone()).or_default() += count;
+    for (model, _, count) in rows {
+        *model_totals.entry(model.clone()).or_default() += count;
     }
-    let total: i64 = provider_totals.values().sum();
-    let by_provider: Vec<Value> = provider_totals
+    let total: i64 = model_totals.values().sum();
+    let by_model: Vec<Value> = model_totals
         .into_iter()
-        .map(|(provider, count)| {
+        .map(|(model, count)| {
             json!({
-                "stt_provider": provider,
+                "speech_model": model,
                 "count": count,
                 "share": if total > 0 {
                     (count as f64 * 100.0 / total as f64 * 10.0).round() / 10.0
@@ -709,27 +697,27 @@ fn stt_breakdown_json(rows: &[(String, String, i64)]) -> Value {
         })
         .collect();
     json!({
-        "by_provider_path": by_provider_path,
-        "by_provider": by_provider,
+        "by_model_path": by_model_path,
+        "by_model": by_model,
         "total_tagged": total,
     })
 }
 
-async fn fetch_stt_latency_by_provider(
+async fn fetch_speech_latency_by_model(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Uuid,
     since: DateTime<Utc>,
 ) -> Result<Vec<Value>, sqlx::Error> {
     let rows: Vec<(String, Option<f64>, Option<f64>, i64)> = sqlx::query_as(
-        "SELECT COALESCE(stt_provider, 'unknown') AS stt_provider,
+        "SELECT COALESCE(speech_model, 'unknown') AS speech_model,
                 percentile_cont(0.5) WITHIN GROUP (ORDER BY transcribe_ms),
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY transcribe_ms),
                 COUNT(*)::bigint
            FROM runtime_telemetry_runs
           WHERE org_id = $1 AND account_id = $2 AND event_at >= $3
-            AND success = true AND stt_provider IS NOT NULL
-          GROUP BY stt_provider
+            AND success = true AND speech_model IS NOT NULL
+          GROUP BY speech_model
           ORDER BY COUNT(*) DESC",
     )
     .bind(org_id)
@@ -739,9 +727,9 @@ async fn fetch_stt_latency_by_provider(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(provider, p50, p95, runs)| {
+        .map(|(model, p50, p95, runs)| {
             json!({
-                "stt_provider": provider,
+                "speech_model": model,
                 "transcribe_p50": p50,
                 "transcribe_p95": p95,
                 "runs": runs,
@@ -831,8 +819,8 @@ pub async fn list_users(
         learning_saved: i64,
         last_active_at: Option<DateTime<Utc>>,
         desktop_active: bool,
-        primary_stt_provider: Option<String>,
-        primary_stt_count: Option<i64>,
+        primary_speech_model: Option<String>,
+        primary_speech_count: Option<i64>,
     }
 
     let rows: Vec<TelemetryUserListRow> = if let Some(ref pattern) = search {
@@ -857,8 +845,8 @@ pub async fn list_users(
                 COALESCE(agg.learning_saved, 0)::bigint AS learning_saved,
                 agg.last_active_at,
                 COALESCE(dc.desktop_active, false) AS desktop_active,
-                stt_top.stt_provider AS primary_stt_provider,
-                stt_top.cnt AS primary_stt_count
+                speech_top.speech_model AS primary_speech_model,
+                speech_top.cnt AS primary_speech_count
              FROM org_members om
              JOIN accounts a ON a.id = om.account_id
              LEFT JOIN (
@@ -873,7 +861,7 @@ pub async fn list_users(
             END), 0)::bigint AS accepted,
                        COALESCE(SUM(CASE WHEN edit_detected THEN 1 ELSE 0 END), 0)::bigint AS edits,
                        COALESCE(SUM(CASE WHEN edit_bucket IN ('medium','heavy','full_replace') THEN 1 ELSE 0 END), 0)::bigint AS heavy_edits,
-                       COALESCE(SUM(CASE WHEN used_clipboard_fallback OR used_http_stt_fallback THEN 1 ELSE 0 END), 0)::bigint AS fallbacks,
+                       COALESCE(SUM(CASE WHEN used_clipboard_fallback THEN 1 ELSE 0 END), 0)::bigint AS fallbacks,
                        COALESCE(SUM(CASE WHEN learning_candidate THEN 1 ELSE 0 END), 0)::bigint AS learning_candidates,
                        COALESCE(SUM(CASE WHEN server_learning_saved THEN 1 ELSE 0 END), 0)::bigint AS learning_saved,
                        MAX(event_at) AS last_active_at
@@ -887,14 +875,14 @@ pub async fn list_users(
                  WHERE dc.org_id = $1 AND dc.account_id = om.account_id
              ) dc ON true
              LEFT JOIN LATERAL (
-                SELECT r.stt_provider, COUNT(*)::bigint AS cnt
+                SELECT r.speech_model, COUNT(*)::bigint AS cnt
                   FROM runtime_telemetry_runs r
                  WHERE r.org_id = $1 AND r.account_id = om.account_id
-                   AND r.event_at >= $2 AND r.stt_provider IS NOT NULL
-                 GROUP BY r.stt_provider
+                   AND r.event_at >= $2 AND r.speech_model IS NOT NULL
+                 GROUP BY r.speech_model
                  ORDER BY cnt DESC
                  LIMIT 1
-             ) stt_top ON true
+             ) speech_top ON true
              WHERE om.org_id = $1
                AND (a.email ILIKE $3 OR om.lark_name ILIKE $3)
              ORDER BY COALESCE(agg.runs, 0) DESC, om.joined_at ASC
@@ -930,8 +918,8 @@ pub async fn list_users(
                 COALESCE(agg.learning_saved, 0)::bigint AS learning_saved,
                 agg.last_active_at,
                 COALESCE(dc.desktop_active, false) AS desktop_active,
-                stt_top.stt_provider AS primary_stt_provider,
-                stt_top.cnt AS primary_stt_count
+                speech_top.speech_model AS primary_speech_model,
+                speech_top.cnt AS primary_speech_count
              FROM org_members om
              JOIN accounts a ON a.id = om.account_id
              LEFT JOIN (
@@ -946,7 +934,7 @@ pub async fn list_users(
             END), 0)::bigint AS accepted,
                        COALESCE(SUM(CASE WHEN edit_detected THEN 1 ELSE 0 END), 0)::bigint AS edits,
                        COALESCE(SUM(CASE WHEN edit_bucket IN ('medium','heavy','full_replace') THEN 1 ELSE 0 END), 0)::bigint AS heavy_edits,
-                       COALESCE(SUM(CASE WHEN used_clipboard_fallback OR used_http_stt_fallback THEN 1 ELSE 0 END), 0)::bigint AS fallbacks,
+                       COALESCE(SUM(CASE WHEN used_clipboard_fallback THEN 1 ELSE 0 END), 0)::bigint AS fallbacks,
                        COALESCE(SUM(CASE WHEN learning_candidate THEN 1 ELSE 0 END), 0)::bigint AS learning_candidates,
                        COALESCE(SUM(CASE WHEN server_learning_saved THEN 1 ELSE 0 END), 0)::bigint AS learning_saved,
                        MAX(event_at) AS last_active_at
@@ -960,14 +948,14 @@ pub async fn list_users(
                  WHERE dc.org_id = $1 AND dc.account_id = om.account_id
              ) dc ON true
              LEFT JOIN LATERAL (
-                SELECT r.stt_provider, COUNT(*)::bigint AS cnt
+                SELECT r.speech_model, COUNT(*)::bigint AS cnt
                   FROM runtime_telemetry_runs r
                  WHERE r.org_id = $1 AND r.account_id = om.account_id
-                   AND r.event_at >= $2 AND r.stt_provider IS NOT NULL
-                 GROUP BY r.stt_provider
+                   AND r.event_at >= $2 AND r.speech_model IS NOT NULL
+                 GROUP BY r.speech_model
                  ORDER BY cnt DESC
                  LIMIT 1
-             ) stt_top ON true
+             ) speech_top ON true
              WHERE om.org_id = $1
              ORDER BY COALESCE(agg.runs, 0) DESC, om.joined_at ASC
              LIMIT $3 OFFSET $4",
@@ -999,13 +987,13 @@ pub async fn list_users(
                 "learning_success_rate": telemetry_rate(row.learning_saved, row.learning_candidates),
                 "last_active_at": row.last_active_at,
                 "desktop_active": row.desktop_active,
-                "primary_stt": match (
-                    row.primary_stt_provider.as_deref(),
-                    row.primary_stt_count,
+                "primary_speech": match (
+                    row.primary_speech_model.as_deref(),
+                    row.primary_speech_count,
                     row.runs,
                 ) {
-                    (Some(provider), Some(cnt), runs) if runs > 0 => {
-                        Some(primary_stt_label(provider, cnt as f64 * 100.0 / runs as f64))
+                    (Some(model), Some(cnt), runs) if runs > 0 => {
+                        Some(primary_speech_label(model, cnt as f64 * 100.0 / runs as f64))
                     }
                     _ => None,
                 },
@@ -1105,10 +1093,10 @@ pub async fn user_detail(
     .await
     .unwrap_or_default();
 
-    let stt_rows = fetch_stt_breakdown(&state.db, org_id, Some(account_id), since)
+    let speech_rows = fetch_speech_breakdown(&state.db, org_id, Some(account_id), since)
         .await
         .unwrap_or_default();
-    let stt_latency = fetch_stt_latency_by_provider(&state.db, org_id, account_id, since)
+    let speech_latency = fetch_speech_latency_by_model(&state.db, org_id, account_id, since)
         .await
         .unwrap_or_default();
 
@@ -1181,9 +1169,9 @@ pub async fn user_detail(
     .await
     .unwrap_or_default();
 
-    let mut stt_json = stt_breakdown_json(&stt_rows);
-    if let Some(obj) = stt_json.as_object_mut() {
-        obj.insert("latency_by_provider".into(), json!(stt_latency));
+    let mut speech_json = speech_breakdown_json(&speech_rows);
+    if let Some(obj) = speech_json.as_object_mut() {
+        obj.insert("latency_by_model".into(), json!(speech_latency));
     }
 
     Ok(Json(json!({
@@ -1222,7 +1210,7 @@ pub async fn user_detail(
             "server_learning_blocked": totals.server_learning_blocked,
         },
         "latency_ms": latency_json(&latency),
-        "stt": stt_json,
+        "speech": speech_json,
         "by_mode": by_mode.iter().map(|(m, c)| json!({"mode": m, "count": c})).collect::<Vec<_>>(),
         "by_target_app": by_app.iter().map(|(a, c)| json!({"target_app": a, "count": c})).collect::<Vec<_>>(),
         "content_flags": {
@@ -1316,8 +1304,7 @@ pub async fn user_runs(
             "SELECT run_id, recording_id, device_id, mode, target_app, platform, app_version,
                     machine_class, audio_seconds, word_count, char_count, transcribe_ms, embed_ms,
                     polish_ms, total_ms, paste_ms, success, error_code, used_clipboard_fallback,
-                    used_ws_pretranscript, used_http_stt_fallback, stt_provider, stt_model, stt_path,
-                    edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
+                    speech_model, speech_path, edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
                     accepted_as_is, deleted_entire_output, re_recorded_quickly, learning_candidate,
                     learning_modal_shown, learning_confirmed, learning_dismissed, server_learning_saved,
                     server_learning_blocked, has_numbers, has_currency, has_percent, has_email, has_url,
@@ -1342,8 +1329,7 @@ pub async fn user_runs(
             "SELECT run_id, recording_id, device_id, mode, target_app, platform, app_version,
                     machine_class, audio_seconds, word_count, char_count, transcribe_ms, embed_ms,
                     polish_ms, total_ms, paste_ms, success, error_code, used_clipboard_fallback,
-                    used_ws_pretranscript, used_http_stt_fallback, stt_provider, stt_model, stt_path,
-                    edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
+                    speech_model, speech_path, edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
                     accepted_as_is, deleted_entire_output, re_recorded_quickly, learning_candidate,
                     learning_modal_shown, learning_confirmed, learning_dismissed, server_learning_saved,
                     server_learning_blocked, has_numbers, has_currency, has_percent, has_email, has_url,
@@ -1396,11 +1382,8 @@ struct TelemetryRunRow {
     success: bool,
     error_code: Option<String>,
     used_clipboard_fallback: bool,
-    used_ws_pretranscript: bool,
-    used_http_stt_fallback: bool,
-    stt_provider: Option<String>,
-    stt_model: Option<String>,
-    stt_path: Option<String>,
+    speech_model: Option<String>,
+    speech_path: Option<String>,
     edit_detected: bool,
     edit_bucket: String,
     edit_distance_chars: Option<i32>,
@@ -1460,11 +1443,8 @@ struct TelemetryRunOut {
     success: bool,
     error_code: Option<String>,
     used_clipboard_fallback: bool,
-    used_ws_pretranscript: bool,
-    used_http_stt_fallback: bool,
-    stt_provider: Option<String>,
-    stt_model: Option<String>,
-    stt_path: Option<String>,
+    speech_model: Option<String>,
+    speech_path: Option<String>,
     edit_detected: bool,
     edit_bucket: String,
     edit_distance_chars: Option<i32>,
@@ -1505,11 +1485,8 @@ fn run_row_to_json(r: TelemetryRunRow) -> Value {
         success: r.success,
         error_code: r.error_code,
         used_clipboard_fallback: r.used_clipboard_fallback,
-        used_ws_pretranscript: r.used_ws_pretranscript,
-        used_http_stt_fallback: r.used_http_stt_fallback,
-        stt_provider: r.stt_provider,
-        stt_model: r.stt_model,
-        stt_path: r.stt_path,
+        speech_model: r.speech_model,
+        speech_path: r.speech_path,
         edit_detected: r.edit_detected,
         edit_bucket: r.edit_bucket,
         edit_distance_chars: r.edit_distance_chars,
@@ -1576,7 +1553,7 @@ pub async fn user_memory(
 
     let aliases: Vec<(String, String, f64, i32, String, String, Option<String>)> = sqlx::query_as(
         "SELECT transcript_form, correct_form, weight, positive_count, status, safety_status,
-                learned_stt_provider
+                learned_speech_model
            FROM personal_stt_replacements
           WHERE account_id = $1
           ORDER BY positive_count DESC, updated_at DESC
@@ -1679,7 +1656,7 @@ pub async fn user_memory(
                 "source": source,
             })
         }).collect::<Vec<_>>(),
-        "aliases": aliases.iter().map(|(heard, correct, weight, pos, status, safety, stt)| {
+        "aliases": aliases.iter().map(|(heard, correct, weight, pos, status, safety, speech_model)| {
             json!({
                 "transcript_form": heard,
                 "correct_form": correct,
@@ -1687,7 +1664,7 @@ pub async fn user_memory(
                 "positive_count": pos,
                 "status": status,
                 "safety_status": safety,
-                "learned_stt_provider": stt,
+                "learned_speech_model": speech_model,
             })
         }).collect::<Vec<_>>(),
         "edit_policies": policies.iter().map(|(variant, correct, edit_type, pos, neg, status)| {

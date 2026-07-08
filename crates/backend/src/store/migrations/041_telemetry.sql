@@ -21,8 +21,6 @@ CREATE TABLE IF NOT EXISTS telemetry_run_summaries (
     success                 INTEGER NOT NULL DEFAULT 0,
     error_code              TEXT,
     used_clipboard_fallback INTEGER NOT NULL DEFAULT 0,
-    used_ws_pretranscript   INTEGER NOT NULL DEFAULT 0,
-    used_http_stt_fallback  INTEGER NOT NULL DEFAULT 0,
     edit_detected           INTEGER NOT NULL DEFAULT 0,
     edit_bucket             TEXT NOT NULL DEFAULT 'none',
     edit_distance_chars     INTEGER,

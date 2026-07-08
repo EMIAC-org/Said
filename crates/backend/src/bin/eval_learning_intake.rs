@@ -36,7 +36,7 @@ const CORE_EVAL_TERMS: &[&str] = &[
     "ZooKeeper",
     "Sentry",
     "AirNote",
-    "Deepgram",
+    "Speech engine",
     "DeepSeek",
     "DeepInfra",
     "Cerebras",
@@ -969,7 +969,7 @@ fn seed_mixed_complex_cases(target_count: usize) -> Vec<EvalCase> {
             &["Earnote", "Air not", "A note", "Arnote"],
         ),
         (
-            "Deepgram",
+            "Speech engine",
             "Deep gram",
             &["Deep gram", "Deep Graham", "Deep graam", "D gram"],
         ),
@@ -1071,7 +1071,7 @@ fn seed_multi_swap_mixed_cases(target_count: usize) -> Vec<EvalCase> {
         ),
         (
             "Please Deep gram aur Deep sick ke benchmark ko Air not settings mein compare karo, agar Grok latency spike kare to Post grass logs attach kar dena.",
-            "Please Deepgram aur DeepSeek ke benchmark ko AirNote settings mein compare karo, agar Groq latency spike kare to Postgres logs attach kar dena.",
+            "Please Speech engine aur DeepSeek ke benchmark ko AirNote settings mein compare karo, agar Groq latency spike kare to Postgres logs attach kar dena.",
         ),
         (
             "Yaar Deep infra se Sara bras fallback tak ka flow check karo, Q grant vector search aur CQLite migration dono same report mein mention karna.",
@@ -1079,7 +1079,7 @@ fn seed_multi_swap_mixed_cases(target_count: usize) -> Vec<EvalCase> {
         ),
         (
             "AMEAC onboarding mein MACOPS user bol raha hai ki Earnote local model slow hai, Deep Graham key missing aur Century warning ek saath aa rahe hain.",
-            "EMIAC onboarding mein Macobs user bol raha hai ki AirNote local model slow hai, Deepgram key missing aur Sentry warning ek saath aa rahe hain.",
+            "EMIAC onboarding mein Macobs user bol raha hai ki AirNote local model slow hai, Speech engine key missing aur Sentry warning ek saath aa rahe hain.",
         ),
         (
             "For Kaafka and Zuki par, mujhe ek business friendly RCA chahiye jisme Deep in fra model, Grok response time aur Post gress connection pool clear ho.",
@@ -1099,7 +1099,7 @@ fn seed_multi_swap_mixed_cases(target_count: usize) -> Vec<EvalCase> {
         ),
         (
             "Sare bras GPT OSS run mein Deep gram transcript good tha but Deep sick polish ne Grok pricing aur Q grant context ko confuse kar diya.",
-            "Cerebras GPT OSS run mein Deepgram transcript good tha but DeepSeek polish ne Groq pricing aur Qdrant context ko confuse kar diya.",
+            "Cerebras GPT OSS run mein Speech engine transcript good tha but DeepSeek polish ne Groq pricing aur Qdrant context ko confuse kar diya.",
         ),
         (
             "Amiac team ko bolo MACOPS inventory aur Kaaf ka queue dono check karein, Zooki par dependency agar down hai to Saintry mein incident daal do.",
@@ -1115,7 +1115,7 @@ fn seed_multi_swap_mixed_cases(target_count: usize) -> Vec<EvalCase> {
         ),
         (
             "Please Deep graam key rotation, Deep sick profile updater, aur CQLite local cache ko same deployment checklist mein daal do, par tone natural Hinglish rehna chahiye.",
-            "Please Deepgram key rotation, DeepSeek profile updater, aur SQLite local cache ko same deployment checklist mein daal do, par tone natural Hinglish rehna chahiye.",
+            "Please Speech engine key rotation, DeepSeek profile updater, aur SQLite local cache ko same deployment checklist mein daal do, par tone natural Hinglish rehna chahiye.",
         ),
         (
             "G rock streaming fast hai but Earnote paste path mein Zuki par aur Kaafqa words toot rahe hain, isliye direct alias probes zaroor run karna.",
@@ -1131,7 +1131,7 @@ fn seed_multi_swap_mixed_cases(target_count: usize) -> Vec<EvalCase> {
         ),
         (
             "Sentri mein jo Grok timeout aa raha hai usko Deep gram STT aur Deep seekh polish latency ke context mein compare karna.",
-            "Sentry mein jo Groq timeout aa raha hai usko Deepgram STT aur DeepSeek polish latency ke context mein compare karna.",
+            "Sentry mein jo Groq timeout aa raha hai usko Speech engine STT aur DeepSeek polish latency ke context mein compare karna.",
         ),
         (
             "MACOPS user ne bola AMEAC app mein queue drant profile prompt nahi aa raha, please CQLite cache aur Deep infra env dono verify karo.",
@@ -1143,7 +1143,7 @@ fn seed_multi_swap_mixed_cases(target_count: usize) -> Vec<EvalCase> {
         ),
         (
             "A note beta mein Sara bras model selected hai but Deep Graham fallback trigger ho raha, Grok aur Deep sick dono ka final verdict likhna.",
-            "AirNote beta mein Cerebras model selected hai but Deepgram fallback trigger ho raha, Groq aur DeepSeek dono ka final verdict likhna.",
+            "AirNote beta mein Cerebras model selected hai but Speech engine fallback trigger ho raha, Groq aur DeepSeek dono ka final verdict likhna.",
         ),
     ];
     pairs

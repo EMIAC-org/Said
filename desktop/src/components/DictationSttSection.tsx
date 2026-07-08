@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Check, Cloud, Cpu, Download, Loader2, Trash2 } from "lucide-react";
+import { Check, Cpu, Download, Loader2, Trash2 } from "lucide-react";
 import type { Preferences, SttRuntimeInfo } from "../types";
 import { getSttRuntime } from "../lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "../lib/onDeviceModel";
 import { ReclaimOldModelsRow, type ReclaimResult } from "./ReclaimOldModelsRow";
 import { friendlyError } from "../lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
-
-type SttProviderChoice = "deepgram" | "whisper_local";
 
 interface DictationModelStatus {
   installed: boolean;
@@ -38,7 +36,7 @@ interface DictationSttSectionProps {
   platform: string;
 }
 
-export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform }: DictationSttSectionProps) {
+export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpdated, platform: _platform }: DictationSttSectionProps) {
   const [runtime, setRuntime] = useState<SttRuntimeInfo | null>(null);
   const [whisperModel, setWhisperModel] = useState<DictationModelStatus | null>(null);
   const [whisperDownload, setWhisperDownload] = useState<MeetingModelProgress | null>(null);
@@ -48,32 +46,10 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
   const [reclaiming, setReclaiming] = useState(false);
   const [reclaimResult, setReclaimResult] = useState<ReclaimResult | null>(null);
   const [reclaimError, setReclaimError] = useState("");
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const mounted = useRef(true);
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const whisperInstalled = deletingWhisper
-    ? false
-    : (whisperModel?.installed ?? runtime?.whisper_installed ?? false);
-
-  // Which option shows as selected. Honor an explicit, still-usable choice;
-  // otherwise auto-select the installed-aware effective provider so the picker
-  // follows what onboarding actually set up — the downloaded local model if it's
-  // present, else Deepgram. (Empty pref or a local choice whose model is no
-  // longer installed both fall through to the effective default.)
-  const storedProvider = (prefs?.stt_provider ?? "").trim();
-  let rawProvider: string;
-  if (storedProvider === "deepgram") {
-    rawProvider = "deepgram";
-  } else if (storedProvider === "whisper_local" && whisperInstalled) {
-    rawProvider = "whisper_local";
-  } else {
-    rawProvider = runtime?.effective_provider || "deepgram";
-  }
-  const provider: SttProviderChoice =
-    rawProvider === "whisper_local" && whisperInstalled ? "whisper_local" : "deepgram";
 
   const showSuccess = useCallback((msg: string) => {
     if (successTimer.current) clearTimeout(successTimer.current);
@@ -87,7 +63,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     try {
       const [rt, wstatus] = await Promise.all([
         getSttRuntime(),
-        invoke<DictationModelStatus>("apex_model_status").catch(() => null),
+        invoke<DictationModelStatus>("dictation_model_status").catch(() => null),
       ]);
       if (!mounted.current) return;
       setRuntime(rt);
@@ -132,7 +108,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     setError(null);
     setSuccessMsg(null);
     try {
-      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
+      await invoke("download_dictation_model");
     } catch (e) {
       setError(friendlyError(e));
     }
@@ -143,7 +119,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     setDeletingWhisper(true);
     setError(null);
     try {
-      await invoke("delete_apex_model");
+      await invoke("delete_dictation_model");
       showSuccess(`${NEW_MODEL_NAME} removed`);
       await refresh();
     } catch (e) {
@@ -162,9 +138,9 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     setSuccessMsg(null);
     setReclaimResult(null);
     try {
-      await invoke("delete_apex_model");
+      await invoke("delete_dictation_model");
       setWhisperModel((m) => (m ? { ...m, installed: false } : m));
-      await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
+      await invoke("download_dictation_model");
       await refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -174,8 +150,8 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     }
   };
 
-  // Reclaim disk from the old (superseded) model. Backend refuses unless the new
-  // model is installed, so this is safe to expose whenever the new model is here.
+  // Reclaim disk from unsupported extra speech models. The Oriserve model and
+  // Silero VAD support model are preserved.
   const reclaimOldModels = async () => {
     setReclaiming(true);
     setReclaimError("");
@@ -189,39 +165,6 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
     }
   };
 
-  const selectProvider = async (next: SttProviderChoice) => {
-    if (next === provider) return;
-    if (next === "whisper_local" && !whisperInstalled && !deletingWhisper) {
-      setError("Download the on-device model first, then select Local.");
-      setSuccessMsg(null);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    setSuccessMsg(null);
-    const prevProvider = provider;
-    if (prefs) {
-      onPrefsUpdated({ ...prefs, stt_provider: next });
-    }
-    try {
-      const updated = await invoke<Preferences>("patch_preferences", {
-        update: { stt_provider: next },
-      });
-      if (!updated) {
-        throw new Error("Failed to save preference");
-      }
-      onPrefsUpdated(updated);
-      await refresh();
-    } catch (e) {
-      if (prefs) {
-        onPrefsUpdated({ ...prefs, stt_provider: prevProvider });
-      }
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const whisperDownloadPct =
     whisperDownload && whisperDownload.total > 0
       ? Math.min(100, Math.round((whisperDownload.received / whisperDownload.total) * 100))
@@ -232,59 +175,25 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
       <div className="px-5 py-4 border-b" style={{ borderColor: "hsl(var(--surface-3))" }}>
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
-          Use cloud Deepgram or download the on-device model for local speech recognition.
+          Dictation uses the local whisper.cpp model on this device.
         </p>
       </div>
 
       <div className="px-5 py-4 flex flex-col gap-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button
-            type="button"
-            disabled={busy || deletingWhisper || !!whisperDownload}
-            onClick={() => void selectProvider("deepgram")}
-            className="rounded-xl px-3 py-2.5 text-left border transition-colors"
-            style={{
-              borderColor:
-                provider === "deepgram" ? "hsl(var(--primary))" : "hsl(var(--surface-3))",
-              background:
-                provider === "deepgram" ? "hsl(var(--surface-3))" : "hsl(var(--surface-2))",
-            }}
-          >
-            <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
-              <Cloud size={14} />
-              Cloud
-              {provider === "deepgram" && <Check size={14} className="ml-auto text-primary" />}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              {runtime?.deepgram_configured
-                ? "Deepgram ready"
-                : "Deepgram cloud speech recognition"}
-            </p>
-          </button>
-
-          <button
-            type="button"
-            disabled={busy || deletingWhisper || !!whisperDownload}
-            onClick={() => void selectProvider("whisper_local")}
-            className="rounded-xl px-3 py-2.5 text-left border transition-colors disabled:opacity-50"
-            style={{
-              borderColor:
-                provider === "whisper_local" ? "hsl(var(--primary))" : "hsl(var(--surface-3))",
-              background:
-                provider === "whisper_local" ? "hsl(var(--surface-3))" : "hsl(var(--surface-2))",
-            }}
-          >
-            <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
-              <Cpu size={14} />
-              Local
-              {provider === "whisper_local" && (
-                <Check size={14} className="ml-auto text-primary" />
-              )}
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              On-device speech recognition · no cloud
-            </p>
-          </button>
+        <div
+          className="rounded-xl px-3 py-2.5 border"
+          style={{ borderColor: "hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
+        >
+          <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
+            <Cpu size={14} />
+            Local speech engine
+            {runtime?.whisper_ready && <Check size={14} className="ml-auto text-primary" />}
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            {runtime?.whisper_ready
+              ? "Ready for dictation and meetings"
+              : "Local speech model required before dictation can run"}
+          </p>
         </div>
 
         <div className="rounded-xl px-4 py-3" style={{ background: "hsl(var(--surface-2))" }}>
@@ -296,7 +205,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
                   className="text-[9px] px-1.5 py-px rounded-full font-semibold uppercase tracking-wide"
                   style={{ background: "hsl(var(--primary) / 0.18)", color: "hsl(var(--primary))" }}
                 >
-                  New
+                  Local
                 </span>
               </div>
               <p className="text-[11px] text-muted-foreground">
@@ -306,7 +215,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
                     ? `Installed · ${formatSize(whisperModel.size_bytes)}`
                     : whisperDownload
                       ? `Downloading… ${whisperDownloadPct ?? 0}%`
-                      : `Our best on-device Hinglish model · ${NEW_MODEL_SIZE_HINT}`}
+                      : `On-device Hinglish model · ${NEW_MODEL_SIZE_HINT}`}
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -388,7 +297,7 @@ export function DictationSttSection({ prefs, onPrefsUpdated, platform: _platform
             </div>
           )}
 
-          {/* Reclaim the old model's disk once the new one is installed. */}
+          {/* Reclaim extra speech-model disk once Oriserve is installed. */}
           {whisperModel?.installed && !repairing && (
             <ReclaimOldModelsRow
               reclaiming={reclaiming}

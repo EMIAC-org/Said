@@ -177,7 +177,10 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
         "[profile-batch] account={} analyzing {} runs across buckets {:?}",
         account_id,
         run_count,
-        signal_buckets.iter().map(|b| b.as_key()).collect::<Vec<_>>()
+        signal_buckets
+            .iter()
+            .map(|b| b.as_key())
+            .collect::<Vec<_>>()
     );
 
     let global_summary = load_global_summary(state, account_id, org_scope).await;

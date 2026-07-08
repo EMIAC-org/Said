@@ -413,13 +413,6 @@ fn extract_error_message(body: &str, status: u16) -> String {
 
 fn provider_secrets(prefs: &Preferences) -> Vec<ProviderSecret> {
     let mut out = Vec::new();
-    if let Some(secret) = clean_secret(prefs.deepgram_api_key.as_deref()) {
-        out.push(ProviderSecret {
-            provider: "deepgram",
-            display_name: "Deepgram API key",
-            secret,
-        });
-    }
     if let Some(secret) = clean_secret(prefs.groq_api_key.as_deref()) {
         out.push(ProviderSecret {
             provider: "groq",
@@ -480,19 +473,16 @@ mod tests {
             server_audio_runtime_enabled: false,
             updated_at: 0,
             gateway_api_key: Some("gsk_test_gateway_key_1234567890".into()),
-            deepgram_api_key: Some("dg_test".into()),
             gemini_api_key: None,
             groq_api_key: None,
             cerebras_api_key: None,
             deepinfra_api_key: None,
             llm_provider: "groq".into(),
-            stt_provider: "deepgram".into(),
         };
         let providers: Vec<&str> = provider_secrets(&prefs)
             .iter()
             .map(|p| p.provider)
             .collect();
-        assert!(providers.contains(&"deepgram"));
         assert!(providers.contains(&"groq"));
         assert!(providers.contains(&"gateway"));
     }

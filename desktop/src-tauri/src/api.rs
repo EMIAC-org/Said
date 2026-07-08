@@ -5,7 +5,7 @@
 
 use futures::StreamExt;
 use reqwest::Client;
-use said_core::deepgram::{BiasPackage, TranscriptMeta};
+use said_core::transcript::TranscriptMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
@@ -35,8 +35,6 @@ pub struct Preferences {
     pub server_audio_runtime_enabled: bool,
     // API keys (stored in SQLite; None if not set yet)
     #[serde(default)]
-    pub deepgram_api_key: Option<String>,
-    #[serde(default)]
     pub gemini_api_key: Option<String>,
     #[serde(default)]
     pub gateway_api_key: Option<String>,
@@ -49,18 +47,10 @@ pub struct Preferences {
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(default = "default_llm_provider")]
     pub llm_provider: String,
-    /// STT routing: "deepgram"
-    #[serde(default = "default_stt_provider")]
-    pub stt_provider: String,
 }
 
 fn default_llm_provider() -> String {
     "gateway".to_string()
-}
-
-fn default_stt_provider() -> String {
-    // Native, Python-free on-device whisper.cpp is the default.
-    "whisper_local".to_string()
 }
 
 fn default_learning_enabled() -> bool {
@@ -97,8 +87,6 @@ pub struct PrefsUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub deepgram_api_key: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub gemini_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groq_api_key: Option<Option<String>>,
@@ -109,9 +97,6 @@ pub struct PrefsUpdate {
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider: Option<String>,
-    /// STT routing: "deepgram"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stt_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,7 +245,6 @@ fn redact_pref_key_fields(raw: &str) -> String {
     };
     for field in [
         "gateway_api_key",
-        "deepgram_api_key",
         "gemini_api_key",
         "groq_api_key",
         "cerebras_api_key",
@@ -280,8 +264,7 @@ fn redact_pref_key_fields(raw: &str) -> String {
 
 /// Stream polish events for a WAV recording. Calls `on_event` as events arrive.
 ///
-/// `pre_transcript` — if the caller already obtained a transcript via Deepgram
-/// WebSocket streaming (P5), pass it here so the backend can skip its own STT call.
+/// `pre_transcript` is the local ASR result. The backend only polishes text.
 pub async fn stream_voice_polish<F>(
     ep: &BackendEndpoint,
     wav_data: Vec<u8>,
@@ -353,7 +336,6 @@ where
     if let Some(trace) = client_trace_json {
         form = form.text("client_trace_json", trace.to_string());
     }
-    // P5: forward pre-transcribed text so backend can skip Deepgram HTTP call
     if let Some(transcript) = pre_transcript {
         form = form.text("pre_transcript", transcript);
     }
@@ -1732,6 +1714,16 @@ pub struct ReviewCandidateResponse {
     pub term_type: String,
     pub learnable: bool,
     pub tag: String,
+    #[serde(default)]
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConfirmBatchRequestItem {
+    pub original: String,
+    pub corrected: String,
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1746,13 +1738,19 @@ pub struct ConfirmBatchResponse {
 
 pub async fn confirm_batch(
     ep: &BackendEndpoint,
-    items: &[(String, String)],
+    items: &[ConfirmBatchRequestItem],
     recording_id: Option<&str>,
 ) -> Result<ConfirmBatchResponse, String> {
     let url = format!("{}/v1/confirm-batch", ep.url);
     let items_json: Vec<serde_json::Value> = items
         .iter()
-        .map(|(orig, corr)| serde_json::json!({ "original": orig, "corrected": corr }))
+        .map(|item| {
+            serde_json::json!({
+                "original": item.original,
+                "corrected": item.corrected,
+                "context": item.context,
+            })
+        })
         .collect();
     let body = serde_json::json!({
         "items": items_json,
@@ -1855,20 +1853,6 @@ pub async fn get_retrain_status(ep: &BackendEndpoint) -> Result<RetrainStatus, S
         .json::<RetrainStatus>()
         .await
         .map_err(|e| format!("parse retrain status: {e}"))
-}
-
-pub async fn get_stt_bias(ep: &BackendEndpoint) -> Result<BiasPackage, String> {
-    let url = format!("{}/v1/stt/bias", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_millis(800))
-        .send()
-        .await
-        .map_err(|e| format!("get stt bias failed: {e}"))?
-        .json::<BiasPackage>()
-        .await
-        .map_err(|e| format!("parse stt bias: {e}"))
 }
 
 // ── Vocabulary alias API (honest UI: learned wrong→right fixes) ─────────────
@@ -2227,15 +2211,9 @@ pub struct TelemetryRunPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_clipboard_fallback: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub used_ws_pretranscript: Option<bool>,
+    pub speech_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub used_http_stt_fallback: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stt_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stt_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stt_path: Option<String>,
+    pub speech_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit_detected: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

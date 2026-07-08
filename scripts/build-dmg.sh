@@ -55,23 +55,6 @@ fail()  { echo -e "\n  ${red}✗ $*${nc}\n"; exit 1; }
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# ── Bundle the Deepgram STT key into the build ───────────────────────────────
-# This must happen BEFORE any Rust build. said-core captures the value with
-# option_env!("DEEPGRAM_API_KEY"), so loading it after `cargo build` produces an
-# app whose backend sidecar has an empty/stale bundled key.
-if [ -f "$REPO_ROOT/.env" ]; then
-  if [ -z "${DEEPGRAM_API_KEY:-}" ]; then
-    _bundle_val="$(grep -E "^DEEPGRAM_API_KEY=" "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"'' || true)"
-    [ -n "$_bundle_val" ] && export DEEPGRAM_API_KEY="$_bundle_val"
-  fi
-  unset _bundle_val
-fi
-if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
-  ok "Deepgram STT key will be bundled into the build"
-else
-  warn "DEEPGRAM_API_KEY not set — Cloud dictation will fail until a key is bundled"
-fi
-
 # ── Pre-clean: undo whatever Tauri's bundle_dmg.sh left attached ─────────────
 step "Pre-clean: detach stale AirNote volumes & temp DMGs"
 
@@ -137,22 +120,6 @@ if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
   ok "DeepSeek summary key will be bundled into the build"
 else
   warn "DEEPSEEK_API_KEY not set — meeting summaries will fail until a key is bundled"
-fi
-
-# ── Verify the Deepgram STT key stayed available for Tauri build ─────────────
-# These are baked at compile time via option_env! in said-core
-# (crates/core/src/{stt.rs,lib.rs}) so the shipped app ships with working keys —
-# end users never enter API keys. crates/core/build.rs has rerun-if-env-changed
-# directives, so cargo re-bakes when the values change. Pull from .env if not
-# already exported.
-# Only the Deepgram STT key is bundled. Polish runs server-side (Cerebras via the
-# server runtime), so no local LLM/gateway key is baked in. The `|| true` keeps a
-# missing/empty key from aborting the build under `set -euo pipefail` (a failed
-# grep in the command substitution would otherwise kill the whole script).
-if [ -n "${DEEPGRAM_API_KEY:-}" ]; then
-  ok "Deepgram STT key still available for build"
-else
-  warn "DEEPGRAM_API_KEY not set — Cloud dictation will fail until a key is bundled"
 fi
 
 # ── Tauri build ──────────────────────────────────────────────────────────────

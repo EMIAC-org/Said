@@ -96,7 +96,7 @@ for every request with no crashes or hangs.
 
 ## Manual QA scenarios (still human-required)
 
-These scenarios require real hardware permissions and/or a live Deepgram key.
+These scenarios require real hardware permissions and the local speech model.
 Run them before every release milestone.
 
 ### 1. Rapid Caps Lock cycling (session isolation)
@@ -107,8 +107,7 @@ Run them before every release milestone.
 3. Immediately hold Caps Lock again (< 200 ms gap), say "delta echo foxtrot", release.
 4. Repeat 10 times as fast as possible.
 5. **Pass:** each dictation types only its own words, no carry-over.
-6. **Check logs:** macOS Console → filter `[dg_session]` — each cycle must have a
-   distinct `recording_id` with `parts` starting empty.
+6. **Check logs:** macOS Console → filter the recording id — each cycle must have a distinct `recording_id` with local transcript state starting empty.
 
 ### 2. Status bar / AppKit main-thread safety (macOS)
 **Goal:** no crash or hang when the status bar is dismissed/moved while dictating.
@@ -123,7 +122,7 @@ Also test: long idle (> 5 min), then dictate → status bar must reappear.
 ### 3. Fleet diagnostics pipeline
 **Goal:** events reach the control plane without leaking PII.
 
-1. Trigger a backend error (e.g. set an invalid `DEEPGRAM_API_KEY`).
+1. Trigger a backend error (e.g. set an invalid gateway URL/key for text polish).
 2. Wait 45 s for the flusher to fire.
 3. Check the admin diagnostics list in the control-plane UI.
 4. **Pass:** event appears with no `transcript`, `api_key`, or `token` fields.

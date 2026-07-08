@@ -65,7 +65,7 @@
     <h3>AI Summary</h3>
     <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px;">
       <p style="font-size: 14px; color: var(--fg); line-height: 1.7;">
-        The team reviewed Week 20 performance (34 story points closed) and planned Week 21 priorities. The Windows port (v2.2.0-beta6) is stable with Sentry telemetry added. Key priorities for the week: <strong>Phase 2 meeting manager architecture</strong> (Abhishek leading), <strong>Lark OAuth integration</strong> (Abhishek, target Wednesday), <strong>WebSocket server design</strong> (Rahul, estimate by Thursday), and <strong>WASAPI buffer sizing fix</strong> (Rahul, ~1 day). Priya will refine the editorial dashboard UI. The team decided on plain WebSocket (tokio-tungstenite) over Socket.IO, with client-side reconnection reusing the existing Deepgram stream retry pattern.
+        The team reviewed Week 20 performance (34 story points closed) and planned Week 21 priorities. The Windows port (v2.2.0-beta6) is stable with Sentry telemetry added. Key priorities for the week: <strong>Phase 2 meeting manager architecture</strong> (Abhishek leading), <strong>Lark OAuth integration</strong> (Abhishek, target Wednesday), <strong>WebSocket server design</strong> (Rahul, estimate by Thursday), and <strong>WASAPI buffer sizing fix</strong> (Rahul, ~1 day). Priya will refine the editorial dashboard UI. The team decided on plain WebSocket (tokio-tungstenite) over Socket.IO, with client-side reconnection reusing the existing Local speech stream retry pattern.
       </p>
     </div>
   </div>
@@ -148,7 +148,7 @@
       <div class="decision-row">
         <div class="decision-marker"></div>
         <div class="decision-text">
-          <strong>Reconnection strategy:</strong> Client-side, reusing the existing Deepgram stream retry pattern from the desktop app.
+          <strong>Reconnection strategy:</strong> Client-side, reusing the existing Local speech stream retry pattern from the desktop app.
         </div>
       </div>
       <div class="decision-row">

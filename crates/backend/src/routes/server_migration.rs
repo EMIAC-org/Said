@@ -251,13 +251,6 @@ async fn upload_credentials(
     let secrets: Vec<(&str, &str, String)> = {
         let mut v: Vec<(&str, &str, String)> = Vec::new();
         if let Some(k) = prefs
-            .deepgram_api_key
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            v.push(("deepgram", "Deepgram API key", k.to_string()));
-        }
-        if let Some(k) = prefs
             .groq_api_key
             .as_deref()
             .filter(|s| !s.trim().is_empty())

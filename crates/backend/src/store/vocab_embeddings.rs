@@ -840,7 +840,7 @@ pub fn select_for_polish_hybrid(
                 // Path a2: STT alias matching — three sub-paths:
                 //   a2i)   exact token match against known alias
                 //   a2ii)  substring match — alias appears inside a longer token
-                //          (catches Deepgram joins like "yarmiac" containing "miac")
+                //          (catches speech joins like "yarmiac" containing "miac")
                 //   a2iii) fuzzy alias — transcript token is phonetically close
                 //          to a known alias (catches "macops" ≈ "macobs")
                 if let Some(aliases) = alias_map.get(&term_lower) {
@@ -851,7 +851,7 @@ pub fn select_for_polish_hybrid(
                     if alias_exact {
                         return true;
                     }
-                    // a2ii: substring alias match — Deepgram often concatenates
+                    // a2ii: substring alias match — speech engines often concatenate
                     // adjacent words ("yaar" + "miac" → "yarmiac"). If a known
                     // alias (≥3 chars) appears as a suffix or substring of a
                     // transcript token, that's a match.
@@ -866,7 +866,7 @@ pub fn select_for_polish_hybrid(
                     if alias_substring {
                         return true;
                     }
-                    // a2iii: fuzzy alias match — Deepgram may output a novel
+                    // a2iii: fuzzy alias match — speech engines may output a novel
                     // distortion close to a stored alias ("macops" ≈ "mccorb").
                     // Check transcript tokens against each alias phonetically.
                     let alias_fuzzy = transcript_tokens.iter().any(|tok| {
@@ -1947,7 +1947,7 @@ mod tests {
         // or learned before the meaning pipeline existed) must be filtered
         // out of the polish prompt — the LLM has no semantic anchor for
         // them, which is the documented hallucination failure mode. They
-        // remain in the vocabulary table (still useful for Deepgram keyterm
+        // remain in the vocabulary table (still useful for local speech/polish
         // bias and stt_replacements), just not in the polish prompt.
         let pool = mem_pool();
         seed_with_context_and_meaning(

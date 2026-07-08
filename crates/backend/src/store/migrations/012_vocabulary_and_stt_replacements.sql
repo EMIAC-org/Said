@@ -3,7 +3,7 @@
 -- Replaces the single-table `word_corrections` model with three stores that
 -- map onto where each kind of correction must actually be applied:
 --
---   1. `vocabulary`        — STT-layer bias terms (Deepgram keyterm / Whisper
+--   1. `vocabulary`        — STT-layer hint terms (local speech / polish
 --                            initial_prompt). Catches STT misrecognitions of
 --                            jargon, names, brands, code identifiers.
 --

@@ -53,35 +53,18 @@ pub fn default_db_path() -> PathBuf {
     data_dir().join("db.sqlite")
 }
 
-/// Path to the local whisper.cpp ggml model file for offline STT.
-/// Oriserve Whisper-Hindi2Hinglish-Swift, converted to fp16 GGML (148 MB):
-/// faithful to the PyTorch model, runs on all Macs with no Python dependency.
+/// Path to the local Oriserve whisper.cpp ggml model file for offline STT.
 /// `<data_dir>/models/ggml-oriserve-hinglish-fp16.bin`
 pub fn whisper_model_path() -> PathBuf {
     data_dir()
         .join("models")
-        .join("ggml-oriserve-hinglish-fp16.bin")
+        .join(crate::stt::ORISERVE_HINGLISH_MODEL)
 }
 
-/// Path to the Apex (Whisper-Hindi2Hinglish-Apex, large-v3-turbo) whisper.cpp
-/// ggml model, q8_0 quant (~834 MB). A parallel on-device dictation model to the
-/// Oriserve Swift model — also emits Roman-script Hinglish directly.
-/// `<data_dir>/models/ggml-apex-hinglish-q8_0.bin`
-pub fn apex_model_path() -> PathBuf {
-    data_dir()
-        .join("models")
-        .join("ggml-apex-hinglish-q8_0.bin")
-}
-
-/// Active local dictation model path. Apex is the current preferred model; the
-/// old Oriserve file remains a fallback for users who have not migrated yet.
+/// Active local dictation model path. AirNote supports exactly one speech model:
+/// Oriserve Hinglish. Silero VAD is a separate tiny support model.
 pub fn active_dictation_model_path() -> PathBuf {
-    let apex = apex_model_path();
-    if apex.is_file() {
-        apex
-    } else {
-        whisper_model_path()
-    }
+    whisper_model_path()
 }
 
 /// Silero VAD ggml model for whisper.cpp built-in voice-activity detection.
@@ -90,17 +73,6 @@ pub fn active_dictation_model_path() -> PathBuf {
 /// `<data_dir>/models/ggml-silero-v5.1.2.bin`
 pub fn silero_vad_model_path() -> PathBuf {
     data_dir().join("models").join("ggml-silero-v5.1.2.bin")
-}
-
-/// Directory for the Oriserve Swift HF model weights (downloaded on demand).
-/// `<data_dir>/models/oriserve-swift/`
-pub fn swift_model_dir() -> PathBuf {
-    data_dir().join("models").join("oriserve-swift")
-}
-
-/// Marker file indicating the Swift model download completed.
-pub fn swift_model_weights_path() -> PathBuf {
-    swift_model_dir().join("model.safetensors")
 }
 
 /// Stable anonymous device ID. Generated once on first call and persisted to

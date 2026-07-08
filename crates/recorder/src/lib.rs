@@ -4,6 +4,9 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(target_os = "macos")]
+mod macos_voice_processing;
+
 // ── Recording constants ───────────────────────────────────────────────────────
 
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -11,6 +14,8 @@ pub const CHANNELS: u16 = 1;
 pub const MIN_DURATION_S: f32 = 0.5;
 const STOP_REPLY_TIMEOUT: Duration = Duration::from_secs(3);
 const ALLOW_BLUETOOTH_MIC_ENV: &str = "AIRNOTE_ALLOW_BLUETOOTH_MIC";
+#[cfg(target_os = "macos")]
+const MACOS_VOICE_PROCESSING_ENV: &str = "AIRNOTE_MACOS_VOICE_PROCESSING";
 
 // ── Internal command ──────────────────────────────────────────────────────────
 
@@ -40,10 +45,33 @@ pub fn resample_to_16k(samples: &[f32], src_rate: u32) -> Vec<f32> {
         .collect()
 }
 
+fn fan_out_mono(
+    mono: Vec<f32>,
+    frames_cb: &Arc<Mutex<Vec<f32>>>,
+    chunk_tx_cb: &mpsc::SyncSender<Vec<f32>>,
+    level_tx_cb: &mpsc::SyncSender<f32>,
+) {
+    if mono.is_empty() {
+        return;
+    }
+    match frames_cb.lock() {
+        Ok(mut frames) => frames.extend_from_slice(&mono),
+        Err(poison) => {
+            eprintln!("[rec] recovered poisoned audio buffer lock in callback");
+            poison.into_inner().extend_from_slice(&mono);
+        }
+    }
+    let _ = chunk_tx_cb.try_send(mono.clone());
+    let sum_sq = mono.iter().map(|s| s * s).sum::<f32>();
+    let rms = (sum_sq / mono.len() as f32).sqrt();
+    let boosted = (rms * 9.0).clamp(0.0, 1.0);
+    let _ = level_tx_cb.try_send(boosted);
+}
+
 // ── Chunk receiver ────────────────────────────────────────────────────────────
 
 /// A live handle to raw audio chunks as they arrive from the microphone.
-/// Used by the Deepgram WebSocket streaming pipeline (P5).
+/// Used by local speech transcription and recovery diagnostics.
 pub struct ChunkReceiver {
     pub rx: mpsc::Receiver<Vec<f32>>,
     pub native_rate: u32,
@@ -73,6 +101,11 @@ pub struct AudioRecorder {
 
 impl AudioRecorder {
     pub fn new() -> Self {
+        #[cfg(target_os = "macos")]
+        if macos_voice_processing_capture_enabled() {
+            macos_voice_processing::prewarm();
+        }
+
         Self {
             cmd_tx: None,
             chunk_rx: None,
@@ -84,6 +117,22 @@ impl AudioRecorder {
     }
 
     pub fn start(&mut self) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        if macos_voice_processing_capture_enabled() {
+            match self.start_macos_voice_processing() {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    eprintln!(
+                        "[rec] Apple voice-processing capture unavailable ({e}); falling back to raw CPAL capture"
+                    );
+                }
+            }
+        }
+
+        self.start_cpal()
+    }
+
+    fn start_cpal(&mut self) -> Result<(), String> {
         let host = cpal::default_host();
         let device = select_input_device(&host)?;
 
@@ -93,16 +142,12 @@ impl AudioRecorder {
         let (cmd_tx, cmd_rx) = mpsc::channel::<RecCmd>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, String>>();
 
-        // Chunk channel for WS streaming (P5): buffer 256 cpal frames
+        // Chunk channel for live local diagnostics: buffer 256 cpal frames.
         let (chunk_tx, chunk_rx) = mpsc::sync_channel::<Vec<f32>>(256);
         let chunk_tx_cb = chunk_tx.clone(); // moved into cpal callback
-        self.chunk_tx = Some(chunk_tx); // dropped in stop() to close the channel
-        self.chunk_rx = Some(chunk_rx);
 
         let (level_tx, level_rx) = mpsc::sync_channel::<f32>(64);
         let level_tx_cb = level_tx.clone();
-        self.level_tx = Some(level_tx);
-        self.level_rx = Some(level_rx);
 
         std::thread::spawn(move || {
             let device_name = device.name().unwrap_or_else(|_| "unknown".into());
@@ -173,32 +218,6 @@ impl AudioRecorder {
             let chunk_tx_cb_arc = std::sync::Arc::new(chunk_tx_cb);
             let level_tx_cb_arc = std::sync::Arc::new(level_tx_cb);
 
-            // Push the post-conversion samples through the same fan-out that the
-            // F32-only path used to do inline. Kept as a closure so the match
-            // arms below stay short.
-            fn fan_out(
-                mono: Vec<f32>,
-                frames_cb: &Arc<Mutex<Vec<f32>>>,
-                chunk_tx_cb: &mpsc::SyncSender<Vec<f32>>,
-                level_tx_cb: &mpsc::SyncSender<f32>,
-            ) {
-                if mono.is_empty() {
-                    return;
-                }
-                match frames_cb.lock() {
-                    Ok(mut frames) => frames.extend_from_slice(&mono),
-                    Err(poison) => {
-                        eprintln!("[rec] recovered poisoned audio buffer lock in callback");
-                        poison.into_inner().extend_from_slice(&mono);
-                    }
-                }
-                let _ = chunk_tx_cb.try_send(mono.clone());
-                let sum_sq = mono.iter().map(|s| s * s).sum::<f32>();
-                let rms = (sum_sq / mono.len() as f32).sqrt();
-                let boosted = (rms * 9.0).clamp(0.0, 1.0);
-                let _ = level_tx_cb.try_send(boosted);
-            }
-
             let err_cb = |err: cpal::StreamError| eprintln!("[rec] stream error: {err}");
             let build_result = match sample_format {
                 cpal::SampleFormat::F32 => {
@@ -209,7 +228,7 @@ impl AudioRecorder {
                         &config,
                         move |data: &[f32], _: &cpal::InputCallbackInfo| {
                             let mono = to_mono_f32_from_f32(data, native_channels);
-                            fan_out(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
+                            fan_out_mono(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
                         },
                         err_cb,
                         None,
@@ -223,7 +242,7 @@ impl AudioRecorder {
                         &config,
                         move |data: &[i16], _: &cpal::InputCallbackInfo| {
                             let mono = to_mono_f32_from_i16(data, native_channels);
-                            fan_out(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
+                            fan_out_mono(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
                         },
                         err_cb,
                         None,
@@ -237,7 +256,7 @@ impl AudioRecorder {
                         &config,
                         move |data: &[u16], _: &cpal::InputCallbackInfo| {
                             let mono = to_mono_f32_from_u16(data, native_channels);
-                            fan_out(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
+                            fan_out_mono(mono, &frames_cb, &chunk_tx_cb, &level_tx_cb);
                         },
                         err_cb,
                         None,
@@ -298,7 +317,11 @@ impl AudioRecorder {
         match ready_rx.recv() {
             Ok(Ok(rate)) => {
                 self.native_rate = Some(rate);
-                println!("[rec] opened at {rate}Hz F32");
+                self.chunk_tx = Some(chunk_tx);
+                self.chunk_rx = Some(chunk_rx);
+                self.level_tx = Some(level_tx);
+                self.level_rx = Some(level_rx);
+                println!("[rec] opened CPAL capture at {rate}Hz");
             }
             Ok(Err(e)) => return Err(e),
             Err(_) => return Err("recording thread died".into()),
@@ -309,7 +332,44 @@ impl AudioRecorder {
         Ok(())
     }
 
-    /// Take the chunk receiver for the Deepgram WS streaming pipeline.
+    #[cfg(target_os = "macos")]
+    fn start_macos_voice_processing(&mut self) -> Result<(), String> {
+        if !macos_default_input_allows_voice_processing()? {
+            return Err("default input is not a safe VoiceProcessingIO target".into());
+        }
+
+        let frames: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let (cmd_tx, cmd_rx) = mpsc::channel::<RecCmd>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, String>>();
+
+        let (chunk_tx, chunk_rx) = mpsc::sync_channel::<Vec<f32>>(256);
+        let (level_tx, level_rx) = mpsc::sync_channel::<f32>(64);
+
+        macos_voice_processing::spawn_capture_thread(
+            Arc::clone(&frames),
+            cmd_rx,
+            ready_tx,
+            chunk_tx.clone(),
+            level_tx.clone(),
+        );
+
+        match ready_rx.recv() {
+            Ok(Ok(rate)) => {
+                self.native_rate = Some(rate);
+                self.chunk_tx = Some(chunk_tx);
+                self.chunk_rx = Some(chunk_rx);
+                self.level_tx = Some(level_tx);
+                self.level_rx = Some(level_rx);
+                self.cmd_tx = Some(cmd_tx);
+                println!("[rec] recording with Apple voice processing");
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("voice-processing recording thread died".into()),
+        }
+    }
+
+    /// Take the chunk receiver for local speech diagnostics.
     /// Can only be called once per recording session (after `start()`).
     pub fn take_chunk_receiver(&mut self) -> Option<ChunkReceiver> {
         let rx = self.chunk_rx.take()?;
@@ -389,7 +449,7 @@ impl AudioRecorder {
             return Err("recording too short".to_string());
         }
 
-        // ── P1: Resample to 16 kHz (2.75× smaller WAV → faster Deepgram upload) ──
+        // ── P1: Resample to 16 kHz (smaller WAV → faster local transcription) ──
         let resampled = resample_to_16k(&samples_f32, native_rate);
 
         // Convert F32 → I16 WAV at 16 kHz
@@ -522,6 +582,35 @@ fn bluetooth_mic_allowed() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_voice_processing_capture_enabled() -> bool {
+    std::env::var(MACOS_VOICE_PROCESSING_ENV)
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_default_input_allows_voice_processing() -> Result<bool, String> {
+    let host = cpal::default_host();
+    let default = host.default_input_device().ok_or("no input device found")?;
+    let default_name = device_name(&default);
+
+    if input_name_looks_virtual(&default_name) {
+        return Ok(false);
+    }
+
+    if !bluetooth_mic_allowed() && should_avoid_input(&default_name) {
+        return Ok(false);
+    }
+
+    Ok(default.default_input_config().is_ok())
 }
 
 fn input_name_looks_bluetooth(name: &str) -> bool {

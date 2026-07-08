@@ -34,9 +34,9 @@ interface TelemetryAnalytics {
     transcribe_p50: number | null
     transcribe_p95: number | null
   }
-  stt?: {
-    by_provider_path: { stt_provider: string; stt_path: string; count: number }[]
-    by_provider: { stt_provider: string; count: number; share: number }[]
+  speech?: {
+    by_model_path: { speech_model: string; speech_path: string; count: number }[]
+    by_model: { speech_model: string; count: number; share: number }[]
     total_tagged: number
   }
 }
@@ -85,7 +85,7 @@ export function TelemetryPage() {
         <div>
           <h1 className="text-[15px] font-semibold text-fg">Analytics</h1>
           <p className="text-[12px] text-fg-4 mt-1">
-            Per-run usage &amp; quality aggregates. For the raw STT → polish pipeline, see Dictations.
+            Per-run usage &amp; quality aggregates. For the raw speech → polish pipeline, see Dictations.
           </p>
         </div>
         <select
@@ -142,7 +142,7 @@ export function TelemetryPage() {
               label="Fallback rate"
               value={pct(data.quality.fallback_rate)}
               icon={Zap}
-              sub="Clipboard or HTTP STT fallback"
+              sub="Clipboard fallback"
             />
           </div>
 
@@ -164,7 +164,7 @@ export function TelemetryPage() {
                 sub="audit events"
               />
               <TelemetryStatCard
-                label="STT-error edit rate"
+                label="Speech-error edit rate"
                 value={pct(observability.classify_stt_error_rate * 100)}
                 sub={`${observability.stt_error_edits} edits`}
               />
@@ -212,27 +212,27 @@ export function TelemetryPage() {
 
             <div className="card p-4">
               <div className="text-[10px] font-semibold text-fg-4 uppercase tracking-wider mb-3">
-                STT provider mix
+                speech model mix
               </div>
-              {!data.stt?.by_provider?.length ? (
-                <div className="text-[12px] text-fg-4">No STT-tagged runs yet.</div>
+              {!data.speech?.by_model?.length ? (
+                <div className="text-[12px] text-fg-4">No speech-tagged runs yet.</div>
               ) : (
                 <div className="space-y-2">
-                  {data.stt.by_provider.map(row => (
-                    <div key={row.stt_provider} className="flex items-center justify-between text-[12px]">
-                      <span className="text-fg-2 font-mono">{row.stt_provider}</span>
+                  {data.speech.by_model.map(row => (
+                    <div key={row.speech_model} className="flex items-center justify-between text-[12px]">
+                      <span className="text-fg-2 font-mono">{row.speech_model}</span>
                       <span className="text-fg tabular-nums">
                         {row.count} ({row.share}%)
                       </span>
                     </div>
                   ))}
-                  {data.stt.by_provider_path.slice(0, 6).map(row => (
+                  {data.speech.by_model_path.slice(0, 6).map(row => (
                     <div
-                      key={`${row.stt_provider}-${row.stt_path}`}
+                      key={`${row.speech_model}-${row.speech_path}`}
                       className="flex items-center justify-between text-[11px] text-fg-4"
                     >
                       <span className="font-mono">
-                        {row.stt_provider} · {row.stt_path}
+                        {row.speech_model} · {row.speech_path}
                       </span>
                       <span className="tabular-nums">{row.count}</span>
                     </div>

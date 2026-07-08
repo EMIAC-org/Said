@@ -478,7 +478,7 @@ export function TelemetryUserPage() {
                         <td className="text-[12px] px-4 py-2 border-b border-border-light font-mono">{a.transcript_form}</td>
                         <td className="text-[12px] px-4 py-2 border-b border-border-light font-mono">{a.correct_form}</td>
                         <td className="text-[11px] px-4 py-2 border-b border-border-light">{a.safety_status}</td>
-                        <td className="text-[11px] px-4 py-2 border-b border-border-light font-mono">{a.learned_stt_provider || '—'}</td>
+                        <td className="text-[11px] px-4 py-2 border-b border-border-light font-mono">{a.learned_speech_model || '—'}</td>
                         <td className="text-[12px] tabular-nums px-4 py-2 border-b border-border-light">{a.positive_count}</td>
                       </tr>
                     ))}
@@ -558,7 +558,7 @@ export function TelemetryUserPage() {
         <TelemetryStatCard
           label="Fallback rate"
           value={pct(profile.quality.fallback_rate)}
-          sub="clipboard or HTTP STT"
+          sub="clipboard fallback"
         />
         <TelemetryStatCard
           label="Latency p50 / p95"
@@ -647,14 +647,14 @@ export function TelemetryUserPage() {
         </div>
       </div>
 
-      {profile.stt?.by_provider?.length ? (
+      {profile.speech?.by_model?.length ? (
         <div className="card p-4 mb-4">
-          <SectionLabel>STT provider mix</SectionLabel>
+          <SectionLabel>speech model mix</SectionLabel>
           <div className="grid grid-cols-2 gap-4 text-[12px]">
             <div className="space-y-1.5">
-              {profile.stt.by_provider.map(row => (
-                <div key={row.stt_provider} className="flex justify-between">
-                  <span className="font-mono text-fg-2">{row.stt_provider}</span>
+              {profile.speech.by_model.map(row => (
+                <div key={row.speech_model} className="flex justify-between">
+                  <span className="font-mono text-fg-2">{row.speech_model}</span>
                   <span className="tabular-nums">
                     {row.count} ({row.share}%)
                   </span>
@@ -662,9 +662,9 @@ export function TelemetryUserPage() {
               ))}
             </div>
             <div className="space-y-1.5">
-              {(profile.stt.latency_by_provider || []).map(row => (
-                <div key={row.stt_provider} className="flex justify-between text-fg-3">
-                  <span className="font-mono">{row.stt_provider} transcribe</span>
+              {(profile.speech.latency_by_model || []).map(row => (
+                <div key={row.speech_model} className="flex justify-between text-fg-3">
+                  <span className="font-mono">{row.speech_model} transcribe</span>
                   <span className="tabular-nums">
                     {ms(row.transcribe_p50)} / {ms(row.transcribe_p95)}
                   </span>
