@@ -14,6 +14,7 @@ mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plan
 mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
+mod hud_manager;
 mod local_asr;
 mod meeting_engine;
 mod notch_sidecar;
@@ -126,7 +127,7 @@ fn guard_panics<R>(label: &'static str, f: impl FnOnce() -> R) -> Option<R> {
 /// Dispatch `f` to the AppKit main thread wrapped in the panic seatbelt. Use this
 /// instead of `run_on_main_thread` for any closure touching windows/panels/tray so
 /// a panic inside it can never SIGABRT the app.
-fn run_on_main_guarded(
+pub(crate) fn run_on_main_guarded(
     app: &tauri::AppHandle,
     label: &'static str,
     f: impl FnOnce() + Send + 'static,
@@ -286,7 +287,7 @@ fn show_status_bar_panel(app: &tauri::AppHandle) -> bool {
     }
 }
 
-fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
+pub(crate) fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
     let state = app
         .try_state::<SharedApp>()
         .and_then(|shared| shared.0.lock().ok().map(|d| d.state.as_str().to_string()))
@@ -621,7 +622,7 @@ fn apply_status_bar_position(
 }
 
 /// Keep the floating status bar visible at idle only when `SAID_STATUS_BAR_PIN=1`.
-fn status_bar_pinned() -> bool {
+pub(crate) fn status_bar_pinned() -> bool {
     matches!(
         std::env::var("SAID_STATUS_BAR_PIN").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
@@ -704,7 +705,7 @@ fn present_status_bar_macos_on_main(
 }
 
 #[cfg(target_os = "macos")]
-fn schedule_present_status_bar_macos(
+pub(crate) fn schedule_present_status_bar_macos(
     app: &tauri::AppHandle,
     win: &tauri::WebviewWindow,
     state: &str,
@@ -727,35 +728,30 @@ fn present_status_bar_native(
     reason: &str,
     resync: bool,
 ) -> Result<(), String> {
-    if app.get_webview_window("status-bar").is_none() {
-        // The status-bar window is pre-created at startup. If it is somehow missing,
-        // do NOT create it here on Windows: this fn is reachable from the
-        // present_status_bar / set_status_bar_persistent IPC commands, and creating
-        // a WebView2 window from inside an IPC handler deadlocks Windows IPC
-        // (wry #583 — the same class that wedged End-meeting). macOS's NSPanel path
-        // is safe.
-        #[cfg(target_os = "macos")]
-        create_status_bar(app);
-        #[cfg(not(target_os = "macos"))]
-        {
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).present(reason, resync);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if app.get_webview_window("status-bar").is_none() {
+            // The status-bar window is pre-created at startup. If it is somehow missing,
+            // do NOT create it here on Windows: this fn is reachable from the
+            // present_status_bar / set_status_bar_persistent IPC commands, and creating
+            // a WebView2 window from inside an IPC handler deadlocks Windows IPC
+            // (wry #583 — the same class that wedged End-meeting). macOS's NSPanel path
+            // is safe.
             tracing::warn!(
                 "[status-bar] window missing — not recreating from an IPC path on Windows"
             );
             return Err("status-bar window not available".to_string());
         }
-    }
-    let win = app
-        .get_webview_window("status-bar")
-        .ok_or_else(|| "status-bar window not found".to_string())?;
-    tracing::debug!("[status-bar] native present reason={reason} resync={resync}");
+        let win = app
+            .get_webview_window("status-bar")
+            .ok_or_else(|| "status-bar window not found".to_string())?;
+        tracing::debug!("[status-bar] native present reason={reason} resync={resync}");
 
-    #[cfg(target_os = "macos")]
-    {
-        schedule_present_status_bar_macos(app, &win, reason, resync);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
         // Position the HUD before showing — the macOS path repositions via the
         // panel presenter, but the native path must do it explicitly or the
         // window appears at its stale/default origin.
@@ -768,9 +764,9 @@ fn present_status_bar_native(
         if resync {
             emit_status_bar_resync(app, reason);
         }
-    }
 
-    Ok(())
+        Ok(())
+    }
 }
 
 // ── Keystroke reconstruction (edit detection for AX-blind apps) ──────────────
@@ -988,7 +984,7 @@ impl LiveTypingGuard {
 // ── Managed state ─────────────────────────────────────────────────────────────
 
 /// Holds the local recording state machine.
-struct SharedApp(Arc<Mutex<DesktopApp>>);
+pub(crate) struct SharedApp(Arc<Mutex<DesktopApp>>);
 
 /// Holds the backend endpoint (url + secret). None until daemon starts.
 struct BackendState(Arc<Mutex<Option<BackendEndpoint>>>);
@@ -1387,7 +1383,7 @@ struct HotPathCacheInner {
 
 /// Generation counter for status-bar idle hide timers.
 /// Each idle sync increments this; a timer whose generation no longer matches is silently dropped.
-struct StatusBarHideGen(Arc<AtomicU64>);
+pub(crate) struct StatusBarHideGen(Arc<AtomicU64>);
 
 /// True while the status bar is showing a user-action-required notification.
 /// Idle app-state syncs must not hide the native window until the frontend
@@ -1503,7 +1499,7 @@ fn emit_voice_done(app: &tauri::AppHandle, done: &api::PolishDone, run_id: Optio
     let _ = app.emit("voice-done", payload);
 }
 
-fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
+pub(crate) fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
     app.try_state::<StatusBarPersistentHold>()
         .map(|s| s.0.load(Ordering::SeqCst))
         .unwrap_or(false)
@@ -1893,139 +1889,112 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
 }
 
 fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
-    diag::breadcrumb(format!("status_bar:sync_main:{state}:begin"));
-    let win = match handle.get_webview_window("status-bar") {
-        Some(win) => win,
-        None if state != "idle" => {
-            diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_recreate"));
-            tracing::warn!(
-                "[status-bar] sync requested for active state={state}, but window was not found — recreating"
-            );
-            create_status_bar(handle);
-            let Some(win) = handle.get_webview_window("status-bar") else {
-                diag::breadcrumb(format!("status_bar:sync_main:{state}:recreate_failed"));
+    #[cfg(target_os = "macos")]
+    {
+        hud_manager::MacHudManager::new(handle).sync_on_main(state);
+        return;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        diag::breadcrumb(format!("status_bar:sync_main:{state}:begin"));
+        let win = match handle.get_webview_window("status-bar") {
+            Some(win) => win,
+            None if state != "idle" => {
+                diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_recreate"));
                 tracing::warn!(
-                    "[status-bar] recreate failed; still no status-bar window for state={state}"
+                    "[status-bar] sync requested for active state={state}, but window was not found — recreating"
+                );
+                create_status_bar(handle);
+                let Some(win) = handle.get_webview_window("status-bar") else {
+                    diag::breadcrumb(format!("status_bar:sync_main:{state}:recreate_failed"));
+                    tracing::warn!(
+                        "[status-bar] recreate failed; still no status-bar window for state={state}"
+                    );
+                    return;
+                };
+                win
+            }
+            None => {
+                diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_idle"));
+                tracing::warn!(
+                    "[status-bar] sync requested for state={state}, but window was not found"
                 );
                 return;
-            };
-            win
-        }
-        None => {
-            diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_idle"));
-            tracing::warn!(
-                "[status-bar] sync requested for state={state}, but window was not found"
-            );
-            return;
-        }
-    };
+            }
+        };
 
-    tracing::debug!("[status-bar] sync state={state}");
-    if state == "idle" {
-        if status_bar_pinned() || status_bar_persistent_hold(handle) {
-            diag::breadcrumb("status_bar:sync_main:idle:held_visible");
-            tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
-            #[cfg(target_os = "macos")]
-            schedule_present_status_bar_macos(handle, &win, state, false);
-            #[cfg(not(target_os = "macos"))]
-            {
+        tracing::debug!("[status-bar] sync state={state}");
+        if state == "idle" {
+            if status_bar_pinned() || status_bar_persistent_hold(handle) {
+                diag::breadcrumb("status_bar:sync_main:idle:held_visible");
+                tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
                 reposition_status_bar(handle, &win);
                 let _ = win.set_always_on_top(true);
                 let _ = win.set_visible_on_all_workspaces(true);
                 let _ = win.show();
+                return;
             }
-            return;
-        }
-        tracing::debug!("[status-bar] idle state — scheduling native hide");
-        diag::breadcrumb("status_bar:sync_main:idle:schedule_hide");
-        let my_gen = handle
-            .try_state::<StatusBarHideGen>()
-            .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
-            .unwrap_or(0);
-        let hide_gen_arc = handle
-            .try_state::<StatusBarHideGen>()
-            .map(|s| Arc::clone(&s.0));
-        let app = handle.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
-            // If a newer idle sync fired after us, let it own the hide decision.
-            if let Some(counter) = &hide_gen_arc {
-                if counter.load(Ordering::Relaxed) != my_gen {
+            tracing::debug!("[status-bar] idle state — scheduling native hide");
+            diag::breadcrumb("status_bar:sync_main:idle:schedule_hide");
+            let my_gen = handle
+                .try_state::<StatusBarHideGen>()
+                .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
+                .unwrap_or(0);
+            let hide_gen_arc = handle
+                .try_state::<StatusBarHideGen>()
+                .map(|s| Arc::clone(&s.0));
+            let app = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+                // If a newer idle sync fired after us, let it own the hide decision.
+                if let Some(counter) = &hide_gen_arc {
+                    if counter.load(Ordering::Relaxed) != my_gen {
+                        return;
+                    }
+                }
+                let still_idle = app
+                    .try_state::<SharedApp>()
+                    .and_then(|shared| {
+                        shared
+                            .0
+                            .lock()
+                            .ok()
+                            .map(|d| d.state == desktop::AppState::Idle)
+                    })
+                    .unwrap_or(true);
+                if !still_idle {
+                    tracing::debug!("[status-bar] hide skipped — app is active again");
                     return;
                 }
-            }
-            let still_idle = app
-                .try_state::<SharedApp>()
-                .and_then(|shared| {
-                    shared
-                        .0
-                        .lock()
-                        .ok()
-                        .map(|d| d.state == desktop::AppState::Idle)
-                })
-                .unwrap_or(true);
-            if !still_idle {
-                tracing::debug!("[status-bar] hide skipped — app is active again");
-                return;
-            }
-            if status_bar_pinned() || status_bar_persistent_hold(&app) {
-                tracing::debug!("[status-bar] hide skipped — status bar is pinned/held");
-                return;
-            }
-            if app.get_webview_window("status-bar").is_some() {
-                #[cfg(target_os = "macos")]
-                {
-                    let app_main = app.clone();
-                    if let Err(e) =
-                        run_on_main_guarded(&app_main.clone(), "status_bar.idle_hide", move || {
-                            if let Some(win) = app_main.get_webview_window("status-bar") {
-                                diag::breadcrumb("status_bar:idle_hide:begin");
-                                match win.hide() {
-                                    Ok(_) => {
-                                        diag::breadcrumb("status_bar:idle_hide:end");
-                                        tracing::debug!("[status-bar] hidden after idle")
-                                    }
-                                    Err(e) => {
-                                        diag::breadcrumb("status_bar:idle_hide:failed");
-                                        tracing::warn!("[status-bar] hide after idle failed: {e}")
-                                    }
-                                }
-                            }
-                        })
-                    {
-                        tracing::warn!("[status-bar] schedule idle hide failed: {e}");
+                if status_bar_pinned() || status_bar_persistent_hold(&app) {
+                    tracing::debug!("[status-bar] hide skipped — status bar is pinned/held");
+                    return;
+                }
+                if app.get_webview_window("status-bar").is_some() {
+                    if let Some(win) = app.get_webview_window("status-bar") {
+                        match win.hide() {
+                            Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
+                            Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
+                        }
                     }
                 }
-                #[cfg(not(target_os = "macos"))]
-                if let Some(win) = app.get_webview_window("status-bar") {
-                    match win.hide() {
-                        Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
-                        Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
-                    }
-                }
-            }
-        });
-        return;
-    }
+            });
+            return;
+        }
 
-    // Invalidate any pending idle-hide timer immediately. The timer also checks
-    // state before hiding, but bumping the generation avoids relying on a mutex
-    // read from an old async task when recordings happen in quick succession.
-    if let Some(counter) = handle
-        .try_state::<StatusBarHideGen>()
-        .map(|s| Arc::clone(&s.0))
-    {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
+        // Invalidate any pending idle-hide timer immediately. The timer also checks
+        // state before hiding, but bumping the generation avoids relying on a mutex
+        // read from an old async task when recordings happen in quick succession.
+        if let Some(counter) = handle
+            .try_state::<StatusBarHideGen>()
+            .map(|s| Arc::clone(&s.0))
+        {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
 
-    #[cfg(target_os = "macos")]
-    {
-        schedule_present_status_bar_macos(handle, &win, state, state != "placement");
-    }
-    diag::breadcrumb(format!("status_bar:sync_main:{state}:end"));
+        diag::breadcrumb(format!("status_bar:sync_main:{state}:end"));
 
-    #[cfg(not(target_os = "macos"))]
-    {
         reposition_status_bar(handle, &win);
         match win.set_always_on_top(true) {
             Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
@@ -2098,7 +2067,7 @@ static NOTCH_FIRST_CLASS: AtomicBool = AtomicBool::new(false);
 /// The window loads the same SPA with an explicit statusbar marker so
 /// `main.tsx` renders `<StatusBar />` instead of the full app. It starts hidden
 /// at idle and is shown by `sync_status_bar()` when recording/processing begins.
-fn create_status_bar(app: &tauri::AppHandle) {
+pub(crate) fn create_status_bar(app: &tauri::AppHandle) {
     if NOTCH_FIRST_CLASS.load(Ordering::Relaxed) {
         // Notch sidecar is the HUD; never bring up the pill (incl. auto-recreate).
         return;
@@ -3003,28 +2972,36 @@ fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn dismiss_status_bar_on_main(app: &tauri::AppHandle) -> Result<(), String> {
-    if status_bar_pinned() || status_bar_persistent_hold(app) {
-        return Ok(());
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).dismiss_on_main();
     }
-    let is_active = app
-        .try_state::<SharedApp>()
-        .and_then(|shared| {
-            shared
-                .0
-                .lock()
-                .ok()
-                .map(|d| d.state != desktop::AppState::Idle)
-        })
-        .unwrap_or(false);
-    if is_active {
-        tracing::debug!("[status-bar] dismiss skipped — app state is active");
-        return Ok(());
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if status_bar_pinned() || status_bar_persistent_hold(app) {
+            return Ok(());
+        }
+        let is_active = app
+            .try_state::<SharedApp>()
+            .and_then(|shared| {
+                shared
+                    .0
+                    .lock()
+                    .ok()
+                    .map(|d| d.state != desktop::AppState::Idle)
+            })
+            .unwrap_or(false);
+        if is_active {
+            tracing::debug!("[status-bar] dismiss skipped — app state is active");
+            return Ok(());
+        }
+        if let Some(win) = app.get_webview_window("status-bar") {
+            win.hide()
+                .map_err(|e| format!("hide status bar failed: {e}"))?;
+        }
+        Ok(())
     }
-    if let Some(win) = app.get_webview_window("status-bar") {
-        win.hide()
-            .map_err(|e| format!("hide status bar failed: {e}"))?;
-    }
-    Ok(())
 }
 
 #[tauri::command]
