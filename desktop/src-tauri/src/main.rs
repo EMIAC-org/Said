@@ -8040,6 +8040,21 @@ impl EditObservationTimeline {
     }
 }
 
+fn effective_owned_field_value(
+    anchor: &EditCaptureAnchor,
+    last_value: &str,
+    observations: &EditObservationTimeline,
+) -> String {
+    if !last_value.is_empty() && extract_owned_text(anchor, last_value).is_ok() {
+        last_value.to_string()
+    } else {
+        observations
+            .latest_field_value()
+            .unwrap_or(last_value)
+            .to_string()
+    }
+}
+
 fn derive_owned_text_span(
     pre_paste: Option<&str>,
     post_paste: &str,
@@ -8577,9 +8592,9 @@ async fn watch_for_edit(
                 })
                 .await;
                 if observed != Some(expected) {
-                    ownership_lost_reason = Some("field_changed");
+                    explicit_boundary = Some("field_changed");
                     tracing::info!(
-                        "[edit-watch] ownership lost for {recording_id} — focused field changed"
+                        "[edit-watch] field boundary for {recording_id} — finalizing last owned state"
                     );
                     break;
                 }
@@ -8664,6 +8679,7 @@ async fn watch_for_edit(
         })
         .await;
         if let Some(now_val) = final_value {
+            let mut final_field_is_owned = true;
             #[cfg(target_os = "macos")]
             if let (Some(pid), Some(expected)) = (initial_pid, anchor.field_fingerprint) {
                 let observed = blocking_ax_option("finalize field fingerprint", move || {
@@ -8671,10 +8687,11 @@ async fn watch_for_edit(
                 })
                 .await;
                 if observed != Some(expected) {
-                    ownership_lost_reason = Some("field_changed");
+                    explicit_boundary = Some("field_changed");
+                    final_field_is_owned = false;
                 }
             }
-            if ownership_lost_reason.is_none() && now_val != last_val {
+            if final_field_is_owned && ownership_lost_reason.is_none() && now_val != last_val {
                 saw_user_edit = now_val != post_paste;
                 if let Err(reason) = observations.record(
                     &anchor,
@@ -8701,16 +8718,12 @@ async fn watch_for_edit(
 
     // A submit can clear the field after several valid edits. Recover the latest
     // anchored state rather than guessing from word overlap or a single snapshot.
-    let effective_val = if !last_val.is_empty() && extract_owned_text(&anchor, &last_val).is_ok() {
-        last_val.clone()
-    } else if let Some(latest) = observations.latest_field_value() {
+    let effective_val = effective_owned_field_value(&anchor, &last_val, &observations);
+    if effective_val != last_val {
         tracing::info!(
             "[edit-watch] final field unavailable (sent message?); using latest owned observation"
         );
-        latest.to_string()
-    } else {
-        last_val.clone()
-    };
+    }
 
     let final_front_pid = blocking_ax_option("focused_pid final", paster::focused_pid).await;
     tracing::info!(
@@ -10967,8 +10980,8 @@ mod edit_watch_timeout_tests {
     use super::{
         EDIT_WATCH_MAX_OBSERVATIONS, EditCaptureAnchor, EditObservationTimeline,
         clipboard_content_was_added, derive_owned_text_span, edit_watch_crossed_app_boundary,
-        edit_watch_timeouts, edit_watcher_generation_is_current, extract_owned_text,
-        new_edit_watcher_control,
+        edit_watch_timeouts, edit_watcher_generation_is_current, effective_owned_field_value,
+        extract_owned_text, new_edit_watcher_control,
     };
 
     #[test]
@@ -11151,6 +11164,30 @@ mod edit_watch_timeout_tests {
         assert_eq!(
             timeline.latest_field_value(),
             Some("Before SQLite and MACOBS After"),
+        );
+        assert_eq!(
+            effective_owned_field_value(&anchor, "Before SQLite and MACOBS After", &timeline,),
+            "Before SQLite and MACOBS After",
+        );
+    }
+
+    #[test]
+    fn field_change_finalizes_prior_owned_edit_without_reading_new_field() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: None,
+            post_paste_text: "Original output".to_string(),
+            owned_span: derive_owned_text_span(None, "Original output", "Original output"),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        timeline
+            .record(&anchor, &anchor.post_paste_text, "Corrected output", 500)
+            .unwrap();
+
+        assert_eq!(
+            effective_owned_field_value(&anchor, "Corrected output", &timeline),
+            "Corrected output",
         );
     }
 
