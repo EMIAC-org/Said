@@ -631,6 +631,9 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("gemini") && (lower.contains("401") || lower.contains("403")) {
         return "Gemini key invalid".into();
     }
+    if lower.contains("cerebras") && (lower.contains("rate limit") || lower.contains("429")) {
+        return "Cerebras rate limit hit".into();
+    }
     if lower.contains("rate") || lower.contains("429") {
         return "Rate limited — wait a moment".into();
     }
@@ -5562,6 +5565,9 @@ async fn run_voice_polish_sse(
                     message_polish_mode,
                 );
                 let human = humanize_error(&message);
+                if error_code.as_deref() == Some("cerebras_rate_limit") {
+                    notify_macos(&app_clone, "Cerebras rate limit hit", &human);
+                }
                 let _ = app_clone.emit(
                     "voice-error",
                     serde_json::json!({

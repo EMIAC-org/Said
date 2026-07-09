@@ -196,16 +196,32 @@ fn voice_error_payload(
     audio_id: Option<&str>,
     explicit_code: Option<&str>,
 ) -> Value {
-    let message = message.into();
-    let error_code = voice_error_code_for(&message, explicit_code);
-    let retryable = audio_id.is_some() && voice_error_retryable(&error_code);
+    let raw_message = message.into();
+    let details = crate::llm::decode_llm_error(&raw_message);
+    let message = details
+        .as_ref()
+        .map(|details| details.message.clone())
+        .unwrap_or(raw_message);
+    let detail_code = details
+        .as_ref()
+        .and_then(|details| details.error_code.as_deref());
+    let error_code = voice_error_code_for(&message, explicit_code.or(detail_code));
+    let retryable = audio_id.is_some()
+        && details
+            .as_ref()
+            .and_then(|details| details.retryable)
+            .unwrap_or_else(|| voice_error_retryable(&error_code));
     let owned_by_airnote = voice_error_owned_by_airnote(&error_code, &message);
-    let diagnostic = format!(
-        "AirNote voice pipeline failure; code={}; retryable={}; saved_audio={}",
-        error_code,
-        retryable,
-        audio_id.unwrap_or("none")
-    );
+    let diagnostic = details
+        .and_then(|details| details.diagnostic)
+        .unwrap_or_else(|| {
+            format!(
+                "AirNote voice pipeline failure; code={}; retryable={}; saved_audio={}",
+                error_code,
+                retryable,
+                audio_id.unwrap_or("none")
+            )
+        });
     json!({
         "message": message,
         "run_id": run_id,
@@ -234,11 +250,33 @@ fn voice_run_failed_event(
     audio_id: Option<&str>,
     explicit_code: Option<&str>,
 ) -> Event {
-    let message = message.into();
+    let raw_message = message.into();
+    let details = crate::llm::decode_llm_error(&raw_message);
+    let message = details
+        .as_ref()
+        .map(|details| details.message.clone())
+        .unwrap_or(raw_message);
+    let detail_code = details
+        .as_ref()
+        .and_then(|details| details.error_code.as_deref());
     let error_code = voice_error_code_for(&message, explicit_code);
-    let retryable = audio_id.is_some() && voice_error_retryable(&error_code);
+    let error_code = detail_code.unwrap_or(&error_code).to_string();
+    let retryable = audio_id.is_some()
+        && details
+            .as_ref()
+            .and_then(|details| details.retryable)
+            .unwrap_or_else(|| voice_error_retryable(&error_code));
     let owned_by_airnote = voice_error_owned_by_airnote(&error_code, &message);
     let payload = voice_error_payload(&message, Some(run_id), audio_id, Some(&error_code));
+    let payload = if let Some(diagnostic) = details.and_then(|details| details.diagnostic) {
+        let mut payload = payload;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("diagnostic".to_string(), json!(diagnostic));
+        }
+        payload
+    } else {
+        payload
+    };
     let _ = crate::store::voice_runs::mark_voice_run_failed(
         pool,
         run_id,

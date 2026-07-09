@@ -77,6 +77,18 @@ fn invalidate_openai_session_on_auth_error(
     true
 }
 
+fn llm_error_payload(raw: &str, message: String) -> serde_json::Value {
+    if let Some(details) = crate::llm::decode_llm_error(raw) {
+        return json!({
+            "message": message,
+            "error_code": details.error_code,
+            "retryable": details.retryable,
+            "diagnostic": details.diagnostic,
+        });
+    }
+    json!({ "message": message })
+}
+
 pub async fn polish(
     State(state): State<AppState>,
     Json(body): Json<TextPolishBody>,
@@ -328,11 +340,11 @@ pub async fn polish(
                 let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
                     "OpenAI not connected — go to Settings to connect your account".to_string()
                 } else {
-                    e.clone()
+                    crate::llm::llm_error_message(&e)
                 };
                 warn!("[text] LLM error: {e}");
                 yield Ok(Event::default().event("error")
-                    .data(json!({"message": message}).to_string()));
+                    .data(llm_error_payload(&e, message).to_string()));
                 return;
             }
             Err(_) => {
@@ -651,11 +663,11 @@ pub async fn refine_last(
                 let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
                     "OpenAI not connected — go to Settings to connect your account".to_string()
                 } else {
-                    e.clone()
+                    crate::llm::llm_error_message(&e)
                 };
                 warn!("[text-refine] LLM error: {e}");
                 yield Ok(Event::default().event("error")
-                    .data(json!({"message": message}).to_string()));
+                    .data(llm_error_payload(&e, message).to_string()));
                 return;
             }
             Err(_) => {

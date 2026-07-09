@@ -4,12 +4,14 @@
 //! Endpoint: https://api.cerebras.ai/v1/chat/completions
 
 use futures::StreamExt;
-use reqwest::Client;
+use reqwest::{Client, StatusCode, header::HeaderMap};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{info, trace, warn};
+
+use super::{LlmErrorDetails, encode_llm_error};
 
 pub use super::PolishResult;
 
@@ -91,8 +93,12 @@ pub async fn stream_polish(
 
     let status = resp.status();
     if !status.is_success() {
+        let headers = resp.headers().clone();
         let body_text = resp.text().await.unwrap_or_default();
         warn!("[cerebras] HTTP {status}: {body_text}");
+        if let Some(details) = cerebras_rate_limit_error(status, &headers, &body_text) {
+            return Err(encode_llm_error(&details));
+        }
         return Err(format!(
             "Cerebras API error {status}: {}",
             said_core::text::truncate_utf8(&body_text, 400)
@@ -145,4 +151,78 @@ pub async fn stream_polish(
         polished,
         polish_ms,
     })
+}
+
+fn cerebras_rate_limit_error(
+    status: StatusCode,
+    headers: &HeaderMap,
+    body_text: &str,
+) -> Option<LlmErrorDetails> {
+    let has_rate_limit_headers = headers
+        .keys()
+        .any(|name| name.as_str().starts_with("x-ratelimit-"));
+    if status != StatusCode::TOO_MANY_REQUESTS
+        && !(has_rate_limit_headers && body_text.to_ascii_lowercase().contains("rate"))
+    {
+        return None;
+    }
+
+    let reset_tokens = header_value(headers, "x-ratelimit-reset-tokens-minute");
+    let reset_requests = header_value(headers, "x-ratelimit-reset-requests-day");
+    let remaining_tokens = header_value(headers, "x-ratelimit-remaining-tokens-minute");
+    let remaining_requests = header_value(headers, "x-ratelimit-remaining-requests-day");
+
+    let mut message = "Cerebras rate limit hit".to_string();
+    if let Some(reset) = reset_tokens.as_deref() {
+        message.push_str(&format!(" — token limit resets in {reset}s"));
+    } else if let Some(reset) = reset_requests.as_deref() {
+        message.push_str(&format!(" — request limit resets in {reset}s"));
+    }
+    if let Some(remaining) = remaining_tokens.as_deref() {
+        message.push_str(&format!("; tokens remaining this minute: {remaining}"));
+    }
+    if let Some(remaining) = remaining_requests.as_deref() {
+        message.push_str(&format!("; requests remaining today: {remaining}"));
+    }
+
+    let diagnostic = format!(
+        "Cerebras API error {status}\n{}\nbody: {}",
+        rate_limit_headers_diagnostic(headers),
+        said_core::text::truncate_utf8(body_text, 800)
+    );
+
+    Some(LlmErrorDetails {
+        message,
+        error_code: Some("cerebras_rate_limit".to_string()),
+        retryable: Some(true),
+        diagnostic: Some(diagnostic),
+    })
+}
+
+fn rate_limit_headers_diagnostic(headers: &HeaderMap) -> String {
+    const NAMES: &[&str] = &[
+        "x-ratelimit-limit-requests-day",
+        "x-ratelimit-limit-tokens-minute",
+        "x-ratelimit-remaining-requests-day",
+        "x-ratelimit-remaining-tokens-minute",
+        "x-ratelimit-reset-requests-day",
+        "x-ratelimit-reset-tokens-minute",
+        "retry-after",
+    ];
+
+    let mut lines = Vec::with_capacity(NAMES.len());
+    for name in NAMES {
+        let value = header_value(headers, name).unwrap_or_else(|| "<missing>".to_string());
+        lines.push(format!("{name}: {value}"));
+    }
+    lines.join("\n")
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }

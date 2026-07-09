@@ -72,6 +72,12 @@ export function classifyError(raw: unknown, fallback = "Something went wrong. Pl
   }
 
   // Transient failures — a retry is the right fix.
+  if (/cerebras.*(rate.?limit|429)|cerebras_rate_limit|x-ratelimit/.test(e)) {
+    return {
+      message: "Cerebras rate limit hit — wait for the reset and try again.",
+      action: { label: "Try again", kind: "retry" },
+    };
+  }
   if (/timed? ?out|timeout|deadline/.test(e)) {
     return {
       message: "That took too long — check your connection and try again.",
