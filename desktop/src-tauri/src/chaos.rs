@@ -81,8 +81,9 @@ pub fn inject(app: &tauri::AppHandle, kind: &str) -> String {
             crate::recovery::plant_synthetic_orphan(3);
             "planted a 3s synthetic orphan — relaunch to verify recovery".into()
         }
-        // HUD watchdog — hide the pill while the app is active; the watchdog must
-        // bring it back (`hud_watchdog:recover`).
+        // HUD visibility watchdog — hide the pill while the app is active; the
+        // watchdog should notice the hidden HUD and bring it back
+        // (`hud_watchdog:recover`).
         "drop_hud" => {
             stick_processing(app);
             let app2 = app.clone();

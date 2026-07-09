@@ -1024,16 +1024,16 @@ export async function starVocabularyTerm(term: string): Promise<boolean> {
  * still works. In Tauri, calls the native opener so mailto: actually launches
  * the user's mail client (window.open silently fails in the webview).
  */
-export async function openExternal(url: string): Promise<void> {
+export async function openExternal(url: string): Promise<boolean> {
   if (!isTauriRuntime()) {
-    window.open(url, "_blank");
-    return;
+    return window.open(url, "_blank") !== null;
   }
   try {
     await tauriInvoke("open_external", { url });
+    return true;
   } catch {
     // Last-ditch fallback so the user is never left with nothing happening.
-    window.open(url, "_blank");
+    return window.open(url, "_blank") !== null;
   }
 }
 

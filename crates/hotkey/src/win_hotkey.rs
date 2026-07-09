@@ -27,6 +27,10 @@ pub const VK_5: u32 = 0x35;
 pub const VK_N: u32 = 0x4E;
 pub const VK_V: u32 = 0x56;
 pub const VK_R: u32 = 0x52;
+pub const VK_LWIN: u32 = 0x5B;
+pub const VK_RWIN: u32 = 0x5C;
+pub const VK_LSHIFT: u32 = 0xA0;
+pub const VK_RSHIFT: u32 = 0xA1;
 pub const VK_LCONTROL: u32 = 0xA2;
 pub const VK_RCONTROL: u32 = 0xA3;
 pub const VK_LMENU: u32 = 0xA4;
@@ -354,9 +358,13 @@ pub fn classify_long_dictation(
             mods.alt && mods.right_alt && !mods.left_alt && !mods.ctrl && !mods.shift
         }
         RecordHotkey::Function => false,
-        // Space-to-lock long dictation is only wired for the preset keys; a custom
-        // sided modifier records normally but doesn't gate the long-dictation lock.
-        RecordHotkey::Modifier { .. } => false,
+        RecordHotkey::Modifier { win_vk, .. } => match win_vk {
+            VK_LCONTROL | VK_RCONTROL => mods.ctrl && !mods.shift && !mods.alt,
+            VK_LSHIFT | VK_RSHIFT => mods.shift && !mods.ctrl && !mods.alt,
+            VK_LMENU => mods.alt && mods.left_alt && !mods.right_alt && !mods.ctrl && !mods.shift,
+            VK_LWIN | VK_RWIN => !mods.ctrl && !mods.shift && !mods.alt,
+            _ => false,
+        },
     }
 }
 
@@ -788,6 +796,87 @@ mod tests {
             EvtKind::KeyDown,
             WinModifiers::none(),
             RecordHotkey::Function,
+            true,
+        ));
+    }
+
+    #[test]
+    fn long_dictation_custom_modifier_space_is_supported() {
+        let left_control = RecordHotkey::Modifier {
+            mac_keycode: 0,
+            mac_mask: 0,
+            win_vk: VK_LCONTROL,
+        };
+        assert!(classify_long_dictation(
+            VK_SPACE,
+            EvtKind::KeyDown,
+            WinModifiers {
+                ctrl: true,
+                ..WinModifiers::default()
+            },
+            left_control,
+            true,
+        ));
+        assert!(!classify_long_dictation(
+            VK_SPACE,
+            EvtKind::KeyDown,
+            WinModifiers {
+                ctrl: true,
+                shift: true,
+                ..WinModifiers::default()
+            },
+            left_control,
+            true,
+        ));
+
+        let left_option = RecordHotkey::Modifier {
+            mac_keycode: 0,
+            mac_mask: 0,
+            win_vk: VK_LMENU,
+        };
+        assert!(classify_long_dictation(
+            VK_SPACE,
+            EvtKind::KeyDown,
+            WinModifiers {
+                alt: true,
+                left_alt: true,
+                ..WinModifiers::default()
+            },
+            left_option,
+            true,
+        ));
+        assert!(!classify_long_dictation(
+            VK_SPACE,
+            EvtKind::KeyDown,
+            WinModifiers {
+                alt: true,
+                right_alt: true,
+                ..WinModifiers::default()
+            },
+            left_option,
+            true,
+        ));
+
+        let left_command = RecordHotkey::Modifier {
+            mac_keycode: 0,
+            mac_mask: 0,
+            win_vk: VK_LWIN,
+        };
+        assert!(classify_long_dictation(
+            VK_SPACE,
+            EvtKind::KeyDown,
+            WinModifiers::none(),
+            left_command,
+            true,
+        ));
+        assert!(!classify_long_dictation(
+            VK_SPACE,
+            EvtKind::KeyDown,
+            WinModifiers {
+                ctrl: true,
+                ..WinModifiers::default()
+            },
+            left_command,
             true,
         ));
     }

@@ -176,8 +176,14 @@ export function EnterpriseConnectForm({
     const larkUrl = query ? `${trimmed}/auth/lark?${query}` : `${trimmed}/auth/lark`;
 
     setAuthUrl(larkUrl);
+    const opened = await openExternal(larkUrl);
+    if (!opened) {
+      setOauthPhase("error");
+      setTokenError("Couldn't open your browser. Try again or paste the token manually.");
+      setShowManualToken(true);
+      return;
+    }
     setOauthPhase("waiting");
-    await openExternal(larkUrl);
   }, []);
 
   async function handleValidate() {
@@ -505,16 +511,16 @@ export function EnterpriseConnectForm({
 
           {/* A single muted row replaces the old Cancel + Try-again + paste-token stack. */}
           <div className="flex items-center justify-between">
-            {onCancel && oauthPhase !== "submitting" ? (
+            {oauthPhase !== "submitting" ? (
               <button
                 type="button"
                 className="text-[11.5px] text-muted-foreground hover:text-foreground transition-colors"
                 onClick={() => {
                   void resetOAuth();
-                  onCancel();
+                  onCancel?.();
                 }}
               >
-                Cancel
+                {onCancel ? "Cancel" : "Start over"}
               </button>
             ) : (
               <span />

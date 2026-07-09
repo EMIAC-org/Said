@@ -140,6 +140,8 @@ export function OnboardingFlow({
   const [testError, setTestError] = useState("");
   const [testPhase, setTestPhase] = useState<"idle" | "recording" | "processing">("idle");
   const [testNoAudio, setTestNoAudio] = useState(false);
+  const [testDictationText, setTestDictationText] = useState("");
+  const testTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
   const [userNavigatedManually, setUserNavigatedManually] = useState(false);
   const resumeSynced = useRef(false);
@@ -481,12 +483,22 @@ export function OnboardingFlow({
       setTestPhase("idle");
       setTestError(friendlyError(e.payload?.message, "That didn’t go through. Try again."));
     });
+    const completeFromText = (text: string) => {
+      const polished = text.trim();
+      if (!polished) return;
+      setTestDictationText(text);
+      setDictationTried(true);
+      dictationTriedRef.current = true;
+      setTestError("");
+      setTestNoAudio(false);
+    };
     const unlistenState = listen<{ state?: string }>("app-state", (e) => {
       const s = e.payload?.state;
       if (s === "recording") {
         setTestError("");
         setTestNoAudio(false);
         setTestPhase("recording");
+        testTextareaRef.current?.focus();
       } else if (s === "processing") {
         setTestPhase("processing");
       } else {
@@ -495,9 +507,20 @@ export function OnboardingFlow({
     });
     // When a capture finishes but nothing lands in the box shortly after, nudge
     // the user instead of leaving them staring at an empty field.
-    const unlistenDone = listen("voice-done", () => {
+    const unlistenDone = listen<{ polished?: string }>("voice-done", (e) => {
       setTestPhase("idle");
       if (noAudioTimer) clearTimeout(noAudioTimer);
+      const polished = e.payload?.polished ?? "";
+      if (polished.trim()) {
+        window.setTimeout(() => {
+          const field = testTextareaRef.current;
+          if (!field) return;
+          if (!field.value.trim() || !dictationTriedRef.current) {
+            completeFromText(polished);
+            field.focus();
+          }
+        }, 250);
+      }
       noAudioTimer = setTimeout(() => {
         if (!dictationTriedRef.current) setTestNoAudio(true);
       }, 3500);
@@ -1066,10 +1089,13 @@ export function OnboardingFlow({
             <span className="onb-try-readaloud-text">“Kal ka demo ready hai — let’s ship it.”</span>
           </div>
           <textarea
+            ref={testTextareaRef}
             autoFocus
             className="onb-try-field"
             placeholder={tryPlaceholder}
+            value={testDictationText}
             onChange={(e) => {
+              setTestDictationText(e.target.value);
               if (e.target.value.trim()) {
                 setDictationTried(true);
                 dictationTriedRef.current = true;

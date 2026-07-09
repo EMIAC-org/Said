@@ -14,6 +14,7 @@ mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plan
 mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
+mod hud_manager;
 mod local_asr;
 mod meeting_engine;
 mod notch_sidecar;
@@ -126,7 +127,7 @@ fn guard_panics<R>(label: &'static str, f: impl FnOnce() -> R) -> Option<R> {
 /// Dispatch `f` to the AppKit main thread wrapped in the panic seatbelt. Use this
 /// instead of `run_on_main_thread` for any closure touching windows/panels/tray so
 /// a panic inside it can never SIGABRT the app.
-fn run_on_main_guarded(
+pub(crate) fn run_on_main_guarded(
     app: &tauri::AppHandle,
     label: &'static str,
     f: impl FnOnce() + Send + 'static,
@@ -148,6 +149,18 @@ fn exit_after_shutdown_cleanup(code: i32) -> ! {
 fn exit_after_shutdown_cleanup(code: i32) -> ! {
     std::process::exit(code)
 }
+
+#[cfg(target_os = "macos")]
+fn configure_ggml_metal_shutdown_guard() {
+    if std::env::var_os("GGML_METAL_NO_RESIDENCY").is_none() {
+        // Must be set before whisper.cpp/ggml initializes Metal. Newer ggml
+        // residency-set teardown can assert during libc finalizers on app quit.
+        unsafe { std::env::set_var("GGML_METAL_NO_RESIDENCY", "1") };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_ggml_metal_shutdown_guard() {}
 
 fn record_hotkey_label(raw: &str) -> &'static str {
     // Platform-aware: the same pref maps to different physical keys. On Windows
@@ -226,49 +239,7 @@ tauri_panel! {
     })
 }
 
-#[cfg(target_os = "macos")]
-fn status_bar_collection_behavior() -> CollectionBehavior {
-    // `.stationary` + `.can_join_all_spaces` conflict in release builds:
-    // macOS silently ignores setCollectionBehavior after Space/fullscreen transitions
-    // (Tauri #5566). Use only what is needed: pin to all spaces, allow over fullscreen.
-    CollectionBehavior::new()
-        .can_join_all_spaces()
-        .full_screen_auxiliary()
-}
-
-#[cfg(target_os = "macos")]
-fn tune_status_bar_panel(app: &tauri::AppHandle) {
-    let Ok(panel) = app.get_webview_panel("status-bar") else {
-        return;
-    };
-    panel.set_level(PanelLevel::Custom(28).value());
-    panel.set_floating_panel(true);
-    panel.set_hides_on_deactivate(false);
-    panel.set_works_when_modal(true);
-    panel.set_ignores_mouse_events(!status_bar_interactive(app));
-    panel.set_collection_behavior(status_bar_collection_behavior().into());
-    panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().into());
-    panel.set_transparent(true);
-    panel.set_has_shadow(false);
-}
-
-#[cfg(target_os = "macos")]
-fn show_status_bar_panel(app: &tauri::AppHandle) -> bool {
-    match app.get_webview_panel("status-bar") {
-        Ok(panel) => {
-            tune_status_bar_panel(app);
-            panel.show();
-            panel.order_front_regardless();
-            true
-        }
-        Err(_) => {
-            tracing::warn!("[status-bar] panel handle missing; falling back to webview window");
-            false
-        }
-    }
-}
-
-fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
+pub(crate) fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
     let state = app
         .try_state::<SharedApp>()
         .and_then(|shared| shared.0.lock().ok().map(|d| d.state.as_str().to_string()))
@@ -283,67 +254,13 @@ fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
-    use objc::Message;
-    use objc::runtime::{Object, Sel};
-
-    let Ok(ns_window) = win.ns_window() else {
-        tracing::warn!("[status-bar] macOS tune failed: ns_window unavailable");
-        return;
-    };
-    if ns_window.is_null() {
-        tracing::warn!("[status-bar] macOS tune failed: ns_window was null");
-        return;
-    }
-
-    // Non-activating floating panel available on every Space and over fullscreen apps.
-    // `.stationary` (1<<4) and `.ignoresExposeCycle` (1<<6) are intentionally omitted:
-    // combining them with `.canJoinAllSpaces` silently breaks setCollectionBehavior in
-    // release builds after Space/fullscreen transitions (Tauri #5566).
-    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
-    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
-    const NONACTIVATING_PANEL_STYLE: usize = 1 << 7;
-    const FULL_SIZE_CONTENT_VIEW_STYLE: usize = 1 << 15;
-    const NS_STATUS_WINDOW_LEVEL_PLUS_THREE: isize = 28;
-
-    unsafe {
-        let ns_window = &*(ns_window as *mut Object);
-        let style_mask: usize = ns_window
-            .send_message(Sel::register("styleMask"), ())
-            .unwrap_or(0);
-        let panel_style = style_mask | NONACTIVATING_PANEL_STYLE | FULL_SIZE_CONTENT_VIEW_STYLE;
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setStyleMask:"), (panel_style,));
-
-        let behavior = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
-        let _: Result<(), _> = ns_window.send_message(
-            Sel::register("setLevel:"),
-            (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,),
-        );
-        let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
-        let ignores_mouse = !status_bar_interactive(win.app_handle());
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (ignores_mouse,));
-        for (selector_name, value) in [
-            ("setHidesOnDeactivate:", false),
-            ("setFloatingPanel:", true),
-        ] {
-            let selector = Sel::register(selector_name);
-            let responds: bool = ns_window
-                .send_message(Sel::register("respondsToSelector:"), (selector,))
-                .unwrap_or(false);
-            if responds {
-                let _: Result<(), _> = ns_window.send_message(selector, (value,));
-            }
-        }
-        let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
-        tracing::debug!(
-            "[status-bar] macOS tuned style={panel_style:#x} behavior={behavior:#x} level={NS_STATUS_WINDOW_LEVEL_PLUS_THREE}"
-        );
-    }
+fn configure_main_window_macos(_win: &tauri::WebviewWindow) {
+    // The dynamic acceptsFirstMouse subclassing path caused foreign Cocoa
+    // exceptions to unwind through tao's event loop in dev builds.
 }
+
+#[cfg(not(target_os = "macos"))]
+fn configure_main_window_macos(_win: &tauri::WebviewWindow) {}
 
 const STATUS_BAR_WIDTH: f64 = 300.0;
 const STATUS_BAR_HEIGHT: f64 = 142.0;
@@ -428,7 +345,7 @@ fn apply_status_bar_position(
 }
 
 /// Keep the floating status bar visible at idle only when `SAID_STATUS_BAR_PIN=1`.
-fn status_bar_pinned() -> bool {
+pub(crate) fn status_bar_pinned() -> bool {
     matches!(
         std::env::var("SAID_STATUS_BAR_PIN").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
@@ -489,24 +406,29 @@ fn present_status_bar_macos_on_main(
     state: &str,
     resync: bool,
 ) {
+    diag::breadcrumb(format!("status_bar:present:{state}:begin"));
     reposition_status_bar(app, win);
-    configure_status_bar_macos(win);
+    diag::breadcrumb(format!("status_bar:present:{state}:repositioned"));
+    hud_manager::configure_window(win);
     if let Err(e) = win.set_always_on_top(true) {
         tracing::warn!("[status-bar] set_always_on_top failed: {e}");
     }
+    diag::breadcrumb(format!("status_bar:present:{state}:show"));
     match win.show() {
         Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
         Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
     }
-    configure_status_bar_macos(win);
-    let _ = show_status_bar_panel(app);
+    hud_manager::configure_window(win);
+    let _ = hud_manager::show_panel(app);
     if resync {
+        diag::breadcrumb(format!("status_bar:present:{state}:resync"));
         emit_status_bar_resync(app, state);
     }
+    diag::breadcrumb(format!("status_bar:present:{state}:end"));
 }
 
 #[cfg(target_os = "macos")]
-fn schedule_present_status_bar_macos(
+pub(crate) fn schedule_present_status_bar_macos(
     app: &tauri::AppHandle,
     win: &tauri::WebviewWindow,
     state: &str,
@@ -516,6 +438,7 @@ fn schedule_present_status_bar_macos(
     let app_in_closure = app_for_main.clone();
     let win = win.clone();
     let state = state.to_string();
+    diag::breadcrumb(format!("status_bar:schedule_present:{state}"));
     if let Err(e) = run_on_main_guarded(&app_for_main, "status_bar.present", move || {
         present_status_bar_macos_on_main(&app_in_closure, &win, &state, resync);
     }) {
@@ -528,35 +451,30 @@ fn present_status_bar_native(
     reason: &str,
     resync: bool,
 ) -> Result<(), String> {
-    if app.get_webview_window("status-bar").is_none() {
-        // The status-bar window is pre-created at startup. If it is somehow missing,
-        // do NOT create it here on Windows: this fn is reachable from the
-        // present_status_bar / set_status_bar_persistent IPC commands, and creating
-        // a WebView2 window from inside an IPC handler deadlocks Windows IPC
-        // (wry #583 — the same class that wedged End-meeting). macOS's NSPanel path
-        // is safe.
-        #[cfg(target_os = "macos")]
-        create_status_bar(app);
-        #[cfg(not(target_os = "macos"))]
-        {
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).present(reason, resync);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if app.get_webview_window("status-bar").is_none() {
+            // The status-bar window is pre-created at startup. If it is somehow missing,
+            // do NOT create it here on Windows: this fn is reachable from the
+            // present_status_bar / set_status_bar_persistent IPC commands, and creating
+            // a WebView2 window from inside an IPC handler deadlocks Windows IPC
+            // (wry #583 — the same class that wedged End-meeting). macOS's NSPanel path
+            // is safe.
             tracing::warn!(
                 "[status-bar] window missing — not recreating from an IPC path on Windows"
             );
             return Err("status-bar window not available".to_string());
         }
-    }
-    let win = app
-        .get_webview_window("status-bar")
-        .ok_or_else(|| "status-bar window not found".to_string())?;
-    tracing::debug!("[status-bar] native present reason={reason} resync={resync}");
+        let win = app
+            .get_webview_window("status-bar")
+            .ok_or_else(|| "status-bar window not found".to_string())?;
+        tracing::debug!("[status-bar] native present reason={reason} resync={resync}");
 
-    #[cfg(target_os = "macos")]
-    {
-        schedule_present_status_bar_macos(app, &win, reason, resync);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
         // Position the HUD before showing — the macOS path repositions via the
         // panel presenter, but the native path must do it explicitly or the
         // window appears at its stale/default origin.
@@ -569,9 +487,9 @@ fn present_status_bar_native(
         if resync {
             emit_status_bar_resync(app, reason);
         }
-    }
 
-    Ok(())
+        Ok(())
+    }
 }
 
 // ── Keystroke reconstruction (edit detection for AX-blind apps) ──────────────
@@ -789,7 +707,7 @@ impl LiveTypingGuard {
 // ── Managed state ─────────────────────────────────────────────────────────────
 
 /// Holds the local recording state machine.
-struct SharedApp(Arc<Mutex<DesktopApp>>);
+pub(crate) struct SharedApp(Arc<Mutex<DesktopApp>>);
 
 /// Holds the backend endpoint (url + secret). None until daemon starts.
 struct BackendState(Arc<Mutex<Option<BackendEndpoint>>>);
@@ -1042,6 +960,7 @@ struct LongDictationState {
     locked: Arc<AtomicBool>,
     pending_lock: Arc<AtomicBool>,
     stop_consumed: Arc<AtomicBool>,
+    finishing: Arc<AtomicBool>,
 }
 
 impl LongDictationState {
@@ -1050,13 +969,28 @@ impl LongDictationState {
             locked: Arc::new(AtomicBool::new(false)),
             pending_lock: Arc::new(AtomicBool::new(false)),
             stop_consumed: Arc::new(AtomicBool::new(false)),
+            finishing: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn reset(&self) {
-        self.locked.store(false, Ordering::SeqCst);
-        self.pending_lock.store(false, Ordering::SeqCst);
-        self.stop_consumed.store(false, Ordering::SeqCst);
+    fn reset(&self) -> bool {
+        let was_locked = self.locked.swap(false, Ordering::SeqCst);
+        let had_pending_lock = self.pending_lock.swap(false, Ordering::SeqCst);
+        let had_consumed_stop = self.stop_consumed.swap(false, Ordering::SeqCst);
+        let was_finishing = self.finishing.swap(false, Ordering::SeqCst);
+        was_locked || had_pending_lock || had_consumed_stop || was_finishing
+    }
+
+    fn clear_recording_lock(&self) -> bool {
+        let was_locked = self.locked.swap(false, Ordering::SeqCst);
+        let had_pending_lock = self.pending_lock.swap(false, Ordering::SeqCst);
+        was_locked || had_pending_lock
+    }
+
+    fn clear_finishing(&self) -> bool {
+        let had_consumed_stop = self.stop_consumed.swap(false, Ordering::SeqCst);
+        let was_finishing = self.finishing.swap(false, Ordering::SeqCst);
+        had_consumed_stop || was_finishing
     }
 }
 
@@ -1173,7 +1107,7 @@ struct HotPathCacheInner {
 
 /// Generation counter for status-bar idle hide timers.
 /// Each idle sync increments this; a timer whose generation no longer matches is silently dropped.
-struct StatusBarHideGen(Arc<AtomicU64>);
+pub(crate) struct StatusBarHideGen(Arc<AtomicU64>);
 
 /// True while the status bar is showing a user-action-required notification.
 /// Idle app-state syncs must not hide the native window until the frontend
@@ -1289,7 +1223,7 @@ fn emit_voice_done(app: &tauri::AppHandle, done: &api::PolishDone, run_id: Optio
     let _ = app.emit("voice-done", payload);
 }
 
-fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
+pub(crate) fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
     app.try_state::<StatusBarPersistentHold>()
         .map(|s| s.0.load(Ordering::SeqCst))
         .unwrap_or(false)
@@ -1297,51 +1231,25 @@ fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
 
 /// Whether the status bar currently wants to accept clicks. Defaults to false
 /// (click-through) when the state hasn't been registered yet.
-fn status_bar_interactive(app: &tauri::AppHandle) -> bool {
-    app.try_state::<StatusBarInteractive>()
-        .map(|s| s.0.load(Ordering::SeqCst))
-        .unwrap_or(false)
-}
-
+#[cfg(not(target_os = "macos"))]
 fn apply_status_bar_interactive_state(win: &tauri::WebviewWindow, interactive: bool) {
     let _ = win.set_ignore_cursor_events(!interactive);
-    #[cfg(target_os = "macos")]
-    {
-        use objc::Message;
-        use objc::runtime::{Object, Sel};
-        if let Ok(ns_window) = win.ns_window() {
-            if !ns_window.is_null() {
-                unsafe {
-                    let ns_window = &*(ns_window as *mut Object);
-                    let _: Result<(), _> = ns_window
-                        .send_message(Sel::register("setIgnoresMouseEvents:"), (!interactive,));
-                }
-            }
-        }
-    }
     tracing::debug!("[status-bar] interactive={interactive}");
 }
 
 fn set_status_bar_interactive_state(app: &tauri::AppHandle, interactive: bool) {
-    if let Some(state) = app.try_state::<StatusBarInteractive>() {
-        state.0.store(interactive, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    {
+        hud_manager::MacHudManager::new(app).set_interactive(interactive);
+        return;
     }
-    if let Some(win) = app.get_webview_window("status-bar") {
-        #[cfg(target_os = "macos")]
-        {
-            let app_for_main = app.clone();
-            let win_for_main = win.clone();
-            if let Err(e) =
-                run_on_main_guarded(&app_for_main, "status_bar.interactive", move || {
-                    apply_status_bar_interactive_state(&win_for_main, interactive);
-                })
-            {
-                tracing::warn!("[status-bar] schedule interactive state failed: {e}");
-            }
-        }
 
-        #[cfg(not(target_os = "macos"))]
-        {
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(state) = app.try_state::<StatusBarInteractive>() {
+            state.0.store(interactive, Ordering::SeqCst);
+        }
+        if let Some(win) = app.get_webview_window("status-bar") {
             apply_status_bar_interactive_state(&win, interactive);
         }
     }
@@ -1363,8 +1271,10 @@ fn set_placement_mode_active(app: &tauri::AppHandle, active: bool) {
 struct DebugLogs {
     desktop_path: String,
     backend_path: String,
+    breadcrumb_path: String,
     desktop: String,
     backend: String,
+    breadcrumbs: String,
     combined: String,
     truncated: bool,
 }
@@ -1660,6 +1570,7 @@ fn build_tray_menu_for_state(
 }
 
 fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
+    diag::breadcrumb(format!("status_bar:sync:{state}"));
     #[cfg(target_os = "macos")]
     {
         let app = handle.clone();
@@ -1676,127 +1587,112 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
 }
 
 fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
-    let win = match handle.get_webview_window("status-bar") {
-        Some(win) => win,
-        None if state != "idle" => {
-            tracing::warn!(
-                "[status-bar] sync requested for active state={state}, but window was not found — recreating"
-            );
-            create_status_bar(handle);
-            let Some(win) = handle.get_webview_window("status-bar") else {
-                tracing::warn!(
-                    "[status-bar] recreate failed; still no status-bar window for state={state}"
-                );
-                return;
-            };
-            win
-        }
-        None => {
-            tracing::warn!(
-                "[status-bar] sync requested for state={state}, but window was not found"
-            );
-            return;
-        }
-    };
-
-    tracing::debug!("[status-bar] sync state={state}");
-    if state == "idle" {
-        if status_bar_pinned() || status_bar_persistent_hold(handle) {
-            tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
-            #[cfg(target_os = "macos")]
-            schedule_present_status_bar_macos(handle, &win, state, false);
-            #[cfg(not(target_os = "macos"))]
-            {
-                reposition_status_bar(handle, &win);
-                let _ = win.set_always_on_top(true);
-                let _ = win.set_visible_on_all_workspaces(true);
-                let _ = win.show();
-            }
-            return;
-        }
-        tracing::debug!("[status-bar] idle state — scheduling native hide");
-        let my_gen = handle
-            .try_state::<StatusBarHideGen>()
-            .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
-            .unwrap_or(0);
-        let hide_gen_arc = handle
-            .try_state::<StatusBarHideGen>()
-            .map(|s| Arc::clone(&s.0));
-        let app = handle.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
-            // If a newer idle sync fired after us, let it own the hide decision.
-            if let Some(counter) = &hide_gen_arc {
-                if counter.load(Ordering::Relaxed) != my_gen {
-                    return;
-                }
-            }
-            let still_idle = app
-                .try_state::<SharedApp>()
-                .and_then(|shared| {
-                    shared
-                        .0
-                        .lock()
-                        .ok()
-                        .map(|d| d.state == desktop::AppState::Idle)
-                })
-                .unwrap_or(true);
-            if !still_idle {
-                tracing::debug!("[status-bar] hide skipped — app is active again");
-                return;
-            }
-            if status_bar_pinned() || status_bar_persistent_hold(&app) {
-                tracing::debug!("[status-bar] hide skipped — status bar is pinned/held");
-                return;
-            }
-            if app.get_webview_window("status-bar").is_some() {
-                #[cfg(target_os = "macos")]
-                {
-                    let app_main = app.clone();
-                    if let Err(e) =
-                        run_on_main_guarded(&app_main.clone(), "status_bar.idle_hide", move || {
-                            if let Some(win) = app_main.get_webview_window("status-bar") {
-                                match win.hide() {
-                                    Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
-                                    Err(e) => {
-                                        tracing::warn!("[status-bar] hide after idle failed: {e}")
-                                    }
-                                }
-                            }
-                        })
-                    {
-                        tracing::warn!("[status-bar] schedule idle hide failed: {e}");
-                    }
-                }
-                #[cfg(not(target_os = "macos"))]
-                if let Some(win) = app.get_webview_window("status-bar") {
-                    match win.hide() {
-                        Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
-                        Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
-                    }
-                }
-            }
-        });
-        return;
-    }
-
-    // Invalidate any pending idle-hide timer immediately. The timer also checks
-    // state before hiding, but bumping the generation avoids relying on a mutex
-    // read from an old async task when recordings happen in quick succession.
-    if let Some(counter) = handle
-        .try_state::<StatusBarHideGen>()
-        .map(|s| Arc::clone(&s.0))
-    {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-
     #[cfg(target_os = "macos")]
     {
-        schedule_present_status_bar_macos(handle, &win, state, state != "placement");
+        hud_manager::MacHudManager::new(handle).sync_on_main(state);
+        return;
     }
 
     #[cfg(not(target_os = "macos"))]
     {
+        diag::breadcrumb(format!("status_bar:sync_main:{state}:begin"));
+        let win = match handle.get_webview_window("status-bar") {
+            Some(win) => win,
+            None if state != "idle" => {
+                diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_recreate"));
+                tracing::warn!(
+                    "[status-bar] sync requested for active state={state}, but window was not found — recreating"
+                );
+                create_status_bar(handle);
+                let Some(win) = handle.get_webview_window("status-bar") else {
+                    diag::breadcrumb(format!("status_bar:sync_main:{state}:recreate_failed"));
+                    tracing::warn!(
+                        "[status-bar] recreate failed; still no status-bar window for state={state}"
+                    );
+                    return;
+                };
+                win
+            }
+            None => {
+                diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_idle"));
+                tracing::warn!(
+                    "[status-bar] sync requested for state={state}, but window was not found"
+                );
+                return;
+            }
+        };
+
+        tracing::debug!("[status-bar] sync state={state}");
+        if state == "idle" {
+            if status_bar_pinned() || status_bar_persistent_hold(handle) {
+                diag::breadcrumb("status_bar:sync_main:idle:held_visible");
+                tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
+                reposition_status_bar(handle, &win);
+                let _ = win.set_always_on_top(true);
+                let _ = win.set_visible_on_all_workspaces(true);
+                let _ = win.show();
+                return;
+            }
+            tracing::debug!("[status-bar] idle state — scheduling native hide");
+            diag::breadcrumb("status_bar:sync_main:idle:schedule_hide");
+            let my_gen = handle
+                .try_state::<StatusBarHideGen>()
+                .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
+                .unwrap_or(0);
+            let hide_gen_arc = handle
+                .try_state::<StatusBarHideGen>()
+                .map(|s| Arc::clone(&s.0));
+            let app = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+                // If a newer idle sync fired after us, let it own the hide decision.
+                if let Some(counter) = &hide_gen_arc {
+                    if counter.load(Ordering::Relaxed) != my_gen {
+                        return;
+                    }
+                }
+                let still_idle = app
+                    .try_state::<SharedApp>()
+                    .and_then(|shared| {
+                        shared
+                            .0
+                            .lock()
+                            .ok()
+                            .map(|d| d.state == desktop::AppState::Idle)
+                    })
+                    .unwrap_or(true);
+                if !still_idle {
+                    tracing::debug!("[status-bar] hide skipped — app is active again");
+                    return;
+                }
+                if status_bar_pinned() || status_bar_persistent_hold(&app) {
+                    tracing::debug!("[status-bar] hide skipped — status bar is pinned/held");
+                    return;
+                }
+                if app.get_webview_window("status-bar").is_some() {
+                    if let Some(win) = app.get_webview_window("status-bar") {
+                        match win.hide() {
+                            Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
+                            Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
+        // Invalidate any pending idle-hide timer immediately. The timer also checks
+        // state before hiding, but bumping the generation avoids relying on a mutex
+        // read from an old async task when recordings happen in quick succession.
+        if let Some(counter) = handle
+            .try_state::<StatusBarHideGen>()
+            .map(|s| Arc::clone(&s.0))
+        {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+
+        diag::breadcrumb(format!("status_bar:sync_main:{state}:end"));
+
         reposition_status_bar(handle, &win);
         match win.set_always_on_top(true) {
             Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
@@ -1869,96 +1765,46 @@ static NOTCH_FIRST_CLASS: AtomicBool = AtomicBool::new(false);
 /// The window loads the same SPA with an explicit statusbar marker so
 /// `main.tsx` renders `<StatusBar />` instead of the full app. It starts hidden
 /// at idle and is shown by `sync_status_bar()` when recording/processing begins.
-fn create_status_bar(app: &tauri::AppHandle) {
-    if NOTCH_FIRST_CLASS.load(Ordering::Relaxed) {
-        // Notch sidecar is the HUD; never bring up the pill (incl. auto-recreate).
-        return;
-    }
-    if app.get_webview_window("status-bar").is_some() {
-        tracing::info!("[status-bar] create skipped; window already exists");
-        return;
-    }
-
-    // Position: bottom-center, low above the dock. Match VoiceInk's panel model:
-    // keep a max-size transparent native canvas and expand the inner HUD inside it.
-    let idle_w = STATUS_BAR_WIDTH;
-    let idle_h = STATUS_BAR_HEIGHT;
-    let (x, y) = status_bar_target_origin(app, idle_w, idle_h);
-
-    let recovery_preview_enabled = std::env::var("AIRNOTE_RECOVERY_PREVIEW")
-        .or_else(|_| std::env::var("VITE_AIRNOTE_RECOVERY_PREVIEW"))
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    let url = if recovery_preview_enabled {
-        "index.html?view=statusbar&recoveryPreview=1#statusbar"
-    } else {
-        "index.html?view=statusbar#statusbar"
-    };
-    tracing::info!(
-        "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
-    );
-
+pub(crate) fn create_status_bar(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
-        match PanelBuilder::<_, StatusBarPanel>::new(app, "status-bar")
-            .url(tauri::WebviewUrl::App(url.into()))
-            .title("AirNote")
-            .size(tauri::Size::Logical(tauri::LogicalSize::new(
-                idle_w, idle_h,
-            )))
-            .position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
-            .level(PanelLevel::Custom(28))
-            .floating(true)
-            .hides_on_deactivate(false)
-            .works_when_modal(true)
-            .ignores_mouse_events(true)
-            .has_shadow(false)
-            .transparent(true)
-            .style_mask(StyleMask::empty().borderless().nonactivating_panel())
-            .collection_behavior(status_bar_collection_behavior())
-            .no_activate(true)
-            .with_window(|window| {
-                window
-                    .background_throttling(
-                        tauri::utils::config::BackgroundThrottlingPolicy::Disabled,
-                    )
-                    .decorations(false)
-                    .always_on_top(true)
-                    .visible_on_all_workspaces(true)
-                    .skip_taskbar(true)
-                    .focused(false)
-                    .resizable(true)
-                    .shadow(false)
-                    .transparent(true)
-                    .visible(false)
-            })
-            .build()
-        {
-            Ok(panel) => {
-                tracing::info!("[status-bar] NSPanel created label={}", panel.label());
-                tune_status_bar_panel(app);
-                if status_bar_pinned() {
-                    tracing::info!("[status-bar] dev pin active — showing at idle");
-                } else {
-                    panel.hide();
-                }
-                if let Some(win) = app.get_webview_window("status-bar") {
-                    match win.url() {
-                        Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
-                        Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
-                    }
-                    let _ = win.set_ignore_cursor_events(true);
-                    configure_status_bar_macos(&win);
-                }
-                sync_status_bar(app, "idle");
-            }
-            Err(e) => tracing::warn!("[status-bar] could not create NSPanel: {e}"),
-        }
+        hud_manager::MacHudManager::new(app).ensure_created();
         return;
     }
 
     #[cfg(not(target_os = "macos"))]
-    match tauri::WebviewWindowBuilder::new(app, "status-bar", tauri::WebviewUrl::App(url.into()))
+    {
+        if NOTCH_FIRST_CLASS.load(Ordering::Relaxed) {
+            // Notch sidecar is the HUD; never bring up the pill (incl. auto-recreate).
+            return;
+        }
+        if app.get_webview_window("status-bar").is_some() {
+            tracing::info!("[status-bar] create skipped; window already exists");
+            return;
+        }
+
+        let idle_w = STATUS_BAR_WIDTH;
+        let idle_h = STATUS_BAR_HEIGHT;
+        let (x, y) = status_bar_target_origin(app, idle_w, idle_h);
+
+        let recovery_preview_enabled = std::env::var("AIRNOTE_RECOVERY_PREVIEW")
+            .or_else(|_| std::env::var("VITE_AIRNOTE_RECOVERY_PREVIEW"))
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let url = if recovery_preview_enabled {
+            "index.html?view=statusbar&recoveryPreview=1#statusbar"
+        } else {
+            "index.html?view=statusbar#statusbar"
+        };
+        tracing::info!(
+            "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
+        );
+
+        match tauri::WebviewWindowBuilder::new(
+            app,
+            "status-bar",
+            tauri::WebviewUrl::App(url.into()),
+        )
         .title("AirNote")
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
         .inner_size(idle_w, idle_h)
@@ -1973,17 +1819,18 @@ fn create_status_bar(app: &tauri::AppHandle) {
         .transparent(true)
         .visible(false)
         .build()
-    {
-        Ok(win) => {
-            tracing::info!("[status-bar] window created label={}", win.label());
-            match win.url() {
-                Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
-                Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
+        {
+            Ok(win) => {
+                tracing::info!("[status-bar] window created label={}", win.label());
+                match win.url() {
+                    Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
+                    Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
+                }
+                let _ = win.set_ignore_cursor_events(true);
+                sync_status_bar(app, "idle");
             }
-            let _ = win.set_ignore_cursor_events(true);
-            sync_status_bar(app, "idle");
+            Err(e) => tracing::warn!("[status-bar] could not create window: {e}"),
         }
-        Err(e) => tracing::warn!("[status-bar] could not create window: {e}"),
     }
 }
 
@@ -2000,12 +1847,18 @@ fn emit_tray_error(app: &tauri::AppHandle, message: impl Into<String>) {
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        activate_airnote(app, "show_main_window");
+        return;
+    }
+
+    #[cfg(not(target_os = "macos"))]
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
-    activate_airnote(app, "show_main_window");
 }
 
 // ── Live-meeting floating pill ────────────────────────────────────────────────
@@ -2194,6 +2047,18 @@ fn activate_airnote(app: &tauri::AppHandle, reason: &'static str) {
 #[cfg(not(target_os = "macos"))]
 fn activate_airnote(_app: &tauri::AppHandle, _reason: &'static str) {}
 
+#[cfg(target_os = "macos")]
+fn activate_airnote_after(app: &tauri::AppHandle, reason: &'static str, delay_ms: u64) {
+    let app_h = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        activate_airnote(&app_h, reason);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_airnote_after(_app: &tauri::AppHandle, _reason: &'static str, _delay_ms: u64) {}
+
 fn apply_launch_at_login(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let manager = app
         .try_state::<tauri_plugin_autostart::AutoLaunchManager>()
@@ -2230,7 +2095,45 @@ fn activate_long_dictation_lock(app: &tauri::AppHandle) {
 
 fn reset_long_dictation_lock(app: &tauri::AppHandle) {
     if let Some(long) = app.try_state::<LongDictationState>() {
-        long.reset();
+        if long.reset() {
+            let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
+        }
+    }
+}
+
+fn clear_long_dictation_recording_lock(app: &tauri::AppHandle) {
+    if let Some(long) = app.try_state::<LongDictationState>() {
+        if long.clear_recording_lock() {
+            let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
+        }
+    }
+}
+
+fn clear_long_dictation_finishing(app: &tauri::AppHandle, reason: &'static str) {
+    if let Some(long) = app.try_state::<LongDictationState>() {
+        if long.clear_finishing() {
+            tracing::debug!("[hotkey] long dictation finishing cleared ({reason})");
+        }
+    }
+}
+
+fn long_dictation_finishing(app: &tauri::AppHandle) -> bool {
+    app.try_state::<LongDictationState>()
+        .map(|long| long.finishing.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+fn stop_long_dictation_lock(
+    app: &tauri::AppHandle,
+    locked: &AtomicBool,
+    stop_consumed: &AtomicBool,
+    finishing: &AtomicBool,
+) {
+    stop_consumed.store(true, Ordering::SeqCst);
+    finishing.store(true, Ordering::SeqCst);
+    if locked.swap(false, Ordering::SeqCst) {
+        tracing::info!("[hotkey] long dictation unlocked for processing");
+        let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
     }
 }
 
@@ -2708,28 +2611,36 @@ fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn dismiss_status_bar_on_main(app: &tauri::AppHandle) -> Result<(), String> {
-    if status_bar_pinned() || status_bar_persistent_hold(app) {
-        return Ok(());
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).dismiss_on_main();
     }
-    let is_active = app
-        .try_state::<SharedApp>()
-        .and_then(|shared| {
-            shared
-                .0
-                .lock()
-                .ok()
-                .map(|d| d.state != desktop::AppState::Idle)
-        })
-        .unwrap_or(false);
-    if is_active {
-        tracing::debug!("[status-bar] dismiss skipped — app state is active");
-        return Ok(());
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if status_bar_pinned() || status_bar_persistent_hold(app) {
+            return Ok(());
+        }
+        let is_active = app
+            .try_state::<SharedApp>()
+            .and_then(|shared| {
+                shared
+                    .0
+                    .lock()
+                    .ok()
+                    .map(|d| d.state != desktop::AppState::Idle)
+            })
+            .unwrap_or(false);
+        if is_active {
+            tracing::debug!("[status-bar] dismiss skipped — app state is active");
+            return Ok(());
+        }
+        if let Some(win) = app.get_webview_window("status-bar") {
+            win.hide()
+                .map_err(|e| format!("hide status bar failed: {e}"))?;
+        }
+        Ok(())
     }
-    if let Some(win) = app.get_webview_window("status-bar") {
-        win.hide()
-            .map_err(|e| format!("hide status bar failed: {e}"))?;
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -2862,6 +2773,7 @@ fn set_status_bar_persistent(
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn read_window_bottom_anchor(win: &tauri::WebviewWindow) -> Option<(f64, f64)> {
     let scale = win.scale_factor().ok()?;
     let pos = win.outer_position().ok()?;
@@ -2876,6 +2788,7 @@ fn read_window_bottom_anchor(win: &tauri::WebviewWindow) -> Option<(f64, f64)> {
     Some((x + w / 2.0, y + h))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn origin_from_bottom_anchor(center_x: f64, bottom_y: f64, width: f64, height: f64) -> (f64, f64) {
     (center_x - width / 2.0, bottom_y - height)
 }
@@ -2902,19 +2815,27 @@ fn resize_status_bar_on_main(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    let win = app
-        .get_webview_window("status-bar")
-        .ok_or_else(|| "status-bar window not found".to_string())?;
-    let (center_x, bottom_y) = read_window_bottom_anchor(&win).unwrap_or_else(|| {
-        let (x, y) = status_bar_target_origin(app, width, height);
-        (x + width / 2.0, y + height)
-    });
-    win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
-        .map_err(|e| format!("resize status bar failed: {e}"))?;
-    let (x, y) = origin_from_bottom_anchor(center_x, bottom_y, width, height);
-    win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
-        .map_err(|e| format!("post-resize position failed: {e}"))?;
-    Ok(())
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).resize_on_main(width, height);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let win = app
+            .get_webview_window("status-bar")
+            .ok_or_else(|| "status-bar window not found".to_string())?;
+        let (center_x, bottom_y) = read_window_bottom_anchor(&win).unwrap_or_else(|| {
+            let (x, y) = status_bar_target_origin(app, width, height);
+            (x + width / 2.0, y + height)
+        });
+        win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+            .map_err(|e| format!("resize status bar failed: {e}"))?;
+        let (x, y) = origin_from_bottom_anchor(center_x, bottom_y, width, height);
+        win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .map_err(|e| format!("post-resize position failed: {e}"))?;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -2948,21 +2869,29 @@ fn set_status_bar_position(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), 
 }
 
 fn set_status_bar_position_on_main(app: &tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
-    let win = app
-        .get_webview_window("status-bar")
-        .ok_or_else(|| "status-bar window not found".to_string())?;
-    let scale = win.scale_factor().unwrap_or(1.0);
-    let size = win.inner_size().map_err(|e| format!("inner_size: {e}"))?;
-    let w = size.width as f64 / scale;
-    let h = size.height as f64 / scale;
-    let anchor = StatusBarAnchor {
-        center_x: x + w / 2.0,
-        bottom_y: y + h,
-    };
-    save_status_bar_anchor(anchor)?;
-    win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
-        .map_err(|e| format!("set position failed: {e}"))?;
-    Ok(())
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).set_position_on_main(x, y);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let win = app
+            .get_webview_window("status-bar")
+            .ok_or_else(|| "status-bar window not found".to_string())?;
+        let scale = win.scale_factor().unwrap_or(1.0);
+        let size = win.inner_size().map_err(|e| format!("inner_size: {e}"))?;
+        let w = size.width as f64 / scale;
+        let h = size.height as f64 / scale;
+        let anchor = StatusBarAnchor {
+            center_x: x + w / 2.0,
+            bottom_y: y + h,
+        };
+        save_status_bar_anchor(anchor)?;
+        win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .map_err(|e| format!("set position failed: {e}"))?;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -2980,11 +2909,19 @@ fn reset_status_bar_position(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn reset_status_bar_position_on_main(app: &tauri::AppHandle) -> Result<(), String> {
-    clear_status_bar_position()?;
-    if let Some(win) = app.get_webview_window("status-bar") {
-        apply_status_bar_position(app, &win)?;
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).reset_position_on_main();
     }
-    Ok(())
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        clear_status_bar_position()?;
+        if let Some(win) = app.get_webview_window("status-bar") {
+            apply_status_bar_position(app, &win)?;
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -3979,8 +3916,10 @@ fn do_start_recording_inner(
     app: &tauri::AppHandle,
     enforce_cycle_gap: bool,
 ) {
+    diag::breadcrumb("record:start:enter");
     // Reject if another start is already in progress
     if RECORDING_STARTING.swap(true, Ordering::SeqCst) {
+        diag::breadcrumb("record:start:skip_in_flight");
         tracing::info!("[record] start skipped — another start already in progress");
         DIVO_START_PENDING.store(false, Ordering::SeqCst);
         PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
@@ -3991,6 +3930,7 @@ fn do_start_recording_inner(
     let now = now_ms_desktop();
     let last_finish = LAST_FINISH_MS.load(Ordering::SeqCst);
     if enforce_cycle_gap && last_finish > 0 && now.saturating_sub(last_finish) < MIN_CYCLE_GAP_MS {
+        diag::breadcrumb("record:start:skip_cycle_gap");
         tracing::info!(
             "[record] start skipped — too soon after last finish ({}ms < {}ms)",
             now.saturating_sub(last_finish),
@@ -4421,9 +4361,10 @@ fn do_finish_recording(
     app: tauri::AppHandle,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
 ) {
+    diag::breadcrumb("record:finish:enter");
     FINISH_AFTER_START.store(false, Ordering::SeqCst);
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
-    reset_long_dictation_lock(&app);
+    clear_long_dictation_recording_lock(&app);
 
     let session_end = app
         .try_state::<RecordingSessionState>()
@@ -4472,11 +4413,20 @@ fn do_finish_recording(
                 Ok((stop_rx, was_too_short, snap))
             }
             Err(e) => {
+                if e == "not recording" && long_dictation_finishing(&app) {
+                    diag::breadcrumb("record:finish:duplicate_long_finish");
+                    tracing::debug!(
+                        "[record] duplicate finish ignored while long dictation is already finishing"
+                    );
+                    return;
+                }
                 if is_short_recording_cancel(&e) {
+                    diag::breadcrumb("record:finish:short_cancel");
                     tracing::info!("[record] short Option tap — cancelled recording");
                     let snap = d.finish_cancelled();
                     Err(BeginStopError::Short(snap))
                 } else {
+                    diag::breadcrumb("record:finish:begin_stop_failed");
                     let snap = d.finish_err(e);
                     Err(BeginStopError::Failed(snap))
                 }
@@ -4616,6 +4566,7 @@ fn do_finish_recording(
             sync_tray(&app2, &snap);
             emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
+            clear_long_dictation_finishing(&app2, "no_pre_transcript");
             return;
         }
 
@@ -4676,6 +4627,7 @@ fn do_finish_recording(
             emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
             recovery::clear();
+            clear_long_dictation_finishing(&app2, "problem_done");
             return;
         }
 
@@ -4715,6 +4667,7 @@ fn do_finish_recording(
                 "[record] finish superseded by a newer recording — leaving the live run intact (run_id={})",
                 client_run_id.as_deref().unwrap_or("none"),
             );
+            clear_long_dictation_finishing(&app2, "superseded_finish");
             return;
         }
 
@@ -4803,6 +4756,7 @@ fn do_finish_recording(
                 _ => {}
             }
             recovery::clear();
+            clear_long_dictation_finishing(&app2, "divo_done");
             return;
         }
 
@@ -4886,6 +4840,7 @@ fn do_finish_recording(
                     do_start_recording(&shared3, &app3);
                 });
             }
+            clear_long_dictation_finishing(&app2, "meeting_done");
         } else {
             // Normal mode: paste and edit-watch
             // Spawn edit-watcher immediately after paste (non-blocking).
@@ -4941,6 +4896,7 @@ fn do_finish_recording(
             sync_tray(&app2, &snap);
             emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
+            clear_long_dictation_finishing(&app2, "normal_done");
         }
         // Dictation delivered (or surfaced as an error to the user) — the captured
         // audio is no longer needed, so the orphan file must not linger.
@@ -7794,7 +7750,9 @@ fn read_recent_log(path: &std::path::Path, marker: &str) -> (String, bool) {
         return ("".into(), false);
     }
     let mut text = String::from_utf8_lossy(&bytes).to_string();
-    if let Some(idx) = text.rfind(marker) {
+    if !marker.is_empty()
+        && let Some(idx) = text.rfind(marker)
+    {
         text = text[idx..].to_string();
     }
     (text, start > 0)
@@ -7805,12 +7763,14 @@ fn get_debug_logs() -> DebugLogs {
     let dir = said_log_dir();
     let desktop_path = dir.join("said.log");
     let backend_path = dir.join("backend.log");
+    let breadcrumb_path = diag::breadcrumb_log_path();
     let (desktop, desktop_truncated) =
         read_recent_log(&desktop_path, "[main] said desktop starting");
     let (backend, backend_truncated) = read_recent_log(&backend_path, "airnote-backend build=");
+    let (breadcrumbs, breadcrumbs_truncated) = read_recent_log(&breadcrumb_path, "");
 
     let combined = format!(
-        "── AirNote desktop ({}) ──\n{}\n\n── airnote-backend ({}) ──\n{}",
+        "── AirNote desktop ({}) ──\n{}\n\n── airnote-backend ({}) ──\n{}\n\n── crash breadcrumbs ({}) ──\n{}",
         desktop_path.display(),
         if desktop.trim().is_empty() {
             "(no desktop log found)"
@@ -7823,15 +7783,23 @@ fn get_debug_logs() -> DebugLogs {
         } else {
             backend.trim_end()
         },
+        breadcrumb_path.display(),
+        if breadcrumbs.trim().is_empty() {
+            "(no crash breadcrumbs found)"
+        } else {
+            breadcrumbs.trim_end()
+        },
     );
 
     DebugLogs {
         desktop_path: desktop_path.display().to_string(),
         backend_path: backend_path.display().to_string(),
+        breadcrumb_path: breadcrumb_path.display().to_string(),
         desktop,
         backend,
+        breadcrumbs,
         combined,
-        truncated: desktop_truncated || backend_truncated,
+        truncated: desktop_truncated || backend_truncated || breadcrumbs_truncated,
     }
 }
 
@@ -9063,6 +9031,7 @@ fn handle_enterprise_oauth_urls(app: &tauri::AppHandle, urls: &[String]) {
 }
 
 fn main() {
+    configure_ggml_metal_shutdown_guard();
     install_rustls_crypto_provider();
 
     // 1. Load env vars from .env files
@@ -9199,6 +9168,9 @@ fn main() {
                     // NSPanel, so we no longer switch the whole app to Accessory.
                     app.set_activation_policy(tauri::ActivationPolicy::Regular);
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
+                    if let Some(w) = app.get_webview_window("main") {
+                        configure_main_window_macos(&w);
+                    }
                 }
 
                 // Crash recovery: repair WAV headers for any meeting interrupted
@@ -9563,7 +9535,9 @@ fn main() {
                         }
                     }
                     if !notch_active {
-                        create_status_bar(app.handle());
+                        tracing::info!(
+                            "[status-bar] startup create skipped — HUD will be created on demand"
+                        );
                     }
                 }
 
@@ -9724,11 +9698,11 @@ fn main() {
                 // faults on a loop so a monitor can verify it tortures-and-heals.
                 chaos::maybe_start_soak(app.handle());
 
-                // ── HUD level watchdog (macOS) ─────────────────────────────────
-                // macOS silently resets NSPanel window level and collection behavior
-                // after sleep/wake and Space/fullscreen transitions. Re-tune every
-                // 30 s so the HUD never stays invisible for more than one interval.
-                // If the app is in a non-idle state but the panel is hidden, recover.
+                // ── HUD visibility watchdog (macOS) ────────────────────────────
+                // Keep this watchdog narrow and deterministic: it only checks
+                // whether the HUD disappeared while the app is active, and then
+                // re-presents it on demand. Avoid periodic panel retuning here;
+                // repeated AppKit mutation while idle is the crash suspect.
                 #[cfg(target_os = "macos")]
                 {
                     let app_wdg = app.handle().clone();
@@ -9739,33 +9713,29 @@ fn main() {
                         interval.tick().await; // skip the immediate first tick
                         loop {
                             interval.tick().await;
-                            let h = app_wdg.clone();
-                            if let Err(e) = run_on_main_guarded(&app_wdg, "hud_watchdog.retune", move || {
-                                tune_status_bar_panel(&h);
-                            }) {
-                                tracing::warn!("[hud-watchdog] retune dispatch failed: {e}");
-                            }
                             let is_active = shared_wdg
                                 .lock()
                                 .ok()
                                 .map(|d| d.state != desktop::AppState::Idle)
                                 .unwrap_or(false);
-                            if is_active {
-                                let visible = app_wdg
-                                    .get_webview_window("status-bar")
-                                    .and_then(|w| w.is_visible().ok())
-                                    .unwrap_or(true);
-                                if !visible {
-                                    tracing::warn!(
-                                        "[hud-watchdog] HUD hidden while state is active — recovering"
-                                    );
-                                    diag::breadcrumb("hud_watchdog:recover");
-                                    let _ = present_status_bar_native(
-                                        &app_wdg,
-                                        "watchdog-recover",
-                                        true,
-                                    );
-                                }
+                            if !is_active {
+                                continue;
+                            }
+
+                            let visible = app_wdg
+                                .get_webview_window("status-bar")
+                                .and_then(|w| w.is_visible().ok())
+                                .unwrap_or(true);
+                            if !visible {
+                                tracing::warn!(
+                                    "[hud-watchdog] HUD hidden while state is active — recovering"
+                                );
+                                diag::breadcrumb("hud_watchdog:recover");
+                                let _ = present_status_bar_native(
+                                    &app_wdg,
+                                    "watchdog-recover",
+                                    true,
+                                );
                             }
                         }
                     });
@@ -9791,6 +9761,8 @@ fn main() {
                         Arc::clone(&app.state::<LongDictationState>().stop_consumed);
                     let long_stop_consumed_release =
                         Arc::clone(&app.state::<LongDictationState>().stop_consumed);
+                    let long_finishing_press =
+                        Arc::clone(&app.state::<LongDictationState>().finishing);
                     let meeting_active_press = Arc::clone(&app.state::<MeetingModeState>().active);
                     let meeting_muted_press = Arc::clone(&app.state::<MeetingModeState>().muted);
                     let meeting_generation_press =
@@ -9820,6 +9792,7 @@ fn main() {
                                 let back = Arc::clone(&back_hold_press);
                                 let long_locked = Arc::clone(&long_locked_press);
                                 let long_stop_consumed = Arc::clone(&long_stop_consumed_press);
+                                let long_finishing = Arc::clone(&long_finishing_press);
                                 HOTKEY_START_IN_FLIGHT.store(true, Ordering::SeqCst);
                                 std::thread::spawn(move || {
                                     struct HotkeyStartGuard;
@@ -9836,8 +9809,12 @@ fn main() {
                                         tracing::info!(
                                             "[hotkey] record key pressed while long dictation locked → process"
                                         );
-                                        long_locked.store(false, Ordering::SeqCst);
-                                        long_stop_consumed.store(true, Ordering::SeqCst);
+                                        stop_long_dictation_lock(
+                                            &app_h,
+                                            &long_locked,
+                                            &long_stop_consumed,
+                                            &long_finishing,
+                                        );
                                         do_finish_recording(shared, app_h, back);
                                     } else if current == Some(desktop::AppState::Idle) {
                                         do_start_recording(&shared, &app_h);
@@ -9850,6 +9827,14 @@ fn main() {
                                             );
                                         }
                                     } else if current == Some(desktop::AppState::Processing) {
+                                        if long_stop_consumed.load(Ordering::SeqCst)
+                                            || long_finishing.load(Ordering::SeqCst)
+                                        {
+                                            tracing::debug!(
+                                                "[hotkey] record press ignored while long dictation is finishing"
+                                            );
+                                            return;
+                                        }
                                         // Pressing record again while the previous take is
                                         // still processing means the user abandoned it (e.g.
                                         // released the hotkey early by mistake). Reset that
