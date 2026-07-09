@@ -261,6 +261,7 @@ mod imp {
         WordBackspace, // Option+Backspace — delete word before cursor
         LineBackspace, // Cmd+Backspace    — delete to line start
         SelectAll,     // Cmd+A
+        Paste,         // Cmd+V — explicit boundary for post-dictation edit capture
         Cut,           // Cmd+X — marks reconstruction uncertain
         Undo,          // Cmd+Z — marks reconstruction uncertain
         MouseClick,    // mouse repositioned cursor — uncertain
@@ -757,6 +758,7 @@ mod imp {
         } else if cmd {
             match keycode {
                 ffi::KC_A => KeyEvt::SelectAll,
+                ffi::KC_V => KeyEvt::Paste,
                 ffi::KC_X => KeyEvt::Cut,
                 ffi::KC_Z => KeyEvt::Undo,
                 ffi::KC_LEFT => KeyEvt::LineStart,

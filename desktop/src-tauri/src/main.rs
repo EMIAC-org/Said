@@ -7884,6 +7884,100 @@ fn get_performance_snapshot(
 const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
+const EDIT_WATCH_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(300);
+
+#[cfg(target_os = "macos")]
+async fn read_clipboard_text_readonly() -> Option<String> {
+    let read = tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("pbpaste").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout)
+            .ok()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    });
+    tokio::time::timeout(EDIT_WATCH_CLIPBOARD_TIMEOUT, read)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn read_clipboard_text_readonly() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn paste_shortcut_seen_since(since: std::time::Instant) -> bool {
+    said_hotkey::key_buffer().lock().is_ok_and(|events| {
+        events
+            .iter()
+            .any(|event| event.when >= since && matches!(event.evt, said_hotkey::KeyEvt::Paste))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn paste_shortcut_seen_since(_since: std::time::Instant) -> bool {
+    false
+}
+
+fn normalized_clipboard_candidate(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn clipboard_content_was_added(polished: &str, user_kept: &str, clipboard: &str) -> bool {
+    let polished = normalized_clipboard_candidate(polished);
+    let kept = normalized_clipboard_candidate(user_kept);
+    let clipboard = normalized_clipboard_candidate(clipboard);
+    if clipboard.chars().count() < 4
+        || polished.is_empty()
+        || kept.is_empty()
+        || clipboard == polished
+        || !kept.contains(&clipboard)
+    {
+        return false;
+    }
+
+    let Some(offset) = kept.find(&clipboard) else {
+        return false;
+    };
+    let clip_end = offset + clipboard.len();
+    let is_surrounding_addition =
+        kept[..offset].trim().is_empty() || kept[clip_end..].trim().is_empty();
+    if !is_surrounding_addition {
+        return false;
+    }
+
+    let without_clipboard = format!("{} {}", &kept[..offset], &kept[clip_end..]);
+    let remaining = normalized_clipboard_candidate(&without_clipboard);
+    remaining == polished || shares_word_overlap_ratio(&remaining, &polished) >= 0.6
+}
+
+fn shares_word_overlap_ratio(candidate: &str, reference: &str) -> f64 {
+    let candidate_words: std::collections::HashSet<String> = candidate
+        .split_whitespace()
+        .map(alnum_word_core)
+        .filter(|word| word.chars().count() > 2)
+        .map(str::to_lowercase)
+        .collect();
+    let reference_words: std::collections::HashSet<String> = reference
+        .split_whitespace()
+        .map(alnum_word_core)
+        .filter(|word| word.chars().count() > 2)
+        .map(str::to_lowercase)
+        .collect();
+    if reference_words.is_empty() {
+        return 0.0;
+    }
+    let shared = reference_words
+        .iter()
+        .filter(|word| candidate_words.contains(*word))
+        .count();
+    shared as f64 / reference_words.len() as f64
+}
 
 /// Compute edit-watch timeouts scaled by sentence length.
 ///
@@ -8023,6 +8117,8 @@ async fn watch_for_edit(
     pre_paste_text: Option<String>, // field text BEFORE AirNote typed (from ScreenContextState)
 ) {
     use std::time::Instant;
+
+    let clipboard_at_watch_start = read_clipboard_text_readonly().await;
 
     // Let the paste animation settle and focus move into the text field.
     // 400ms covers paste animation (~200ms) + AX cache start; retries handle the rest.
@@ -8401,10 +8497,26 @@ async fn watch_for_edit(
 
     let ep_opt = back_arc.lock().ok().and_then(|g| g.clone());
     if let Some(ref ep) = ep_opt {
+        let clipboard_at_capture = read_clipboard_text_readonly().await;
+        let paste_shortcut_seen = paste_shortcut_seen_since(watch_start);
+        let clipboard_addition_seen = clipboard_at_watch_start
+            .as_deref()
+            .is_some_and(|clipboard| clipboard_content_was_added(&polished, &user_kept, clipboard))
+            || clipboard_at_capture.as_deref().is_some_and(|clipboard| {
+                clipboard_content_was_added(&polished, &user_kept, clipboard)
+            });
+        let matches_clipboard = paste_shortcut_seen || clipboard_addition_seen;
+        if matches_clipboard {
+            tracing::info!(
+                "[edit-watch] follow-up paste detected for {recording_id}; shortcut={} clipboard_addition={}",
+                paste_shortcut_seen,
+                clipboard_addition_seen,
+            );
+        }
         let capture_meta = api::CaptureMeta {
             time_since_paste_ms: watch_start.elapsed().as_millis() as u64,
             app_switched: app_switched_during_capture,
-            matches_clipboard: false,
+            matches_clipboard,
         };
         let mut edit_trace = said_core::dictation_trace::DictationTrace::default();
         edit_trace.add_stage(said_core::dictation_trace::TraceStageInput {
@@ -10556,7 +10668,7 @@ mod dictation_audio_level_tests {
 
 #[cfg(test)]
 mod edit_watch_timeout_tests {
-    use super::edit_watch_timeouts;
+    use super::{clipboard_content_was_added, edit_watch_timeouts};
 
     #[test]
     fn gives_user_time_to_read_before_first_edit() {
@@ -10577,5 +10689,46 @@ mod edit_watch_timeout_tests {
         assert!(max.as_secs() >= 60);
         assert!(no_edit_idle.as_secs() >= 25);
         assert!(post_edit_idle.as_secs() >= 25);
+    }
+
+    #[test]
+    fn detects_clipboard_text_appended_after_dictation() {
+        assert!(clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal. https://example.com/spec",
+            "https://example.com/spec",
+        ));
+    }
+
+    #[test]
+    fn detects_clipboard_text_prepended_before_dictation() {
+        assert!(clipboard_content_was_added(
+            "Please review the proposal.",
+            "Context from the client: Please review the proposal.",
+            "Context from the client:",
+        ));
+    }
+
+    #[test]
+    fn does_not_treat_word_correction_as_clipboard_addition() {
+        assert!(!clipboard_content_was_added(
+            "Please check the CQLite migration.",
+            "Please check the SQLite migration.",
+            "SQLite",
+        ));
+    }
+
+    #[test]
+    fn ignores_short_or_unrelated_clipboard_content() {
+        assert!(!clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal. yes",
+            "yes",
+        ));
+        assert!(!clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal carefully.",
+            "unrelated clipboard text",
+        ));
     }
 }
