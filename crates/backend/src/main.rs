@@ -17,7 +17,6 @@ struct Cli {
 }
 
 fn main() {
-    configure_ggml_metal_shutdown_guard();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -173,12 +172,6 @@ async fn async_main() {
         });
     }
 
-    // NOTE: the whisper.cpp model is warmed AFTER the listener binds (see below).
-    // Loading it here would block the runtime ~5s before /v1/health is reachable,
-    // and the desktop kills + respawns the backend after a 5s health timeout — an
-    // infinite respawn loop. `transcribe_wav` lazy-loads on first use, so warming
-    // in the background off the critical path is safe.
-
     said_backend::watchdog::spawn_watchdog(pool.clone(), wd, tokio::runtime::Handle::current());
 
     // ── Build router ──────────────────────────────────────────────────────────
@@ -202,31 +195,6 @@ async fn async_main() {
     info!("airnote-backend listening on http://{addr}");
 
     tokio::task::spawn_blocking(said_backend::tier2::warm_runtime_caches);
-
-    // Warm the on-device whisper.cpp model in the background, AFTER the listener
-    // is up, so /v1/health is reachable immediately (no respawn loop). The load
-    // is CPU-blocking, so it runs on the blocking pool; `ensure_model_loaded`
-    // uses `OnceCell::get_or_try_init`, so a dictation arriving before the warm
-    // finishes simply blocks on the same one-time init.
-    #[cfg(feature = "local-stt")]
-    {
-        let whisper_model = said_backend::paths::active_dictation_model_path();
-        tokio::task::spawn_blocking(move || {
-            if whisper_model.is_file() {
-                match said_backend::stt::whisper::ensure_model_loaded(
-                    whisper_model.to_str().unwrap_or_default(),
-                ) {
-                    Ok(()) => info!("whisper model warmed from {}", whisper_model.display()),
-                    Err(e) => tracing::warn!("whisper model warm failed: {e}"),
-                }
-            } else {
-                info!(
-                    "whisper model not found at {} — local STT unavailable",
-                    whisper_model.display()
-                );
-            }
-        });
-    }
 
     // ── Retention sweep (every 6 h): delete recordings + audio older than 1 day
     // (failed-retryable audio is protected up to 7 days — see cleanup_old_audio).
@@ -336,35 +304,11 @@ async fn async_main() {
     }
 
     info!("airnote-backend stopped");
-    exit_after_shutdown_cleanup(0);
+    std::process::exit(0);
 }
 
 fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-}
-
-#[cfg(target_os = "macos")]
-fn configure_ggml_metal_shutdown_guard() {
-    if std::env::var_os("GGML_METAL_NO_RESIDENCY").is_none() {
-        // Must be set before whisper.cpp/ggml initializes Metal. Newer ggml
-        // residency-set teardown can assert during libc finalizers on shutdown.
-        unsafe { std::env::set_var("GGML_METAL_NO_RESIDENCY", "1") };
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn configure_ggml_metal_shutdown_guard() {}
-
-#[cfg(target_os = "macos")]
-fn exit_after_shutdown_cleanup(code: i32) -> ! {
-    // whisper.cpp/ggml Metal can abort from C/C++ process-exit finalizers after
-    // normal shutdown. The backend has already stopped serving before this point.
-    unsafe { libc::_exit(code) }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn exit_after_shutdown_cleanup(code: i32) -> ! {
-    std::process::exit(code)
 }
 
 #[cfg(target_os = "macos")]
@@ -395,7 +339,7 @@ fn start_parent_death_watch() {
 
         if rc > 0 {
             info!("[parent-watch] parent pid={parent_pid} exited — shutting down backend");
-            exit_after_shutdown_cleanup(0);
+            std::process::exit(0);
         }
     });
 
@@ -404,7 +348,7 @@ fn start_parent_death_watch() {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if unsafe { libc::getppid() } == 1 {
                 info!("[parent-watch] backend reparented to launchd — shutting down");
-                exit_after_shutdown_cleanup(0);
+                std::process::exit(0);
             }
         }
     });

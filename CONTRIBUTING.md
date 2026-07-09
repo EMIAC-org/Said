@@ -81,7 +81,6 @@ See [AGENTS.md](AGENTS.md) for the full map. Briefly:
 | `crates/core` | Shared transcript metadata + polish helpers |
 | `crates/paster` | HID typing + edit-watch (macOS today; Windows planned) |
 | `crates/backend` | Local Axum daemon — routes, LLM polish, SQLite, learning |
-| `crates/said` | Standalone CLI |
 | `desktop/src-tauri` | Tauri shell (spawns `airnote-backend`) |
 | `desktop/src` | React + Vite frontend |
 | `scripts` | `build-dmg.sh`, `bump-version.sh` |
