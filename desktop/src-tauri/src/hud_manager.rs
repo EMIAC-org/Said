@@ -14,8 +14,8 @@ use tauri_nspanel::{
 use crate::{
     NOTCH_FIRST_CLASS, STATUS_BAR_HEIGHT, STATUS_BAR_WIDTH, SharedApp, StatusBarAnchor,
     StatusBarHideGen, StatusBarInteractive, StatusBarPanel, apply_status_bar_position,
-    clear_status_bar_position, desktop, diag, run_on_main_guarded, save_status_bar_anchor,
-    schedule_present_status_bar_macos, status_bar_persistent_hold, status_bar_pinned,
+    clear_status_bar_position, desktop, diag, emit_status_bar_resync, run_on_main_guarded,
+    save_status_bar_anchor, status_bar_persistent_hold, status_bar_pinned,
     status_bar_target_origin,
 };
 
@@ -26,73 +26,11 @@ pub(crate) struct MacHudManager {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn configure_window(win: &WebviewWindow) {
-    use objc::Message;
-    use objc::runtime::{Object, Sel};
-
     diag::breadcrumb("status_bar:configure:begin");
-    let Ok(ns_window) = win.ns_window() else {
-        diag::breadcrumb("status_bar:configure:no_ns_window");
-        tracing::warn!("[status-bar] macOS tune failed: ns_window unavailable");
-        return;
-    };
-    if ns_window.is_null() {
-        diag::breadcrumb("status_bar:configure:null_ns_window");
-        tracing::warn!("[status-bar] macOS tune failed: ns_window was null");
-        return;
-    }
-
-    // Non-activating floating panel available on every Space and over fullscreen apps.
-    // `.stationary` (1<<4) and `.ignoresExposeCycle` (1<<6) are intentionally omitted:
-    // combining them with `.canJoinAllSpaces` silently breaks setCollectionBehavior in
-    // release builds after Space/fullscreen transitions (Tauri #5566).
-    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
-    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
-    const NONACTIVATING_PANEL_STYLE: usize = 1 << 7;
-    const FULL_SIZE_CONTENT_VIEW_STYLE: usize = 1 << 15;
-    const NS_STATUS_WINDOW_LEVEL_PLUS_THREE: isize = 28;
-
-    unsafe {
-        let ns_window = &*(ns_window as *mut Object);
-        let style_mask: usize = ns_window
-            .send_message(Sel::register("styleMask"), ())
-            .unwrap_or(0);
-        let panel_style = style_mask | NONACTIVATING_PANEL_STYLE | FULL_SIZE_CONTENT_VIEW_STYLE;
-        diag::breadcrumb("status_bar:configure:set_style");
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setStyleMask:"), (panel_style,));
-
-        let behavior = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
-        diag::breadcrumb("status_bar:configure:set_behavior");
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
-        diag::breadcrumb("status_bar:configure:set_level");
-        let _: Result<(), _> = ns_window.send_message(
-            Sel::register("setLevel:"),
-            (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,),
-        );
-        let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
-        let ignores_mouse = !status_bar_interactive(win.app_handle());
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (ignores_mouse,));
-        for (selector_name, value) in [
-            ("setHidesOnDeactivate:", false),
-            ("setFloatingPanel:", true),
-        ] {
-            let selector = Sel::register(selector_name);
-            let responds: bool = ns_window
-                .send_message(Sel::register("respondsToSelector:"), (selector,))
-                .unwrap_or(false);
-            if responds {
-                let _: Result<(), _> = ns_window.send_message(selector, (value,));
-            }
-        }
-        diag::breadcrumb("status_bar:configure:order_front");
-        let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
-        diag::breadcrumb("status_bar:configure:end");
-        tracing::debug!(
-            "[status-bar] macOS tuned style={panel_style:#x} behavior={behavior:#x} level={NS_STATUS_WINDOW_LEVEL_PLUS_THREE}"
-        );
-    }
+    // Legacy compatibility hook. Runtime AppKit style/level/collection retuning
+    // is intentionally avoided; PanelBuilder owns that configuration at creation.
+    MacHudManager::apply_interactive_to_window(win, status_bar_interactive(win.app_handle()));
+    diag::breadcrumb("status_bar:configure:end");
 }
 
 #[cfg(target_os = "macos")]
@@ -100,7 +38,6 @@ pub(crate) fn show_panel(app: &AppHandle) -> bool {
     match app.get_webview_panel("status-bar") {
         Ok(panel) => {
             diag::breadcrumb("status_bar:panel_show:begin");
-            tune_panel(app);
             panel.show();
             panel.order_front_regardless();
             diag::breadcrumb("status_bar:panel_show:end");
@@ -133,7 +70,7 @@ impl MacHudManager {
         }
 
         self.invalidate_pending_idle_hide();
-        schedule_present_status_bar_macos(&self.app, &win, state, state != "placement");
+        self.present_on_main(&win, state, state != "placement");
         diag::breadcrumb(format!("status_bar:sync_main:{state}:end"));
     }
 
@@ -200,7 +137,6 @@ impl MacHudManager {
         {
             Ok(panel) => {
                 tracing::info!("[status-bar] NSPanel created label={}", panel.label());
-                tune_panel(&self.app);
                 if status_bar_pinned() {
                     tracing::info!("[status-bar] dev pin active — showing at idle");
                 } else {
@@ -211,8 +147,7 @@ impl MacHudManager {
                         Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
                         Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
                     }
-                    let _ = win.set_ignore_cursor_events(true);
-                    configure_window(&win);
+                    Self::apply_interactive_to_window(&win, status_bar_interactive(&self.app));
                 }
             }
             Err(e) => tracing::warn!("[status-bar] could not create NSPanel: {e}"),
@@ -222,7 +157,14 @@ impl MacHudManager {
     pub(crate) fn present(&self, reason: &str, resync: bool) -> Result<(), String> {
         let win = self.ensure_window_present()?;
         tracing::debug!("[status-bar] native present reason={reason} resync={resync}");
-        schedule_present_status_bar_macos(&self.app, &win, reason, resync);
+        let app_for_main = self.app.clone();
+        let app_in_closure = app_for_main.clone();
+        let reason = reason.to_string();
+        if let Err(e) = run_on_main_guarded(&app_for_main, "status_bar.present", move || {
+            MacHudManager::new(&app_in_closure).present_on_main(&win, &reason, resync);
+        }) {
+            return Err(format!("schedule present failed: {e}"));
+        }
         Ok(())
     }
 
@@ -234,7 +176,7 @@ impl MacHudManager {
             tracing::debug!("[status-bar] dismiss skipped — app state is active");
             return Ok(());
         }
-        self.destroy_window_on_main("dismiss")?;
+        self.hide_window_on_main("dismiss")?;
         Ok(())
     }
 
@@ -340,7 +282,7 @@ impl MacHudManager {
         if status_bar_pinned() || status_bar_persistent_hold(&self.app) {
             diag::breadcrumb("status_bar:sync_main:idle:held_visible");
             tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
-            schedule_present_status_bar_macos(&self.app, win, "idle", false);
+            self.present_on_main(win, "idle", false);
             return;
         }
 
@@ -384,17 +326,45 @@ impl MacHudManager {
             if app.get_webview_window("status-bar").is_some() {
                 let app_main = app.clone();
                 if let Err(e) =
-                    run_on_main_guarded(&app_main.clone(), "status_bar.idle_destroy", move || {
+                    run_on_main_guarded(&app_main.clone(), "status_bar.idle_hide", move || {
                         let manager = MacHudManager::new(&app_main);
-                        if let Err(e) = manager.destroy_window_on_main("idle") {
-                            tracing::warn!("[status-bar] destroy after idle failed: {e}");
+                        if let Err(e) = manager.hide_window_on_main("idle") {
+                            tracing::warn!("[status-bar] hide after idle failed: {e}");
                         }
                     })
                 {
-                    tracing::warn!("[status-bar] schedule idle destroy failed: {e}");
+                    tracing::warn!("[status-bar] schedule idle hide failed: {e}");
                 }
             }
         });
+    }
+
+    fn present_on_main(&self, win: &WebviewWindow, state: &str, resync: bool) {
+        diag::breadcrumb(format!("status_bar:present:{state}:begin"));
+        match apply_status_bar_position(&self.app, win) {
+            Ok(_) => tracing::debug!("[status-bar] repositioned"),
+            Err(e) => tracing::warn!("[status-bar] reposition failed: {e}"),
+        }
+        diag::breadcrumb(format!("status_bar:present:{state}:repositioned"));
+
+        Self::apply_interactive_to_window(win, status_bar_interactive(&self.app));
+        if let Err(e) = win.set_always_on_top(true) {
+            tracing::warn!("[status-bar] set_always_on_top failed: {e}");
+        }
+
+        diag::breadcrumb(format!("status_bar:present:{state}:show"));
+        if !show_panel(&self.app) {
+            match win.show() {
+                Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
+                Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
+            }
+        }
+
+        if resync {
+            diag::breadcrumb(format!("status_bar:present:{state}:resync"));
+            emit_status_bar_resync(&self.app, state);
+        }
+        diag::breadcrumb(format!("status_bar:present:{state}:end"));
     }
 
     fn invalidate_pending_idle_hide(&self) {
@@ -459,19 +429,20 @@ impl MacHudManager {
         (center_x - width / 2.0, bottom_y - height)
     }
 
-    fn destroy_window_on_main(&self, reason: &str) -> Result<(), String> {
+    fn hide_window_on_main(&self, reason: &str) -> Result<(), String> {
         let Some(win) = self.app.get_webview_window("status-bar") else {
             return Ok(());
         };
 
-        // A hidden NSPanel-backed WebView can still be inspected later by macOS
-        // UIIntelligence support, which is the crashy state we want to avoid.
-        diag::breadcrumb(format!("status_bar:{reason}_destroy:begin"));
-        let _ = win.hide();
-        win.destroy()
-            .map_err(|e| format!("destroy status bar failed: {e}"))?;
-        diag::breadcrumb(format!("status_bar:{reason}_destroy:end"));
-        tracing::debug!("[status-bar] destroyed window after {reason}");
+        diag::breadcrumb(format!("status_bar:{reason}_hide:begin"));
+        match self.app.get_webview_panel("status-bar") {
+            Ok(panel) => panel.hide(),
+            Err(_) => win
+                .hide()
+                .map_err(|e| format!("hide status bar failed: {e}"))?,
+        }
+        diag::breadcrumb(format!("status_bar:{reason}_hide:end"));
+        tracing::debug!("[status-bar] hidden after {reason}");
         Ok(())
     }
 }
@@ -484,25 +455,6 @@ fn status_bar_collection_behavior() -> CollectionBehavior {
     CollectionBehavior::new()
         .can_join_all_spaces()
         .full_screen_auxiliary()
-}
-
-#[cfg(target_os = "macos")]
-fn tune_panel(app: &AppHandle) {
-    diag::breadcrumb("status_bar:panel_tune:begin");
-    let Ok(panel) = app.get_webview_panel("status-bar") else {
-        diag::breadcrumb("status_bar:panel_tune:missing");
-        return;
-    };
-    panel.set_level(PanelLevel::Custom(28).value());
-    panel.set_floating_panel(true);
-    panel.set_hides_on_deactivate(false);
-    panel.set_works_when_modal(true);
-    panel.set_ignores_mouse_events(!status_bar_interactive(app));
-    panel.set_collection_behavior(status_bar_collection_behavior().into());
-    panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().into());
-    panel.set_transparent(true);
-    panel.set_has_shadow(false);
-    diag::breadcrumb("status_bar:panel_tune:end");
 }
 
 #[cfg(target_os = "macos")]
