@@ -840,6 +840,25 @@ struct EditWatcherControl {
     finalize: CancellationToken,
 }
 
+fn new_edit_watcher_control(generation: u64) -> EditWatcherControl {
+    EditWatcherControl {
+        generation,
+        cancel: CancellationToken::new(),
+        finalize: CancellationToken::new(),
+    }
+}
+
+fn edit_watch_crossed_app_boundary(initial_pid: Option<i32>, now_pid: Option<i32>) -> bool {
+    matches!((initial_pid, now_pid), (Some(initial), Some(now)) if initial != now)
+}
+
+fn edit_watcher_generation_is_current(
+    current: Option<&EditWatcherControl>,
+    task_generation: u64,
+) -> bool {
+    current.is_some_and(|control| control.generation == task_generation)
+}
+
 /// Owns the currently running post-paste edit watcher. A new recording asks the
 /// previous watcher to finalize; unrelated replacement actions may hard-cancel.
 struct EditWatcherState(Mutex<Option<EditWatcherControl>>);
@@ -8307,11 +8326,8 @@ fn start_edit_watcher(
             prev.cancel.cancel();
             std::thread::yield_now();
         }
-        let control = EditWatcherControl {
-            generation: EDIT_WATCHER_GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
-            cancel: CancellationToken::new(),
-            finalize: CancellationToken::new(),
-        };
+        let control =
+            new_edit_watcher_control(EDIT_WATCHER_GENERATION.fetch_add(1, Ordering::Relaxed) + 1);
         *guard = Some(control.clone());
         control
     };
@@ -8333,10 +8349,7 @@ fn start_edit_watcher(
         .await;
 
         if let Ok(mut guard) = app_for_task.state::<EditWatcherState>().0.lock() {
-            if guard
-                .as_ref()
-                .is_some_and(|current| current.generation == task_generation)
-            {
+            if edit_watcher_generation_is_current(guard.as_ref(), task_generation) {
                 *guard = None;
             }
         }
@@ -8494,10 +8507,7 @@ async fn watch_for_edit(
         // Leaving the target app closes this edit session. The last owned value
         // remains valid, but text entered after the switch cannot belong to it.
         let now_pid = blocking_ax_option("focused_pid poll", paster::focused_pid).await;
-        let pid_switched = matches!(
-            (initial_pid, now_pid),
-            (Some(a), Some(b)) if a != b
-        );
+        let pid_switched = edit_watch_crossed_app_boundary(initial_pid, now_pid);
         if pid_switched {
             app_switched_during_capture = true;
             explicit_boundary = Some("app_switched");
@@ -10956,8 +10966,9 @@ mod dictation_audio_level_tests {
 mod edit_watch_timeout_tests {
     use super::{
         EDIT_WATCH_MAX_OBSERVATIONS, EditCaptureAnchor, EditObservationTimeline,
-        clipboard_content_was_added, derive_owned_text_span, edit_watch_timeouts,
-        extract_owned_text,
+        clipboard_content_was_added, derive_owned_text_span, edit_watch_crossed_app_boundary,
+        edit_watch_timeouts, edit_watcher_generation_is_current, extract_owned_text,
+        new_edit_watcher_control,
     };
 
     #[test]
@@ -10979,6 +10990,27 @@ mod edit_watch_timeout_tests {
         assert!(max.as_secs() >= 60);
         assert!(no_edit_idle.as_secs() >= 25);
         assert!(post_edit_idle.as_secs() >= 25);
+    }
+
+    #[test]
+    fn app_switch_closes_the_owned_edit_session() {
+        assert!(!edit_watch_crossed_app_boundary(Some(101), Some(101)));
+        assert!(edit_watch_crossed_app_boundary(Some(101), Some(202)));
+        assert!(!edit_watch_crossed_app_boundary(Some(101), None));
+        assert!(!edit_watch_crossed_app_boundary(None, Some(202)));
+    }
+
+    #[test]
+    fn rapid_dictation_finalizes_old_watch_without_hard_cancel() {
+        let previous = new_edit_watcher_control(7);
+        previous.finalize.cancel();
+        assert!(previous.finalize.is_cancelled());
+        assert!(!previous.cancel.is_cancelled());
+
+        let current = new_edit_watcher_control(8);
+        assert!(!edit_watcher_generation_is_current(Some(&current), 7));
+        assert!(edit_watcher_generation_is_current(Some(&current), 8));
+        assert!(!edit_watcher_generation_is_current(None, 8));
     }
 
     #[test]
