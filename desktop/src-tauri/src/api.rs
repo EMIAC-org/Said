@@ -1712,6 +1712,8 @@ pub struct ConfirmBatchRequestItem {
     pub corrected: String,
     #[serde(default)]
     pub context: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1751,6 +1753,7 @@ pub async fn confirm_batch(
                 "original": item.original,
                 "corrected": item.corrected,
                 "context": item.context,
+                "tag": item.tag,
             })
         })
         .collect();

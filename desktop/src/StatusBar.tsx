@@ -1964,7 +1964,7 @@ export default function StatusBar() {
     const handleLearn = async () => {
       const items = bar.candidates
         .filter((_, i) => sel.has(i))
-        .map((c) => ({ original: c.original, corrected: c.corrected, context: c.context || null }));
+        .map((c) => ({ original: c.original, corrected: c.corrected, context: c.context || null, tag: c.tag }));
       if (items.length === 0) return;
       try {
         const result = await invoke<{ learned_count: number; server_owned?: boolean }>("confirm_batch", {

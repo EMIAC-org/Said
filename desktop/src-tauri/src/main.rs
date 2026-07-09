@@ -6841,10 +6841,15 @@ async fn confirm_batch(
                 .get("context")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string());
+            let tag = v
+                .get("tag")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
             Some(api::ConfirmBatchRequestItem {
                 original: orig,
                 corrected: corr,
                 context,
+                tag,
             })
         })
         .collect();
@@ -7680,10 +7685,15 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                                     .get("context")
                                     .and_then(|value| value.as_str())
                                     .map(|value| value.to_string());
+                                let tag = v
+                                    .get("tag")
+                                    .and_then(|value| value.as_str())
+                                    .map(|value| value.to_string());
                                 Some(api::ConfirmBatchRequestItem {
                                     original: v.get("original")?.as_str()?.to_string(),
                                     corrected: v.get("corrected")?.as_str()?.to_string(),
                                     context,
+                                    tag,
                                 })
                             })
                             .collect()
