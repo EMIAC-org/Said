@@ -10,7 +10,6 @@ pub mod key_guard;
 pub mod message_polish;
 pub mod openai_oauth;
 pub mod pending_edits;
-pub mod polish_models;
 pub mod pre_embed;
 pub mod prefs;
 pub mod problem;

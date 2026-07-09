@@ -202,15 +202,6 @@ pub fn resolve_polish_route(_selected_model: &str) -> PolishRoute {
     }
 }
 
-/// List catalog entries for UI (`beta` includes experimental models).
-pub fn list_polish_models(beta: bool) -> Vec<PolishModelSpec> {
-    POLISH_MODEL_CATALOG
-        .iter()
-        .copied()
-        .filter(|spec| !spec.beta_only || beta)
-        .collect()
-}
-
 /// Human-readable label for a stored catalog key.
 pub fn polish_model_display_label(selected_model: &str) -> String {
     let key = validate_polish_model_key(selected_model);
@@ -298,17 +289,6 @@ mod tests {
         let route = resolve_polish_route("fast");
         assert_eq!(route.provider, "cerebras");
         assert_eq!(route.model, CEREBRAS_POLISH_MODEL_GEMMA_4);
-    }
-
-    #[test]
-    fn list_models_beta_filters() {
-        let prod = list_polish_models(false);
-        assert!(prod.iter().any(|s| s.key == "cerebras-gemma-4"));
-        assert!(prod.iter().any(|s| s.key == "fast"));
-        assert!(!prod.iter().any(|s| s.key == "groq-gpt-oss-20b"));
-        let beta = list_polish_models(true);
-        assert!(beta.iter().any(|s| s.key == "groq-gpt-oss-20b"));
-        assert!(beta.iter().any(|s| s.key == "phi4"));
     }
 
     #[test]

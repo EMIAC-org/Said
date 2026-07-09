@@ -384,7 +384,6 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/preferences", get(routes::prefs::get_prefs))
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
-        .route("/v1/polish/models", get(routes::polish_models::list_models))
         .route("/v1/corrections", get(routes::prefs::get_corrections))
         .route("/v1/tier2/status", get(routes::tier2::status))
         .route(

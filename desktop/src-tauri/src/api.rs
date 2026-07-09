@@ -894,38 +894,6 @@ pub async fn patch_preferences(
     })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolishModelEntry {
-    pub key: String,
-    pub label: String,
-    pub provider: String,
-    pub model_id: String,
-    pub beta_only: bool,
-    pub available: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListPolishModelsResponse {
-    pub models: Vec<PolishModelEntry>,
-    pub selected_model: String,
-}
-
-pub async fn list_polish_models(
-    ep: &BackendEndpoint,
-    beta: bool,
-) -> Result<ListPolishModelsResponse, String> {
-    let url = format!("{}/v1/polish/models?beta={}", ep.url, beta);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("list polish models failed: {e}"))?
-        .json::<ListPolishModelsResponse>()
-        .await
-        .map_err(|e| format!("parse polish models failed: {e}"))
-}
-
 // ── History ───────────────────────────────────────────────────────────────────
 
 pub async fn get_history(

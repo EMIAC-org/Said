@@ -2946,15 +2946,6 @@ async fn get_preferences(backend: State<'_, BackendState>) -> Result<api::Prefer
     api::get_preferences(&ep).await
 }
 
-#[tauri::command]
-async fn list_polish_models(
-    backend: State<'_, BackendState>,
-    beta: bool,
-) -> Result<api::ListPolishModelsResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::list_polish_models(&ep, beta).await
-}
-
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
     whisper_installed: bool,
@@ -10192,7 +10183,6 @@ fn main() {
             set_status_bar_interactive,
             get_backend_endpoint,
             get_preferences,
-            list_polish_models,
             get_stt_runtime,
             patch_preferences,
             get_history,

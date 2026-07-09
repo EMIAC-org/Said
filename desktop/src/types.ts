@@ -109,20 +109,6 @@ export interface PrefsUpdate {
   llm_provider?:       string;
 }
 
-export interface PolishModelEntry {
-  key: string;
-  label: string;
-  provider: string;
-  model_id: string;
-  beta_only: boolean;
-  available: boolean;
-}
-
-export interface ListPolishModelsResponse {
-  models: PolishModelEntry[];
-  selected_model: string;
-}
-
 export interface ProcessPerf {
   pid: number;
   name: string;
