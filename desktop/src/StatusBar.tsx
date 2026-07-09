@@ -112,7 +112,7 @@ type BarState =
   | { kind: "negative_confirm"; term: string; wrongReplacement: string }
   | { kind: "wrong_fixed"; term: string; wrongReplacement: string }
   | { kind: "queued"; term: string; remaining: number }
-  | { kind: "reviewing"; candidates: ReviewCandidate[]; selected: Set<number>; recordingId: string }
+  | { kind: "reviewing"; candidates: ReviewCandidate[]; detectedChanges: DetectedChange[]; selected: Set<number>; recordingId: string }
   | { kind: "placement"; message: string }
   | { kind: "polish_mode"; enabled: boolean; message: string }
   | { kind: "problem_ambiguous"; candidates: DeveloperContextCandidate[] }
@@ -164,6 +164,15 @@ type ReviewCandidate = {
   learnable: boolean;
   tag: string;
   context?: string | null;
+};
+
+type DetectedChange = {
+  original: string;
+  corrected: string;
+  reason: string;
+  should_learn: boolean;
+  confidence: number;
+  skip_reason?: string | null;
 };
 
 type VoiceErrorPayload = {
@@ -248,6 +257,11 @@ function reviewTagHint(tag: string): string {
   switch (tag) {
     case "added": return "new word";
     case "case": return "capitalization";
+    case "stt_error": return "speech recognition";
+    case "polish_error": return "writing correction";
+    case "format_preference": return "formatting";
+    case "style_preference": return "rephrasing";
+    case "structural_rewrite": return "larger rewrite";
     default: return "swapped";
   }
 }
@@ -480,7 +494,9 @@ export default function StatusBar() {
     }
   })();
 
-  const candidateCount = bar.kind === "reviewing" ? bar.candidates.length : 0;
+  const candidateCount = bar.kind === "reviewing"
+    ? Math.max(bar.candidates.length, bar.detectedChanges.length)
+    : 0;
   const compactActionCount = bar.kind === "error" ? 2 + (bar.audioId ? 2 : 0) : 0;
   const innerSize = pillSize(
     bar.kind,
@@ -1156,21 +1172,21 @@ export default function StatusBar() {
     }).catch(() => {});
 
     // ── Review card — multi-change edit review ────────────────────────
-    listen<{ candidates: ReviewCandidate[]; recording_id: string }>("vocab-review", (e) => {
+    listen<{ candidates: ReviewCandidate[]; detected_changes?: DetectedChange[]; recording_id: string }>("vocab-review", (e) => {
       // Review is an actionable prompt, not a passive "word learned" toast.
       // It must remain visible even if learned-notification toasts are disabled.
       console.info("[status-bar] vocab-review", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
       presentStatusBar("vocab-review");
       playSound("knock");
-      const learnable = e.payload.candidates.filter(c => c.learnable);
-      const selected = new Set<number>(learnable.map((_, i) => {
-        const idx = e.payload.candidates.indexOf(learnable[i]);
-        return idx;
-      }));
+      const selected = new Set<number>();
+      e.payload.candidates.forEach((candidate, index) => {
+        if (candidate.learnable) selected.add(index);
+      });
       setBar({
         kind: "reviewing",
         candidates: e.payload.candidates,
+        detectedChanges: e.payload.detected_changes ?? [],
         selected,
         recordingId: e.payload.recording_id,
       });
@@ -1865,18 +1881,42 @@ export default function StatusBar() {
   if (bar.kind === "reviewing") {
     const sel = bar.selected;
     const selCount = sel.size;
-    const learnableTotal = bar.candidates.filter((c) => c.learnable).length;
+    const pairKey = (original: string, corrected: string) =>
+      `${original.trim().toLocaleLowerCase()}\u0000${corrected.trim().toLocaleLowerCase()}`;
+    const matchedCandidateIndexes = new Set<number>();
+    const allEntries = bar.detectedChanges.map((change) => {
+      const candidateIndex = bar.candidates.findIndex((candidate, index) =>
+        !matchedCandidateIndexes.has(index)
+        && pairKey(candidate.original, candidate.corrected) === pairKey(change.original, change.corrected));
+      if (candidateIndex >= 0) matchedCandidateIndexes.add(candidateIndex);
+      const candidate = candidateIndex >= 0 ? bar.candidates[candidateIndex] : null;
+      const c: ReviewCandidate = candidate ?? {
+        original: change.original,
+        corrected: change.corrected,
+        term_type: "other",
+        learnable: false,
+        tag: change.reason,
+        context: null,
+      };
+      return { c, candidateIndex: candidateIndex >= 0 ? candidateIndex : null };
+    });
+    bar.candidates.forEach((candidate, candidateIndex) => {
+      if (!matchedCandidateIndexes.has(candidateIndex)) {
+        allEntries.push({ c: candidate, candidateIndex });
+      }
+    });
     const learnableEntries = bar.candidates
-      .map((c, i) => ({ c, i }))
+      .map((c, candidateIndex) => ({ c, candidateIndex }))
       .filter(({ c }) => c.learnable);
     const displayEntries = showAllCandidates
-      ? learnableEntries
-      : learnableEntries.filter(({ i }) => sel.has(i));
+      ? allEntries
+      : learnableEntries.filter(({ candidateIndex }) => sel.has(candidateIndex));
     const totalPages = Math.max(1, Math.ceil(displayEntries.length / REVIEW_PAGE_SIZE));
     const page = Math.min(reviewPage, totalPages - 1);
     const pageStart = page * REVIEW_PAGE_SIZE;
     const pageItems = displayEntries.slice(pageStart, pageStart + REVIEW_PAGE_SIZE);
-    const hiddenCount = learnableTotal - selCount;
+    const detectedTotal = allEntries.length;
+    const hiddenCount = Math.max(0, detectedTotal - selCount);
 
     const toggleIdx = (idx: number) => {
       if (!bar.candidates[idx]?.learnable) return;
@@ -1934,7 +1974,7 @@ export default function StatusBar() {
       }
       void handleLearn();
     };
-    const pillText = reviewPillLabel(selCount);
+    const pillText = reviewPillLabel(detectedTotal);
     const pillW = innerSize.width;
 
     return (
@@ -1953,7 +1993,7 @@ export default function StatusBar() {
           <div className="sb-survey-top">
             <div className="sb-survey-kicker-row">
               <span className="sb-survey-kicker">
-                {selCount} selected{learnableTotal !== selCount ? ` · ${learnableTotal} total` : ""}
+                {detectedTotal} detected · {selCount} learnable
               </span>
               {!showAllCandidates && hiddenCount > 0 && (
                 <button
@@ -1961,16 +2001,16 @@ export default function StatusBar() {
                   className="sb-survey-edit"
                   onClick={() => { setShowAllCandidates(true); setReviewPage(0); }}
                 >
-                  +{hiddenCount} more
+                  View all
                 </button>
               )}
-              {showAllCandidates && learnableTotal > selCount && (
+              {showAllCandidates && detectedTotal > selCount && (
                 <button
                   type="button"
                   className="sb-survey-edit"
                   onClick={() => { setShowAllCandidates(false); setReviewPage(0); }}
                 >
-                  Show selected
+                  Show learnable
                 </button>
               )}
             </div>
@@ -2000,7 +2040,7 @@ export default function StatusBar() {
           </div>
 
           <div className="sb-survey-question">
-            {showAllCandidates ? "Tap to include or exclude" : "These will be learned"}
+            {showAllCandidates ? "All detected changes; dimmed items will not be learned" : "Safe learning suggestions"}
           </div>
 
           <div className="sb-survey-list" ref={reviewListRef}>
@@ -2017,16 +2057,22 @@ export default function StatusBar() {
                   </button>
                 )}
               </div>
-            ) : pageItems.map(({ c, i }, slot) => {
-              const selected = sel.has(i);
+            ) : pageItems.map(({ c, candidateIndex }, slot) => {
+              const learnable = candidateIndex !== null && c.learnable;
+              const selected = learnable && sel.has(candidateIndex);
               return (
                 <div
-                  key={`${c.original}-${c.corrected}-${i}`}
-                  className={`sb-survey-row${selected ? " selected" : ""}`}
-                  onClick={() => toggleIdx(i)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleIdx(i); } }}
+                  key={`${c.original}-${c.corrected}-${candidateIndex ?? `detected-${slot}`}`}
+                  className={`sb-survey-row${selected ? " selected" : ""}${learnable ? "" : " disabled"}`}
+                  onClick={() => { if (candidateIndex !== null) toggleIdx(candidateIndex); }}
+                  role={learnable ? "button" : undefined}
+                  tabIndex={learnable ? 0 : -1}
+                  onKeyDown={(e) => {
+                    if (candidateIndex !== null && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      toggleIdx(candidateIndex);
+                    }
+                  }}
                 >
                   <span className="sb-survey-letter">{reviewLetter(slot)}</span>
                   <p className="sb-survey-copy">
@@ -2034,6 +2080,7 @@ export default function StatusBar() {
                     <span className="sb-survey-desc">
                       {" "}— was “{c.original || "—"}”
                       {" · "}{reviewTagHint(c.tag)}
+                      {!learnable ? " · not learnable" : ""}
                     </span>
                   </p>
                 </div>

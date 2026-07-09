@@ -8995,12 +8995,14 @@ async fn watch_for_edit(
                         "vocab-review",
                         serde_json::json!({
                             "candidates": candidates,
+                            "detected_changes": &resp.changes,
                             "recording_id": recording_id,
                         }),
                     );
                     tracing::info!(
-                        "[edit-watch] review card: {} candidate(s)",
+                        "[edit-watch] review card: {} candidate(s), {} detected change(s)",
                         resp.review_candidates.len(),
+                        resp.changes.len(),
                     );
                 }
 

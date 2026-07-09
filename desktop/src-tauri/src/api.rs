@@ -1651,6 +1651,24 @@ pub struct ClassifyEditResponse {
     /// Changes the user should review before learning.
     #[serde(default)]
     pub review_candidates: Vec<ReviewCandidateResponse>,
+    /// Every deterministic change detected in the final owned text. This is
+    /// intentionally broader than `review_candidates`, which contains only the
+    /// subset eligible for learning or explicit review.
+    #[serde(default)]
+    pub changes: Vec<AnalyzedChangeResponse>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AnalyzedChangeResponse {
+    pub original: String,
+    pub corrected: String,
+    pub reason: String,
+    #[serde(default)]
+    pub should_learn: bool,
+    #[serde(default)]
+    pub confidence: f64,
+    #[serde(default)]
+    pub skip_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
