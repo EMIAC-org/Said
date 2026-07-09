@@ -2,6 +2,7 @@ pub mod classify;
 pub mod cloud;
 pub mod company_vocab;
 pub mod confirm;
+pub mod edit_review_sessions;
 pub mod feedback;
 pub mod health;
 pub mod history;

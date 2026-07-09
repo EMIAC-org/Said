@@ -6829,6 +6829,7 @@ async fn confirm_batch(
     backend: State<'_, BackendState>,
     items: Vec<serde_json::Value>,
     recording_id: Option<String>,
+    review_session_id: Option<String>,
 ) -> Result<api::ConfirmBatchResponse, String> {
     let ep = get_endpoint(&backend)?;
     let request_items: Vec<api::ConfirmBatchRequestItem> = items
@@ -6847,7 +6848,13 @@ async fn confirm_batch(
             })
         })
         .collect();
-    let result = api::confirm_batch(&ep, &request_items, recording_id.as_deref()).await?;
+    let result = api::confirm_batch(
+        &ep,
+        &request_items,
+        recording_id.as_deref(),
+        review_session_id.as_deref(),
+    )
+    .await?;
     let _ = app.emit("vocabulary-changed", ());
     tracing::info!(
         "[confirm-batch] user confirmed {} term(s) server_owned={}: {:?}",
@@ -6856,6 +6863,23 @@ async fn confirm_batch(
         result.learned_terms,
     );
     Ok(result)
+}
+
+#[tauri::command]
+async fn get_next_edit_review_session(
+    backend: State<'_, BackendState>,
+) -> Result<Option<api::EditReviewSessionResponse>, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_next_edit_review_session(&ep).await
+}
+
+#[tauri::command]
+async fn skip_edit_review_session(
+    backend: State<'_, BackendState>,
+    session_id: String,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::skip_edit_review_session(&ep, &session_id).await
 }
 
 #[tauri::command]
@@ -7668,7 +7692,7 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                 if !request_items.is_empty() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if api::confirm_batch(&ep, &request_items, recording_id.as_deref())
+                        if api::confirm_batch(&ep, &request_items, recording_id.as_deref(), None)
                             .await
                             .is_ok()
                         {
@@ -8996,6 +9020,7 @@ async fn watch_for_edit(
                         serde_json::json!({
                             "candidates": candidates,
                             "detected_changes": &resp.changes,
+                            "review_session_id": &resp.review_session_id,
                             "recording_id": recording_id,
                         }),
                     );
@@ -10633,6 +10658,8 @@ fn main() {
             delete_vocabulary_term,
             confirm_term,
             confirm_batch,
+            get_next_edit_review_session,
+            skip_edit_review_session,
             block_correction,
             reset_all_vocabulary,
             star_vocabulary_term,

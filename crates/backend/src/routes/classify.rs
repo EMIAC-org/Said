@@ -26,8 +26,8 @@ use crate::{
         edit_diff, promotion_gate,
     },
     store::{
-        corrections, email_memory, history, prefs::get_prefs, stt_replacements, tier2_edit_policy,
-        users, vectors, vocabulary,
+        corrections, edit_review_sessions, email_memory, history, prefs::get_prefs,
+        stt_replacements, tier2_edit_policy, users, vectors, vocabulary,
     },
 };
 
@@ -212,6 +212,8 @@ pub struct ClassifyResponse {
     pub class: String,
     pub reason: String,
     pub pending_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_session_id: Option<String>,
     pub learned: bool,
     pub notify: bool,
     pub promoted_count: usize,
@@ -1193,6 +1195,31 @@ async fn classify_inner(
         .iter()
         .filter_map(|r| serde_json::to_value(r).ok())
         .collect();
+    let changes_json: Vec<serde_json::Value> = analyzer_output
+        .changes
+        .iter()
+        .filter_map(|change| serde_json::to_value(change).ok())
+        .collect();
+    let review_session_id = if review_candidates.is_empty() || audit_only {
+        None
+    } else {
+        let id = edit_review_sessions::insert(
+            &state.pool,
+            &state.default_user_id,
+            &body.recording_id,
+            &body.ai_output,
+            &body.user_kept,
+            &review_json,
+            &changes_json,
+        );
+        if id.is_none() {
+            warn!(
+                "[classify] failed to persist review session for {}",
+                body.recording_id
+            );
+        }
+        id
+    };
     crate::observability::schedule_classify_observability(
         &state,
         crate::observability::ClassifyObservabilityInput {
@@ -1214,6 +1241,7 @@ async fn classify_inner(
             class: analyzer_output.overall_class,
             reason: format!("analyzer identified {} change(s)", change_count),
             pending_id: None,
+            review_session_id,
             learned,
             notify,
             promoted_count,
@@ -3174,6 +3202,7 @@ fn empty_response(class: &str, reason: &str) -> ClassifyResponse {
         class: class.to_string(),
         reason: reason.to_string(),
         pending_id: None,
+        review_session_id: None,
         learned: false,
         notify: false,
         promoted_count: 0,

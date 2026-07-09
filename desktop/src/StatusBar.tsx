@@ -112,7 +112,7 @@ type BarState =
   | { kind: "negative_confirm"; term: string; wrongReplacement: string }
   | { kind: "wrong_fixed"; term: string; wrongReplacement: string }
   | { kind: "queued"; term: string; remaining: number }
-  | { kind: "reviewing"; candidates: ReviewCandidate[]; detectedChanges: DetectedChange[]; selected: Set<number>; recordingId: string }
+  | { kind: "reviewing"; candidates: ReviewCandidate[]; detectedChanges: DetectedChange[]; selected: Set<number>; recordingId: string; reviewSessionId: string }
   | { kind: "placement"; message: string }
   | { kind: "polish_mode"; enabled: boolean; message: string }
   | { kind: "problem_ambiguous"; candidates: DeveloperContextCandidate[] }
@@ -173,6 +173,13 @@ type DetectedChange = {
   should_learn: boolean;
   confidence: number;
   skip_reason?: string | null;
+};
+
+type EditReviewSession = {
+  id: string;
+  recording_id: string;
+  review_candidates: ReviewCandidate[];
+  detected_changes: DetectedChange[];
 };
 
 type VoiceErrorPayload = {
@@ -406,6 +413,34 @@ export default function StatusBar() {
       console.warn("[status-bar] native present failed", err);
       win.show().catch((showErr) => console.warn("[status-bar] fallback show failed", showErr));
     });
+  };
+  const presentNextReviewSession = async (withSound: boolean): Promise<boolean> => {
+    try {
+      const session = await invoke<EditReviewSession | null>("get_next_edit_review_session");
+      if (!session) return false;
+      if (["recording", "processing", "divo_stage", "divo_route", "divo_streaming", "divo_answer"].includes(barKindRef.current)) {
+        return false;
+      }
+      const selected = new Set<number>();
+      session.review_candidates.forEach((candidate, index) => {
+        if (candidate.learnable) selected.add(index);
+      });
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      presentStatusBar("vocab-review-queue");
+      if (withSound) playSound("knock");
+      setBar({
+        kind: "reviewing",
+        candidates: session.review_candidates,
+        detectedChanges: session.detected_changes,
+        selected,
+        recordingId: session.recording_id,
+        reviewSessionId: session.id,
+      });
+      return true;
+    } catch (error) {
+      console.warn("[status-bar] failed to load edit review queue", error);
+      return false;
+    }
   };
   const showPinnedUpdate = (next: UpdateReadyState, reason: string) => {
     pinnedUpdateRef.current = next;
@@ -1172,24 +1207,12 @@ export default function StatusBar() {
     }).catch(() => {});
 
     // ── Review card — multi-change edit review ────────────────────────
-    listen<{ candidates: ReviewCandidate[]; detected_changes?: DetectedChange[]; recording_id: string }>("vocab-review", (e) => {
+    listen<{ review_session_id?: string; recording_id: string }>("vocab-review", (e) => {
       // Review is an actionable prompt, not a passive "word learned" toast.
       // It must remain visible even if learned-notification toasts are disabled.
       console.info("[status-bar] vocab-review", e.payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      presentStatusBar("vocab-review");
-      playSound("knock");
-      const selected = new Set<number>();
-      e.payload.candidates.forEach((candidate, index) => {
-        if (candidate.learnable) selected.add(index);
-      });
-      setBar({
-        kind: "reviewing",
-        candidates: e.payload.candidates,
-        detectedChanges: e.payload.detected_changes ?? [],
-        selected,
-        recordingId: e.payload.recording_id,
-      });
+      if (barKindRef.current === "reviewing") return;
+      void presentNextReviewSession(true);
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
@@ -1416,6 +1439,15 @@ export default function StatusBar() {
     const t = window.setTimeout(() => {
       emit("frontend-ready").catch(() => {});
     }, 100);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (barKindRef.current === "idle") {
+        void presentNextReviewSession(false);
+      }
+    }, 500);
     return () => window.clearTimeout(t);
   }, []);
 
@@ -1935,8 +1967,13 @@ export default function StatusBar() {
         .map((c) => ({ original: c.original, corrected: c.corrected, context: c.context || null }));
       if (items.length === 0) return;
       try {
-        const result = await invoke<{ learned_count: number; server_owned?: boolean }>("confirm_batch", { items, recordingId: bar.recordingId });
+        const result = await invoke<{ learned_count: number; server_owned?: boolean }>("confirm_batch", {
+          items,
+          recordingId: bar.recordingId,
+          reviewSessionId: bar.reviewSessionId,
+        });
         const n = result.learned_count;
+        if (await presentNextReviewSession(false)) return;
         if (result.server_owned) {
           // Server-owned: defer toast and let the WS vocab-learned notification take over.
           // Fallback after 1.5s if WS event does not arrive.
@@ -1962,10 +1999,18 @@ export default function StatusBar() {
         }
       } catch (e) { console.error("[review] confirm_batch failed", e); }
     };
-    const handleSkip = () => {
+    const handleSkip = async () => {
+      try {
+        await invoke("skip_edit_review_session", { sessionId: bar.reviewSessionId });
+      } catch (error) {
+        console.error("[review] skip failed", error);
+        return;
+      }
       setReviewPage(0);
-      setBar({ kind: "idle" });
-      invoke("dismiss_status_bar").catch(() => {});
+      if (!(await presentNextReviewSession(false))) {
+        setBar({ kind: "idle" });
+        invoke("dismiss_status_bar").catch(() => {});
+      }
     };
     const handleNext = () => {
       if (!isLastPage) {
@@ -2089,7 +2134,7 @@ export default function StatusBar() {
           </div>
 
           <div className="sb-survey-footer">
-            <button type="button" className="sb-survey-skip" onClick={handleSkip}>Skip</button>
+            <button type="button" className="sb-survey-skip" onClick={() => { void handleSkip(); }}>Skip</button>
             <button
               type="button"
               className="sb-survey-next"

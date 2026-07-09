@@ -12,8 +12,8 @@ use crate::{
     embedder::gemini,
     llm::{alias_safety, meaning, promotion_gate},
     store::{
-        openai_oauth, prefs::get_prefs, stt_replacements, tier2_edit_policy, users,
-        vocab_embeddings, vocab_fts, vocabulary,
+        edit_review_sessions, openai_oauth, prefs::get_prefs, stt_replacements, tier2_edit_policy,
+        users, vocab_embeddings, vocab_fts, vocabulary,
     },
 };
 
@@ -745,6 +745,8 @@ pub async fn block_correction(
 pub struct ConfirmBatchBody {
     pub items: Vec<ConfirmBatchItem>,
     pub recording_id: Option<String>,
+    #[serde(default)]
+    pub review_session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1036,6 +1038,12 @@ pub async fn confirm_batch(
                 &http,
             );
         });
+    }
+
+    if let Some(session_id) = body.review_session_id.as_deref() {
+        if !edit_review_sessions::resolve(&state.pool, user_id, session_id, 1) {
+            warn!("[confirm-batch] review session {session_id} was not pending");
+        }
     }
 
     (

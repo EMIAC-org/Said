@@ -1623,6 +1623,8 @@ pub struct ClassifyEditResponse {
     pub reason: String,
     pub pending_id: Option<String>,
     #[serde(default)]
+    pub review_session_id: Option<String>,
+    #[serde(default)]
     pub learned: bool,
     #[serde(default)]
     pub notify: bool,
@@ -1722,10 +1724,24 @@ pub struct ConfirmBatchResponse {
     pub server_owned: bool,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct EditReviewSessionResponse {
+    pub id: String,
+    pub recording_id: String,
+    pub ai_output: String,
+    pub user_kept: String,
+    #[serde(default)]
+    pub review_candidates: Vec<ReviewCandidateResponse>,
+    #[serde(default)]
+    pub detected_changes: Vec<AnalyzedChangeResponse>,
+    pub created_at_ms: i64,
+}
+
 pub async fn confirm_batch(
     ep: &BackendEndpoint,
     items: &[ConfirmBatchRequestItem],
     recording_id: Option<&str>,
+    review_session_id: Option<&str>,
 ) -> Result<ConfirmBatchResponse, String> {
     let url = format!("{}/v1/confirm-batch", ep.url);
     let items_json: Vec<serde_json::Value> = items
@@ -1741,6 +1757,7 @@ pub async fn confirm_batch(
     let body = serde_json::json!({
         "items": items_json,
         "recording_id": recording_id,
+        "review_session_id": review_session_id,
     });
     Client::new()
         .post(&url)
@@ -1753,6 +1770,44 @@ pub async fn confirm_batch(
         .json::<ConfirmBatchResponse>()
         .await
         .map_err(|e| format!("parse confirm batch: {e}"))
+}
+
+pub async fn get_next_edit_review_session(
+    ep: &BackendEndpoint,
+) -> Result<Option<EditReviewSessionResponse>, String> {
+    let url = format!("{}/v1/edit-review-sessions/next", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("get next edit review session failed: {e}"))?
+        .json::<Option<EditReviewSessionResponse>>()
+        .await
+        .map_err(|e| format!("parse next edit review session: {e}"))
+}
+
+pub async fn skip_edit_review_session(
+    ep: &BackendEndpoint,
+    session_id: &str,
+) -> Result<(), String> {
+    let url = format!("{}/v1/edit-review-sessions/{session_id}/skip", ep.url);
+    let response = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("skip edit review session failed: {e}"))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "skip edit review session returned {}",
+            response.status()
+        ))
+    }
 }
 
 /// Classify an edit using the four-way classifier.

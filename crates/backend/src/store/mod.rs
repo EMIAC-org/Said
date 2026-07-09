@@ -7,6 +7,7 @@ use tracing::{info, warn};
 pub mod alias_safety;
 pub mod company_vocab;
 pub mod corrections;
+pub mod edit_review_sessions;
 pub mod email_memory;
 pub mod history;
 pub mod openai_oauth;
@@ -87,6 +88,7 @@ const MIGRATION_054: &str = include_str!("migrations/054_recording_trace_json.sq
 const MIGRATION_055: &str = include_str!("migrations/055_drop_prompt_templates.sql");
 const MIGRATION_056: &str = include_str!("migrations/056_site_visits.sql");
 const MIGRATION_057: &str = include_str!("migrations/057_force_cerebras_gemma_4.sql");
+const MIGRATION_058: &str = include_str!("migrations/058_edit_review_sessions.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -598,6 +600,14 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 57")
             .expect("failed to set user_version to 57");
     }
+
+    if version < 58 {
+        info!("running migration 058_edit_review_sessions");
+        conn.execute_batch(MIGRATION_058)
+            .expect("migration 058 failed");
+        conn.execute_batch("PRAGMA user_version = 58")
+            .expect("failed to set user_version to 58");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -833,7 +843,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 57);
+        assert_eq!(version, 58);
 
         for table in [
             "tier2_policy_weights",
@@ -844,6 +854,7 @@ mod tests {
             "company_bucket_state",
             "company_vocabulary",
             "company_stt_replacements",
+            "edit_review_sessions",
         ] {
             let exists: i64 = conn
                 .query_row(

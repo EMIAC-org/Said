@@ -436,6 +436,14 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/confirm-term", post(routes::confirm::confirm_term))
         .route("/v1/confirm-batch", post(routes::confirm::confirm_batch))
         .route(
+            "/v1/edit-review-sessions/next",
+            get(routes::edit_review_sessions::next),
+        )
+        .route(
+            "/v1/edit-review-sessions/:id/skip",
+            post(routes::edit_review_sessions::skip),
+        )
+        .route(
             "/v1/block-correction",
             post(routes::confirm::block_correction),
         )
