@@ -833,9 +833,17 @@ fn start_backend_watchdog(app: tauri::AppHandle, using_external_backend: bool) {
         });
 }
 
-/// Owns the currently running post-paste edit watcher. Starting a new watcher
-/// cancels the previous one so rapid recordings cannot stack poll loops.
-struct EditWatcherState(Mutex<Option<CancellationToken>>);
+#[derive(Clone)]
+struct EditWatcherControl {
+    generation: u64,
+    cancel: CancellationToken,
+    finalize: CancellationToken,
+}
+
+/// Owns the currently running post-paste edit watcher. A new recording asks the
+/// previous watcher to finalize; unrelated replacement actions may hard-cancel.
+struct EditWatcherState(Mutex<Option<EditWatcherControl>>);
+static EDIT_WATCHER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The frontmost app PID when recording started.
 ///
@@ -3962,7 +3970,7 @@ fn do_start_recording_inner(
     }
     let _guard = StartGuard;
 
-    cancel_edit_watcher(app, "new recording");
+    finalize_edit_watcher(app, "new recording");
 
     let meeting_capture = app
         .try_state::<MeetingModeState>()
@@ -8155,7 +8163,22 @@ fn cancel_edit_watcher(app: &tauri::AppHandle, reason: &str) {
     };
     if let Some(prev) = guard.take() {
         tracing::info!("[edit-watch] cancelling watcher — {reason}");
-        prev.cancel();
+        prev.cancel.cancel();
+    }
+}
+
+fn finalize_edit_watcher(app: &tauri::AppHandle, reason: &str) {
+    let st = app.state::<EditWatcherState>();
+    let mut guard = match st.0.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!("[edit-watch] watcher state lock poisoned; recovering");
+            e.into_inner()
+        }
+    };
+    if let Some(prev) = guard.take() {
+        tracing::info!("[edit-watch] finalizing watcher — {reason}");
+        prev.finalize.cancel();
     }
 }
 
@@ -8168,7 +8191,7 @@ fn start_edit_watcher(
     watch_start: std::time::Instant,
     anchor: EditCaptureAnchor,
 ) {
-    let token = {
+    let control = {
         let st = app.state::<EditWatcherState>();
         let mut guard = match st.0.lock() {
             Ok(g) => g,
@@ -8179,18 +8202,24 @@ fn start_edit_watcher(
         };
         if let Some(prev) = guard.take() {
             tracing::info!("[edit-watch] cancelling previous watcher");
-            prev.cancel();
+            prev.cancel.cancel();
             std::thread::yield_now();
         }
-        let token = CancellationToken::new();
-        *guard = Some(token.clone());
-        token
+        let control = EditWatcherControl {
+            generation: EDIT_WATCHER_GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
+            cancel: CancellationToken::new(),
+            finalize: CancellationToken::new(),
+        };
+        *guard = Some(control.clone());
+        control
     };
 
     let app_for_task = app.clone();
+    let task_generation = control.generation;
     tauri::async_runtime::spawn(async move {
         watch_for_edit(
-            token.clone(),
+            control.cancel.clone(),
+            control.finalize.clone(),
             back_arc,
             app_for_task.clone(),
             client_run_id,
@@ -8201,8 +8230,11 @@ fn start_edit_watcher(
         )
         .await;
 
-        if !token.is_cancelled() {
-            if let Ok(mut guard) = app_for_task.state::<EditWatcherState>().0.lock() {
+        if let Ok(mut guard) = app_for_task.state::<EditWatcherState>().0.lock() {
+            if guard
+                .as_ref()
+                .is_some_and(|current| current.generation == task_generation)
+            {
                 *guard = None;
             }
         }
@@ -8213,7 +8245,8 @@ fn start_edit_watcher(
 /// When the user stops typing for 5 s (or switches apps), emit "edit-detected"
 /// so the frontend can ask "Save this preference?" before writing to SQLite.
 async fn watch_for_edit(
-    token: CancellationToken,
+    cancel_token: CancellationToken,
+    finalize_token: CancellationToken,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
     app: tauri::AppHandle,
     client_run_id: Option<String>,
@@ -8228,7 +8261,7 @@ async fn watch_for_edit(
 
     // Let the paste animation settle and focus move into the text field.
     // 400ms covers paste animation (~200ms) + AX cache start; retries handle the rest.
-    if !cancellable_sleep(&token, Duration::from_millis(400)).await {
+    if !cancellable_sleep(&cancel_token, Duration::from_millis(400)).await {
         tracing::info!("[edit-watch] watcher cancelled before start for {recording_id}");
         return;
     }
@@ -8258,7 +8291,7 @@ async fn watch_for_edit(
         }
         if val.is_empty() {
             // 2nd attempt after 300 ms
-            if !cancellable_sleep(&token, Duration::from_millis(300)).await {
+            if !cancellable_sleep(&cancel_token, Duration::from_millis(300)).await {
                 tracing::info!(
                     "[edit-watch] watcher cancelled during initial retry for {recording_id}"
                 );
@@ -8276,7 +8309,7 @@ async fn watch_for_edit(
         }
         if val.is_empty() {
             // 3rd attempt after another 500 ms — AX tree should be ready by now
-            if !cancellable_sleep(&token, Duration::from_millis(500)).await {
+            if !cancellable_sleep(&cancel_token, Duration::from_millis(500)).await {
                 tracing::info!(
                     "[edit-watch] watcher cancelled during initial retry for {recording_id}"
                 );
@@ -8313,6 +8346,7 @@ async fn watch_for_edit(
     let mut current_interval = EDIT_WATCH_FAST_INTERVAL;
     let mut last_pid = initial_pid;
     let mut ownership_lost_reason: Option<&'static str> = None;
+    let mut finalize_requested = finalize_token.is_cancelled();
 
     // Scale timeouts by sentence length — long sentences need more reading time
     let word_count = polished.split_whitespace().count();
@@ -8341,10 +8375,18 @@ async fn watch_for_edit(
     // and watch for app switches.  Clipboard verification (Cmd+A+C) is
     // strictly an end-of-loop, same-app operation; doing it during the loop
     // disrupts the user's typing in AX-blind apps like Claude input.
-    loop {
-        if !cancellable_sleep(&token, current_interval).await {
-            tracing::info!("[edit-watch] watcher cancelled for {recording_id}");
-            return;
+    while !finalize_requested {
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                tracing::info!("[edit-watch] watcher cancelled for {recording_id}");
+                return;
+            }
+            _ = finalize_token.cancelled() => {
+                finalize_requested = true;
+                tracing::info!("[edit-watch] finalize requested for {recording_id}");
+                break;
+            }
+            _ = tokio::time::sleep(current_interval) => {}
         }
 
         // Check the frontmost PID first. With a locked target PID we keep
@@ -8485,6 +8527,33 @@ async fn watch_for_edit(
                 saw_user_edit,
             );
             break;
+        }
+    }
+
+    if finalize_requested {
+        let final_value = blocking_ax_option("finalize current value", move || match initial_pid {
+            Some(pid) => paster::read_focused_value_fast_for_pid(pid),
+            None => paster::read_focused_value_fast(),
+        })
+        .await;
+        if let Some(now_val) = final_value {
+            #[cfg(target_os = "macos")]
+            if let (Some(pid), Some(expected)) = (initial_pid, anchor.field_fingerprint) {
+                let observed = blocking_ax_option("finalize field fingerprint", move || {
+                    paster::focused_element_fingerprint_for_pid(pid)
+                })
+                .await;
+                if observed != Some(expected) {
+                    ownership_lost_reason = Some("field_changed");
+                }
+            }
+            if ownership_lost_reason.is_none() && now_val != last_val {
+                saw_user_edit = now_val != post_paste;
+                if shares_word_overlap(&now_val, &polished) {
+                    best_candidate = now_val.clone();
+                }
+                last_val = now_val;
+            }
         }
     }
 
