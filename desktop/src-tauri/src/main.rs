@@ -7900,6 +7900,7 @@ const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 const EDIT_WATCH_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(300);
+const EDIT_WATCH_EMPTY_FIELD_BOUNDARY: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedTextSpan {
@@ -8347,6 +8348,8 @@ async fn watch_for_edit(
     let mut last_pid = initial_pid;
     let mut ownership_lost_reason: Option<&'static str> = None;
     let mut finalize_requested = finalize_token.is_cancelled();
+    let mut field_empty_since: Option<Instant> = None;
+    let mut explicit_boundary: Option<&'static str> = None;
 
     // Scale timeouts by sentence length — long sentences need more reading time
     let word_count = polished.split_whitespace().count();
@@ -8371,10 +8374,8 @@ async fn watch_for_edit(
         post_paste.len(),
     );
 
-    // Poll loop: adaptive cadence.  No mid-loop side effects — we only read AX
-    // and watch for app switches.  Clipboard verification (Cmd+A+C) is
-    // strictly an end-of-loop, same-app operation; doing it during the loop
-    // disrupts the user's typing in AX-blind apps like Claude input.
+    // Poll loop: adaptive cadence. No mid-loop side effects: AX and pasteboard
+    // reads are non-mutating, and app/field/submit boundaries close the session.
     while !finalize_requested {
         tokio::select! {
             _ = cancel_token.cancelled() => {
@@ -8389,22 +8390,20 @@ async fn watch_for_edit(
             _ = tokio::time::sleep(current_interval) => {}
         }
 
-        // Check the frontmost PID first. With a locked target PID we keep
-        // monitoring that original app even if focus moves; without one, keep
-        // the old safety behavior and stop before reading another app's field.
+        // Leaving the target app closes this edit session. The last owned value
+        // remains valid, but text entered after the switch cannot belong to it.
         let now_pid = blocking_ax_option("focused_pid poll", paster::focused_pid).await;
         let pid_switched = matches!(
             (initial_pid, now_pid),
             (Some(a), Some(b)) if a != b
         );
-        if pid_switched && anchor.target_pid.is_none() {
+        if pid_switched {
             app_switched_during_capture = true;
+            explicit_boundary = Some("app_switched");
             tracing::info!(
-                "[edit-watch] app_switched_skip for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
+                "[edit-watch] app boundary for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
             );
             break;
-        } else if pid_switched {
-            app_switched_during_capture = true;
         }
 
         // Detect if target app exited — stop polling a dead process
@@ -8477,6 +8476,7 @@ async fn watch_for_edit(
             idle_at = Instant::now();
             last_change_at = Instant::now();
             current_interval = EDIT_WATCH_FAST_INTERVAL;
+            field_empty_since = now_val.is_empty().then(Instant::now);
             if now_val != post_paste {
                 if !saw_user_edit {
                     tracing::info!(
@@ -8494,6 +8494,14 @@ async fn watch_for_edit(
             last_val = now_val;
         } else if last_change_at.elapsed() > Duration::from_secs(2) {
             current_interval = EDIT_WATCH_SLOW_INTERVAL;
+        }
+
+        if field_empty_since
+            .is_some_and(|empty_since| empty_since.elapsed() >= EDIT_WATCH_EMPTY_FIELD_BOUNDARY)
+        {
+            explicit_boundary = Some("field_cleared");
+            tracing::info!("[edit-watch] field-clear boundary for {recording_id}");
+            break;
         }
 
         let active_idle_timeout = if saw_user_edit {
@@ -8531,6 +8539,7 @@ async fn watch_for_edit(
     }
 
     if finalize_requested {
+        explicit_boundary = Some("new_recording");
         let final_value = blocking_ax_option("finalize current value", move || match initial_pid {
             Some(pid) => paster::read_focused_value_fast_for_pid(pid),
             None => paster::read_focused_value_fast(),
@@ -8583,9 +8592,10 @@ async fn watch_for_edit(
 
     let final_front_pid = blocking_ax_option("focused_pid final", paster::focused_pid).await;
     tracing::info!(
-        "[edit-watch] done watching {recording_id} — field changed: {}, target still frontmost: {}",
+        "[edit-watch] done watching {recording_id} — field changed: {}, target still frontmost: {}, boundary={:?}",
         effective_val != post_paste,
         matches!((initial_pid, final_front_pid), (Some(a), Some(b)) if a == b),
+        explicit_boundary,
     );
 
     // ── Determine user_kept + capture_method ───────────────────────────────────
@@ -8757,6 +8767,7 @@ async fn watch_for_edit(
                 "saw_user_edit": saw_user_edit,
                 "initial_pid": initial_pid,
                 "final_front_pid": final_front_pid,
+                "boundary": explicit_boundary,
                 "field_fingerprint": anchor.field_fingerprint,
                 "owned_span_start_chars": anchor.owned_span.as_ref().map(|span| span.start_chars),
                 "owned_span_len_chars": anchor.owned_span.as_ref().map(|span| span.len_chars),
