@@ -250,7 +250,9 @@ fn status_bar_collection_behavior() -> CollectionBehavior {
 
 #[cfg(target_os = "macos")]
 fn tune_status_bar_panel(app: &tauri::AppHandle) {
+    diag::breadcrumb("status_bar:panel_tune:begin");
     let Ok(panel) = app.get_webview_panel("status-bar") else {
+        diag::breadcrumb("status_bar:panel_tune:missing");
         return;
     };
     panel.set_level(PanelLevel::Custom(28).value());
@@ -262,18 +264,22 @@ fn tune_status_bar_panel(app: &tauri::AppHandle) {
     panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().into());
     panel.set_transparent(true);
     panel.set_has_shadow(false);
+    diag::breadcrumb("status_bar:panel_tune:end");
 }
 
 #[cfg(target_os = "macos")]
 fn show_status_bar_panel(app: &tauri::AppHandle) -> bool {
     match app.get_webview_panel("status-bar") {
         Ok(panel) => {
+            diag::breadcrumb("status_bar:panel_show:begin");
             tune_status_bar_panel(app);
             panel.show();
             panel.order_front_regardless();
+            diag::breadcrumb("status_bar:panel_show:end");
             true
         }
         Err(_) => {
+            diag::breadcrumb("status_bar:panel_show:missing");
             tracing::warn!("[status-bar] panel handle missing; falling back to webview window");
             false
         }
@@ -299,11 +305,14 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
     use objc::Message;
     use objc::runtime::{Object, Sel};
 
+    diag::breadcrumb("status_bar:configure:begin");
     let Ok(ns_window) = win.ns_window() else {
+        diag::breadcrumb("status_bar:configure:no_ns_window");
         tracing::warn!("[status-bar] macOS tune failed: ns_window unavailable");
         return;
     };
     if ns_window.is_null() {
+        diag::breadcrumb("status_bar:configure:null_ns_window");
         tracing::warn!("[status-bar] macOS tune failed: ns_window was null");
         return;
     }
@@ -324,12 +333,15 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
             .send_message(Sel::register("styleMask"), ())
             .unwrap_or(0);
         let panel_style = style_mask | NONACTIVATING_PANEL_STYLE | FULL_SIZE_CONTENT_VIEW_STYLE;
+        diag::breadcrumb("status_bar:configure:set_style");
         let _: Result<(), _> =
             ns_window.send_message(Sel::register("setStyleMask:"), (panel_style,));
 
         let behavior = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
+        diag::breadcrumb("status_bar:configure:set_behavior");
         let _: Result<(), _> =
             ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
+        diag::breadcrumb("status_bar:configure:set_level");
         let _: Result<(), _> = ns_window.send_message(
             Sel::register("setLevel:"),
             (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,),
@@ -350,7 +362,9 @@ fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
                 let _: Result<(), _> = ns_window.send_message(selector, (value,));
             }
         }
+        diag::breadcrumb("status_bar:configure:order_front");
         let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
+        diag::breadcrumb("status_bar:configure:end");
         tracing::debug!(
             "[status-bar] macOS tuned style={panel_style:#x} behavior={behavior:#x} level={NS_STATUS_WINDOW_LEVEL_PLUS_THREE}"
         );
@@ -668,11 +682,14 @@ fn present_status_bar_macos_on_main(
     state: &str,
     resync: bool,
 ) {
+    diag::breadcrumb(format!("status_bar:present:{state}:begin"));
     reposition_status_bar(app, win);
+    diag::breadcrumb(format!("status_bar:present:{state}:repositioned"));
     configure_status_bar_macos(win);
     if let Err(e) = win.set_always_on_top(true) {
         tracing::warn!("[status-bar] set_always_on_top failed: {e}");
     }
+    diag::breadcrumb(format!("status_bar:present:{state}:show"));
     match win.show() {
         Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
         Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
@@ -680,8 +697,10 @@ fn present_status_bar_macos_on_main(
     configure_status_bar_macos(win);
     let _ = show_status_bar_panel(app);
     if resync {
+        diag::breadcrumb(format!("status_bar:present:{state}:resync"));
         emit_status_bar_resync(app, state);
     }
+    diag::breadcrumb(format!("status_bar:present:{state}:end"));
 }
 
 #[cfg(target_os = "macos")]
@@ -695,6 +714,7 @@ fn schedule_present_status_bar_macos(
     let app_in_closure = app_for_main.clone();
     let win = win.clone();
     let state = state.to_string();
+    diag::breadcrumb(format!("status_bar:schedule_present:{state}"));
     if let Err(e) = run_on_main_guarded(&app_for_main, "status_bar.present", move || {
         present_status_bar_macos_on_main(&app_in_closure, &win, &state, resync);
     }) {
@@ -1557,8 +1577,10 @@ fn set_placement_mode_active(app: &tauri::AppHandle, active: bool) {
 struct DebugLogs {
     desktop_path: String,
     backend_path: String,
+    breadcrumb_path: String,
     desktop: String,
     backend: String,
+    breadcrumbs: String,
     combined: String,
     truncated: bool,
 }
@@ -1854,6 +1876,7 @@ fn build_tray_menu_for_state(
 }
 
 fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
+    diag::breadcrumb(format!("status_bar:sync:{state}"));
     #[cfg(target_os = "macos")]
     {
         let app = handle.clone();
@@ -1870,14 +1893,17 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
 }
 
 fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
+    diag::breadcrumb(format!("status_bar:sync_main:{state}:begin"));
     let win = match handle.get_webview_window("status-bar") {
         Some(win) => win,
         None if state != "idle" => {
+            diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_recreate"));
             tracing::warn!(
                 "[status-bar] sync requested for active state={state}, but window was not found — recreating"
             );
             create_status_bar(handle);
             let Some(win) = handle.get_webview_window("status-bar") else {
+                diag::breadcrumb(format!("status_bar:sync_main:{state}:recreate_failed"));
                 tracing::warn!(
                     "[status-bar] recreate failed; still no status-bar window for state={state}"
                 );
@@ -1886,6 +1912,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
             win
         }
         None => {
+            diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_idle"));
             tracing::warn!(
                 "[status-bar] sync requested for state={state}, but window was not found"
             );
@@ -1896,6 +1923,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
     tracing::debug!("[status-bar] sync state={state}");
     if state == "idle" {
         if status_bar_pinned() || status_bar_persistent_hold(handle) {
+            diag::breadcrumb("status_bar:sync_main:idle:held_visible");
             tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
             #[cfg(target_os = "macos")]
             schedule_present_status_bar_macos(handle, &win, state, false);
@@ -1909,6 +1937,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
             return;
         }
         tracing::debug!("[status-bar] idle state — scheduling native hide");
+        diag::breadcrumb("status_bar:sync_main:idle:schedule_hide");
         let my_gen = handle
             .try_state::<StatusBarHideGen>()
             .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
@@ -1950,9 +1979,14 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
                     if let Err(e) =
                         run_on_main_guarded(&app_main.clone(), "status_bar.idle_hide", move || {
                             if let Some(win) = app_main.get_webview_window("status-bar") {
+                                diag::breadcrumb("status_bar:idle_hide:begin");
                                 match win.hide() {
-                                    Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
+                                    Ok(_) => {
+                                        diag::breadcrumb("status_bar:idle_hide:end");
+                                        tracing::debug!("[status-bar] hidden after idle")
+                                    }
                                     Err(e) => {
+                                        diag::breadcrumb("status_bar:idle_hide:failed");
                                         tracing::warn!("[status-bar] hide after idle failed: {e}")
                                     }
                                 }
@@ -1988,6 +2022,7 @@ fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
     {
         schedule_present_status_bar_macos(handle, &win, state, state != "placement");
     }
+    diag::breadcrumb(format!("status_bar:sync_main:{state}:end"));
 
     #[cfg(not(target_os = "macos"))]
     {
@@ -4235,8 +4270,10 @@ fn do_start_recording_inner(
     app: &tauri::AppHandle,
     enforce_cycle_gap: bool,
 ) {
+    diag::breadcrumb("record:start:enter");
     // Reject if another start is already in progress
     if RECORDING_STARTING.swap(true, Ordering::SeqCst) {
+        diag::breadcrumb("record:start:skip_in_flight");
         tracing::info!("[record] start skipped — another start already in progress");
         DIVO_START_PENDING.store(false, Ordering::SeqCst);
         PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
@@ -4247,6 +4284,7 @@ fn do_start_recording_inner(
     let now = now_ms_desktop();
     let last_finish = LAST_FINISH_MS.load(Ordering::SeqCst);
     if enforce_cycle_gap && last_finish > 0 && now.saturating_sub(last_finish) < MIN_CYCLE_GAP_MS {
+        diag::breadcrumb("record:start:skip_cycle_gap");
         tracing::info!(
             "[record] start skipped — too soon after last finish ({}ms < {}ms)",
             now.saturating_sub(last_finish),
@@ -4677,6 +4715,7 @@ fn do_finish_recording(
     app: tauri::AppHandle,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
 ) {
+    diag::breadcrumb("record:finish:enter");
     FINISH_AFTER_START.store(false, Ordering::SeqCst);
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
     clear_long_dictation_recording_lock(&app);
@@ -4729,16 +4768,19 @@ fn do_finish_recording(
             }
             Err(e) => {
                 if e == "not recording" && long_dictation_finishing(&app) {
+                    diag::breadcrumb("record:finish:duplicate_long_finish");
                     tracing::debug!(
                         "[record] duplicate finish ignored while long dictation is already finishing"
                     );
                     return;
                 }
                 if is_short_recording_cancel(&e) {
+                    diag::breadcrumb("record:finish:short_cancel");
                     tracing::info!("[record] short Option tap — cancelled recording");
                     let snap = d.finish_cancelled();
                     Err(BeginStopError::Short(snap))
                 } else {
+                    diag::breadcrumb("record:finish:begin_stop_failed");
                     let snap = d.finish_err(e);
                     Err(BeginStopError::Failed(snap))
                 }
@@ -8050,7 +8092,9 @@ fn read_recent_log(path: &std::path::Path, marker: &str) -> (String, bool) {
         return ("".into(), false);
     }
     let mut text = String::from_utf8_lossy(&bytes).to_string();
-    if let Some(idx) = text.rfind(marker) {
+    if !marker.is_empty()
+        && let Some(idx) = text.rfind(marker)
+    {
         text = text[idx..].to_string();
     }
     (text, start > 0)
@@ -8061,12 +8105,14 @@ fn get_debug_logs() -> DebugLogs {
     let dir = said_log_dir();
     let desktop_path = dir.join("said.log");
     let backend_path = dir.join("backend.log");
+    let breadcrumb_path = diag::breadcrumb_log_path();
     let (desktop, desktop_truncated) =
         read_recent_log(&desktop_path, "[main] said desktop starting");
     let (backend, backend_truncated) = read_recent_log(&backend_path, "airnote-backend build=");
+    let (breadcrumbs, breadcrumbs_truncated) = read_recent_log(&breadcrumb_path, "");
 
     let combined = format!(
-        "── AirNote desktop ({}) ──\n{}\n\n── airnote-backend ({}) ──\n{}",
+        "── AirNote desktop ({}) ──\n{}\n\n── airnote-backend ({}) ──\n{}\n\n── crash breadcrumbs ({}) ──\n{}",
         desktop_path.display(),
         if desktop.trim().is_empty() {
             "(no desktop log found)"
@@ -8079,15 +8125,23 @@ fn get_debug_logs() -> DebugLogs {
         } else {
             backend.trim_end()
         },
+        breadcrumb_path.display(),
+        if breadcrumbs.trim().is_empty() {
+            "(no crash breadcrumbs found)"
+        } else {
+            breadcrumbs.trim_end()
+        },
     );
 
     DebugLogs {
         desktop_path: desktop_path.display().to_string(),
         backend_path: backend_path.display().to_string(),
+        breadcrumb_path: breadcrumb_path.display().to_string(),
         desktop,
         backend,
+        breadcrumbs,
         combined,
-        truncated: desktop_truncated || backend_truncated,
+        truncated: desktop_truncated || backend_truncated || breadcrumbs_truncated,
     }
 }
 

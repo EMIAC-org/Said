@@ -17,6 +17,7 @@
 //! audio, or user text — so they are safe to upload to the diagnostics endpoint.
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,19 +76,58 @@ struct Crumb {
 }
 
 static CRUMBS: Mutex<VecDeque<Crumb>> = Mutex::new(VecDeque::new());
+static CRUMB_SEQ: AtomicU64 = AtomicU64::new(0);
+
+pub fn breadcrumb_log_path() -> std::path::PathBuf {
+    said_core::paths::log_dir().join("crash-breadcrumbs.jsonl")
+}
+
+fn append_persistent_breadcrumb(t_ms: u64, ev: &str) {
+    let path = breadcrumb_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let sanitized = ev
+        .chars()
+        .map(|ch| match ch {
+            '\n' | '\r' => ' ',
+            _ => ch,
+        })
+        .take(240)
+        .collect::<String>();
+    let line = json!({
+        "seq": CRUMB_SEQ.fetch_add(1, Ordering::Relaxed) + 1,
+        "t_ms": t_ms,
+        "ev": sanitized,
+    })
+    .to_string();
+
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+        let _ = file.flush();
+    }
+}
 
 /// Append a recording-lifecycle milestone. Keep `ev` a fixed identifier
 /// (e.g. `"start:recording"`), never user content.
 pub fn breadcrumb(ev: impl Into<String>) {
+    let t_ms = now_ms();
+    let ev = ev.into();
     if let Ok(mut q) = CRUMBS.lock() {
         if q.len() >= MAX_CRUMBS {
             q.pop_front();
         }
         q.push_back(Crumb {
-            t_ms: now_ms(),
-            ev: ev.into(),
+            t_ms,
+            ev: ev.clone(),
         });
     }
+    append_persistent_breadcrumb(t_ms, &ev);
 }
 
 /// The most recent `limit` breadcrumbs, oldest-first, each tagged with how many
