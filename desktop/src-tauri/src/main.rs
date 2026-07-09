@@ -1836,6 +1836,27 @@ pub(crate) fn create_status_bar(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn schedule_status_bar_startup_preload(app: &tauri::AppHandle) {
+    let app_h = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Avoid creating AppKit/WebView state inside Tauri setup, but have the
+        // hidden panel ready before the first hold-to-talk transition.
+        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+        let app_main = app_h.clone();
+        if let Err(e) = run_on_main_guarded(&app_h, "status_bar.startup_preload", move || {
+            if app_main.get_webview_window("status-bar").is_some() {
+                return;
+            }
+            diag::breadcrumb("status_bar:startup_preload:create");
+            tracing::info!("[status-bar] startup preload creating hidden HUD");
+            create_status_bar(&app_main);
+        }) {
+            tracing::warn!("[status-bar] startup preload failed: {e}");
+        }
+    });
+}
+
 // ── Tray action helpers ───────────────────────────────────────────────────────
 
 fn emit_tray_error(app: &tauri::AppHandle, message: impl Into<String>) {
@@ -9516,7 +9537,7 @@ fn main() {
                     }
                     if !notch_active {
                         tracing::info!(
-                            "[status-bar] startup create skipped — HUD will be created on demand"
+                            "[status-bar] startup preload scheduled — HUD will be created hidden after ready"
                         );
                     }
                 }
@@ -10362,6 +10383,8 @@ fn main() {
                 } else {
                     show_main_window(app);
                 }
+                #[cfg(target_os = "macos")]
+                schedule_status_bar_startup_preload(app);
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
