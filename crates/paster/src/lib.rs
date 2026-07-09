@@ -52,6 +52,7 @@ mod imp {
                 unicode_string: *const u16,
             );
             pub fn CFRelease(cf: *mut c_void);
+            pub fn CFHash(cf: *const c_void) -> usize;
             pub fn AXIsProcessTrusted() -> bool;
             pub fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
 
@@ -527,6 +528,30 @@ mod imp {
             ffi::CFRelease(el);
             ffi::CFRelease(app);
             result
+        }
+    }
+
+    /// Stable CoreFoundation identity for the currently focused AX element in
+    /// `pid`. The edit watcher combines this with the target PID and owned text
+    /// span so a later field change can be distinguished from an edit.
+    pub fn focused_element_fingerprint_for_pid(pid: i32) -> Option<u64> {
+        if pid <= 0 {
+            return None;
+        }
+        unsafe {
+            if !ffi::AXIsProcessTrusted() {
+                return None;
+            }
+            let app = ffi::AXUIElementCreateApplication(pid);
+            if app.is_null() {
+                return None;
+            }
+            let element = ax_attr(app as *const _, "AXFocusedUIElement");
+            ffi::CFRelease(app);
+            let element = element?;
+            let fingerprint = ffi::CFHash(element as *const _) as u64;
+            ffi::CFRelease(element);
+            Some(fingerprint)
         }
     }
 

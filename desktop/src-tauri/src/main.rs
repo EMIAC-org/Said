@@ -4857,6 +4857,7 @@ fn do_finish_recording(
                 let pre_paste = app2
                     .try_state::<ScreenContextState>()
                     .and_then(|s| s.0.lock().ok()?.clone());
+                let anchor = capture_edit_anchor(edit_target_pid, pre_paste, &done.polished);
                 start_edit_watcher(
                     back3,
                     app2.clone(),
@@ -4864,8 +4865,7 @@ fn do_finish_recording(
                     done.recording_id.clone(),
                     done.polished.clone(),
                     watch_start,
-                    edit_target_pid,
-                    pre_paste,
+                    anchor,
                 );
             }
 
@@ -5379,6 +5379,13 @@ async fn run_voice_polish_sse(
     } else {
         paster::read_focused_value_fast()
     };
+    if !suppress_local {
+        if let Ok(mut context) = app.state::<ScreenContextState>().0.lock() {
+            *context = initial_field_text
+                .clone()
+                .filter(|text| !text.trim().is_empty());
+        }
+    }
     let initial_field_read_ms = initial_field_read_t0.elapsed().as_millis() as i64;
     let error_target_app = target_app.clone();
     let error_client_run_id = client_run_id.clone();
@@ -6641,6 +6648,7 @@ fn retry_recording_spawn(
         let watch_start = std::time::Instant::now();
         if let Ok(ref done) = result {
             let back3 = Arc::clone(&back_arc2);
+            let anchor = capture_edit_anchor(None, None, &done.polished);
             start_edit_watcher(
                 back3,
                 app2.clone(),
@@ -6648,8 +6656,7 @@ fn retry_recording_spawn(
                 done.recording_id.clone(),
                 done.polished.clone(),
                 watch_start,
-                None,
-                None, // re-polish: no pre_paste context
+                anchor,
             );
         }
 
@@ -7886,6 +7893,88 @@ const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 const EDIT_WATCH_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(300);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedTextSpan {
+    start_chars: usize,
+    len_chars: usize,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+struct EditCaptureAnchor {
+    target_pid: Option<i32>,
+    field_fingerprint: Option<u64>,
+    pre_paste_text: Option<String>,
+    post_paste_text: String,
+    owned_span: Option<OwnedTextSpan>,
+}
+
+fn derive_owned_text_span(
+    pre_paste: Option<&str>,
+    post_paste: &str,
+    polished: &str,
+) -> Option<OwnedTextSpan> {
+    if post_paste.is_empty() {
+        return None;
+    }
+
+    if let Some(pre) = pre_paste {
+        let prefix_bytes = common_prefix_bytes(pre, post_paste);
+        let pre_rest = &pre[prefix_bytes..];
+        let post_rest = &post_paste[prefix_bytes..];
+        let suffix_bytes = common_suffix_bytes(pre_rest, post_rest);
+        let inserted_end = post_paste.len().checked_sub(suffix_bytes)?;
+        if inserted_end <= prefix_bytes {
+            return None;
+        }
+        let text = post_paste[prefix_bytes..inserted_end].to_string();
+        return Some(OwnedTextSpan {
+            start_chars: post_paste[..prefix_bytes].chars().count(),
+            len_chars: text.chars().count(),
+            text,
+        });
+    }
+
+    let polished = polished.trim();
+    if polished.is_empty() {
+        return None;
+    }
+    let mut matches = post_paste.match_indices(polished);
+    let (offset, matched) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(OwnedTextSpan {
+        start_chars: post_paste[..offset].chars().count(),
+        len_chars: matched.chars().count(),
+        text: matched.to_string(),
+    })
+}
+
+fn capture_edit_anchor(
+    target_pid: Option<i32>,
+    pre_paste_text: Option<String>,
+    polished: &str,
+) -> EditCaptureAnchor {
+    let post_paste_text = match target_pid {
+        Some(pid) => paster::read_focused_value_fast_for_pid(pid),
+        None => paster::read_focused_value_fast(),
+    }
+    .unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let field_fingerprint = target_pid.and_then(paster::focused_element_fingerprint_for_pid);
+    #[cfg(not(target_os = "macos"))]
+    let field_fingerprint = None;
+    let owned_span = derive_owned_text_span(pre_paste_text.as_deref(), &post_paste_text, polished);
+    EditCaptureAnchor {
+        target_pid,
+        field_fingerprint,
+        pre_paste_text,
+        post_paste_text,
+        owned_span,
+    }
+}
+
 #[cfg(target_os = "macos")]
 async fn read_clipboard_text_readonly() -> Option<String> {
     let read = tokio::task::spawn_blocking(|| {
@@ -8057,8 +8146,7 @@ fn start_edit_watcher(
     recording_id: String,
     polished: String,
     watch_start: std::time::Instant,
-    target_pid: Option<i32>,
-    pre_paste_text: Option<String>,
+    anchor: EditCaptureAnchor,
 ) {
     let token = {
         let st = app.state::<EditWatcherState>();
@@ -8089,8 +8177,7 @@ fn start_edit_watcher(
             recording_id,
             polished,
             watch_start,
-            target_pid,
-            pre_paste_text,
+            anchor,
         )
         .await;
 
@@ -8113,8 +8200,7 @@ async fn watch_for_edit(
     recording_id: String,
     polished: String,                // the AI-generated text we pasted
     watch_start: std::time::Instant, // captured at the call site, right after paste
-    target_pid: Option<i32>,
-    pre_paste_text: Option<String>, // field text BEFORE AirNote typed (from ScreenContextState)
+    mut anchor: EditCaptureAnchor,
 ) {
     use std::time::Instant;
 
@@ -8132,14 +8218,15 @@ async fn watch_for_edit(
     // whatever happens to be frontmost after our HUD/status UI has updated.
     let focused_pid_after_paste =
         blocking_ax_option("focused_pid after-paste", paster::focused_pid).await;
-    let initial_pid = target_pid.or(focused_pid_after_paste);
+    let initial_pid = anchor.target_pid.or(focused_pid_after_paste);
 
     // Attempt to get the initial field value.  Chrome / Electron may still be
     // building their AX cache even after the pre-unlock at recording-start, so
     // we retry a few times with increasing delays before declaring "AX blind".
     let post_paste = {
-        let mut val =
-            blocking_ax_option(
+        let mut val = anchor.post_paste_text.clone();
+        if val.is_empty() {
+            val = blocking_ax_option(
                 "read_focused_value_first initial",
                 move || match initial_pid {
                     Some(pid) => paster::read_focused_value_first_for_pid(pid),
@@ -8148,6 +8235,7 @@ async fn watch_for_edit(
             )
             .await
             .unwrap_or_default();
+        }
         if val.is_empty() {
             // 2nd attempt after 300 ms
             if !cancellable_sleep(&token, Duration::from_millis(300)).await {
@@ -8186,6 +8274,16 @@ async fn watch_for_edit(
         }
         val
     };
+    if anchor.post_paste_text.is_empty() && !post_paste.is_empty() {
+        anchor.post_paste_text = post_paste.clone();
+        anchor.owned_span =
+            derive_owned_text_span(anchor.pre_paste_text.as_deref(), &post_paste, &polished);
+        #[cfg(target_os = "macos")]
+        if anchor.field_fingerprint.is_none() {
+            anchor.field_fingerprint =
+                initial_pid.and_then(paster::focused_element_fingerprint_for_pid);
+        }
+    }
 
     let mut last_val = post_paste.clone();
     let mut best_candidate = post_paste.clone();
@@ -8212,7 +8310,7 @@ async fn watch_for_edit(
 
     tracing::info!(
         "[edit-watch] watching {recording_id} — target_pid={:?} focused_after_paste={:?} initial field readable: {} (len={})",
-        target_pid,
+        anchor.target_pid,
         focused_pid_after_paste,
         !post_paste.is_empty(),
         post_paste.len(),
@@ -8236,7 +8334,7 @@ async fn watch_for_edit(
             (initial_pid, now_pid),
             (Some(a), Some(b)) if a != b
         );
-        if pid_switched && target_pid.is_none() {
+        if pid_switched && anchor.target_pid.is_none() {
             app_switched_during_capture = true;
             tracing::info!(
                 "[edit-watch] app_switched_skip for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
@@ -8404,7 +8502,7 @@ async fn watch_for_edit(
             &polished,
             &post_paste,
             &effective_val,
-            pre_paste_text.as_deref(),
+            anchor.pre_paste_text.as_deref(),
         );
         capture_method = "ax";
         tracing::info!(
@@ -8536,6 +8634,9 @@ async fn watch_for_edit(
                 "saw_user_edit": saw_user_edit,
                 "initial_pid": initial_pid,
                 "final_front_pid": final_front_pid,
+                "field_fingerprint": anchor.field_fingerprint,
+                "owned_span_start_chars": anchor.owned_span.as_ref().map(|span| span.start_chars),
+                "owned_span_len_chars": anchor.owned_span.as_ref().map(|span| span.len_chars),
             }),
             ..Default::default()
         });
@@ -8547,7 +8648,7 @@ async fn watch_for_edit(
             capture_method,
             capture_meta,
             client_run_id.as_deref(),
-            pre_paste_text.as_deref(),
+            anchor.pre_paste_text.as_deref(),
             Some(edit_trace.into_value()),
         )
         .await
@@ -10668,7 +10769,7 @@ mod dictation_audio_level_tests {
 
 #[cfg(test)]
 mod edit_watch_timeout_tests {
-    use super::{clipboard_content_was_added, edit_watch_timeouts};
+    use super::{clipboard_content_was_added, derive_owned_text_span, edit_watch_timeouts};
 
     #[test]
     fn gives_user_time_to_read_before_first_edit() {
@@ -10730,5 +10831,36 @@ mod edit_watch_timeout_tests {
             "Please review the proposal carefully.",
             "unrelated clipboard text",
         ));
+    }
+
+    #[test]
+    fn owned_span_comes_from_immediate_pre_and_post_snapshots() {
+        let span = derive_owned_text_span(
+            Some("Hello  Thanks"),
+            "Hello AirNote output Thanks",
+            "AirNote output",
+        )
+        .expect("inserted span");
+        assert_eq!(span.start_chars, 6);
+        assert_eq!(span.len_chars, 14);
+        assert_eq!(span.text, "AirNote output");
+    }
+
+    #[test]
+    fn owned_span_handles_replaced_selection_and_unicode() {
+        let span =
+            derive_owned_text_span(Some("Start पुराना end"), "Start नया text end", "नया text")
+                .expect("replacement span");
+        assert_eq!(span.start_chars, 6);
+        assert_eq!(span.len_chars, 8);
+        assert_eq!(span.text, "नया text");
+    }
+
+    #[test]
+    fn owned_span_without_baseline_requires_unique_output() {
+        assert!(
+            derive_owned_text_span(None, "prefix unique output suffix", "unique output").is_some()
+        );
+        assert!(derive_owned_text_span(None, "same then same", "same").is_none());
     }
 }
