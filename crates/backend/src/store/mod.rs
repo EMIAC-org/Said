@@ -89,6 +89,7 @@ const MIGRATION_055: &str = include_str!("migrations/055_drop_prompt_templates.s
 const MIGRATION_056: &str = include_str!("migrations/056_site_visits.sql");
 const MIGRATION_057: &str = include_str!("migrations/057_force_cerebras_gemma_4.sql");
 const MIGRATION_058: &str = include_str!("migrations/058_edit_review_sessions.sql");
+const MIGRATION_059: &str = include_str!("migrations/059_edit_review_sessions_repair.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -608,6 +609,14 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 58")
             .expect("failed to set user_version to 58");
     }
+
+    if version < 59 {
+        info!("running migration 059_edit_review_sessions_repair");
+        conn.execute_batch(MIGRATION_059)
+            .expect("migration 059 failed");
+        conn.execute_batch("PRAGMA user_version = 59")
+            .expect("failed to set user_version to 59");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -705,6 +714,13 @@ fn repair_schema_gaps(pool: &DbPool) {
         "deepinfra_api_key TEXT",
     );
     add_column_if_missing(&conn, "recordings", "trace_json", "trace_json TEXT");
+
+    // Migration numbers collided on an older dev branch. Always repair this
+    // idempotently so a database with an advanced user_version cannot skip the
+    // durable review queue again.
+    if let Err(e) = conn.execute_batch(MIGRATION_059) {
+        warn!("[schema-repair] edit_review_sessions repair failed: {e}");
+    }
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -843,7 +859,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 58);
+        assert_eq!(version, 59);
 
         for table in [
             "tier2_policy_weights",
@@ -880,5 +896,36 @@ mod tests {
                 .unwrap();
             assert_eq!(exists, 1, "recordings.{column} should exist");
         }
+    }
+
+    #[test]
+    fn migration_59_repairs_version_58_collision() {
+        let manager = SqliteConnectionManager::memory();
+        let pool = Pool::builder().max_size(1).build(manager).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE local_user (id TEXT PRIMARY KEY);
+                 PRAGMA user_version = 58;",
+            )
+            .unwrap();
+        }
+
+        run_migrations(&pool);
+
+        let conn = pool.get().unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'table' AND name = 'edit_review_sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 59);
+        assert_eq!(table_exists, 1);
     }
 }
