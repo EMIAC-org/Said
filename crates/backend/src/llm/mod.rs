@@ -22,7 +22,7 @@ pub mod promotion_gate;
 pub mod prompt;
 pub mod script;
 pub mod stream_safety;
-pub mod vocab_resolver;
+pub mod vocab_retrieval;
 
 /// Shared result type returned by all LLM streaming clients.
 pub struct PolishResult {

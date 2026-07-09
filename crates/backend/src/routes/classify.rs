@@ -27,7 +27,7 @@ use crate::{
     },
     store::{
         corrections, email_memory, history, prefs::get_prefs, stt_replacements, tier2_edit_policy,
-        users, vectors, vocabulary,
+        users, vectors, vocab_fts, vocabulary,
     },
 };
 
@@ -722,16 +722,23 @@ async fn classify_inner(
                     if let Some(existing) =
                         vocabulary::find_by_term_ci(&state.pool, &state.default_user_id, corrected)
                     {
-                        vocabulary::update_meaning(
+                        if vocabulary::update_meaning(
                             &state.pool,
                             &state.default_user_id,
                             &existing.term,
                             meaning,
-                        );
-                        tracing::info!(
-                            "[classify] deepened meaning for existing term {:?}",
-                            existing.term
-                        );
+                        ) {
+                            vocab_fts::upsert(
+                                &state.pool,
+                                &state.default_user_id,
+                                &existing.term,
+                                existing.example_context.as_deref(),
+                            );
+                            tracing::info!(
+                                "[classify] deepened meaning for existing term {:?}",
+                                existing.term
+                            );
+                        }
                     }
                 }
             }
@@ -1054,9 +1061,7 @@ async fn classify_inner(
                     pair.1 == *blocked_corrected
                         && !pair.0.is_empty()
                         && !blocked_original.is_empty()
-                        && (pair.0 == *blocked_original
-                            || pair.0.contains(blocked_original)
-                            || blocked_original.contains(&pair.0))
+                        && safety_block_should_suppress_candidate(&pair.0, blocked_original)
                 });
         if safety_blocked {
             info!(
@@ -2100,6 +2105,35 @@ fn weak_single_token_alias_source(source: &str) -> bool {
         || promotion_gate::is_common_word(source)
         || crate::tier2::is_in_dictionary(token)
         || lowercase_plain_fragment(source, token)
+}
+
+fn safety_block_should_suppress_candidate(
+    candidate_original_norm: &str,
+    blocked_original_norm: &str,
+) -> bool {
+    let candidate = candidate_original_norm.trim();
+    let blocked = blocked_original_norm.trim();
+    if candidate.is_empty() || blocked.is_empty() {
+        return false;
+    }
+    if candidate == blocked {
+        return true;
+    }
+
+    let candidate_tokens: Vec<&str> = candidate.split_whitespace().collect();
+    let blocked_tokens: Vec<&str> = blocked.split_whitespace().collect();
+    if candidate_tokens.is_empty() || blocked_tokens.is_empty() {
+        return false;
+    }
+
+    if candidate_tokens.len() <= blocked_tokens.len() {
+        return contains_token_sequence(&blocked_tokens, &candidate_tokens)
+            || blocked_tokens.join("").contains(&candidate_tokens.join(""));
+    }
+
+    blocked_tokens.len() > 1
+        && (contains_token_sequence(&candidate_tokens, &blocked_tokens)
+            || candidate_tokens.join("").contains(&blocked_tokens.join("")))
 }
 
 fn lowercase_plain_fragment(raw: &str, norm_token: &str) -> bool {
@@ -3503,6 +3537,35 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].original, "Post grass");
         assert_eq!(candidates[0].corrected, "Postgres");
+    }
+
+    #[test]
+    fn safety_blocked_single_token_does_not_poison_phrase_review_candidate() {
+        assert!(safety_block_should_suppress_candidate("cop", "cop"));
+        assert!(safety_block_should_suppress_candidate("cop", "main cop"));
+        assert!(safety_block_should_suppress_candidate(
+            "main cop app",
+            "main cop"
+        ));
+        assert!(!safety_block_should_suppress_candidate("main cop", "cop"));
+    }
+
+    #[test]
+    fn local_review_candidate_keeps_main_cop_to_existing_macobs() {
+        let pool = mem_pool();
+        assert!(vocabulary::upsert(&pool, "u1", "Macobs", 1.0, "manual"));
+        let candidates = local_review_candidates_from_analyzer(
+            &[stt_change("main cop", "Macobs")],
+            &pool,
+            "u1",
+            "Macobs onboarding flow is broken",
+            "english",
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].original, "main cop");
+        assert_eq!(candidates[0].corrected, "Macobs");
+        assert_eq!(candidates[0].tag, "local_token_collapse");
     }
 
     #[test]

@@ -35,8 +35,14 @@ struct Job {
 }
 
 enum JobRequest {
-    Prewarm { language_pref: String },
-    Transcribe { wav: Vec<u8>, language_pref: String },
+    Prewarm {
+        language_pref: String,
+    },
+    Transcribe {
+        wav: Vec<u8>,
+        language_pref: String,
+        prompt: Option<String>,
+    },
 }
 
 struct LoadedModel {
@@ -62,11 +68,19 @@ pub fn prewarm_default_language() {
     }
 }
 
-pub fn transcribe_wav_bytes(wav: Vec<u8>, language_pref: String) -> Result<LocalAsrOutput, String> {
+pub fn transcribe_wav_bytes(
+    wav: Vec<u8>,
+    language_pref: String,
+    prompt: Option<String>,
+) -> Result<LocalAsrOutput, String> {
     let (tx, rx) = mpsc::channel();
     let job = Job {
         queued_at: Instant::now(),
-        request: JobRequest::Transcribe { wav, language_pref },
+        request: JobRequest::Transcribe {
+            wav,
+            language_pref,
+            prompt,
+        },
         reply: Some(tx),
     };
     worker()
@@ -132,8 +146,13 @@ fn run_worker(rx: mpsc::Receiver<Job>) {
                     tracing::warn!(error = %e, "[local_asr] prewarm failed");
                 }
             }
-            JobRequest::Transcribe { wav, language_pref } => {
-                let result = handle_transcribe(&mut loaded, wav, &language_pref, queue_wait_ms);
+            JobRequest::Transcribe {
+                wav,
+                language_pref,
+                prompt,
+            } => {
+                let result =
+                    handle_transcribe(&mut loaded, wav, &language_pref, prompt, queue_wait_ms);
                 if let Some(reply) = job.reply {
                     let _ = reply.send(result);
                 }
@@ -162,6 +181,7 @@ fn handle_transcribe(
     loaded: &mut Option<LoadedModel>,
     wav: Vec<u8>,
     language_pref: &str,
+    prompt: Option<String>,
     queue_wait_ms: u64,
 ) -> Result<LocalAsrOutput, String> {
     let total_started = Instant::now();
@@ -169,7 +189,8 @@ fn handle_transcribe(
         return Err("recording audio is empty".to_string());
     }
 
-    let cfg = crate::meeting_engine::resolve_dictation_local_asr_config(language_pref)?;
+    let mut cfg = crate::meeting_engine::resolve_dictation_local_asr_config(language_pref)?;
+    cfg.prompt = merge_dynamic_prompt(prompt.as_deref(), cfg.prompt.as_deref());
     let mut audio = decode_wav_to_f32(&wav)?;
     if audio.is_empty() {
         return Err("recording audio is empty".to_string());
@@ -210,6 +231,24 @@ fn handle_transcribe(
         inference_ms,
         queue_wait_ms,
     })
+}
+
+fn merge_dynamic_prompt(dynamic: Option<&str>, env_prompt: Option<&str>) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(prompt) = dynamic.map(str::trim).filter(|p| !p.is_empty()) {
+        parts.push(prompt);
+    }
+    if let Some(prompt) = env_prompt.map(str::trim).filter(|p| !p.is_empty()) {
+        parts.push(prompt);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let mut merged = parts.join(" ");
+    if merged.chars().count() > 224 {
+        merged = merged.chars().take(224).collect();
+    }
+    Some(merged)
 }
 
 fn ensure_model_loaded(

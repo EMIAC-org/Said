@@ -18,7 +18,11 @@ pub fn vad_installed() -> bool {
     crate::meeting_engine::silero_vad_model_installed()
 }
 
-pub async fn transcribe_wav_bytes(wav: &[u8], language: &str) -> Result<LocalTranscript, String> {
+pub async fn transcribe_wav_bytes(
+    wav: &[u8],
+    language: &str,
+    prompt: Option<String>,
+) -> Result<LocalTranscript, String> {
     if !model_installed() {
         return Err(
             "Local speech model is required. Download the on-device model in Settings.".into(),
@@ -28,10 +32,11 @@ pub async fn transcribe_wav_bytes(wav: &[u8], language: &str) -> Result<LocalTra
     let started = std::time::Instant::now();
     let wav = wav.to_vec();
     let language = language.to_string();
-    let local =
-        tokio::task::spawn_blocking(move || crate::local_asr::transcribe_wav_bytes(wav, language))
-            .await
-            .map_err(|e| format!("local speech worker failed: {e}"))??;
+    let local = tokio::task::spawn_blocking(move || {
+        crate::local_asr::transcribe_wav_bytes(wav, language, prompt)
+    })
+    .await
+    .map_err(|e| format!("local speech worker failed: {e}"))??;
     let duration_ms = local.total_ms.max(started.elapsed().as_millis() as u64);
 
     tracing::info!(

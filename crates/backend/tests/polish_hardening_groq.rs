@@ -425,6 +425,8 @@ async fn test_vocab_terms_preserved() {
         term_type: Some("code_identifier".into()),
         meaning: Some("Workflow automation tool.".into()),
         stt_aliases: vec![],
+        evidence: vec![],
+        do_not_use_when: None,
     }];
     let transcript = "set up the n8n workflow for the new client today";
     let out = polish(&key, transcript, "english", &entries, &[], &[], None)

@@ -69,6 +69,10 @@ fn backend_ai_payload_log_path() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("airnote-backend-ai-payloads.jsonl"))
 }
 
+fn recent_speech_hints_allowed(vocab_entries: &[VocabEntry]) -> bool {
+    !vocab_entries.is_empty()
+}
+
 async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest) {
     if !backend_ai_payload_log_enabled() {
         return;
@@ -437,18 +441,17 @@ use crate::{
             VocabEntry, build_user_message_with_hints, build_voice_repair_system_prompt,
             build_voice_repair_user_message, default_voice_prompt_template,
             render_voice_system_prompt_template_with_profile_and_recent,
-            resolved_vocab_terms_to_entries_with_aliases,
         },
         script,
         stream_safety::{
             STREAM_RESET_SENTINEL, StreamProvider, StreamSafetyFilter, scrub_polished_output,
         },
-        vocab_resolver,
+        vocab_retrieval::{self, VocabRetrievalRequest},
     },
     store::{
         company_vocab,
         history::{InsertRecording, insert_recording},
-        openai_oauth, stt_replacements, vocab_embeddings, vocabulary,
+        openai_oauth, vocab_embeddings, vocabulary,
     },
 };
 
@@ -2010,11 +2013,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ..Default::default()
         });
 
-        // ── STEP 3: Relevance-aware vocabulary slice ──────────────────────────────
-        // Use the transcript embedding to pick the vocab entries that match
-        // what the user actually said. Skip flooding the prompt with all 200
-        // vocab rows — pick starred + top-weight + top-relevance (deduped,
-        // capped at 25). Falls back to starred + top-weight when no embedding.
+        // ── STEP 3: Meaning-first vocabulary cards ───────────────────────────────
+        // Retrieve a tiny evidence-backed card set. The retriever never rewrites
+        // the transcript and never calls the network; the polish LLM gets soft
+        // cards only when the current transcript has sound/meaning support.
         let vocab_t0 = Instant::now();
         let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = {
             let pool_v   = pool.clone();
@@ -2022,82 +2024,67 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let lang_v   = prefs.output_language.clone();
             let emb_v    = embedding.clone();
             let txt_v = alias_result.text.clone();
-            let mut chosen = tokio::task::spawn_blocking(move || {
-                vocab_embeddings::select_for_prompt(
-                    &pool_v, &uid_v, &lang_v, emb_v.as_deref(), Some(&txt_v),
+            let target_app_v = target_app.clone();
+            let screen_context_v = screen_context.clone();
+            let cards = tokio::task::spawn_blocking(move || {
+                vocab_retrieval::retrieve_after_transcription(
+                    &pool_v,
+                    VocabRetrievalRequest {
+                        user_id: uid_v,
+                        transcript: txt_v,
+                        output_language: lang_v,
+                        target_app: target_app_v,
+                        bucket: None,
+                        screen_context: screen_context_v,
+                        transcript_embedding: emb_v,
+                        limit: 8,
+                    },
                 )
             }).await.unwrap_or_default();
-            // Company terms are not embedded in the local personal-vector index.
-            // Include the highest-priority company entries in the resolver
-            // candidate set so fresh enterprise installs get day-one value.
-            for term in vocab_full.iter().filter(|t| t.source == "company") {
-                if chosen.len() >= 25 {
-                    break;
-                }
-                if !chosen.iter().any(|t| t.term.eq_ignore_ascii_case(&term.term)) {
-                    chosen.push(term.clone());
-                }
-            }
-            // Load safe STT aliases for prompt rendering. These are displayed
-            // only for terms the resolver admits below; Tier 2 now carries
-            // protected-term evidence through polish and mutates only at the end.
-            let alias_map: std::collections::HashMap<String, Vec<(String, i64)>> = {
-                let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
-                    std::collections::HashMap::new();
-                for rule in &stt_replacement_rules {
-                    if stt_replacements::is_plausible_alias(&rule.transcript_form, &rule.correct_form) {
-                        map.entry(rule.correct_form.to_lowercase())
-                            .or_default()
-                            .push((rule.transcript_form.clone(), rule.use_count));
-                    }
-                }
-                map
-            };
 
-            if chosen.is_empty() {
+            if cards.is_empty() {
                 info!(
-                    "[voice] vocab selector picked 0/{} entries — no transcript evidence",
+                    "[voice] vocab retriever picked 0/{} entries — no transcript evidence",
                     vocab_full.len(),
                 );
                 (alias_result.text.clone(), vec![])
             } else {
-                let resolve_t0 = Instant::now();
-                let resolved = vocab_resolver::resolve_for_prompt(
-                    &alias_result.text,
-                    &chosen,
-                    &vocab_full,
-                    &alias_result,
-                );
-                let resolve_ms = resolve_t0.elapsed().as_millis() as i64;
                 info!(
-                    "[voice] vocab resolver={}ms alias_matches={} context_matches={} resolved={} candidates={}",
-                    resolve_ms,
-                    resolved.alias_match_count,
-                    resolved.context_match_count,
-                    resolved.resolved_terms.len(),
-                    resolved.candidate_terms.len(),
+                    "[voice] vocab retriever selected {} card(s): {}",
+                    cards.len(),
+                    cards
+                        .iter()
+                        .map(|card| {
+                            let evidence = card
+                                .evidence
+                                .iter()
+                                .map(|e| format!("{:?}", e.kind))
+                                .collect::<Vec<_>>()
+                                .join("+");
+                            format!("{}[{:.1}:{evidence}]", card.term, card.score)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 );
-                let entries = resolved_vocab_terms_to_entries_with_aliases(
-                    resolved.resolved_terms,
-                    &alias_map,
-                );
-                (resolved.transcript, entries)
+                let entries = vocab_retrieval::cards_to_vocab_entries(cards);
+                (alias_result.text.clone(), entries)
             }
         };
         let vocab_ms = vocab_t0.elapsed().as_millis() as i64;
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "vocab.resolve_for_prompt",
+            stage: "vocab.retrieve_after_transcription",
             component: "backend",
-            function: "vocab_resolver::resolve_for_prompt",
+            function: "vocab_retrieval::retrieve_after_transcription",
             input: Some(&stt_transcript),
             output: Some(&resolved_transcript),
             duration_ms: Some(vocab_ms),
-            reason: Some("select memory/vocabulary candidates for prompt"),
+            reason: Some("retrieve meaning-first vocabulary cards for prompt"),
             risk: Some("prompt_context_bias"),
             metadata: json!({
                 "candidate_terms_total": vocab_full.len(),
                 "selected_terms": vocab_entries.len(),
                 "terms": vocab_entries.iter().take(20).map(|v| v.term.clone()).collect::<Vec<_>>(),
+                "evidence": vocab_entries.iter().take(20).map(|v| v.evidence.clone()).collect::<Vec<_>>(),
             }),
             ..Default::default()
         });
@@ -2144,7 +2131,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ..Default::default()
         });
         let recent_hints_t0 = Instant::now();
-        let recent_speech_hints = {
+        let recent_speech_suppressed = !recent_speech_hints_allowed(&vocab_entries);
+        let recent_speech_hints = if recent_speech_suppressed {
+            Vec::new()
+        } else {
             let pool_recent = pool.clone();
             let uid_recent = user_id.clone();
             let run_recent = voice_run_id.clone();
@@ -2165,13 +2155,21 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .unwrap_or_default()
         };
         let recent_hints_ms = recent_hints_t0.elapsed().as_millis() as i64;
-        info!(
-            "[voice] recent speech hints loaded in {}ms app={} hints={} terms={:?}",
-            recent_hints_ms,
-            target_app.as_deref().unwrap_or("none"),
-            recent_speech_hints.len(),
-            recent_speech_hints
-        );
+        if recent_speech_suppressed {
+            info!(
+                "[voice] recent speech hints suppressed in {}ms app={} reason=no_evidence_backed_vocab",
+                recent_hints_ms,
+                target_app.as_deref().unwrap_or("none"),
+            );
+        } else {
+            info!(
+                "[voice] recent speech hints loaded in {}ms app={} hints={} terms={:?}",
+                recent_hints_ms,
+                target_app.as_deref().unwrap_or("none"),
+                recent_speech_hints.len(),
+                recent_speech_hints
+            );
+        }
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "context.recent_speech_hints",
             component: "backend",
@@ -2185,6 +2183,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 "target_app": target_app.as_deref(),
                 "hint_count": recent_speech_hints.len(),
                 "hints": &recent_speech_hints,
+                "suppressed": recent_speech_suppressed,
                 "ttl_ms": crate::recent_speech_context::RECENT_SPEECH_TTL_MS,
                 "run_limit": crate::recent_speech_context::RECENT_SPEECH_RUN_LIMIT,
             }),
@@ -3473,6 +3472,19 @@ mod scrub_tests {
 // These tests cover the pure, side-effect-free math in wav_duration_secs and
 // estimated_secs.  They are a reliability safety net: if the byte offsets in the
 // WAV header parser drift, these catch it immediately.
+
+#[cfg(test)]
+mod recent_speech_guard_tests {
+    use super::{VocabEntry, recent_speech_hints_allowed};
+
+    #[test]
+    fn recent_speech_hints_need_vocab_evidence() {
+        assert!(!recent_speech_hints_allowed(&[]));
+        assert!(recent_speech_hints_allowed(&[VocabEntry::from_term(
+            "Macobs"
+        )]));
+    }
+}
 
 #[cfg(test)]
 mod live_token_tests {

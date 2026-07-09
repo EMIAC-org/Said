@@ -212,6 +212,7 @@ fn schedule_vocab_artifacts(
 
         if let Some(new_meaning) = generated.filter(|value| !value.trim().is_empty()) {
             if vocabulary::update_meaning(&state.pool, &user_id, &term, &new_meaning) {
+                vocab_fts::upsert(&state.pool, &user_id, &term, Some(&context));
                 crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
                 refresh_local_profile_summary(&state, "vocab_meaning");
             }
@@ -519,21 +520,6 @@ pub async fn confirm_term(
                 &body.term,
                 &language,
             );
-
-            // ── Proactive distortion seeding ────────────────────────────────
-            let proactive = stt_replacements::generate_proactive_distortions(
-                &state.pool,
-                user_id,
-                &body.term,
-                &body.original,
-                &language,
-            );
-            if proactive > 0 {
-                info!(
-                    "[confirm] seeded {proactive} proactive distortion(s) for {:?}",
-                    body.term
-                );
-            }
         } else if !body.original.trim().is_empty() {
             info!(
                 "[confirm] skipped alias learning {:?} → {:?} — alias safety blocked source",
@@ -920,15 +906,6 @@ pub async fn confirm_batch(
                 original,
                 original,
                 corrected,
-                &language,
-            );
-
-            // Proactive distortions
-            stt_replacements::generate_proactive_distortions(
-                &state.pool,
-                user_id,
-                corrected,
-                original,
                 &language,
             );
 

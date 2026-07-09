@@ -307,6 +307,8 @@ pub fn build_voice_system_prompt_with_recent(
                     term_type: None,
                     meaning: None,
                     stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
                 })
             }
         })

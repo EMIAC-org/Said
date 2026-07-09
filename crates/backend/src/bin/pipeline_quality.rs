@@ -41,6 +41,8 @@ impl SimVocabTerm {
             context: self.example_context.clone(),
             resolution,
             stt_aliases: self.stt_aliases.clone(),
+            evidence: vec![],
+            do_not_use_when: None,
         }
     }
 }

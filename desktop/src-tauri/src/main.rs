@@ -932,9 +932,10 @@ struct ScreenContextState(Mutex<Option<String>>);
 async fn local_pre_transcript(
     wav: &[u8],
     language: &str,
+    prompt: Option<String>,
 ) -> Result<dictation_stt::LocalTranscript, String> {
     let started = std::time::Instant::now();
-    let transcript = dictation_stt::transcribe_wav_bytes(wav, language).await?;
+    let transcript = dictation_stt::transcribe_wav_bytes(wav, language, prompt).await?;
     tracing::info!(
         "[finish] local speech transcript ready in {}ms chars={} words={}",
         started.elapsed().as_millis(),
@@ -3932,31 +3933,35 @@ fn schedule_release_mic_cleanup(
     });
 }
 
-/// Best-effort fetch of the user's starred vocabulary keyterms from the local
-/// backend, used to bias the on-device Swift STT model toward proper nouns it
-/// would otherwise mangle (Kubernetes, n8n, EMIAC, names). Tight timeout because
-/// this runs on the recording-start path — a slow or failed fetch returns no
-/// terms (no biasing) rather than delaying dictation.
-#[cfg(target_os = "macos")]
-async fn fetch_stt_keyterms(ep: &BackendEndpoint) -> Vec<String> {
+/// Best-effort fetch of a tiny vocabulary prompt for local Whisper. This is a
+/// soft ASR hint only; the post-ASR meaning-first retriever remains authoritative.
+async fn fetch_stt_bias_prompt(ep: &BackendEndpoint, language: &str) -> Option<String> {
     #[derive(serde::Deserialize)]
-    struct BiasKeyterms {
+    struct BiasPack {
         #[serde(default)]
         keyterms: Vec<String>,
+        #[serde(default)]
+        prompt: String,
     }
     match reqwest::Client::new()
         .get(format!("{}/v1/stt/bias", ep.url))
+        .query(&[("language", language)])
         .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_millis(400))
+        .timeout(std::time::Duration::from_millis(150))
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => resp
-            .json::<BiasKeyterms>()
-            .await
-            .map(|b| b.keyterms)
-            .unwrap_or_default(),
-        _ => Vec::new(),
+        Ok(resp) if resp.status().is_success() => {
+            resp.json::<BiasPack>().await.ok().and_then(|b| {
+                if b.prompt.trim().is_empty() {
+                    None
+                } else {
+                    tracing::debug!("[local_asr] using {} STT bias keyterm(s)", b.keyterms.len());
+                    Some(b.prompt)
+                }
+            })
+        }
+        _ => None,
     }
 }
 
@@ -4583,7 +4588,12 @@ fn do_finish_recording(
             );
             None
         } else {
-            match local_pre_transcript(&wav, &stt_language).await {
+            let stt_bias_prompt = back_arc2.lock().ok().and_then(|endpoint| endpoint.clone());
+            let stt_bias_prompt = match stt_bias_prompt {
+                Some(ep) => fetch_stt_bias_prompt(&ep, &stt_language).await,
+                None => None,
+            };
+            match local_pre_transcript(&wav, &stt_language, stt_bias_prompt).await {
                 Ok(t) => Some(t),
                 Err(e) => {
                     tracing::warn!("[finish] local speech failed: {e}");
@@ -6648,7 +6658,14 @@ fn retry_recording_spawn(
             .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
-        let pre_transcript = local_pre_transcript(&wav, &stt_language).await.ok();
+        let stt_bias_prompt = back_arc2.lock().ok().and_then(|endpoint| endpoint.clone());
+        let stt_bias_prompt = match stt_bias_prompt {
+            Some(ep) => fetch_stt_bias_prompt(&ep, &stt_language).await,
+            None => None,
+        };
+        let pre_transcript = local_pre_transcript(&wav, &stt_language, stt_bias_prompt)
+            .await
+            .ok();
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,

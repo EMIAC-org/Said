@@ -344,6 +344,7 @@ pub fn router_with_state(state: AppState) -> Router {
             "/v1/vocabulary/aliases",
             get(routes::vocabulary::list_aliases),
         )
+        .route("/v1/stt/bias", get(routes::vocabulary::stt_bias))
         .route(
             "/v1/vocabulary/all",
             axum::routing::delete(routes::vocabulary::delete_all),
