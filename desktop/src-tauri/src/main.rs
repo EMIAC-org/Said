@@ -254,167 +254,9 @@ pub(crate) fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn configure_main_window_macos(win: &tauri::WebviewWindow) {
-    use objc::Message;
-    use objc::runtime::{
-        BOOL, Class, Imp, Object, Sel, YES, class_addMethod, class_getName, objc_allocateClassPair,
-        objc_disposeClassPair, objc_getClass, objc_registerClassPair, object_getClass,
-    };
-    use std::ffi::{CStr, CString};
-    use std::ptr;
-
-    unsafe extern "C" {
-        fn object_setClass(
-            obj: *mut tauri_nspanel::objc2_foundation::NSObject,
-            cls: *const tauri_nspanel::objc2::runtime::AnyClass,
-        ) -> *const tauri_nspanel::objc2::runtime::AnyClass;
-    }
-
-    unsafe extern "C" fn accepts_first_mouse(
-        _this: *mut Object,
-        _cmd: Sel,
-        _event: *mut Object,
-    ) -> BOOL {
-        YES
-    }
-
-    unsafe fn install_accepts_first_mouse(view: *mut Object, label: &str) -> bool {
-        if view.is_null() {
-            return false;
-        }
-
-        let current_class = unsafe { object_getClass(view) };
-        if current_class.is_null() {
-            tracing::warn!("[main-window] acceptsFirstMouse skipped for {label}: null class");
-            return false;
-        }
-
-        let class_name = unsafe { CStr::from_ptr(class_getName(current_class)) }.to_string_lossy();
-        if class_name.starts_with("AirNoteAcceptsFirstMouse_") {
-            return true;
-        }
-        let sanitized = class_name
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || ch == '_' {
-                    ch
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-        let Ok(subclass_name) = CString::new(format!("AirNoteAcceptsFirstMouse_{}", sanitized))
-        else {
-            tracing::warn!(
-                "[main-window] acceptsFirstMouse skipped for {label}: invalid subclass name"
-            );
-            return false;
-        };
-
-        let mut subclass = unsafe { objc_getClass(subclass_name.as_ptr()) as *mut Class };
-        if subclass.is_null() {
-            subclass = unsafe { objc_allocateClassPair(current_class, subclass_name.as_ptr(), 0) };
-            if subclass.is_null() {
-                tracing::warn!(
-                    "[main-window] acceptsFirstMouse skipped for {label}: allocate class failed"
-                );
-                return false;
-            }
-
-            let Ok(types) = CString::new("c@:@") else {
-                unsafe { objc_disposeClassPair(subclass) };
-                return false;
-            };
-            let imp: Imp = unsafe {
-                std::mem::transmute(
-                    accepts_first_mouse
-                        as unsafe extern "C" fn(*mut Object, Sel, *mut Object) -> BOOL,
-                )
-            };
-            let added = unsafe {
-                class_addMethod(
-                    subclass,
-                    Sel::register("acceptsFirstMouse:"),
-                    imp,
-                    types.as_ptr(),
-                )
-            };
-            if added != YES {
-                unsafe { objc_disposeClassPair(subclass) };
-                tracing::warn!(
-                    "[main-window] acceptsFirstMouse skipped for {label}: add method failed"
-                );
-                return false;
-            }
-            unsafe { objc_registerClassPair(subclass) };
-        }
-
-        unsafe {
-            object_setClass(
-                view as *mut tauri_nspanel::objc2_foundation::NSObject,
-                subclass as *const tauri_nspanel::objc2::runtime::AnyClass,
-            )
-        };
-        tracing::debug!(
-            "[main-window] acceptsFirstMouse enabled for {label} ({})",
-            class_name
-        );
-        true
-    }
-
-    unsafe fn tune_view_tree(view: *mut Object, depth: usize, configured: &mut usize) {
-        if view.is_null() || depth > 8 {
-            return;
-        }
-
-        if unsafe { install_accepts_first_mouse(view, "view") } {
-            *configured += 1;
-        }
-
-        let subviews: *mut Object = unsafe {
-            (&*view)
-                .send_message(Sel::register("subviews"), ())
-                .unwrap_or(ptr::null_mut())
-        };
-        if subviews.is_null() {
-            return;
-        }
-
-        let subviews = unsafe { &*subviews };
-        let count: usize = unsafe {
-            subviews
-                .send_message(Sel::register("count"), ())
-                .unwrap_or(0)
-        };
-        for index in 0..count.min(64) {
-            let child: *mut Object = unsafe {
-                subviews
-                    .send_message(Sel::register("objectAtIndex:"), (index,))
-                    .unwrap_or(ptr::null_mut())
-            };
-            unsafe { tune_view_tree(child, depth + 1, configured) };
-        }
-    }
-
-    let Ok(ns_window) = win.ns_window() else {
-        tracing::warn!("[main-window] macOS tune failed: ns_window unavailable");
-        return;
-    };
-    if ns_window.is_null() {
-        tracing::warn!("[main-window] macOS tune failed: ns_window was null");
-        return;
-    }
-
-    unsafe {
-        let ns_window = &*(ns_window as *mut Object);
-        let content_view: *mut Object = ns_window
-            .send_message(Sel::register("contentView"), ())
-            .unwrap_or(ptr::null_mut());
-        let mut configured = 0;
-        tune_view_tree(content_view, 0, &mut configured);
-
-        tracing::info!("[main-window] macOS click-through tuned views={configured}");
-    }
+fn configure_main_window_macos(_win: &tauri::WebviewWindow) {
+    // The dynamic acceptsFirstMouse subclassing path caused foreign Cocoa
+    // exceptions to unwind through tao's event loop in dev builds.
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2004,13 +1846,18 @@ fn emit_tray_error(app: &tauri::AppHandle, message: impl Into<String>) {
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        activate_airnote(app, "show_main_window");
+        return;
+    }
+
+    #[cfg(not(target_os = "macos"))]
     if let Some(w) = app.get_webview_window("main") {
-        configure_main_window_macos(&w);
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
-    activate_airnote(app, "show_main_window");
 }
 
 // ── Live-meeting floating pill ────────────────────────────────────────────────
@@ -2183,28 +2030,13 @@ fn activate_airnote(app: &tauri::AppHandle, reason: &'static str) {
     let _ = run_on_main_guarded(app, "activate_airnote", move || {
         use cocoa::appkit::{NSApp, NSApplication};
         use cocoa::base::YES;
-        use objc::Message;
 
         unsafe {
             NSApp().activateIgnoringOtherApps_(YES);
         }
         if let Some(w) = app_h.get_webview_window("main") {
-            configure_main_window_macos(&w);
             let _ = w.show();
             let _ = w.unminimize();
-            if let Ok(ns_window) = w.ns_window() {
-                if !ns_window.is_null() {
-                    unsafe {
-                        let ns_window = &*(ns_window as *mut objc::runtime::Object);
-                        let _: Result<(), _> = ns_window
-                            .send_message(objc::runtime::Sel::register("orderFrontRegardless"), ());
-                        let _: Result<(), _> = ns_window.send_message(
-                            objc::runtime::Sel::register("makeKeyAndOrderFront:"),
-                            (std::ptr::null::<objc::runtime::Object>(),),
-                        );
-                    }
-                }
-            }
             let _ = w.set_focus();
         }
         tracing::debug!("[main] activated AirNote window ({reason})");
@@ -9686,7 +9518,9 @@ fn main() {
                         }
                     }
                     if !notch_active {
-                        create_status_bar(app.handle());
+                        tracing::info!(
+                            "[status-bar] startup create skipped — HUD will be created on demand"
+                        );
                     }
                 }
 
@@ -10531,8 +10365,6 @@ fn main() {
                     tracing::info!("[main] launch-at-login startup — main window left hidden");
                 } else {
                     show_main_window(app);
-                    activate_airnote_after(app, "startup-reassert", 500);
-                    activate_airnote_after(app, "startup-retune", 1500);
                 }
             }
             #[cfg(target_os = "macos")]

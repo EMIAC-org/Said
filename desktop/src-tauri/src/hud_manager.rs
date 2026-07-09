@@ -16,7 +16,7 @@ use crate::{
     StatusBarHideGen, StatusBarInteractive, StatusBarPanel, apply_status_bar_position,
     clear_status_bar_position, desktop, diag, run_on_main_guarded, save_status_bar_anchor,
     schedule_present_status_bar_macos, status_bar_persistent_hold, status_bar_pinned,
-    status_bar_target_origin, sync_status_bar,
+    status_bar_target_origin,
 };
 
 #[cfg(target_os = "macos")]
@@ -214,7 +214,6 @@ impl MacHudManager {
                     let _ = win.set_ignore_cursor_events(true);
                     configure_window(&win);
                 }
-                sync_status_bar(&self.app, "idle");
             }
             Err(e) => tracing::warn!("[status-bar] could not create NSPanel: {e}"),
         }
@@ -320,8 +319,8 @@ impl MacHudManager {
             }
             None => {
                 diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_idle"));
-                tracing::warn!(
-                    "[status-bar] sync requested for state={state}, but window was not found"
+                tracing::debug!(
+                    "[status-bar] sync requested for state={state}, but window is not created"
                 );
                 None
             }

@@ -1058,14 +1058,13 @@ mod imp {
         let tap = unsafe { ffi::CGEventTapCreate(0, 0, 0, mask, callback, std::ptr::null_mut()) };
 
         if tap.is_null() {
+            LAST_IM_GRANTED.store(false, Ordering::Relaxed);
+            tracing::info!("[hotkey] CGEventTapCreate failed — Input Monitoring not granted");
             tracing::info!(
-                "[hotkey] CGEventTapCreate failed — requesting Input Monitoring permission"
+                "[hotkey] Skipping automatic Input Monitoring prompt from hotkey thread"
             );
-            // Trigger the macOS TCC permission dialog for Input Monitoring.
-            // NSInputMonitoringUsageDescription in Info.plist is required for this to work.
-            unsafe { ffi::CGRequestListenEventAccess() };
             tracing::info!(
-                "[hotkey] Restart the app after granting Input Monitoring in System Settings."
+                "[hotkey] Open System Settings → Privacy → Input Monitoring, grant access, then restart the app."
             );
             return;
         }
