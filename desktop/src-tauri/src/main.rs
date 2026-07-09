@@ -10038,11 +10038,11 @@ fn main() {
                 // faults on a loop so a monitor can verify it tortures-and-heals.
                 chaos::maybe_start_soak(app.handle());
 
-                // ── HUD level watchdog (macOS) ─────────────────────────────────
-                // macOS silently resets NSPanel window level and collection behavior
-                // after sleep/wake and Space/fullscreen transitions. Re-tune every
-                // 30 s so the HUD never stays invisible for more than one interval.
-                // If the app is in a non-idle state but the panel is hidden, recover.
+                // ── HUD visibility watchdog (macOS) ────────────────────────────
+                // Keep this watchdog narrow and deterministic: it only checks
+                // whether the HUD disappeared while the app is active, and then
+                // re-presents it on demand. Avoid periodic panel retuning here;
+                // repeated AppKit mutation while idle is the crash suspect.
                 #[cfg(target_os = "macos")]
                 {
                     let app_wdg = app.handle().clone();
@@ -10053,33 +10053,29 @@ fn main() {
                         interval.tick().await; // skip the immediate first tick
                         loop {
                             interval.tick().await;
-                            let h = app_wdg.clone();
-                            if let Err(e) = run_on_main_guarded(&app_wdg, "hud_watchdog.retune", move || {
-                                tune_status_bar_panel(&h);
-                            }) {
-                                tracing::warn!("[hud-watchdog] retune dispatch failed: {e}");
-                            }
                             let is_active = shared_wdg
                                 .lock()
                                 .ok()
                                 .map(|d| d.state != desktop::AppState::Idle)
                                 .unwrap_or(false);
-                            if is_active {
-                                let visible = app_wdg
-                                    .get_webview_window("status-bar")
-                                    .and_then(|w| w.is_visible().ok())
-                                    .unwrap_or(true);
-                                if !visible {
-                                    tracing::warn!(
-                                        "[hud-watchdog] HUD hidden while state is active — recovering"
-                                    );
-                                    diag::breadcrumb("hud_watchdog:recover");
-                                    let _ = present_status_bar_native(
-                                        &app_wdg,
-                                        "watchdog-recover",
-                                        true,
-                                    );
-                                }
+                            if !is_active {
+                                continue;
+                            }
+
+                            let visible = app_wdg
+                                .get_webview_window("status-bar")
+                                .and_then(|w| w.is_visible().ok())
+                                .unwrap_or(true);
+                            if !visible {
+                                tracing::warn!(
+                                    "[hud-watchdog] HUD hidden while state is active — recovering"
+                                );
+                                diag::breadcrumb("hud_watchdog:recover");
+                                let _ = present_status_bar_native(
+                                    &app_wdg,
+                                    "watchdog-recover",
+                                    true,
+                                );
                             }
                         }
                     });
