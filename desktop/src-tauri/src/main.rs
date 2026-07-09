@@ -7898,6 +7898,8 @@ struct OwnedTextSpan {
     start_chars: usize,
     len_chars: usize,
     text: String,
+    prefix: String,
+    suffix: String,
 }
 
 #[derive(Debug, Clone)]
@@ -7932,6 +7934,8 @@ fn derive_owned_text_span(
             start_chars: post_paste[..prefix_bytes].chars().count(),
             len_chars: text.chars().count(),
             text,
+            prefix: post_paste[..prefix_bytes].to_string(),
+            suffix: post_paste[inserted_end..].to_string(),
         });
     }
 
@@ -7948,7 +7952,23 @@ fn derive_owned_text_span(
         start_chars: post_paste[..offset].chars().count(),
         len_chars: matched.chars().count(),
         text: matched.to_string(),
+        prefix: post_paste[..offset].to_string(),
+        suffix: post_paste[offset + matched.len()..].to_string(),
     })
+}
+
+fn extract_owned_text(
+    anchor: &EditCaptureAnchor,
+    current_text: &str,
+) -> Result<String, &'static str> {
+    let span = anchor.owned_span.as_ref().ok_or("anchor_missing")?;
+    let after_prefix = current_text
+        .strip_prefix(&span.prefix)
+        .ok_or("prefix_mismatch")?;
+    let owned = after_prefix
+        .strip_suffix(&span.suffix)
+        .ok_or("suffix_mismatch")?;
+    Ok(owned.trim().to_string())
 }
 
 fn capture_edit_anchor(
@@ -8292,6 +8312,7 @@ async fn watch_for_edit(
     let mut last_change_at = Instant::now();
     let mut current_interval = EDIT_WATCH_FAST_INTERVAL;
     let mut last_pid = initial_pid;
+    let mut ownership_lost_reason: Option<&'static str> = None;
 
     // Scale timeouts by sentence length — long sentences need more reading time
     let word_count = polished.split_whitespace().count();
@@ -8397,6 +8418,20 @@ async fn watch_for_edit(
             );
         }
         if now_val != last_val {
+            #[cfg(target_os = "macos")]
+            if let (Some(pid), Some(expected)) = (initial_pid, anchor.field_fingerprint) {
+                let observed = blocking_ax_option("field fingerprint after change", move || {
+                    paster::focused_element_fingerprint_for_pid(pid)
+                })
+                .await;
+                if observed != Some(expected) {
+                    ownership_lost_reason = Some("field_changed");
+                    tracing::info!(
+                        "[edit-watch] ownership lost for {recording_id} — focused field changed"
+                    );
+                    break;
+                }
+            }
             idle_at = Instant::now();
             last_change_at = Instant::now();
             current_interval = EDIT_WATCH_FAST_INTERVAL;
@@ -8453,6 +8488,16 @@ async fn watch_for_edit(
         }
     }
 
+    if let Some(reason) = ownership_lost_reason {
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|guard| guard.clone()),
+        ) {
+            telemetry::on_edit_excluded(&ep, run_id, reason);
+        }
+        return;
+    }
+
     // If the final field value lost all overlap with our polished text (e.g. the
     // user sent the message and the input reverted to a placeholder), use the last
     // meaningful intermediate value instead.
@@ -8498,12 +8543,21 @@ async fn watch_for_edit(
             }
             return;
         }
-        user_kept = extract_kept(
-            &polished,
-            &post_paste,
-            &effective_val,
-            anchor.pre_paste_text.as_deref(),
-        );
+        user_kept = match extract_owned_text(&anchor, &effective_val) {
+            Ok(text) => text,
+            Err(reason) => {
+                tracing::info!(
+                    "[edit-watch] ownership lost for {recording_id} — {reason}; skipping classification"
+                );
+                if let (Some(run_id), Some(ep)) = (
+                    client_run_id.as_deref(),
+                    back_arc.lock().ok().and_then(|guard| guard.clone()),
+                ) {
+                    telemetry::on_edit_excluded(&ep, run_id, reason);
+                }
+                return;
+            }
+        };
         capture_method = "ax";
         tracing::info!(
             "[edit-watch] ax_capture for {recording_id}: {:?} → {:?}",
@@ -8979,76 +9033,6 @@ fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
         }
     }
     false
-}
-
-/// Given what we pasted (`polished`), where the field was right after paste
-/// (`post_paste`), the final field value (`last_val`), and optionally the field
-/// text from BEFORE AirNote typed (`pre_paste`), extract only the user's edited
-/// version of AirNote's output — stripping any pre-existing text.
-fn extract_kept(
-    polished: &str,
-    post_paste: &str,
-    last_val: &str,
-    pre_paste: Option<&str>,
-) -> String {
-    // ── Strategy 1: use pre_paste to reliably find prefix/suffix ─────────
-    // pre_paste = field content before AirNote typed.  post_paste = field content
-    // after AirNote typed.  The common prefix between them is text before cursor;
-    // the common suffix is text after cursor.  Whatever is in the middle of
-    // post_paste is what AirNote actually inserted (after any app normalization).
-    // We strip the same prefix/suffix from last_val to get the user's edit.
-    if let Some(pre) = pre_paste {
-        if !pre.is_empty() && post_paste.len() > pre.len() {
-            let prefix_bytes = common_prefix_bytes(pre, post_paste);
-            let pre_rest = &pre[prefix_bytes..];
-            let post_rest = &post_paste[prefix_bytes..];
-            let suffix_bytes = common_suffix_bytes(pre_rest, post_rest);
-
-            let prefix = &post_paste[..prefix_bytes];
-            let suffix = if suffix_bytes > 0 && suffix_bytes <= pre_rest.len() {
-                &pre_rest[pre_rest.len() - suffix_bytes..]
-            } else {
-                ""
-            };
-
-            if last_val.starts_with(prefix) {
-                let after_prefix = &last_val[prefix.len()..];
-                if !suffix.is_empty() {
-                    if let Some(middle) = after_prefix.strip_suffix(suffix) {
-                        tracing::info!(
-                            "[edit-watch] extract_kept via pre_paste: prefix={}b suffix={}b",
-                            prefix_bytes,
-                            suffix_bytes,
-                        );
-                        return middle.trim().to_string();
-                    }
-                }
-                tracing::info!(
-                    "[edit-watch] extract_kept via pre_paste prefix only: {}b",
-                    prefix_bytes,
-                );
-                return after_prefix.trim().to_string();
-            }
-        }
-    }
-
-    // ── Strategy 2 (fallback): find polished verbatim in post_paste ──────
-    let Some(offset) = post_paste.find(polished.trim()) else {
-        return last_val.to_string();
-    };
-
-    let prefix = &post_paste[..offset];
-    let after_end = offset + polished.trim().len();
-    let suffix = &post_paste[after_end..];
-
-    if let Some(lv_after_prefix) = last_val.strip_prefix(prefix) {
-        if let Some(edited) = lv_after_prefix.strip_suffix(suffix) {
-            return edited.trim().to_string();
-        }
-        return lv_after_prefix.trim().to_string();
-    }
-
-    last_val.to_string()
 }
 
 fn common_prefix_bytes(a: &str, b: &str) -> usize {
@@ -10769,7 +10753,10 @@ mod dictation_audio_level_tests {
 
 #[cfg(test)]
 mod edit_watch_timeout_tests {
-    use super::{clipboard_content_was_added, derive_owned_text_span, edit_watch_timeouts};
+    use super::{
+        EditCaptureAnchor, clipboard_content_was_added, derive_owned_text_span,
+        edit_watch_timeouts, extract_owned_text,
+    };
 
     #[test]
     fn gives_user_time_to_read_before_first_edit() {
@@ -10862,5 +10849,33 @@ mod edit_watch_timeout_tests {
             derive_owned_text_span(None, "prefix unique output suffix", "unique output").is_some()
         );
         assert!(derive_owned_text_span(None, "same then same", "same").is_none());
+    }
+
+    #[test]
+    fn owned_text_extraction_requires_unchanged_surrounding_baseline() {
+        let span = derive_owned_text_span(
+            Some("Before  After"),
+            "Before AirNote output After",
+            "AirNote output",
+        );
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before AirNote output After".to_string(),
+            owned_span: span,
+        };
+        assert_eq!(
+            extract_owned_text(&anchor, "Before corrected output After"),
+            Ok("corrected output".to_string()),
+        );
+        assert_eq!(
+            extract_owned_text(&anchor, "Changed corrected output After"),
+            Err("prefix_mismatch"),
+        );
+        assert_eq!(
+            extract_owned_text(&anchor, "Before corrected output Changed"),
+            Err("suffix_mismatch"),
+        );
     }
 }

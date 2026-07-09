@@ -218,6 +218,19 @@ pub fn on_accepted_no_edit(ep: &BackendEndpoint, run_id: &str) {
     spawn_patch(ep.clone(), run_id.to_string(), patch);
 }
 
+/// The watcher observed activity but could no longer prove that it belonged to
+/// AirNote's pasted span. This is unknown evidence, not an accepted dictation.
+pub fn on_edit_excluded(ep: &BackendEndpoint, run_id: &str, reason: &str) {
+    let patch = api::TelemetryRunPatch {
+        accepted_as_is: None,
+        edit_detected: Some(false),
+        edit_bucket: Some(format!("excluded:{reason}")),
+        finalize: true,
+        ..Default::default()
+    };
+    spawn_patch(ep.clone(), run_id.to_string(), patch);
+}
+
 pub fn on_edit_outcome(
     ep: &BackendEndpoint,
     run_id: &str,
