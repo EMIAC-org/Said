@@ -7901,6 +7901,7 @@ const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 const EDIT_WATCH_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(300);
 const EDIT_WATCH_EMPTY_FIELD_BOUNDARY: Duration = Duration::from_millis(400);
+const EDIT_WATCH_MAX_OBSERVATIONS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedTextSpan {
@@ -7918,6 +7919,72 @@ struct EditCaptureAnchor {
     pre_paste_text: Option<String>,
     post_paste_text: String,
     owned_span: Option<OwnedTextSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditObservation {
+    elapsed_ms: u64,
+    field_value: String,
+    owned_text: String,
+}
+
+#[derive(Debug, Default)]
+struct EditObservationTimeline {
+    observations: std::collections::VecDeque<EditObservation>,
+    total_observations: usize,
+}
+
+impl EditObservationTimeline {
+    fn record(
+        &mut self,
+        anchor: &EditCaptureAnchor,
+        post_paste: &str,
+        field_value: &str,
+        elapsed_ms: u64,
+    ) -> Result<bool, &'static str> {
+        if field_value == post_paste || field_value.is_empty() {
+            return Ok(false);
+        }
+        let owned_text = extract_owned_text(anchor, field_value)?;
+        if self
+            .observations
+            .back()
+            .is_some_and(|last| last.field_value == field_value && last.owned_text == owned_text)
+        {
+            return Ok(false);
+        }
+        self.total_observations += 1;
+        if self.observations.len() == EDIT_WATCH_MAX_OBSERVATIONS {
+            self.observations.pop_front();
+        }
+        self.observations.push_back(EditObservation {
+            elapsed_ms,
+            field_value: field_value.to_string(),
+            owned_text,
+        });
+        Ok(true)
+    }
+
+    fn latest_field_value(&self) -> Option<&str> {
+        self.observations
+            .back()
+            .map(|observation| observation.field_value.as_str())
+    }
+
+    fn retained_count(&self) -> usize {
+        self.observations.len()
+    }
+
+    fn dropped_count(&self) -> usize {
+        self.total_observations
+            .saturating_sub(self.observations.len())
+    }
+
+    fn elapsed_span_ms(&self) -> Option<u64> {
+        let first = self.observations.front()?.elapsed_ms;
+        let last = self.observations.back()?.elapsed_ms;
+        Some(last.saturating_sub(first))
+    }
 }
 
 fn derive_owned_text_span(
@@ -8340,7 +8407,7 @@ async fn watch_for_edit(
     }
 
     let mut last_val = post_paste.clone();
-    let mut best_candidate = post_paste.clone();
+    let mut observations = EditObservationTimeline::default();
     let mut idle_at = Instant::now();
     let started = Instant::now();
     let mut last_change_at = Instant::now();
@@ -8486,10 +8553,17 @@ async fn watch_for_edit(
                 }
                 saw_user_edit = true;
             }
-            // Only promote to best_candidate if the value still shares words
-            // with the polished text (guards against Send-cleared placeholders).
-            if shares_word_overlap(&now_val, &polished) {
-                best_candidate = now_val.clone();
+            if let Err(reason) = observations.record(
+                &anchor,
+                &post_paste,
+                &now_val,
+                started.elapsed().as_millis() as u64,
+            ) {
+                ownership_lost_reason = Some(reason);
+                tracing::info!(
+                    "[edit-watch] ownership lost for {recording_id} — {reason}; refusing changed field state"
+                );
+                break;
             }
             last_val = now_val;
         } else if last_change_at.elapsed() > Duration::from_secs(2) {
@@ -8558,8 +8632,13 @@ async fn watch_for_edit(
             }
             if ownership_lost_reason.is_none() && now_val != last_val {
                 saw_user_edit = now_val != post_paste;
-                if shares_word_overlap(&now_val, &polished) {
-                    best_candidate = now_val.clone();
+                if let Err(reason) = observations.record(
+                    &anchor,
+                    &post_paste,
+                    &now_val,
+                    started.elapsed().as_millis() as u64,
+                ) {
+                    ownership_lost_reason = Some(reason);
                 }
                 last_val = now_val;
             }
@@ -8576,16 +8655,15 @@ async fn watch_for_edit(
         return;
     }
 
-    // If the final field value lost all overlap with our polished text (e.g. the
-    // user sent the message and the input reverted to a placeholder), use the last
-    // meaningful intermediate value instead.
-    let effective_val = if shares_word_overlap(&last_val, &polished) {
+    // A submit can clear the field after several valid edits. Recover the latest
+    // anchored state rather than guessing from word overlap or a single snapshot.
+    let effective_val = if !last_val.is_empty() && extract_owned_text(&anchor, &last_val).is_ok() {
         last_val.clone()
-    } else if best_candidate != post_paste {
+    } else if let Some(latest) = observations.latest_field_value() {
         tracing::info!(
-            "[edit-watch] last_val lost overlap with polished (sent message?); using best_candidate"
+            "[edit-watch] final field unavailable (sent message?); using latest owned observation"
         );
-        best_candidate.clone()
+        latest.to_string()
     } else {
         last_val.clone()
     };
@@ -8771,6 +8849,10 @@ async fn watch_for_edit(
                 "field_fingerprint": anchor.field_fingerprint,
                 "owned_span_start_chars": anchor.owned_span.as_ref().map(|span| span.start_chars),
                 "owned_span_len_chars": anchor.owned_span.as_ref().map(|span| span.len_chars),
+                "observation_count": observations.total_observations,
+                "retained_observation_count": observations.retained_count(),
+                "dropped_observation_count": observations.dropped_count(),
+                "observation_span_ms": observations.elapsed_span_ms(),
             }),
             ..Default::default()
         });
@@ -10834,8 +10916,9 @@ mod dictation_audio_level_tests {
 #[cfg(test)]
 mod edit_watch_timeout_tests {
     use super::{
-        EditCaptureAnchor, clipboard_content_was_added, derive_owned_text_span,
-        edit_watch_timeouts, extract_owned_text,
+        EDIT_WATCH_MAX_OBSERVATIONS, EditCaptureAnchor, EditObservationTimeline,
+        clipboard_content_was_added, derive_owned_text_span, edit_watch_timeouts,
+        extract_owned_text,
     };
 
     #[test]
@@ -10956,6 +11039,81 @@ mod edit_watch_timeout_tests {
         assert_eq!(
             extract_owned_text(&anchor, "Before corrected output Changed"),
             Err("suffix_mismatch"),
+        );
+    }
+
+    #[test]
+    fn observation_timeline_preserves_multiple_owned_edits() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before CQLite and MacOps After".to_string(),
+            owned_span: derive_owned_text_span(
+                Some("Before  After"),
+                "Before CQLite and MacOps After",
+                "CQLite and MacOps",
+            ),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Before SQLite and MacOps After",
+                500,
+            ),
+            Ok(true),
+        );
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Before SQLite and MACOBS After",
+                900,
+            ),
+            Ok(true),
+        );
+        assert_eq!(timeline.total_observations, 2);
+        assert_eq!(timeline.retained_count(), 2);
+        assert_eq!(timeline.elapsed_span_ms(), Some(400));
+        assert_eq!(
+            timeline.latest_field_value(),
+            Some("Before SQLite and MACOBS After"),
+        );
+    }
+
+    #[test]
+    fn observation_timeline_is_bounded_and_rejects_unowned_changes() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before original After".to_string(),
+            owned_span: derive_owned_text_span(
+                Some("Before  After"),
+                "Before original After",
+                "original",
+            ),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        for index in 0..EDIT_WATCH_MAX_OBSERVATIONS + 5 {
+            let value = format!("Before edit-{index} After");
+            assert_eq!(
+                timeline.record(&anchor, &anchor.post_paste_text, &value, index as u64,),
+                Ok(true),
+            );
+        }
+        assert_eq!(timeline.retained_count(), EDIT_WATCH_MAX_OBSERVATIONS);
+        assert_eq!(timeline.dropped_count(), 5);
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Changed edit outside the anchor After",
+                100,
+            ),
+            Err("prefix_mismatch"),
         );
     }
 }
