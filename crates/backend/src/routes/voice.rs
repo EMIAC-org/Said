@@ -2911,54 +2911,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ..Default::default()
         });
 
-        // The formatter prompt is now responsible for numbers, emails, and
-        // aliases. These deterministic post-LLM mutators were too context-blind:
-        // they could rewrite correct model output into the wrong final paste.
-        let before_number_final = llm_result.polished.clone();
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.number_format",
-            component: "backend",
-            function: "number_format::apply",
-            input: Some(&before_number_final),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(0),
-            reason: Some("disabled: preserve model-formatted numbers"),
-            risk: Some("post_model_observer"),
-            metadata: json!({ "disabled": true }),
-            ..Default::default()
-        });
-
-        let before_email_recover = llm_result.polished.clone();
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.email_recover",
-            component: "backend",
-            function: "format_recover::recover_emails_with_candidates",
-            input: Some(&before_email_recover),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(0),
-            reason: Some("disabled: preserve model-formatted emails"),
-            risk: Some("post_model_observer"),
-            metadata: json!({ "disabled": true }),
-            ..Default::default()
-        });
-
-        let before_exact_alias = llm_result.polished.clone();
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.exact_alias_resolver",
-            component: "backend",
-            function: "stt_replacements::apply_exact_safe",
-            input: Some(&before_exact_alias),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(0),
-            reason: Some("disabled: aliases are prompt evidence, not final rewrite rules"),
-            risk: Some("post_model_observer"),
-            metadata: json!({ "disabled": true }),
-            ..Default::default()
-        });
-
-        // Desktop reconciliation now only patches safety-cleaned model output
-        // against any live-streamed tokens for the current recording.
-
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms vocab={}ms llm={}ms",
             llm_ms, total_ms, transcribe_ms, embed_ms, vocab_ms, llm_ms);
