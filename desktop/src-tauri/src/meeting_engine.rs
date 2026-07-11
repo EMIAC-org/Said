@@ -4388,6 +4388,12 @@ fn run_mic_capture(
 
     let _ = ready_tx.send(Ok(()));
     let _ = stop_rx.recv();
+    // CoreAudio can keep a CPAL input stream alive through its internal
+    // disconnect listener, so dropping the final external handle is not a
+    // reliable stop signal on macOS. Pause explicitly before releasing it.
+    if let Err(e) = stream.pause() {
+        tracing::warn!(error = %e, "[meeting_engine] failed to pause mic stream during teardown");
+    }
     writer_stop.store(true, Ordering::SeqCst);
     drop(stream);
     drop(audio_tx);
