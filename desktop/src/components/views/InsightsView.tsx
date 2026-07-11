@@ -282,8 +282,7 @@ function LearningTab({ vocabulary, activeAliases, appliedFixes, manualTerms, rec
   const autoTerms = vocabulary.filter((term) => term.source === "auto").length;
   return (
     <div className="insights-reveal" role="tabpanel">
-      <div className="insights-learning-intro"><div><p className="insights-kicker">Private, durable memory</p><h2>AirNote is adapting to the words that matter to you.</h2><p>This is based only on vocabulary and correction rules stored by AirNote, not inferred personality scores.</p></div><span className="insights-learning-orbit"><Sparkles /></span></div>
-      <section className="insights-metric-grid insights-learning-metrics">
+      <section className="insights-metric-grid">
         <MetricCard icon={<BookOpen size={15} />} label="Vocabulary" value={vocabulary.length.toLocaleString()} detail={`${manualTerms} added by you · ${autoTerms} learned`} />
         <MetricCard icon={<Languages size={15} />} label="Active corrections" value={activeAliases.length.toLocaleString()} detail="Approved mishearing fixes" />
         <MetricCard icon={<Check size={15} />} label="Fixes applied" value={appliedFixes.toLocaleString()} detail="Times active rules were used" />

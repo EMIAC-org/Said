@@ -3652,7 +3652,7 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
 .insights-metric-card {
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 15px;
   border-radius: 14px;
 }
 
@@ -3672,9 +3672,10 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
 }
 
 .insights-metric-value {
-  margin-top: 14px;
+  margin-top: auto;
+  padding-top: 16px;
   color: hsl(var(--foreground));
-  font-size: 28px;
+  font-size: 25px;
   font-weight: 640;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.03em;
@@ -3690,14 +3691,13 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
 }
 
 .insights-metric-card > p {
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   color: hsl(var(--muted-foreground));
   font-size: 11px;
   line-height: 1.35;
 }
 
-.insights-card-heading h2,
-.insights-learning-intro h2 {
+.insights-card-heading h2 {
   margin: 0;
   color: hsl(var(--foreground));
   font-size: 14px;
@@ -3877,60 +3877,6 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   font-variant-numeric: tabular-nums;
 }
 
-.insights-learning-intro {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 10px;
-  padding: 20px 22px;
-  overflow: hidden;
-  border: 1px solid hsl(var(--border));
-  border-radius: 16px;
-  background:
-    radial-gradient(circle at 92% 40%, hsl(var(--accent-violet) / 0.1), transparent 42%),
-    hsl(var(--surface-3));
-  box-shadow: var(--shadow-tile);
-}
-
-.insights-learning-intro > div {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  max-width: 560px;
-}
-
-.insights-learning-intro h2 {
-  font-size: 17px;
-  font-weight: 640;
-  letter-spacing: -0.02em;
-  line-height: 1.25;
-}
-
-.insights-learning-intro p:last-child {
-  margin: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.insights-learning-orbit {
-  display: grid;
-  width: 54px;
-  height: 54px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid hsl(var(--accent-violet) / 0.28);
-  border-radius: 14px;
-  background: hsl(var(--accent-violet) / 0.08);
-  color: hsl(var(--accent-violet));
-}
-
-.insights-learning-orbit svg {
-  width: 22px;
-  height: 22px;
-}
-
 .insights-term-list,
 .insights-alias-list {
   margin-top: 13px;
@@ -3939,18 +3885,18 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
 .insights-term-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 0;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 11px 0;
   border-bottom: 1px solid hsl(var(--border) / 0.65);
 }
 
 .insights-term-row > span {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   place-items: center;
-  border-radius: 9px;
+  border-radius: 8px;
   background: hsl(var(--accent-violet) / 0.11);
   color: hsl(var(--accent-violet));
   font-size: 11px;
@@ -3961,7 +3907,17 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  padding-top: 1px;
+}
+
+.insights-term-row small {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .insights-term-row em,
@@ -3971,6 +3927,11 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   font-style: normal;
+}
+
+.insights-term-row em {
+  padding-top: 3px;
+  white-space: nowrap;
 }
 
 .insights-alias-row {
@@ -4048,7 +4009,6 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   .insights-tabs button { flex: 1; }
   .insights-toolbar { align-items: flex-start; flex-direction: column; gap: 8px; }
   .insights-metric-grid { grid-template-columns: 1fr; }
-  .insights-learning-intro { flex-direction: column; align-items: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
