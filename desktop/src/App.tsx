@@ -10,6 +10,7 @@ import { MIGRATION_VERSION, loadMigrationDone, markMigrationDone } from "@/lib/m
 import { loadOnboardingProgress } from "@/lib/onboardingProgress";
 import { Topbar } from "@/components/Topbar";
 import { DashboardView } from "@/components/views/DashboardView";
+import { InsightsView } from "@/components/views/InsightsView";
 import { HistoryView } from "@/components/views/HistoryView";
 import { LearningsView } from "@/components/views/LearningsView";
 import { BucketsView } from "@/components/views/BucketsView";
@@ -19,7 +20,6 @@ import { DivoView } from "@/components/views/DivoView";
 import { LiveMeetingView } from "@/components/views/LiveMeetingView";
 import {
   invoke,
-  listHistory,
   onAppState,
   onNavSettings,
   onVoiceDone,
@@ -48,6 +48,7 @@ import {
   type VocabToastPayload,
   type ServerMigrationStatus,
 } from "@/lib/invoke";
+import { invalidateHistoryCache, refreshHistoryCache } from "@/lib/historyUiCache";
 import {
   checkConnection,
   getConnection,
@@ -65,8 +66,8 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "history" | "vocabulary" | "learnings" | "buckets" | "meetings" | "divo" | "settings" | "live-meeting";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "history", "vocabulary", "learnings", "buckets", "meetings", "divo", "settings", "live-meeting"];
+export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "meetings" | "divo" | "settings" | "live-meeting";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "vocabulary", "learnings", "buckets", "meetings", "divo", "settings", "live-meeting"];
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -133,6 +134,10 @@ const SETUP_STEPS = [
   "Uploading vocabulary and corrections",
   "Preparing server memory",
 ];
+
+// Design-review seam: dev builds open directly into the post-update flow.
+// Production builds always use the real migration/model-presence conditions.
+const FORCE_POST_UPDATE_GATE_PREVIEW = import.meta.env.DEV;
 
 function SetupLoader({ status }: { status: ServerMigrationStatus | null }) {
   const counts = status
@@ -214,6 +219,10 @@ export default function App() {
   // required steps (e.g. the new on-device model) that they'd otherwise miss by
   // updating straight past onboarding. See lib/migration.ts.
   const [migrationDone, setMigrationDone] = useState<number>(() => loadMigrationDone());
+  const [localModelInstalled, setLocalModelInstalled] = useState<boolean | null>(null);
+  const [showForcedPostUpdatePreview, setShowForcedPostUpdatePreview] = useState(
+    FORCE_POST_UPDATE_GATE_PREVIEW,
+  );
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
@@ -267,8 +276,8 @@ export default function App() {
 
   // ── Fetch history from backend ─────────────────────────────────────────────
   const refreshHistory = useCallback(async () => {
-    const recs = await listHistory(100);
-    setHistory(recs.map(recordingToHistoryItem));
+    const recs = await refreshHistoryCache({ limit: 300 });
+    setHistory(recs.slice(0, 100).map(recordingToHistoryItem));
   }, []);
 
   const refreshSnapshot = useCallback(async () => {
@@ -297,6 +306,22 @@ export default function App() {
         setErrorBanner(err instanceof Error ? err.message : String(err));
       });
     refreshHistory();
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    invoke<{ installed: boolean }>("dictation_model_status")
+      .then((status) => {
+        if (alive) setLocalModelInstalled(status.installed);
+      })
+      .catch(() => {
+        // Fail closed: the model gate can retry the native status call and
+        // surface its error, while the dashboard must not assume STT is usable.
+        if (alive) setLocalModelInstalled(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -461,6 +486,7 @@ export default function App() {
 
     // Final done event — refresh history with the new recording
     const unsubDone   = onVoiceDone((_done) => {
+      invalidateHistoryCache();
       refreshHistory();
       setHistoryRefreshKey((k) => k + 1);
       setTokenBuf("");
@@ -668,6 +694,7 @@ export default function App() {
 
   const handleOnboardingFinish = useCallback(() => {
     setOnboardingComplete(true);
+    setLocalModelInstalled(true);
     try {
       localStorage.setItem("said:onboarding-complete", "true");
     } catch { /* ignore */ }
@@ -680,6 +707,8 @@ export default function App() {
   const handleMigrationDone = useCallback(() => {
     markMigrationDone();
     setMigrationDone(MIGRATION_VERSION);
+    setLocalModelInstalled(true);
+    setShowForcedPostUpdatePreview(false);
   }, []);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
@@ -719,12 +748,10 @@ export default function App() {
       (!!snapshot?.accessibility_granted && !!snapshot?.input_monitoring_granted));
 
   const needsEnterprise = enterpriseGate === "required";
-  const localModelSetupRequired = false;
-  const needsSetup = !corePermissionsReady || !onboardingComplete || localModelSetupRequired;
-  const workspaceOnly =
-    needsEnterprise && onboardingComplete && corePermissionsReady && !localModelSetupRequired;
+  const needsSetup = !corePermissionsReady || !onboardingComplete;
+  const workspaceOnly = needsEnterprise && onboardingComplete && corePermissionsReady;
 
-  if (needsEnterprise || needsSetup) {
+  if (!showForcedPostUpdatePreview && (needsEnterprise || needsSetup)) {
     return (
       <OnboardingErrorBoundary>
         <OnboardingFlow
@@ -732,7 +759,6 @@ export default function App() {
           workspaceOnly={workspaceOnly}
           enterpriseRequired={needsEnterprise}
           initialProgress={loadOnboardingProgress()}
-          requireLocalModelSetup={localModelSetupRequired}
           onEnterpriseConnected={handleEnterpriseConnected}
           onMicrophone={handleMicrophone}
           onAccessibility={handleAccessibility}
@@ -744,28 +770,26 @@ export default function App() {
     );
   }
 
-  if (setupLoader === "running") {
+  if (!showForcedPostUpdatePreview && setupLoader === "running") {
     return <SetupLoader status={setupStatus} />;
   }
 
-  // Post-update required-step gate: an already-onboarded user who updated past
-  // onboarding is forced through outstanding new steps once (backend is up by
-  // now, so the model download works). They install the new model or explicitly
-  // keep their current setup — either way it stamps the version and never repeats.
-  if (migrationDone < MIGRATION_VERSION) {
-    return (
-      <ModelMigrationGate
-        onDone={handleMigrationDone}
-        platform={(snapshot?.platform ?? "macos") as "macos" | "windows" | "linux"}
-      />
-    );
-  }
+  // Post-update required-step modal: the dashboard remains visible underneath,
+  // but is inert until setup is complete. Model presence is checked separately
+  // on every startup because local speech has no cloud fallback.
+  const showPostUpdateGate =
+    showForcedPostUpdatePreview || !localModelInstalled || migrationDone < MIGRATION_VERSION;
 
   const liveMeetingActive = activeView === "live-meeting" && !!liveMeetingId;
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
+    <>
+    <div
+      className="flex h-screen w-screen overflow-hidden"
+      inert={showPostUpdateGate ? true : undefined}
+      aria-hidden={showPostUpdateGate || undefined}
+    >
 
       {liveMeetingActive ? (
         <div className="min-w-0 flex-1">
@@ -824,6 +848,7 @@ export default function App() {
                     }}
                   />
                 )}
+                {activeView === "insights" && <InsightsView />}
                 {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
                 {activeView === "vocabulary" && <VocabularyView />}
                 {activeView === "learnings"  && <LearningsView />}
@@ -967,5 +992,12 @@ export default function App() {
         justRecovered={heartbeat.justRecovered}
       />
     </div>
+    {showPostUpdateGate && (
+      <ModelMigrationGate
+        onDone={handleMigrationDone}
+        platform={(snapshot?.platform ?? "macos") as "macos" | "windows" | "linux"}
+      />
+    )}
+    </>
   );
 }

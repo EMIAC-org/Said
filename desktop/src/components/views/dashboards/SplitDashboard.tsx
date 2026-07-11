@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Copy, Play, Pause, Download, Check } from "lucide-react";
-import { downloadRecordingAudio, listHistory } from "@/lib/invoke";
+import { downloadRecordingAudio } from "@/lib/invoke";
+import {
+  getHistoryCacheSnapshot,
+  refreshHistoryCache,
+  subscribeHistoryCache,
+} from "@/lib/historyUiCache";
 import { useAudioPlayer } from "@/lib/useAudioPlayer";
 import { AppIcon, appDisplayName, fallbackAppName, useAppIdentity } from "@/components/AppIcon";
+import { SplitDashboardSkeleton } from "@/components/views/dashboards/DashboardSkeleton";
 import type { AppSnapshot, Recording } from "@/types";
 
 interface Props {
@@ -30,12 +36,22 @@ interface Props {
 export function SplitDashboard({
   snapshot, onDownloadSuccess, onNavigate, refreshKey = 0,
 }: Props) {
-  const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [recordings, setRecordings] = useState<Recording[]>(() =>
+    getHistoryCacheSnapshot().recordings?.slice(0, 300) ?? [],
+  );
+  const [loaded, setLoaded] = useState(() => getHistoryCacheSnapshot().recordings !== undefined);
 
   useEffect(() => {
-    let alive = true;
-    listHistory(300).then((r) => { if (alive) setRecordings(r); });
-    return () => { alive = false; };
+    const sync = () => {
+      const cached = getHistoryCacheSnapshot().recordings;
+      if (!cached) return;
+      setRecordings(cached.slice(0, 300));
+      setLoaded(true);
+    };
+    sync();
+    const unsubscribe = subscribeHistoryCache(sync);
+    void refreshHistoryCache({ limit: 300 });
+    return unsubscribe;
   }, [refreshKey]);
 
   // ── Derived metrics ──────────────────────────────────────────────────────
@@ -55,6 +71,8 @@ export function SplitDashboard({
   // dedicated History view is the place for older entries.
   const recent = useMemo(() => filterLastTwoDays(recordings), [recordings]);
   const groups = useMemo(() => groupByDay(recent), [recent]);
+
+  if (!loaded) return <SplitDashboardSkeleton />;
 
   return (
     <div className="h-full overflow-hidden" style={{ padding: 16 }}>

@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowRight, Check, Cpu, Download, Keyboard, Link, Loader2, Sparkles, X } from "lucide-react";
-import {
-  getPreferences, invoke, patchPreferences,
-  getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
-} from "@/lib/invoke";
+import { ArrowRight, Check, Cpu, Download, Loader2, X } from "lucide-react";
+import { getPreferences, invoke, patchPreferences } from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 import type { ReclaimResult } from "@/components/ReclaimOldModelsRow";
 import { friendlyError } from "@/lib/friendlyError";
@@ -37,8 +34,8 @@ function formatSize(bytes: number): string {
  * Forced post-update "Meet the new model" screen. Shown once to every
  * already-onboarded user (see lib/migration.ts) so a feature that ships via the
  * update pipeline — and therefore skips onboarding — is still 100% seen. The
- * user either installs the new model or explicitly keeps their current setup;
- * both dismiss the gate and stamp the migration version.
+ * user must install the local model before continuing because every dictation
+ * and meeting transcription depends on it.
  */
 export function ModelMigrationGate({
   onDone,
@@ -47,7 +44,7 @@ export function ModelMigrationGate({
   onDone: () => void;
   platform: Platform;
 }) {
-  const [gateStep, setGateStep] = useState<"model" | "hotkey" | "browser">("model");
+  const [gateStep, setGateStep] = useState<"model" | "hotkey">("model");
   const [model, setModel] = useState<ModelStatus | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
@@ -56,6 +53,7 @@ export function ModelMigrationGate({
   const [modelChecked, setModelChecked] = useState(false);
   const mounted = useRef(true);
   const silentLegacyModelCleanupDone = useRef(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const installed = model?.installed ?? false;
 
@@ -150,14 +148,39 @@ export function ModelMigrationGate({
   const hk = hotkeyDisplay(recordHotkey, platform);
   const hkToggle = hotkeyMode(recordHotkey, platform) === "toggle";
 
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      dialogRef.current
+        ?.querySelector<HTMLElement>("button:not([disabled])")
+        ?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [gateStep, checkingModel, installed, downloading]);
+
+  const renderModal = (step: string, content: ReactNode) => (
+    <div className="mig-overlay">
+      <div
+        ref={dialogRef}
+        className="mig-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="post-update-title"
+      >
+        <div className="mig-context">
+          <span className="mig-context-rule" aria-hidden />
+          <span>AirNote update</span>
+          <span className="mig-context-step">{step}</span>
+        </div>
+        {content}
+      </div>
+    </div>
+  );
+
   if (gateStep === "hotkey") {
-    return (
-      <div className="onb-error-screen">
-        <div className="mig-card">
-          <div className="mig-badge">
-            <Keyboard size={12} /> Set your dictation key
-          </div>
-          <h2 className="mig-title">Pick your hotkey</h2>
+    return renderModal(
+      "2 of 2",
+      <>
+          <h2 id="post-update-title" className="mig-title">Pick your hotkey</h2>
           <p className="mig-desc">
             Hold this key anywhere to dictate — now you can choose any modifier, Caps Lock, or Fn.
             Press the key you want, or tap one below.
@@ -169,66 +192,24 @@ export function ModelMigrationGate({
 
           <div className="mig-actions">
             <button
-              onClick={() => (platform === "macos" ? setGateStep("browser") : onDone())}
+              onClick={onDone}
               className="btn-primary btn-lg w-full"
             >
               {hkToggle ? `Tap ${hk.label} to dictate — done` : `Hold ${hk.label} to dictate — done`}
               <ArrowRight size={14} />
             </button>
           </div>
-        </div>
-      </div>
+      </>,
     );
   }
 
-  // Browser context — macOS-only optional opt-in, announced in the forced update
-  // flow so every user sees it. Enabling asks macOS for Automation consent.
-  if (gateStep === "browser") {
-    const enable = async () => {
-      try {
-        const p = await getDesktopPrefs();
-        await setDesktopPrefs({ ...p, browser_context_enabled: true });
-        void requestBrowserAutomation();
-      } catch { /* best-effort */ }
-      onDone();
-    };
-    return (
-      <div className="onb-error-screen">
-        <div className="mig-card">
-          <div className="mig-badge">
-            <Link size={12} /> New: browser context
-          </div>
-          <h2 className="mig-title">Smarter context per website</h2>
-          <p className="mig-desc">
-            AirNote can remember which website you’re dictating into — so it learns that Gmail,
-            Twitter and your CMS each want a different style. It stores the domain only
-            (e.g. mail.google.com, never the full URL), on this Mac. Enabling asks macOS for
-            permission to read your browser’s active tab. Optional — change it anytime in Settings.
-          </p>
-          <div className="mig-actions">
-            <button onClick={() => void enable()} className="btn-primary btn-lg w-full">
-              Enable browser context
-              <ArrowRight size={14} />
-            </button>
-          </div>
-          <button type="button" onClick={onDone} className="onb-skip-link">
-            Not now
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="onb-error-screen">
-      <div className="mig-card">
-        <div className="mig-badge">
-          <Sparkles size={12} /> Local speech model
-        </div>
-        <h2 className="mig-title">Meet {NEW_MODEL_NAME}</h2>
+  return renderModal(
+    "1 of 2",
+    <>
+        <h2 id="post-update-title" className="mig-title">Download the speech model</h2>
         <p className="mig-desc">
-          AirNote uses one on-device Hinglish model for dictation and meetings. It stays
-          private, works offline, and has no per-use cost. Install it to enable local speech.
+          AirNote needs this model for dictation and meetings.
+          Download it to continue.
         </p>
 
         <div className="mig-model">
@@ -303,11 +284,7 @@ export function ModelMigrationGate({
                 : `Install ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
             </button>
           )}
-          <button type="button" onClick={() => setGateStep("hotkey")} className="onb-skip-link">
-            Keep my current setup
-          </button>
         </div>
-      </div>
-    </div>
+    </>,
   );
 }

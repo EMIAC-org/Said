@@ -39,6 +39,8 @@ write_dev_info_plist() {
   <string>AirNote</string>
   <key>CFBundleIdentifier</key>
   <string>com.emiac.airnote.desktop</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
   <key>CFBundleName</key>
   <string>AirNote</string>
   <key>CFBundlePackageType</key>
@@ -47,6 +49,10 @@ write_dev_info_plist() {
   <string>2.4.3</string>
   <key>CFBundleVersion</key>
   <string>2.4.3</string>
+  <key>CSResourcesFileMapped</key>
+  <true/>
+  <key>LSRequiresCarbon</key>
+  <true/>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSAccessibilityUsageDescription</key>
@@ -57,6 +63,8 @@ write_dev_info_plist() {
   <string>AirNote needs Input Monitoring to detect your recording hotkey and global shortcuts.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>AirNote records your voice to transcribe and polish your text.</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
   <key>NSScreenCaptureUsageDescription</key>
   <string>AirNote captures system audio during meetings so it can transcribe what other participants say.</string>
   <key>CFBundleURLTypes</key>
@@ -84,6 +92,113 @@ copy_if_exists() {
   fi
 }
 
+find_exact_executable_pid() {
+  local executable="$1"
+  local pid command
+
+  while read -r pid command; do
+    case "$command" in
+      "$executable"|"$executable "*)
+        echo "$pid"
+        return 0
+        ;;
+    esac
+  done < <(ps -axo pid=,command=)
+
+  return 1
+}
+
+terminate_process() {
+  local pid="${1:-}"
+
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.05
+  done
+
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+launch_app_bundle() {
+  local app="$1"
+  local executable="$2"
+  shift 2
+
+  local open_pid=""
+  local launched_pid=""
+  local terminal=""
+  local status=0
+
+  # `open -a` is the important part here: merely executing the Mach-O leaves it
+  # in the terminal launch session, while opening the .app as a document can
+  # fail with kLSUnknownErr when multiple AirNote bundles are registered.
+  # LaunchServices rejects /dev/stdout as a redirection target, so use the real
+  # terminal device when one exists. The app's file logger remains available in
+  # non-interactive environments.
+  if [ -t 1 ]; then
+    terminal="$(tty 2>/dev/null || true)"
+  fi
+
+  if [ "$#" -gt 0 ] && [ -n "$terminal" ] && [ "$terminal" != "not a tty" ]; then
+    open -W -n --stdout "$terminal" --stderr "$terminal" -a "$app" --args "$@" &
+  elif [ "$#" -gt 0 ]; then
+    open -W -n -a "$app" --args "$@" &
+  elif [ -n "$terminal" ] && [ "$terminal" != "not a tty" ]; then
+    open -W -n --stdout "$terminal" --stderr "$terminal" -a "$app" &
+  else
+    open -W -n -a "$app" &
+  fi
+  open_pid=$!
+
+  for _ in $(seq 1 100); do
+    launched_pid="$(find_exact_executable_pid "$executable" || true)"
+    if [ -n "$launched_pid" ]; then
+      break
+    fi
+    if ! kill -0 "$open_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.05
+  done
+
+  if [ -z "$launched_pid" ]; then
+    kill -TERM "$open_pid" 2>/dev/null || true
+    wait "$open_pid" 2>/dev/null || true
+    echo "tauri-dev-runner: LaunchServices did not start $app" >&2
+    return 66
+  fi
+
+  stop_launch() {
+    local exit_code="$1"
+    trap - INT TERM HUP
+    terminate_process "$launched_pid"
+    kill -TERM "$open_pid" 2>/dev/null || true
+    wait "$open_pid" 2>/dev/null || true
+    exit "$exit_code"
+  }
+
+  # Tauri terminates its runner during rebuilds and on Ctrl-C. Since the app is
+  # now owned by launchd rather than this shell, explicitly forward shutdown so
+  # a stale AirNote Dev process cannot survive the dev session.
+  trap 'stop_launch 130' INT
+  trap 'stop_launch 143' TERM HUP
+
+  wait "$open_pid" || status=$?
+  trap - INT TERM HUP
+
+  # `open -W` returns when the launched app exits. It may not preserve the
+  # application's exact exit status, but a non-zero launcher failure must still
+  # reach Tauri so it does not report a healthy dev run.
+  return "$status"
+}
+
 sign_and_exec() {
   local bin="$1"
   shift
@@ -95,6 +210,17 @@ sign_and_exec() {
     local contents="$app/Contents"
     local macos="$contents/MacOS"
     local resources="$contents/Resources"
+    local executable="$macos/AirNote"
+
+    # Only target the dev app produced by this worktree. This is safe for the
+    # installed AirNote and for other worktrees, while repairing an interrupted
+    # previous run before replacing its bundle on disk.
+    local stale_pid
+    stale_pid="$(find_exact_executable_pid "$executable" || true)"
+    if [ -n "$stale_pid" ]; then
+      echo "tauri-dev-runner: stopping stale AirNote Dev process $stale_pid" >&2
+      terminate_process "$stale_pid"
+    fi
 
     rm -rf "$app"
     mkdir -p "$macos" "$resources"
@@ -120,7 +246,8 @@ sign_and_exec() {
     codesign_path "$app"
 
     export __CFBundleIdentifier=com.emiac.airnote.desktop
-    exec "$macos/AirNote" "$@"
+    launch_app_bundle "$app" "$executable" "$@"
+    return $?
   fi
 
   export __CFBundleIdentifier=com.emiac.airnote.desktop

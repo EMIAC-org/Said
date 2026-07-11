@@ -35,6 +35,7 @@ import { exportMeetingToLark } from "@/lib/enterprise";
 import { openExternal } from "@/lib/invoke";
 import { NEW_MODEL_FILE } from "@/lib/onDeviceModel";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
+import { Skeleton } from "@/components/ui/skeleton";
 import { DigestView } from "@/components/views/DigestView";
 import {
   MeetingRichText,
@@ -245,123 +246,6 @@ function tagColor(label: string): string {
   return TAG_COLORS[Math.abs(hash) % TAG_COLORS.length];
 }
 
-function MeetingCard({
-  meeting,
-  overview,
-  searchHit,
-  selected,
-  onSelect,
-  onToggleFavorite,
-}: {
-  meeting: Meeting;
-  overview?: MeetingOverview;
-  searchHit?: MeetingSearchHit;
-  selected: boolean;
-  onSelect: () => void;
-  onToggleFavorite: () => void;
-}) {
-  // Prefer the AI-generated title/word count from the cached overview, falling
-  // back to the server title and agenda when a meeting hasn't been analysed.
-  const title = overview?.title?.trim() || meeting.title;
-  const words = overview?.word_count ?? wordCount(meeting.agenda);
-  const actionCount = overview?.action_count ?? 0;
-  const decisionCount = overview?.decision_count ?? 0;
-  const allCardTags = overview?.tags ?? [];
-  const cardTags = allCardTags.slice(0, 2);
-  const hiddenTagCount = Math.max(0, allCardTags.length - cardTags.length);
-  const favorite = overview?.favorite ?? false;
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      className="w-full rounded-xl p-4 text-left transition-colors cursor-pointer"
-      style={{
-        background: selected ? "hsl(var(--primary) / 0.13)" : "hsl(var(--surface-3))",
-        border: selected ? "1px solid hsl(var(--primary) / 0.42)" : "1px solid hsl(var(--border))",
-        boxShadow: selected
-          ? "0 0 0 1px hsl(var(--primary) / 0.10) inset, 0 8px 22px hsl(var(--primary) / 0.08)"
-          : "0 1px 0 hsl(var(--glass-highlight)) inset",
-      }}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-[13px] font-bold text-foreground">{title}</h3>
-          <p className="mt-2 text-[11px] text-muted-foreground">
-            {formatMeetingDate(meeting)} · {words} words
-          </p>
-        </div>
-        <button
-          type="button"
-          title={favorite ? "Remove from favorites" : "Add to favorites"}
-          aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleFavorite();
-          }}
-          onKeyDown={(event) => event.stopPropagation()}
-          className="rounded-md p-0.5 transition-colors hover:text-foreground"
-          style={{ color: favorite ? "hsl(38 90% 72%)" : "hsl(var(--muted-foreground) / 0.35)" }}
-        >
-          <Star size={14} fill={favorite ? "hsl(38 90% 72%)" : "none"} />
-        </button>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-1.5">
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-blue-bg))", color: "hsl(var(--chip-blue-fg))" }}>
-          Summary
-        </span>
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-lime-bg))", color: "hsl(var(--chip-lime-fg))" }}>
-          {actionCount} actions
-        </span>
-        <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "hsl(var(--chip-amber-bg))", color: "hsl(var(--chip-amber-fg))" }}>
-          {decisionCount} decisions
-        </span>
-      </div>
-      {cardTags.length > 0 ? (
-        <div className="mt-2 flex min-w-0 flex-nowrap items-center gap-1 overflow-hidden">
-          {cardTags.map((tag) => (
-            <span
-              key={tag}
-              className="max-w-[8.5rem] shrink truncate rounded-md px-1.5 py-0.5 text-[9px] font-bold"
-              style={{ background: `${tagColor(tag)}22`, color: tagColor(tag) }}
-              title={`#${tag}`}
-            >
-              #{tag}
-            </span>
-          ))}
-          {hiddenTagCount > 0 ? (
-            <span
-              className="shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground"
-              style={{ background: "hsl(var(--surface-4))" }}
-              title={allCardTags.slice(cardTags.length).map((tag) => `#${tag}`).join(", ")}
-            >
-              +{hiddenTagCount}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-      {searchHit ? (
-        <div className="mt-2.5 border-t pt-2.5" style={{ borderColor: "hsl(var(--border))" }}>
-          {searchHit.matched_in.length > 0 ? (
-            <p className="text-[10px] font-bold uppercase tracking-[0.1em]" style={{ color: "hsl(var(--primary))" }}>
-              Match · {searchHit.matched_in.join(", ")}
-            </p>
-          ) : null}
-          {searchHit.snippet ? (
-            <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">{searchHit.snippet}</p>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function IconButton({
   children,
   label,
@@ -409,7 +293,7 @@ function ToolbarButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors disabled:opacity-45"
+      className="h-9 rounded-lg px-3 text-[12px] font-semibold transition-colors hover:text-foreground disabled:opacity-45"
       style={{
         background: active ? "hsl(var(--chip-lime-bg))" : "hsl(var(--surface-3))",
         border: active ? "1px solid hsl(var(--chip-lime-fg) / 0.26)" : "1px solid hsl(var(--border))",
@@ -458,7 +342,7 @@ function CopyButton({
       type="button"
       disabled={disabled}
       onClick={() => void handle()}
-      className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors disabled:opacity-45"
+      className="h-9 rounded-lg px-3 text-[12px] font-semibold transition-colors hover:text-foreground disabled:opacity-45"
       style={{
         background: copied ? "hsl(var(--chip-lime-bg))" : "hsl(var(--surface-3))",
         border: copied ? "1px solid hsl(var(--chip-lime-fg) / 0.26)" : "1px solid hsl(var(--border))",
@@ -505,9 +389,11 @@ function MeetingAudioBar({
   downloading: boolean;
 }) {
   const effectiveDuration = duration || ((fallbackDurationMs ?? 0) / 1000);
+  const clampedTime = Math.min(currentTime, Math.max(1, effectiveDuration));
+  const pct = effectiveDuration > 0 ? Math.min(100, (clampedTime / effectiveDuration) * 100) : 0;
   return (
     <div
-      className="mt-7 flex h-14 items-center gap-4 rounded-xl px-4"
+      className="mt-6 flex items-center gap-3 rounded-xl px-3 py-2.5"
       style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
     >
       {audioSrc ? (
@@ -528,37 +414,41 @@ function MeetingAudioBar({
         type="button"
         disabled={!audioSrc}
         onClick={onToggle}
-        className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full disabled:opacity-45"
-        style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+        className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:opacity-45 disabled:hover:scale-100"
+        style={{ background: "hsl(var(--accent-violet))", color: "hsl(var(--primary-foreground))" }}
         title={playing ? "Pause audio" : "Play audio"}
       >
-        {playing ? <Pause size={16} /> : <Play size={17} fill="currentColor" />}
+        {playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" className="ml-0.5" />}
       </button>
+      <span className="flex-shrink-0 text-[11.5px] font-semibold tabular-nums text-muted-foreground">
+        {formatTimestamp(clampedTime * 1000)}
+      </span>
       <input
         type="range"
         min={0}
         max={Math.max(1, effectiveDuration)}
         step={0.1}
-        value={Math.min(currentTime, Math.max(1, effectiveDuration))}
+        value={clampedTime}
         disabled={!audioSrc}
         onChange={(event) => onSeek(Number(event.currentTarget.value))}
-        className="min-w-0 flex-1 accent-[hsl(var(--primary))]"
+        className="audio-range min-w-0 flex-1"
+        style={{ background: `linear-gradient(to right, hsl(var(--accent-violet)) ${pct}%, hsl(var(--surface-4)) ${pct}%)` }}
         aria-label="Audio timeline"
       />
-      <div className="flex items-center gap-3 text-[12px] font-semibold text-muted-foreground">
-        <span className="tabular-nums">
-          {formatTimestamp(currentTime * 1000)} / {formatTimestamp(effectiveDuration * 1000)}
-        </span>
+      <span className="flex-shrink-0 text-[11.5px] font-semibold tabular-nums text-muted-foreground">
+        {formatTimestamp(effectiveDuration * 1000)}
+      </span>
+      <div className="flex flex-shrink-0 items-center gap-1 pl-1">
         <button
           type="button"
           disabled={!audioSrc}
           onClick={() => onSeek(Math.max(0, currentTime - 10))}
           title="Back 10 seconds"
           aria-label="Back 10 seconds"
-          className="relative flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:opacity-45"
+          className="relative flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[hsl(var(--surface-4))] hover:text-foreground disabled:opacity-45"
         >
-          <RotateCcw size={18} />
-          <span className="absolute text-[7px] font-bold">10</span>
+          <RotateCcw size={16} />
+          <span className="absolute text-[6px] font-bold">10</span>
         </button>
         <button
           type="button"
@@ -566,17 +456,16 @@ function MeetingAudioBar({
           onClick={() => onSeek(Math.min(effectiveDuration, currentTime + 10))}
           title="Forward 10 seconds"
           aria-label="Forward 10 seconds"
-          className="relative flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:opacity-45"
+          className="relative flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[hsl(var(--surface-4))] hover:text-foreground disabled:opacity-45"
         >
-          <RotateCw size={18} />
-          <span className="absolute text-[7px] font-bold">10</span>
+          <RotateCw size={16} />
+          <span className="absolute text-[6px] font-bold">10</span>
         </button>
         <button
           type="button"
           disabled={!audioSrc}
           onClick={onSpeed}
-          className="h-8 w-10 rounded-lg text-[12px] font-bold tabular-nums transition-colors hover:text-foreground disabled:opacity-45"
-          style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--muted-foreground))" }}
+          className="h-8 min-w-[36px] rounded-lg px-1 text-[11.5px] font-bold tabular-nums text-muted-foreground transition-colors hover:bg-[hsl(var(--surface-4))] hover:text-foreground disabled:opacity-45"
           title="Playback speed"
         >
           {speed}x
@@ -585,8 +474,7 @@ function MeetingAudioBar({
           type="button"
           disabled={!audioSrc || downloading}
           onClick={onDownload}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:opacity-45"
-          style={{ background: "hsl(var(--surface-3))" }}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[hsl(var(--surface-4))] hover:text-foreground disabled:opacity-45"
           title="Download audio"
           aria-label="Download audio"
         >
@@ -642,10 +530,10 @@ function TranscriptTab({
     ?? segments.reduce((max, segment) => Math.max(max, segment.end_ms), 0)
     ?? 0;
   return (
-    <div className="pt-8">
+    <div className="pt-6">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h3 className="text-[15px] font-bold text-foreground">Transcript</h3>
+          <h3 className="text-[14px] font-semibold text-foreground">Transcript</h3>
           <span className="text-[12px] font-semibold text-muted-foreground">
             {speakers.length || 0} speaker{speakers.length === 1 ? "" : "s"}
           </span>
@@ -685,7 +573,7 @@ function TranscriptTab({
                 <span className="ml-1 inline-flex align-middle text-muted-foreground">
                   <ChevronDown size={13} />
                 </span>
-                <span className="mt-1 block max-w-[112ch] text-[15px] leading-7 text-muted-foreground">
+                <span className="mt-1 block max-w-[92ch] text-[13.5px] leading-relaxed text-muted-foreground">
                   {segment.text}
                 </span>
               </span>
@@ -693,11 +581,11 @@ function TranscriptTab({
           ))}
         </div>
       ) : artifacts?.transcript ? (
-        <pre className="mt-7 whitespace-pre-wrap text-[15px] leading-8 text-muted-foreground">
+        <pre className="mt-6 whitespace-pre-wrap text-[13.5px] leading-relaxed text-muted-foreground">
           {artifacts.transcript}
         </pre>
       ) : (
-        <p className="mt-7 text-[14px] text-muted-foreground">Transcript is not attached to this meeting yet.</p>
+        <p className="mt-6 text-[13.5px] text-muted-foreground">Transcript is not attached to this meeting yet.</p>
       )}
     </div>
   );
@@ -729,9 +617,9 @@ function ActionRows({
   const actionCount = actions.length + manualActions.length;
   const totalCount = actionCount + decisions.length;
   return (
-    <div className="pt-8">
+    <div className="pt-6">
       <div className="mb-7">
-        <h3 className="text-[15px] font-bold text-foreground">Actions & Decisions {totalCount}</h3>
+        <h3 className="text-[14px] font-semibold text-foreground">Actions & Decisions {totalCount}</h3>
       </div>
 
       {/* Add a manual action */}
@@ -816,19 +704,19 @@ function ActionRows({
           </p>
         ) : null
       ) : (
-        <div className={decisions.length > 0 ? "mb-8 space-y-7" : "space-y-7"}>
+        <div className={decisions.length > 0 ? "mb-6 space-y-4" : "space-y-4"}>
           {actions.map((action, index) => {
             const key = `${index}-${action.title}`;
             const isDone = completed.has(key);
             return (
-              <div key={key} className="grid grid-cols-[26px_minmax(0,1fr)] gap-4">
+              <div key={key} className="grid grid-cols-[22px_minmax(0,1fr)] gap-3">
                 <button
                   type="button"
                   onClick={() => onToggle(key)}
-                  className="mt-1 flex h-[18px] w-[18px] items-center justify-center rounded-[4px]"
+                  className="mt-0.5 flex h-[18px] w-[18px] items-center justify-center rounded-[5px]"
                   style={{
-                    background: isDone ? "hsl(var(--primary))" : "transparent",
-                    border: isDone ? "1px solid hsl(var(--primary))" : "1px solid hsl(var(--border))",
+                    background: isDone ? "hsl(var(--accent-violet))" : "transparent",
+                    border: isDone ? "1px solid hsl(var(--accent-violet))" : "1px solid hsl(var(--border))",
                     color: "hsl(var(--primary-foreground))",
                   }}
                   title={isDone ? "Mark incomplete" : "Mark complete"}
@@ -836,8 +724,8 @@ function ActionRows({
                   {isDone ? <Check size={12} /> : null}
                 </button>
                 <div className="min-w-0">
-                  <p className="text-[15px] font-bold text-foreground">{action.title}</p>
-                  <p className="mt-1 max-w-[108ch] text-[13px] leading-6 text-muted-foreground">
+                  <p className={`text-[14px] font-semibold ${isDone ? "text-muted-foreground line-through" : "text-foreground"}`}>{action.title}</p>
+                  <p className="mt-1 max-w-[92ch] text-[13px] leading-6 text-muted-foreground">
                     {action.evidence || [action.assignee, action.due].filter(Boolean).join(" · ") || "No extra detail captured."}
                   </p>
                 </div>
@@ -858,14 +746,14 @@ function ActionRows({
                 <span
                   className="mt-0.5 flex h-[18px] w-[18px] items-center justify-center rounded-full text-[11px] font-bold"
                   style={{
-                    background: "hsl(var(--primary) / 0.14)",
-                    color: "hsl(var(--primary))",
+                    background: "hsl(var(--accent-violet) / 0.14)",
+                    color: "hsl(var(--accent-violet))",
                   }}
                 >
                   {index + 1}
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[15px] font-bold text-foreground">{decision.text}</p>
+                  <p className="text-[14px] font-semibold text-foreground">{decision.text}</p>
                   {decision.evidence ? (
                     <p className="mt-1 max-w-[108ch] text-[13px] leading-6 text-muted-foreground">{decision.evidence}</p>
                   ) : null}
@@ -882,15 +770,15 @@ function ActionRows({
 function DecisionsBlock({ decisions }: { decisions: MeetingAiDecision[] }) {
   if (decisions.length === 0) return null;
   return (
-    <section className="mt-8">
-      <h3 className="text-[21px] font-bold text-foreground">Decisions</h3>
-      <div className="mt-4 space-y-3">
+    <section className="mt-7">
+      <h3 className="mb-3 text-[14px] font-semibold text-foreground">Decisions</h3>
+      <div className="space-y-2.5">
         {decisions.map((decision, index) => (
-          <div key={`${decision.text}-${index}`} className="flex gap-3 text-[15px] leading-7 text-muted-foreground">
-            <span className="mt-0.5 text-[16px]">◆</span>
+          <div key={`${decision.text}-${index}`} className="flex gap-2.5 text-[13.5px] leading-6 text-muted-foreground">
+            <span className="mt-0.5 flex-shrink-0 text-[11px]" style={{ color: "hsl(var(--accent-violet))" }}>◆</span>
             <p>
               <span className="font-semibold text-foreground">{decision.text}</span>
-              {decision.evidence ? <span className="block text-[13px] text-muted-foreground">{decision.evidence}</span> : null}
+              {decision.evidence ? <span className="mt-0.5 block text-[12.5px] text-muted-foreground">{decision.evidence}</span> : null}
             </p>
           </div>
         ))}
@@ -1203,6 +1091,7 @@ export function MeetingsView({
   const [meetingInProgress, setMeetingInProgress] = useState(false);
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState<MeetingListFilter>("all");
+  const [activeTag, setActiveTag] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<Record<string, MeetingSearchHit> | null>(null);
   const [searchBusy, setSearchBusy] = useState(false);
@@ -1486,6 +1375,8 @@ export function MeetingsView({
   const searching = searchQuery.trim().length > 0;
   const filteredMeetings = meetings.filter((meeting) => {
     const ov = overviews[meeting.id];
+    // Recent-tag filter (AND with every other constraint below).
+    if (activeTag && !(ov?.tags ?? []).includes(activeTag)) return false;
     // Archived tab: ONLY meetings removed from the list whose files are still on
     // disk (not file-deleted). Other tabs exclude archived meetings.
     if (dateFilter === "archived") {
@@ -1520,19 +1411,42 @@ export function MeetingsView({
     ? sortedMeetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
     : null;
 
-  // Keep selectedMeetingId authoritative: pick the first meeting when nothing is
-  // selected, and re-point it if the current selection was hidden/deleted/filtered
-  // out. This guarantees the load and sync effects always agree on one id.
-  const firstMeetingId = sortedMeetings[0]?.id ?? null;
+  // The detail is a modal now: it opens only on an explicit click, never
+  // auto-selects the first meeting. But if the open meeting gets filtered out,
+  // hidden, or deleted, close the modal so state stays consistent.
   useEffect(() => {
-    if (sortedMeetings.length === 0) {
-      if (selectedMeetingId !== null) setSelectedMeetingId(null);
-      return;
-    }
+    if (selectedMeetingId === null) return;
     const stillVisible = sortedMeetings.some((meeting) => meeting.id === selectedMeetingId);
-    if (!stillVisible) setSelectedMeetingId(firstMeetingId);
+    if (!stillVisible) setSelectedMeetingId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMeetingId, firstMeetingId, sortedMeetings.length]);
+  }, [selectedMeetingId, sortedMeetings.length]);
+
+  // Escape closes the meeting modal — unless an inline title/tag editor is
+  // capturing the key (it uses Escape to cancel its own edit).
+  useEffect(() => {
+    if (!selectedMeetingId) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !editingTitle && !addingTag) setSelectedMeetingId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedMeetingId, editingTitle, addingTag]);
+
+  // Most-recent distinct tags across meetings, for the quick-filter row.
+  const recentTags = (() => {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const meeting of sortedMeetings) {
+      for (const tag of overviews[meeting.id]?.tags ?? []) {
+        if (seen.has(tag)) continue;
+        seen.add(tag);
+        ordered.push(tag);
+        if (ordered.length >= 12) break;
+      }
+      if (ordered.length >= 12) break;
+    }
+    return ordered;
+  })();
 
   // Honor an externally-requested focus (e.g. the meeting that just ended).
   // Select it as soon as it appears in the list, then clear the request so the
@@ -2327,10 +2241,7 @@ export function MeetingsView({
   return (
     <div
       className="flex h-full flex-col overflow-hidden"
-      style={{
-        background:
-          "linear-gradient(180deg, hsl(var(--surface-3) / 0.72), hsl(var(--surface-2) / 0.94))",
-      }}
+      style={{ background: "hsl(var(--surface-2))" }}
     >
       {hasModel === false ? (
         <div
@@ -2355,32 +2266,29 @@ export function MeetingsView({
         </div>
       ) : null}
       <div
-        className="flex flex-shrink-0 items-center gap-1 px-4 py-2"
-        style={{
-          background: "hsl(var(--surface-3) / 0.66)",
-          borderBottom: "1px solid hsl(var(--glass-stroke-strong))",
-        }}
+        className="flex flex-shrink-0 items-center px-4 py-2.5"
+        style={{ borderBottom: "1px solid hsl(var(--border))" }}
       >
-        {(
-          [
-            { id: "meetings" as const, label: "Meetings", icon: <Video size={13} /> },
-            { id: "digest" as const, label: "Digest", icon: <Layers size={13} /> },
-          ]
-        ).map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setViewMode(t.id)}
-            className="flex h-7 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold"
-            style={{
-              background: viewMode === t.id ? "hsl(var(--primary) / 0.10)" : "transparent",
-              color: viewMode === t.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
-            }}
-          >
-            {t.icon}
-            {t.label}
-          </button>
-        ))}
+        <div className="seg" role="tablist" aria-label="Meetings sections">
+          {(
+            [
+              { id: "meetings" as const, label: "Meetings", icon: <Video size={13} /> },
+              { id: "digest" as const, label: "Digest", icon: <Layers size={13} /> },
+            ]
+          ).map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={viewMode === t.id}
+              onClick={() => setViewMode(t.id)}
+              className="h-7 px-3 text-[12px]"
+            >
+              {t.icon}
+              {t.label}
+            </button>
+          ))}
+        </div>
       </div>
       {/* Kept mounted (hidden via CSS) so a generated digest survives tab switches. */}
       <div className={`min-h-0 flex-1 overflow-hidden ${viewMode === "digest" ? "flex" : "hidden"}`}>
@@ -2388,24 +2296,19 @@ export function MeetingsView({
       </div>
       <div
         className={`relative min-h-0 flex-1 overflow-hidden ${viewMode === "meetings" ? "flex" : "hidden"}`}
-        style={{
-          background:
-            "linear-gradient(90deg, hsl(var(--surface-3) / 0.24), hsl(var(--surface-2) / 0.72) 42%, hsl(var(--surface-2) / 0.86))",
-        }}
       >
-      <aside
-        className="flex w-[240px] flex-shrink-0 flex-col xl:w-[330px]"
-        style={{
-          background: "hsl(var(--surface-3) / 0.42)",
-          borderRight: "1px solid hsl(var(--glass-stroke-strong))",
-          boxShadow: "1px 0 0 hsl(var(--glass-highlight)) inset",
-        }}
-      >
-        <div className="px-4 pb-3 pt-5">
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[860px] px-6 pt-6 pb-16">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-[18px] font-bold text-foreground">Meetings</h1>
-              <p className="text-[11px] text-muted-foreground">{liveCount} live · {endedCount} ended</p>
+              <h1 className="text-[24px] font-bold tracking-tight text-foreground leading-tight">Meetings</h1>
+              <p className="mt-1 flex items-center gap-2 text-[12.5px] text-muted-foreground">
+                <span
+                  className="inline-block h-1.5 w-1.5 rounded-full"
+                  style={{ background: "hsl(var(--accent-violet))", boxShadow: "0 0 8px hsl(var(--accent-violet) / 0.5)" }}
+                />
+                {liveCount} live · {endedCount} ended
+              </p>
             </div>
             <div className="flex items-center gap-1.5">
               <IconButton
@@ -2455,7 +2358,7 @@ export function MeetingsView({
               </button>
             ) : null}
           </div>
-          <div className="mt-3 flex flex-nowrap items-center gap-1 overflow-hidden">
+          <div className="mt-3 flex flex-nowrap items-center gap-1 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
             {[
               { id: "all" as const, label: "All" },
               { id: "favorites" as const, label: "Favorites" },
@@ -2467,26 +2370,100 @@ export function MeetingsView({
                 key={filter.id}
                 type="button"
                 onClick={() => setDateFilter(filter.id)}
-                className="h-7 shrink-0 rounded-lg px-2 text-[10px] font-semibold"
+                data-active={dateFilter === filter.id}
+                className="h-7 shrink-0 rounded-lg px-2.5 text-[11px] font-semibold transition-colors"
                 style={{
-                  background: dateFilter === filter.id ? "hsl(var(--primary) / 0.10)" : "transparent",
+                  background: dateFilter === filter.id ? "hsl(var(--surface-4))" : "transparent",
                   color: dateFilter === filter.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+                  boxShadow: dateFilter === filter.id ? "inset 0 0 0 1px hsl(var(--border))" : "none",
                 }}
               >
                 {filter.label}
               </button>
             ))}
           </div>
-        </div>
 
-        <div className="flex-1 overflow-y-auto px-3 pb-4">
+          {recentTags.length > 0 || activeTag ? (
+            <div className="mt-4">
+              <p className="section-label mb-2">Recent tags</p>
+              <div className="flex flex-wrap gap-1.5">
+                {activeTag ? (
+                  <button type="button" className="tag-chip" data-active="true" onClick={() => setActiveTag(null)}>
+                    #{activeTag}
+                    <X size={11} className="ml-1" />
+                  </button>
+                ) : null}
+                {recentTags
+                  .filter((tag) => tag !== activeTag)
+                  .map((tag) => (
+                    <button key={tag} type="button" className="tag-chip" onClick={() => setActiveTag(tag)}>
+                      #{tag}
+                    </button>
+                  ))}
+              </div>
+            </div>
+          ) : null}
+
+          {pendingDelete ? (
+            <div
+              className="mt-4 flex w-full flex-wrap items-center gap-x-4 gap-y-2 rounded-xl px-4 py-2.5"
+              style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                <Trash2 size={15} className="flex-shrink-0" style={{ color: "hsl(354 80% 70%)" }} />
+                <p className="min-w-0 truncate text-[13px] text-muted-foreground">
+                  <span className="font-semibold text-foreground">{pendingDelete.title}</span> removed — files still on disk.
+                </p>
+              </div>
+              <div className="flex flex-shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => void handleUndoDelete()}
+                  className="h-8 rounded-lg px-3 text-[12px] font-semibold"
+                  style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
+                >
+                  Undo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteFiles()}
+                  className="h-8 rounded-lg px-3 text-[12px] font-semibold transition-colors hover:bg-[hsl(354_60%_18%)]"
+                  style={{ color: "hsl(354 82% 72%)" }}
+                >
+                  Delete files
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingDelete(null)}
+                  title="Dismiss"
+                  className="ml-0.5 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-5">
           {loading && meetings.length === 0 && !hasLoadedRef.current ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 opacity-60">
-              <Loader2 size={20} className="animate-spin text-muted-foreground" />
-              <p className="text-[12px] text-muted-foreground">Loading meetings...</p>
+            <div className="space-y-2">
+              <Skeleton className="mx-1 mb-1 h-2.5 w-24" />
+              {Array.from({ length: 7 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-3 rounded-xl p-3"
+                  style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
+                >
+                  <div className="min-w-0 flex-1">
+                    <Skeleton className="h-3.5" style={{ width: `${68 - (i % 3) * 12}%` }} />
+                    <Skeleton className="mt-2 h-2.5 w-2/5" />
+                  </div>
+                  <Skeleton className="h-4 w-4 rounded" />
+                </div>
+              ))}
             </div>
           ) : error ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3">
+            <div className="flex flex-col items-center justify-center gap-3 py-24">
               <p className="text-[12px] text-muted-foreground">{error}</p>
               <button
                 onClick={() => void fetchMeetings()}
@@ -2497,7 +2474,7 @@ export function MeetingsView({
               </button>
             </div>
           ) : sortedMeetings.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3 opacity-60">
+            <div className="flex flex-col items-center justify-center gap-3 py-24 opacity-60">
               <Video size={28} className="text-muted-foreground" />
               <p className="text-[12px] text-muted-foreground">
                 {searching
@@ -2509,77 +2486,111 @@ export function MeetingsView({
             </div>
           ) : (
             <div className="space-y-2">
-              <p className="px-1 pb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
+              <p className="section-label px-1 pb-1">
                 {searching ? `${sortedMeetings.length} result${sortedMeetings.length === 1 ? "" : "s"}` : sectionLabel}
               </p>
-              {sortedMeetings.map((meeting) => (
-                <MeetingCard
-                  key={meeting.id}
-                  meeting={meeting}
-                  overview={overviews[meeting.id]}
-                  searchHit={searching ? searchHits?.[meeting.id] : undefined}
-                  selected={meeting.id === selectedMeeting?.id}
-                  onSelect={() => {
-                    setSelectedMeetingId(meeting.id);
-                    setDetailTab("summary");
-                  }}
-                  onToggleFavorite={() =>
-                    void setMeetingFavorite(meeting.id, !(overviews[meeting.id]?.favorite ?? false))
-                  }
-                />
-              ))}
+              {sortedMeetings.map((meeting) => {
+                const ov = overviews[meeting.id];
+                const rowTitle = ov?.title?.trim() || meeting.title;
+                const rowWords = ov?.word_count ?? wordCount(meeting.agenda);
+                const rowTags = ov?.tags ?? [];
+                const rowFavorite = ov?.favorite ?? false;
+                const hit = searching ? searchHits?.[meeting.id] : undefined;
+                const openMeeting = () => {
+                  setSelectedMeetingId(meeting.id);
+                  setDetailTab("summary");
+                };
+                return (
+                  <div
+                    key={meeting.id}
+                    role="button"
+                    tabIndex={0}
+                    className="meeting-row"
+                    onClick={openMeeting}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openMeeting();
+                      }
+                    }}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="truncate text-[13.5px] font-semibold text-foreground">{rowTitle}</h3>
+                        {meeting.status === "live" ? (
+                          <span
+                            className="flex-shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                            style={{ background: "hsl(var(--recording) / 0.16)", color: "hsl(var(--recording))" }}
+                          >
+                            Live
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+                        <span className="tabular-nums">{formatMeetingDate(meeting)}</span>
+                        <span className="opacity-40">·</span>
+                        <span className="tabular-nums">{rowWords} words</span>
+                        {(ov?.action_count ?? 0) > 0 ? (
+                          <>
+                            <span className="opacity-40">·</span>
+                            <span className="tabular-nums">{ov?.action_count} actions</span>
+                          </>
+                        ) : null}
+                        {rowTags.length > 0 ? (
+                          <>
+                            <span className="opacity-40">·</span>
+                            <span className="truncate" style={{ color: tagColor(rowTags[0]) }}>
+                              #{rowTags[0]}{rowTags.length > 1 ? ` +${rowTags.length - 1}` : ""}
+                            </span>
+                          </>
+                        ) : null}
+                      </p>
+                      {hit?.snippet ? (
+                        <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">{hit.snippet}</p>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      title={rowFavorite ? "Remove from favorites" : "Add to favorites"}
+                      aria-label={rowFavorite ? "Remove from favorites" : "Add to favorites"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void setMeetingFavorite(meeting.id, !rowFavorite);
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
+                      className="flex-shrink-0 rounded-md p-1 transition-colors hover:text-foreground"
+                      style={{ color: rowFavorite ? "hsl(38 90% 72%)" : "hsl(var(--muted-foreground) / 0.4)" }}
+                    >
+                      <Star size={15} fill={rowFavorite ? "hsl(38 90% 72%)" : "none"} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
-      </aside>
+        </div>
+      </div>
+      </div>
 
-      <main
-        className="min-w-0 flex-1 overflow-y-auto px-4 pb-12 pt-6 lg:px-10"
-        style={{
-          background: "linear-gradient(180deg, hsl(var(--surface-3) / 0.36), hsl(var(--surface-2) / 0.68))",
-        }}
-      >
-        {pendingDelete ? (
+      {selectedMeeting ? (
+        <div className="meeting-modal-overlay" onClick={() => setSelectedMeetingId(null)}>
           <div
-            className="mx-auto mb-5 flex w-full max-w-[1280px] flex-wrap items-center gap-x-4 gap-y-2 rounded-xl px-4 py-2.5"
-            style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
+            className="meeting-modal-card"
+            role="dialog"
+            aria-modal="true"
+            onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex min-w-0 flex-1 items-center gap-2.5">
-              <Trash2 size={15} className="flex-shrink-0" style={{ color: "hsl(354 80% 70%)" }} />
-              <p className="min-w-0 truncate text-[13px] text-muted-foreground">
-                <span className="font-semibold text-foreground">{pendingDelete.title}</span> removed — files still on disk.
-              </p>
-            </div>
-            <div className="flex flex-shrink-0 items-center gap-1">
-              <button
-                type="button"
-                onClick={() => void handleUndoDelete()}
-                className="h-8 rounded-lg px-3 text-[12px] font-semibold"
-                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))" }}
-              >
-                Undo
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleDeleteFiles()}
-                className="h-8 rounded-lg px-3 text-[12px] font-semibold transition-colors hover:bg-[hsl(354_60%_18%)]"
-                style={{ color: "hsl(354 82% 72%)" }}
-              >
-                Delete files
-              </button>
-              <button
-                type="button"
-                onClick={() => setPendingDelete(null)}
-                title="Dismiss"
-                className="ml-0.5 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <X size={15} />
-              </button>
-            </div>
-          </div>
-        ) : null}
-        {selectedMeeting ? (
-          <div className="mx-auto w-full max-w-[1280px]">
+            <button
+              type="button"
+              className="meeting-modal-close"
+              title="Close"
+              onClick={() => setSelectedMeetingId(null)}
+            >
+              <X size={16} />
+            </button>
+            <div className="meeting-modal-body">
+              <div className="mx-auto w-full max-w-[1080px] px-6 pb-12 pt-8">
             <div className="flex items-start justify-between gap-5">
               <div className="min-w-0">
                 {editingTitle ? (
@@ -2598,30 +2609,32 @@ export function MeetingsView({
                     onBlur={() => void saveTitle()}
                     placeholder="Meeting title"
                     maxLength={120}
-                    className="w-full bg-transparent text-[30px] font-bold text-foreground outline-none"
-                    style={{ borderBottom: "2px solid hsl(var(--primary) / 0.6)" }}
+                    className="w-full bg-transparent text-[22px] font-bold tracking-tight text-foreground outline-none"
+                    style={{ borderBottom: "2px solid hsl(var(--accent-violet) / 0.6)" }}
                   />
                 ) : (
-                  <h2 className="truncate text-[30px] font-bold text-foreground">{displayTitle}</h2>
+                  <h2 className="truncate text-[22px] font-bold tracking-tight text-foreground">{displayTitle}</h2>
                 )}
-                <div className="mt-4 flex flex-wrap items-center gap-3 text-[13px] font-semibold text-muted-foreground">
-                  <span>{formatMeetingDate(selectedMeeting)}</span>
-                  <span>·</span>
-                  <span>{formatTimestamp((artifacts?.audio_duration_ms ?? audioDuration * 1000) || 0)}</span>
-                  <span>·</span>
+                <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
+                  <span className="tabular-nums">{formatMeetingDate(selectedMeeting)}</span>
+                  <span className="opacity-40">·</span>
+                  <span className="tabular-nums">{formatTimestamp((artifacts?.audio_duration_ms ?? audioDuration * 1000) || 0)}</span>
+                  <span className="opacity-40">·</span>
                   <span>{selectedMeeting.status === "live" ? "Live" : "Local"}</span>
-                  <span>·</span>
-                  <span>{selectedMeeting.participants_count ?? 0}p</span>
-                  <span>·</span>
-                  <span>{selectedWordCount} words</span>
+                  <span className="opacity-40">·</span>
+                  <span className="tabular-nums">{selectedMeeting.participants_count ?? 0}p</span>
+                  <span className="opacity-40">·</span>
+                  <span className="tabular-nums">{selectedWordCount} words</span>
                   {meetingAi?.model ? (
-                    <>
-                      <span>·</span>
-                      <span>{meetingAi.transcript_source} · {meetingAi.model}</span>
-                    </>
+                    <span
+                      className="ml-1 rounded-md px-2 py-0.5 text-[10.5px] font-medium"
+                      style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}
+                    >
+                      {meetingAi.transcript_source} · {meetingAi.model}
+                    </span>
                   ) : null}
                 </div>
-                <div className="mt-5 flex flex-wrap items-center gap-2">
+                <div className="mt-4 flex flex-wrap items-center gap-1.5">
                   {addingTag ? (
                     <input
                       autoFocus
@@ -2639,8 +2652,8 @@ export function MeetingsView({
                       onBlur={() => void handleAddTag()}
                       placeholder="Tag name"
                       maxLength={32}
-                      className="h-7 w-32 rounded-lg bg-transparent px-2.5 text-[12px] font-bold outline-none"
-                      style={{ border: "1px solid hsl(var(--primary) / 0.5)", color: "hsl(var(--foreground))" }}
+                      className="h-7 w-32 rounded-full bg-transparent px-3 text-[11.5px] font-semibold outline-none"
+                      style={{ border: "1px solid hsl(var(--accent-violet) / 0.5)", color: "hsl(var(--foreground))" }}
                     />
                   ) : (
                     <button
@@ -2649,17 +2662,17 @@ export function MeetingsView({
                         setTagDraft("");
                         setAddingTag(true);
                       }}
-                      className="rounded-lg border border-dashed px-3 py-1 text-[12px] font-bold text-muted-foreground transition-colors hover:text-foreground"
+                      className="flex h-7 items-center gap-1 rounded-full border border-dashed px-3 text-[11.5px] font-semibold text-muted-foreground transition-colors hover:text-foreground"
                       style={{ borderColor: "hsl(var(--border))" }}
                     >
-                      + Add
+                      <Plus size={12} /> Add tag
                     </button>
                   )}
                   {tags.map((tag) => (
                     <span
                       key={`${tag.source}-${tag.label}`}
-                      className="group inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[12px] font-bold"
-                      style={{ background: `${tag.color}22`, color: tag.color }}
+                      className="group inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[11.5px] font-semibold"
+                      style={{ background: `${tag.color}1f`, color: tag.color }}
                     >
                       #{tag.label}
                       <button
@@ -2752,10 +2765,10 @@ export function MeetingsView({
                   type="button"
                   onClick={() => setDetailTab(tab.id)}
                   title={tab.label}
-                  className="flex h-14 min-w-0 items-center justify-center gap-1.5 px-1 text-[12px] font-bold lg:gap-2 lg:text-[14px]"
+                  className="flex h-11 min-w-0 items-center justify-center gap-1.5 px-1 text-[12.5px] font-semibold transition-colors lg:gap-2"
                   style={{
                     color: detailTab === tab.id ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
-                    borderBottom: detailTab === tab.id ? "2px solid hsl(var(--primary))" : "2px solid transparent",
+                    borderBottom: detailTab === tab.id ? "2px solid hsl(var(--accent-violet))" : "2px solid transparent",
                   }}
                 >
                   <span className="flex-shrink-0">{tab.icon}</span>
@@ -2765,9 +2778,9 @@ export function MeetingsView({
             </div>
 
             {detailTab === "summary" ? (
-              <div className="pt-8">
+              <div className="pt-6">
                 <div className="mb-5 flex items-center justify-between gap-3">
-                  <h3 className="text-[15px] font-bold text-foreground">Summary</h3>
+                  <h3 className="text-[14px] font-semibold text-foreground">Summary</h3>
                   <div className="flex items-center gap-2">
                     <ToolbarButton
                       icon={<RefreshCw size={14} className={meetingAiLoading ? "animate-spin" : ""} />}
@@ -2806,7 +2819,7 @@ export function MeetingsView({
                             <button
                               type="button"
                               onClick={() => void openExternal(larkUrl)}
-                              className="h-10 rounded-lg px-3 text-[12px] font-bold transition-colors"
+                              className="h-9 rounded-lg px-3 text-[12px] font-semibold transition-colors"
                               style={{
                                 background: "hsl(var(--chip-lime-bg))",
                                 border: "1px solid hsl(var(--chip-lime-fg) / 0.26)",
@@ -2852,13 +2865,14 @@ export function MeetingsView({
                   <p className="text-[14px]" style={{ color: "hsl(354 85% 75%)" }}>{meetingAiError}</p>
                 ) : meetingAi?.summary?.trim() ? (
                   <>
-                    <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
-                      <div className="flex gap-4">
-                        <Sparkles size={19} style={{ color: "hsl(var(--primary))" }} />
-                        <p className="max-w-[110ch] text-[17px] italic leading-8 text-muted-foreground">
-                          {stripInlineMarkdown(summaryLead(meetingAi.summary))}
-                        </p>
+                    <div className="rounded-xl p-5" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
+                      <div className="mb-2.5 flex items-center gap-2">
+                        <Sparkles size={14} style={{ color: "hsl(var(--accent-violet))" }} />
+                        <span className="section-label">AI summary</span>
                       </div>
+                      <p className="max-w-[92ch] text-[14.5px] leading-relaxed text-foreground">
+                        {stripInlineMarkdown(summaryLead(meetingAi.summary))}
+                      </p>
                     </div>
                     <DecisionsBlock decisions={meetingAi.decisions ?? []} />
                     <MeetingSummaryContent summary={meetingAi.summary} />
@@ -2872,10 +2886,10 @@ export function MeetingsView({
             ) : null}
 
             {detailTab === "notes" ? (
-              <div className="pt-8">
+              <div className="pt-6">
                 <div className="mb-5 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <h3 className="text-[15px] font-bold text-foreground">My Notes</h3>
+                    <h3 className="text-[14px] font-semibold text-foreground">My Notes</h3>
                     <span className="text-[11px] font-semibold text-muted-foreground">
                       {notesStatus === "saving" ? "Saving…" : notesStatus === "saved" ? "Saved ✓" : ""}
                     </span>
@@ -2902,7 +2916,7 @@ export function MeetingsView({
                   ) : null}
                 </div>
                 {notesPreview && notes.trim() ? (
-                  <div className="rounded-xl px-7 py-6" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
+                  <div className="rounded-xl px-5 py-4" style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}>
                     <MeetingRichText text={notes} />
                   </div>
                 ) : (
@@ -2911,13 +2925,13 @@ export function MeetingsView({
                       value={notes}
                       onChange={(event) => handleNotesChange(event.currentTarget.value)}
                       placeholder="Jot down anything from this meeting — decisions, follow-ups, your own takeaways. Markdown supported. These notes are private to you and are used as extra context when you ask the AI Chat about this meeting."
-                      className="min-h-[340px] w-full resize-y rounded-xl bg-transparent px-7 py-6 text-[15px] leading-8 text-foreground outline-none placeholder:text-muted-foreground"
+                      className="min-h-[340px] w-full resize-y rounded-xl bg-transparent px-5 py-4 text-[14px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
                       spellCheck
                     />
                   </div>
                 )}
                 <p className="mt-3 flex items-center gap-2 text-[12px] text-muted-foreground">
-                  <Sparkles size={13} style={{ color: "hsl(var(--primary))" }} />
+                  <Sparkles size={13} style={{ color: "hsl(var(--accent-violet))" }} />
                   Your notes are included as context in this meeting's AI Chat.
                 </p>
               </div>
@@ -2955,8 +2969,8 @@ export function MeetingsView({
             ) : null}
 
             {detailTab === "chat" ? (
-              <div className="pt-8">
-                <h3 className="mb-5 text-[15px] font-bold text-foreground">AI Chat</h3>
+              <div className="pt-6">
+                <h3 className="mb-5 text-[14px] font-semibold text-foreground">AI Chat</h3>
                 <div
                   className="h-[560px] overflow-hidden rounded-xl"
                   style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
@@ -2975,20 +2989,11 @@ export function MeetingsView({
                 </div>
               </div>
             ) : null}
-          </div>
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center opacity-70">
-            <Video size={28} className="text-muted-foreground" />
-            <div>
-              <p className="text-[14px] font-semibold text-foreground">Open a meeting note</p>
-              <p className="mt-1 text-[12px] text-muted-foreground">
-                Click any meeting card to open Summary, My Notes, Transcript, Actions & Decisions, and AI Chat here.
-              </p>
+              </div>
             </div>
           </div>
-        )}
-      </main>
-      </div>
+        </div>
+      ) : null}
 
       {meetingInProgress && (
         <div
