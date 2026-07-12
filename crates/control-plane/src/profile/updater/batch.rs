@@ -48,19 +48,25 @@ pub struct BatchJobRow {
 // Trigger: count runs since the last run, enqueue a coalesced job at the threshold.
 // -------------------------------------------------------------------------------------
 
-/// Runs recorded for this account since `since` (exclusive). Account-scoped: history
-/// carries `org_id` (nullable) while profiles use the `org_scope` sentinel, so we count
-/// per account and let the window collector attribute buckets.
+/// Runs recorded for this account and profile scope since `since` (exclusive).
+/// History stores personal-mode rows with `org_id = NULL`, while profiles/jobs use the
+/// global sentinel UUID for that same scope, so translate before querying.
 pub async fn runs_since(
     db: &PgPool,
     account_id: Uuid,
+    org_scope: Uuid,
     since: DateTime<Utc>,
 ) -> Result<i64, sqlx::Error> {
+    let org_id = history_org_id(org_scope);
     let n: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM runtime_history_items
-          WHERE account_id = $1 AND deleted_at IS NULL AND created_at > $2",
+          WHERE account_id = $1
+            AND org_id IS NOT DISTINCT FROM $2
+            AND deleted_at IS NULL
+            AND created_at > $3",
     )
     .bind(account_id)
+    .bind(org_id)
     .bind(since)
     .fetch_one(db)
     .await?;
@@ -105,7 +111,7 @@ pub async fn maybe_enqueue(
     org_scope: Uuid,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     let mark = last_window_mark(db, account_id, org_scope).await?;
-    let count = runs_since(db, account_id, mark).await?;
+    let count = runs_since(db, account_id, org_scope, mark).await?;
     let threshold = runs_per_batch();
     if count < threshold {
         tracing::info!(
@@ -290,17 +296,23 @@ pub fn run_was_edited(run: &WindowRun) -> bool {
 pub async fn collect_window(
     db: &PgPool,
     account_id: Uuid,
+    org_scope: Uuid,
     since: DateTime<Utc>,
 ) -> Result<Vec<BucketedRun>, sqlx::Error> {
+    let org_id = history_org_id(org_scope);
     let mut rows = sqlx::query_as::<_, WindowRun>(
         "SELECT raw_transcript, polished_output, final_text, target_app,
                 edit_feedback_json, created_at
            FROM runtime_history_items
-          WHERE account_id = $1 AND deleted_at IS NULL AND created_at > $2
+          WHERE account_id = $1
+            AND org_id IS NOT DISTINCT FROM $2
+            AND deleted_at IS NULL
+            AND created_at > $3
           ORDER BY created_at DESC
-          LIMIT $3",
+          LIMIT $4",
     )
     .bind(account_id)
+    .bind(org_id)
     .bind(since)
     .bind(MAX_WINDOW_RUNS)
     .fetch_all(db)
@@ -321,6 +333,12 @@ pub async fn collect_window(
         });
     }
     Ok(out)
+}
+
+/// Convert the non-null profile/job scope into the nullable organisation identity used
+/// by runtime history. The global sentinel represents personal mode, not a real org.
+fn history_org_id(org_scope: Uuid) -> Option<Uuid> {
+    (org_scope != store::resolve_org_scope(None)).then_some(org_scope)
 }
 
 /// Distinct buckets present in a window.
@@ -407,5 +425,16 @@ mod tests {
             buckets_present(&runs),
             vec![Bucket::Messaging, Bucket::Coding]
         );
+    }
+
+    #[test]
+    fn personal_profile_scope_selects_null_history_org() {
+        assert_eq!(history_org_id(store::resolve_org_scope(None)), None);
+    }
+
+    #[test]
+    fn organisation_profile_scope_selects_matching_history_org() {
+        let org_id = Uuid::new_v4();
+        assert_eq!(history_org_id(org_id), Some(org_id));
     }
 }

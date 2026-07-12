@@ -84,7 +84,7 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
             return;
         }
     };
-    let window = match batch::collect_window(&state.db, account_id, since).await {
+    let window = match batch::collect_window(&state.db, account_id, org_scope, since).await {
         Ok(w) => w,
         Err(e) => {
             let _ = batch::finish_job(
