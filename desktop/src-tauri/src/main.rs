@@ -8371,9 +8371,9 @@ fn start_edit_watcher(
     });
 }
 
-/// After pasting, poll the focused text element for up to 30 seconds.
-/// When the user stops typing for 5 s (or switches apps), emit "edit-detected"
-/// so the frontend can ask "Save this preference?" before writing to SQLite.
+/// After pasting, poll the focused text element through the sentence-scaled reading
+/// window. Once editing starts, allow up to 120 seconds total and wait for the
+/// sentence-scaled post-edit idle period before classifying the owned field value.
 async fn watch_for_edit(
     cancel_token: CancellationToken,
     finalize_token: CancellationToken,

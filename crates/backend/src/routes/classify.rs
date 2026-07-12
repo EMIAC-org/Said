@@ -198,6 +198,10 @@ fn post_runtime_client_event(
 /// so this must stay wider than the desktop watcher's hard cap.
 const CAPTURE_STALE_MS: u64 = 180_000;
 
+fn capture_is_stale(time_since_paste_ms: u64) -> bool {
+    time_since_paste_ms > CAPTURE_STALE_MS
+}
+
 /// Stricter subset: captures whose source is an *atomic* read of a specific
 /// text element. An AX read returning a value means it came from the targeted
 /// element at that moment; a focus change after the read doesn't invalidate it.
@@ -379,15 +383,18 @@ async fn classify_inner(
 
     // ── Step 2: Branch — no edit / full deletion / stale ─────────────────────
 
-    // Stale capture: > 30s after paste
-    if body.time_since_paste_ms > CAPTURE_STALE_MS {
+    // Stale capture: outside the trusted desktop watcher lifecycle.
+    if capture_is_stale(body.time_since_paste_ms) {
         info!(
             "[classify] stale capture ({}ms after paste) for {}",
             body.time_since_paste_ms, body.recording_id,
         );
         return (
             StatusCode::OK,
-            Json(empty_response("stale", "edit arrived > 30 s after paste")),
+            Json(empty_response(
+                "stale",
+                "edit arrived after the trusted capture window",
+            )),
         );
     }
 
@@ -3350,6 +3357,13 @@ mod tests {
         )
         .unwrap();
         pool
+    }
+
+    #[test]
+    fn capture_stale_window_covers_the_desktop_edit_watcher() {
+        assert!(!capture_is_stale(120_000));
+        assert!(!capture_is_stale(CAPTURE_STALE_MS));
+        assert!(capture_is_stale(CAPTURE_STALE_MS + 1));
     }
 
     #[test]
