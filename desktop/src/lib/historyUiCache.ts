@@ -22,6 +22,7 @@ let refreshing = false;
 let inFlight: Promise<Recording[]> | null = null;
 let eventsInstalled = false;
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+let invalidationVersion = 0;
 const listeners = new Set<Listener>();
 
 function isFresh() {
@@ -57,6 +58,7 @@ function ensureEvents() {
   if (eventsInstalled) return;
   eventsInstalled = true;
   onVoiceDone(() => {
+    invalidationVersion += 1;
     stale = true;
     notify();
     scheduleRefresh();
@@ -93,6 +95,7 @@ export async function refreshHistoryCache(
   refreshing = true;
   notify();
   const requestLimit = limit;
+  const requestVersion = invalidationVersion;
   inFlight = listHistory(requestLimit);
   try {
     const latest = await inFlight;
@@ -101,7 +104,8 @@ export async function refreshHistoryCache(
     recordings = mergeHistoryRows(recordings ?? [], latest).slice(0, retainedLength);
     if (latest.length < requestLimit) exhausted = true;
     updatedAt = Date.now();
-    stale = false;
+    stale = requestVersion !== invalidationVersion;
+    if (stale) scheduleRefresh();
     return recordings.slice(0, limit);
   } finally {
     refreshing = false;
@@ -125,6 +129,7 @@ export async function loadCachedHistoryPage(limit: number, before?: number): Pro
 
 /** Revalidate after a local destructive history mutation. */
 export function invalidateHistoryCache() {
+  invalidationVersion += 1;
   stale = true;
   notify();
   scheduleRefresh();

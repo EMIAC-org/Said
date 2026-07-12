@@ -2993,6 +2993,7 @@ async fn execute_voice_polish(
         let bg_transcript = transcript.to_string();
         let bg_output = output.clone();
         let bg_client_run_id = req.client_run_id.clone();
+        let bg_target_app = req.target_app.clone();
         let bg_account_id = user.account_id;
         let bg_model = model.to_string();
         let org_id_for_history = tenant_ctx.active_org_id;
@@ -3047,6 +3048,7 @@ async fn execute_voice_polish(
                 &bg_output,
                 &format!("{bg_provider}:{bg_model}"),
                 "server_polish",
+                bg_target_app.as_deref(),
                 None,
                 Some(model_ms),
             )
