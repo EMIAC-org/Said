@@ -36,11 +36,11 @@ function notify() {
   for (const listener of listeners) listener();
 }
 
-function mergeNewest(...sets: Recording[][]): Recording[] {
-  const byId = new Map<string, Recording>();
-  for (const set of sets) {
-    for (const recording of set) byId.set(recording.id, recording);
-  }
+function mergeHistoryRows(cached: Recording[], authoritative: Recording[]): Recording[] {
+  const byId = new Map(cached.map((recording) => [recording.id, recording]));
+  // The backend response may contain metadata that was missing from an earlier
+  // snapshot (for example target_app). Always let it replace the cached row.
+  for (const recording of authoritative) byId.set(recording.id, recording);
   return [...byId.values()].sort((a, b) => b.timestamp_ms - a.timestamp_ms);
 }
 
@@ -98,7 +98,7 @@ export async function refreshHistoryCache(
     const latest = await inFlight;
     const previousLength = recordings?.length ?? 0;
     const retainedLength = Math.max(previousLength, latest.length);
-    recordings = mergeNewest(latest, recordings ?? []).slice(0, retainedLength);
+    recordings = mergeHistoryRows(recordings ?? [], latest).slice(0, retainedLength);
     if (latest.length < requestLimit) exhausted = true;
     updatedAt = Date.now();
     stale = false;
@@ -117,7 +117,7 @@ export async function loadCachedHistoryPage(limit: number, before?: number): Pro
   if (localPage.length >= limit || exhausted) return localPage;
 
   const page = await listHistory(limit, before);
-  recordings = mergeNewest(recordings ?? [], page);
+  recordings = mergeHistoryRows(recordings ?? [], page);
   if (page.length < limit) exhausted = true;
   notify();
   return page;
