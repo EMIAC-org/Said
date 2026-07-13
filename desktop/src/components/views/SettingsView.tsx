@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { formatKeycap, hotkeyDisplay, type Platform } from "@/lib/hotkeys";
+import { hotkeyDisplay, type Platform } from "@/lib/hotkeys";
 import { getVersion } from "@tauri-apps/api/app";
 import {
-  Shield, Key, Info, Wifi, Check, Sparkles,
+  Shield, Key, Info, Wifi, Check,
   Languages, MessageSquareText, Loader2, RefreshCw,
   Bell, Bug, Copy, FileText, Mic, Download, Activity,
   Save, GitCompareArrows, Link, LogOut, Power, BookOpen,
@@ -38,7 +38,6 @@ import {
   browserAutomationStatus, triggerBrowserAutomation, type BrowserAutomation,
   readBackendLog, backendLogLocation, openLogFolder,
   openExternal,
-  getServerSettingsStatus,
   getDeveloperSettings,
   saveDeveloperSettings,
   developerProblemBegin,
@@ -47,7 +46,6 @@ import {
   type DebugLogs,
   type NotifPermission,
   type DesktopPrefs,
-  type ServerSettingsStatus,
   type DeveloperSettings,
   type DeveloperProjectProfile,
   type DeveloperProfileWarning,
@@ -102,32 +100,6 @@ const LANGUAGES = [
 ];
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-
-type SyncBadgeState = "idle" | "syncing" | "synced" | "offline" | "failed";
-
-function SyncBadge({ state }: { state: SyncBadgeState }) {
-  if (state === "idle") return null;
-  const configs: Record<Exclude<SyncBadgeState, "idle">, { label: string; fg: string; bg: string }> = {
-    synced:  { label: "Synced",        fg: "hsl(var(--chip-cyan-fg))",  bg: "hsl(var(--chip-cyan-bg))"  },
-    syncing: { label: "Syncing…",      fg: "hsl(var(--chip-amber-fg))", bg: "hsl(var(--chip-amber-bg))" },
-    offline: { label: "Offline cache", fg: "hsl(var(--chip-amber-fg))", bg: "hsl(var(--chip-amber-bg))" },
-    failed:  { label: "Sync failed",   fg: "hsl(var(--chip-red-fg))",   bg: "hsl(var(--chip-red-bg))"   },
-  };
-  const cfg = configs[state as Exclude<SyncBadgeState, "idle">];
-  if (!cfg) return null;
-  return (
-    <span
-      className="ml-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold"
-      style={{ color: cfg.fg, background: cfg.bg }}
-    >
-      <span
-        className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
-        style={{ background: "currentColor" }}
-      />
-      {cfg.label}
-    </span>
-  );
-}
 
 function Section({
   title,
@@ -570,18 +542,6 @@ export function SettingsView({
   const [notifBusy, setNotifBusy] = useState(false);
   const axSupported = snapshot?.auto_paste_supported    ?? false;
 
-  // ── Server settings sync indicator ──────────────────────────────────────────
-  const [serverSyncState, setServerSyncState] = useState<SyncBadgeState>("idle");
-  useEffect(() => {
-    if (!isOn("models")) return;
-    void getServerSettingsStatus().then((s: ServerSettingsStatus | null) => {
-      if (!s || !s.signed_in) { setServerSyncState("idle"); return; }
-      if (s.last_error)        { setServerSyncState("failed");  return; }
-      if (s.synced)            { setServerSyncState("synced");  return; }
-      setServerSyncState("offline");
-    }).catch(() => setServerSyncState("idle"));
-  }, [currentSection]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // ── Prefs state ─────────────────────────────────────────────────────────────
   const [prefs,        setPrefs]        = useState<Preferences | null>(null);
   const [saving,       setSaving]       = useState(false);
@@ -775,11 +735,6 @@ export function SettingsView({
   const isWindows = snapshot?.platform === "windows";
   const platform = (snapshot?.platform ?? "macos") as Platform;
   const recordHotkeyLabel = hotkeyDisplay(recordHotkey, platform).label;
-  // Polish chord shown per-platform (cmd+shift+p → Ctrl+Shift+P on Windows).
-  const polishHotkeyLabel = formatKeycap(prefs?.polish_text_hotkey ?? "cmd+shift+p", platform);
-
-
-
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
   }, []);
@@ -1249,30 +1204,6 @@ export function SettingsView({
           onPrefsUpdated={setPrefs}
           platform={snapshot?.platform ?? "macos"}
         />
-        {/* Dictation polish card hidden from the user-facing settings. Kept (not
-            deleted) and still type-checked — change `false` to `true` to restore. */}
-        {false && (
-          <Section title="Dictation polish" extra={<SyncBadge state={serverSyncState} />}>
-            <div className="px-5 py-4">
-              <div className="flex items-center gap-4">
-                <div
-                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-muted-foreground"
-                  style={{ background: "hsl(var(--surface-4))" }}
-                >
-                  <Sparkles size={16} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-[13px] font-medium text-foreground">Gemma 4 31B (Cerebras)</p>
-                  <p className="text-[12px] text-muted-foreground mt-0.5">
-                    {polishHotkeyLabel} polish always runs on airnote.emiactech.com using Cerebras Gemma 4 31B.
-                    Speech recognition stays local on this device.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </Section>
-        )}
-
         </Show>
 
         {/* ── Developer Problem Command ─────────────────── */}

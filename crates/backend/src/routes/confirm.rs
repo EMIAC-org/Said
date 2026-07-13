@@ -12,8 +12,8 @@ use crate::{
     embedder::gemini,
     llm::{alias_safety, meaning, promotion_gate},
     store::{
-        openai_oauth, prefs::get_prefs, stt_replacements, tier2_edit_policy, users,
-        vocab_embeddings, vocab_fts, vocabulary,
+        corrections, edit_review_sessions, openai_oauth, prefs::get_prefs, stt_replacements,
+        tier2_edit_policy, users, vocab_embeddings, vocab_fts, vocabulary,
     },
 };
 
@@ -34,6 +34,18 @@ fn clean_vocab_context(context: Option<&str>) -> Option<String> {
     } else {
         Some(raw.to_string())
     }
+}
+
+fn unsafe_confirmed_correction_source(original: &str, corrected: &str) -> bool {
+    corrected.trim().is_empty()
+        || original.split_whitespace().count() > 4
+        || corrected.split_whitespace().count() > 4
+        || ((alias_safety::is_common_alias_source(original)
+            || promotion_gate::is_common_word(original))
+            && matches!(
+                vocabulary::classify_term_type(corrected),
+                "brand" | "acronym" | "proper_noun" | "code_identifier"
+            ))
 }
 
 fn groq_key_for_learning(prefs: Option<&crate::store::prefs::Preferences>) -> String {
@@ -731,6 +743,8 @@ pub async fn block_correction(
 pub struct ConfirmBatchBody {
     pub items: Vec<ConfirmBatchItem>,
     pub recording_id: Option<String>,
+    #[serde(default)]
+    pub review_session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -739,6 +753,8 @@ pub struct ConfirmBatchItem {
     pub corrected: String,
     #[serde(default)]
     pub context: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -803,6 +819,38 @@ pub async fn confirm_batch(
         if corrected.is_empty() {
             continue;
         }
+        if matches!(
+            item.tag.as_deref(),
+            Some("polish_error" | "format_preference")
+        ) {
+            if original.is_empty()
+                || original == corrected
+                || unsafe_confirmed_correction_source(original, corrected)
+            {
+                info!(
+                    "[confirm-batch] blocked unsafe writing correction {:?} -> {:?}",
+                    original, corrected
+                );
+                continue;
+            }
+            corrections::upsert(
+                &state.pool,
+                user_id,
+                &[(original.to_ascii_lowercase(), corrected.to_string())],
+            );
+            learned_count += 1;
+            if !learned_terms.iter().any(|term| term == corrected) {
+                learned_terms.push(corrected.to_string());
+            }
+            info!(
+                "[confirm-batch] learned reviewed {} correction {:?} -> {:?}",
+                item.tag.as_deref().unwrap_or("writing"),
+                original,
+                corrected,
+            );
+            continue;
+        }
+
         if !original.is_empty()
             && tier2_edit_policy::normalize_token(original)
                 == tier2_edit_policy::normalize_token(corrected)
@@ -1015,6 +1063,12 @@ pub async fn confirm_batch(
         });
     }
 
+    if let Some(session_id) = body.review_session_id.as_deref() {
+        if !edit_review_sessions::resolve(&state.pool, user_id, session_id, 1) {
+            warn!("[confirm-batch] review session {session_id} was not pending");
+        }
+    }
+
     (
         StatusCode::OK,
         Json(ConfirmBatchResponse {
@@ -1024,4 +1078,20 @@ pub async fn confirm_batch(
             server_owned: false,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unsafe_confirmed_correction_source;
+
+    #[test]
+    fn reviewed_writing_correction_gate_keeps_rules_small_and_non_aliasing() {
+        assert!(!unsafe_confirmed_correction_source("colour", "color"));
+        assert!(!unsafe_confirmed_correction_source("8am", "8:00 AM"));
+        assert!(unsafe_confirmed_correction_source("please", "AirNote"));
+        assert!(unsafe_confirmed_correction_source(
+            "a very long source phrase here",
+            "short"
+        ));
+    }
 }

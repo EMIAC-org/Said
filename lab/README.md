@@ -46,6 +46,45 @@ python lab/polish_lab.py --compare-models
 | `prompt_system.md` | Editable system prompt |
 | `run_prompt_matrix.py` | Many prompts × few routes (prompt A/B) |
 
+## Manual future-server context loop
+
+Use this before building any retrieval or learning automation. It sends one
+**frozen raw STT transcript** and one manually edited, hardcoded system prompt
+to the configured polish model. It does not simulate aliases, retrieval,
+profiles, or refresh logic.
+
+```bash
+# Create/update a frozen STT cache once.
+python lab/polish_lab.py /path/to/recording.wav
+
+# Edit this file by hand between runs.
+# lab/future_server_prompt.md
+
+# Run a baseline or a small prompt variation against the same transcript.
+python lab/context_prompt_lab.py --from-cache --label baseline
+python lab/context_prompt_lab.py --from-cache --label term-plus-type
+
+# Or test a copied historical raw transcript directly.
+python lab/context_prompt_lab.py \
+  --transcript "hello bhai main corps ka IPO check karo" \
+  --expected "Hello bhai, MACOBS ka IPO check karo." \
+  --label macobs-context
+```
+
+Each run snapshots the exact prompt, user message, transcript, response, and
+optional user-kept expectation to `lab/context_prompt_runs/` (gitignored). Keep
+the transcript fixed while changing one context hypothesis at a time:
+
+1. no context;
+2. canonical term only;
+3. add type;
+4. add one usage summary or example;
+5. add a confirmed heard-form clue;
+6. test stale/unrelated context as a negative control.
+
+Do not automate retrieval or refresh logic until the manual prompt iterations
+show which context blocks improve recovery without causing unsupported terms.
+
 ## Model catalog
 
 Edit `model_catalog.py` to change candidates.
@@ -86,6 +125,46 @@ Max score ≈ 30. Use `report.md` ranking + read outputs — heuristic only.
 ```
 GROQ_API_KEY=          # production polish (GPT OSS smart + 8B fast) + lab models
 ```
+
+## Codex Spark
+
+`gpt-5.3-codex-spark` is a Codex research-preview model, not a generally
+available public API model. Do not copy its Codex access or refresh tokens into
+`.env` or this repository.
+
+To authenticate the local Codex CLI through device login, run:
+
+```bash
+lab/codex_spark_device_login.sh
+```
+
+The CLI stores credentials in its own local auth store. Spark can be exercised
+through `codex exec`, but that is an agent invocation with Codex system/tool
+overhead, so it is not a fair replacement for this lab's raw provider API
+latency benchmark.
+
+For an explicit end-to-end comparison against the current production model,
+run the dedicated harness. It measures Spark through the Codex CLI and
+`gemma-4-31b` through Cerebras, and keeps those two transport paths distinct
+in its report:
+
+```bash
+python lab/codex_agent_latency_bench.py --runs 5 --warmup 1
+```
+
+It requires `CEREBRAS_API_KEY` in the gitignored root `.env`. Results are
+written under `lab/latency_runs/` and are not committed.
+
+For correction quality, use the same curated stress suite and strict scorecard
+as `server_bench.py`:
+
+```bash
+python3 lab/codex_correction_bench.py
+```
+
+Its default is the correction-critical subset: technical garble recovery and
+over-correction traps. Results go to `lab/model_runs/` and include every raw
+input and output for review.
 
 ## Single-model routing (unchanged)
 

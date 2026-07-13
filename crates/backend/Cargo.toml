@@ -80,11 +80,3 @@ ort         = "2.0.0-rc.12"
 
 said-core = { path = "../core" }
 dirs              = "5"
-
-# Local STT via whisper.cpp (opt-in via feature flag so CI without Metal still builds)
-whisper-rs = { version = "0.16", optional = true }
-
-[features]
-default = []
-local-stt = ["whisper-rs"]
-metal     = ["whisper-rs/metal"]

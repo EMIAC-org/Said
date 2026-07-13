@@ -9,7 +9,6 @@ import type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
-  ListPolishModelsResponse,
   PendingEditsResponse,
   PerformanceSnapshot,
   PolishDone,
@@ -276,19 +275,6 @@ export async function getSttRuntime(): Promise<SttRuntimeInfo | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await tauriInvoke<SttRuntimeInfo>("get_stt_runtime");
-  } catch {
-    return null;
-  }
-}
-
-export async function listPolishModels(
-  beta = true
-): Promise<ListPolishModelsResponse | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<ListPolishModelsResponse>("list_polish_models", {
-      beta,
-    });
   } catch {
     return null;
   }

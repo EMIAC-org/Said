@@ -385,7 +385,6 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/preferences", get(routes::prefs::get_prefs))
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
-        .route("/v1/polish/models", get(routes::polish_models::list_models))
         .route("/v1/corrections", get(routes::prefs::get_corrections))
         .route("/v1/tier2/status", get(routes::tier2::status))
         .route(
@@ -437,6 +436,14 @@ pub fn router_with_state(state: AppState) -> Router {
         // Confirm / block term corrections
         .route("/v1/confirm-term", post(routes::confirm::confirm_term))
         .route("/v1/confirm-batch", post(routes::confirm::confirm_batch))
+        .route(
+            "/v1/edit-review-sessions/next",
+            get(routes::edit_review_sessions::next),
+        )
+        .route(
+            "/v1/edit-review-sessions/:id/skip",
+            post(routes::edit_review_sessions::skip),
+        )
         .route(
             "/v1/block-correction",
             post(routes::confirm::block_correction),

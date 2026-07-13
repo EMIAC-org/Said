@@ -56,8 +56,9 @@ pub fn start_batch_worker(state: AppState) {
         }
     });
     info!(
-        "[profile-batch] started ({TICK_SECS}s poll, threshold={})",
-        batch::runs_per_batch()
+        "[profile-batch] started ({TICK_SECS}s poll, threshold={}, edit_settle={}s)",
+        batch::runs_per_batch(),
+        batch::PROFILE_EDIT_SETTLE_SECS,
     );
 }
 
@@ -84,7 +85,15 @@ async fn process_job(state: &AppState, job: batch::BatchJobRow) {
             return;
         }
     };
-    let window = match batch::collect_window(&state.db, account_id, since).await {
+    let window = match batch::collect_window(
+        &state.db,
+        account_id,
+        org_scope,
+        since,
+        job.created_at,
+    )
+    .await
+    {
         Ok(w) => w,
         Err(e) => {
             let _ = batch::finish_job(

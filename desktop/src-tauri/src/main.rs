@@ -631,6 +631,9 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("gemini") && (lower.contains("401") || lower.contains("403")) {
         return "Gemini key invalid".into();
     }
+    if lower.contains("cerebras") && (lower.contains("rate limit") || lower.contains("429")) {
+        return "Cerebras rate limit hit".into();
+    }
     if lower.contains("rate") || lower.contains("429") {
         return "Rate limited — wait a moment".into();
     }
@@ -830,9 +833,36 @@ fn start_backend_watchdog(app: tauri::AppHandle, using_external_backend: bool) {
         });
 }
 
-/// Owns the currently running post-paste edit watcher. Starting a new watcher
-/// cancels the previous one so rapid recordings cannot stack poll loops.
-struct EditWatcherState(Mutex<Option<CancellationToken>>);
+#[derive(Clone)]
+struct EditWatcherControl {
+    generation: u64,
+    cancel: CancellationToken,
+    finalize: CancellationToken,
+}
+
+fn new_edit_watcher_control(generation: u64) -> EditWatcherControl {
+    EditWatcherControl {
+        generation,
+        cancel: CancellationToken::new(),
+        finalize: CancellationToken::new(),
+    }
+}
+
+fn edit_watch_crossed_app_boundary(initial_pid: Option<i32>, now_pid: Option<i32>) -> bool {
+    matches!((initial_pid, now_pid), (Some(initial), Some(now)) if initial != now)
+}
+
+fn edit_watcher_generation_is_current(
+    current: Option<&EditWatcherControl>,
+    task_generation: u64,
+) -> bool {
+    current.is_some_and(|control| control.generation == task_generation)
+}
+
+/// Owns the currently running post-paste edit watcher. A new recording asks the
+/// previous watcher to finalize; unrelated replacement actions may hard-cancel.
+struct EditWatcherState(Mutex<Option<EditWatcherControl>>);
+static EDIT_WATCHER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The frontmost app PID when recording started.
 ///
@@ -1832,6 +1862,27 @@ pub(crate) fn create_status_bar(app: &tauri::AppHandle) {
             Err(e) => tracing::warn!("[status-bar] could not create window: {e}"),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_status_bar_startup_preload(app: &tauri::AppHandle) {
+    let app_h = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Avoid creating AppKit/WebView state inside Tauri setup, but have the
+        // hidden panel ready before the first hold-to-talk transition.
+        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+        let app_main = app_h.clone();
+        if let Err(e) = run_on_main_guarded(&app_h, "status_bar.startup_preload", move || {
+            if app_main.get_webview_window("status-bar").is_some() {
+                return;
+            }
+            diag::breadcrumb("status_bar:startup_preload:create");
+            tracing::info!("[status-bar] startup preload creating hidden HUD");
+            create_status_bar(&app_main);
+        }) {
+            tracing::warn!("[status-bar] startup preload failed: {e}");
+        }
+    });
 }
 
 // ── Tray action helpers ───────────────────────────────────────────────────────
@@ -2944,15 +2995,6 @@ async fn get_preferences(backend: State<'_, BackendState>) -> Result<api::Prefer
     api::get_preferences(&ep).await
 }
 
-#[tauri::command]
-async fn list_polish_models(
-    backend: State<'_, BackendState>,
-    beta: bool,
-) -> Result<api::ListPolishModelsResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::list_polish_models(&ep, beta).await
-}
-
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
     whisper_installed: bool,
@@ -3952,7 +3994,7 @@ fn do_start_recording_inner(
     }
     let _guard = StartGuard;
 
-    cancel_edit_watcher(app, "new recording");
+    finalize_edit_watcher(app, "new recording");
 
     let meeting_capture = app
         .try_state::<MeetingModeState>()
@@ -4852,6 +4894,7 @@ fn do_finish_recording(
                 let pre_paste = app2
                     .try_state::<ScreenContextState>()
                     .and_then(|s| s.0.lock().ok()?.clone());
+                let anchor = capture_edit_anchor(edit_target_pid, pre_paste, &done.polished);
                 start_edit_watcher(
                     back3,
                     app2.clone(),
@@ -4859,8 +4902,7 @@ fn do_finish_recording(
                     done.recording_id.clone(),
                     done.polished.clone(),
                     watch_start,
-                    edit_target_pid,
-                    pre_paste,
+                    anchor,
                 );
             }
 
@@ -5374,6 +5416,13 @@ async fn run_voice_polish_sse(
     } else {
         paster::read_focused_value_fast()
     };
+    if !suppress_local {
+        if let Ok(mut context) = app.state::<ScreenContextState>().0.lock() {
+            *context = initial_field_text
+                .clone()
+                .filter(|text| !text.trim().is_empty());
+        }
+    }
     let initial_field_read_ms = initial_field_read_t0.elapsed().as_millis() as i64;
     let error_target_app = target_app.clone();
     let error_client_run_id = client_run_id.clone();
@@ -5572,6 +5621,9 @@ async fn run_voice_polish_sse(
                     message_polish_mode,
                 );
                 let human = humanize_error(&message);
+                if error_code.as_deref() == Some("cerebras_rate_limit") {
+                    notify_macos(&app_clone, "Cerebras rate limit hit", &human);
+                }
                 let _ = app_clone.emit(
                     "voice-error",
                     serde_json::json!({
@@ -6640,6 +6692,7 @@ fn retry_recording_spawn(
         let watch_start = std::time::Instant::now();
         if let Ok(ref done) = result {
             let back3 = Arc::clone(&back_arc2);
+            let anchor = capture_edit_anchor(None, None, &done.polished);
             start_edit_watcher(
                 back3,
                 app2.clone(),
@@ -6647,8 +6700,7 @@ fn retry_recording_spawn(
                 done.recording_id.clone(),
                 done.polished.clone(),
                 watch_start,
-                None,
-                None, // re-polish: no pre_paste context
+                anchor,
             );
         }
 
@@ -6813,6 +6865,7 @@ async fn confirm_batch(
     backend: State<'_, BackendState>,
     items: Vec<serde_json::Value>,
     recording_id: Option<String>,
+    review_session_id: Option<String>,
 ) -> Result<api::ConfirmBatchResponse, String> {
     let ep = get_endpoint(&backend)?;
     let request_items: Vec<api::ConfirmBatchRequestItem> = items
@@ -6824,14 +6877,25 @@ async fn confirm_batch(
                 .get("context")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string());
+            let tag = v
+                .get("tag")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
             Some(api::ConfirmBatchRequestItem {
                 original: orig,
                 corrected: corr,
                 context,
+                tag,
             })
         })
         .collect();
-    let result = api::confirm_batch(&ep, &request_items, recording_id.as_deref()).await?;
+    let result = api::confirm_batch(
+        &ep,
+        &request_items,
+        recording_id.as_deref(),
+        review_session_id.as_deref(),
+    )
+    .await?;
     let _ = app.emit("vocabulary-changed", ());
     tracing::info!(
         "[confirm-batch] user confirmed {} term(s) server_owned={}: {:?}",
@@ -6840,6 +6904,23 @@ async fn confirm_batch(
         result.learned_terms,
     );
     Ok(result)
+}
+
+#[tauri::command]
+async fn get_next_edit_review_session(
+    backend: State<'_, BackendState>,
+) -> Result<Option<api::EditReviewSessionResponse>, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_next_edit_review_session(&ep).await
+}
+
+#[tauri::command]
+async fn skip_edit_review_session(
+    backend: State<'_, BackendState>,
+    session_id: String,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::skip_edit_review_session(&ep, &session_id).await
 }
 
 #[tauri::command]
@@ -7640,10 +7721,15 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                                     .get("context")
                                     .and_then(|value| value.as_str())
                                     .map(|value| value.to_string());
+                                let tag = v
+                                    .get("tag")
+                                    .and_then(|value| value.as_str())
+                                    .map(|value| value.to_string());
                                 Some(api::ConfirmBatchRequestItem {
                                     original: v.get("original")?.as_str()?.to_string(),
                                     corrected: v.get("corrected")?.as_str()?.to_string(),
                                     context,
+                                    tag,
                                 })
                             })
                             .collect()
@@ -7652,7 +7738,7 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                 if !request_items.is_empty() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if api::confirm_batch(&ep, &request_items, recording_id.as_deref())
+                        if api::confirm_batch(&ep, &request_items, recording_id.as_deref(), None)
                             .await
                             .is_ok()
                         {
@@ -7883,6 +7969,285 @@ fn get_performance_snapshot(
 const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
+const EDIT_WATCH_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(300);
+const EDIT_WATCH_EMPTY_FIELD_BOUNDARY: Duration = Duration::from_millis(400);
+const EDIT_WATCH_MAX_OBSERVATIONS: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedTextSpan {
+    start_chars: usize,
+    len_chars: usize,
+    text: String,
+    prefix: String,
+    suffix: String,
+}
+
+#[derive(Debug, Clone)]
+struct EditCaptureAnchor {
+    target_pid: Option<i32>,
+    field_fingerprint: Option<u64>,
+    pre_paste_text: Option<String>,
+    post_paste_text: String,
+    owned_span: Option<OwnedTextSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditObservation {
+    elapsed_ms: u64,
+    field_value: String,
+    owned_text: String,
+}
+
+#[derive(Debug, Default)]
+struct EditObservationTimeline {
+    observations: std::collections::VecDeque<EditObservation>,
+    total_observations: usize,
+}
+
+impl EditObservationTimeline {
+    fn record(
+        &mut self,
+        anchor: &EditCaptureAnchor,
+        post_paste: &str,
+        field_value: &str,
+        elapsed_ms: u64,
+    ) -> Result<bool, &'static str> {
+        if field_value == post_paste || field_value.is_empty() {
+            return Ok(false);
+        }
+        let owned_text = extract_owned_text(anchor, field_value)?;
+        if self
+            .observations
+            .back()
+            .is_some_and(|last| last.field_value == field_value && last.owned_text == owned_text)
+        {
+            return Ok(false);
+        }
+        self.total_observations += 1;
+        if self.observations.len() == EDIT_WATCH_MAX_OBSERVATIONS {
+            self.observations.pop_front();
+        }
+        self.observations.push_back(EditObservation {
+            elapsed_ms,
+            field_value: field_value.to_string(),
+            owned_text,
+        });
+        Ok(true)
+    }
+
+    fn latest_field_value(&self) -> Option<&str> {
+        self.observations
+            .back()
+            .map(|observation| observation.field_value.as_str())
+    }
+
+    fn retained_count(&self) -> usize {
+        self.observations.len()
+    }
+
+    fn dropped_count(&self) -> usize {
+        self.total_observations
+            .saturating_sub(self.observations.len())
+    }
+
+    fn elapsed_span_ms(&self) -> Option<u64> {
+        let first = self.observations.front()?.elapsed_ms;
+        let last = self.observations.back()?.elapsed_ms;
+        Some(last.saturating_sub(first))
+    }
+}
+
+fn effective_owned_field_value(
+    anchor: &EditCaptureAnchor,
+    last_value: &str,
+    observations: &EditObservationTimeline,
+) -> String {
+    if !last_value.is_empty() && extract_owned_text(anchor, last_value).is_ok() {
+        last_value.to_string()
+    } else {
+        observations
+            .latest_field_value()
+            .unwrap_or(last_value)
+            .to_string()
+    }
+}
+
+fn derive_owned_text_span(
+    pre_paste: Option<&str>,
+    post_paste: &str,
+    polished: &str,
+) -> Option<OwnedTextSpan> {
+    if post_paste.is_empty() {
+        return None;
+    }
+
+    if let Some(pre) = pre_paste {
+        let prefix_bytes = common_prefix_bytes(pre, post_paste);
+        let pre_rest = &pre[prefix_bytes..];
+        let post_rest = &post_paste[prefix_bytes..];
+        let suffix_bytes = common_suffix_bytes(pre_rest, post_rest);
+        let inserted_end = post_paste.len().checked_sub(suffix_bytes)?;
+        if inserted_end <= prefix_bytes {
+            return None;
+        }
+        let text = post_paste[prefix_bytes..inserted_end].to_string();
+        return Some(OwnedTextSpan {
+            start_chars: post_paste[..prefix_bytes].chars().count(),
+            len_chars: text.chars().count(),
+            text,
+            prefix: post_paste[..prefix_bytes].to_string(),
+            suffix: post_paste[inserted_end..].to_string(),
+        });
+    }
+
+    let polished = polished.trim();
+    if polished.is_empty() {
+        return None;
+    }
+    let mut matches = post_paste.match_indices(polished);
+    let (offset, matched) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(OwnedTextSpan {
+        start_chars: post_paste[..offset].chars().count(),
+        len_chars: matched.chars().count(),
+        text: matched.to_string(),
+        prefix: post_paste[..offset].to_string(),
+        suffix: post_paste[offset + matched.len()..].to_string(),
+    })
+}
+
+fn extract_owned_text(
+    anchor: &EditCaptureAnchor,
+    current_text: &str,
+) -> Result<String, &'static str> {
+    let span = anchor.owned_span.as_ref().ok_or("anchor_missing")?;
+    let after_prefix = current_text
+        .strip_prefix(&span.prefix)
+        .ok_or("prefix_mismatch")?;
+    let owned = after_prefix
+        .strip_suffix(&span.suffix)
+        .ok_or("suffix_mismatch")?;
+    Ok(owned.trim().to_string())
+}
+
+fn capture_edit_anchor(
+    target_pid: Option<i32>,
+    pre_paste_text: Option<String>,
+    polished: &str,
+) -> EditCaptureAnchor {
+    let post_paste_text = match target_pid {
+        Some(pid) => paster::read_focused_value_fast_for_pid(pid),
+        None => paster::read_focused_value_fast(),
+    }
+    .unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let field_fingerprint = target_pid.and_then(paster::focused_element_fingerprint_for_pid);
+    #[cfg(not(target_os = "macos"))]
+    let field_fingerprint = None;
+    let owned_span = derive_owned_text_span(pre_paste_text.as_deref(), &post_paste_text, polished);
+    EditCaptureAnchor {
+        target_pid,
+        field_fingerprint,
+        pre_paste_text,
+        post_paste_text,
+        owned_span,
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn read_clipboard_text_readonly() -> Option<String> {
+    let read = tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("pbpaste").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout)
+            .ok()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    });
+    tokio::time::timeout(EDIT_WATCH_CLIPBOARD_TIMEOUT, read)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn read_clipboard_text_readonly() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn paste_shortcut_seen_since(since: std::time::Instant) -> bool {
+    said_hotkey::key_buffer().lock().is_ok_and(|events| {
+        events
+            .iter()
+            .any(|event| event.when >= since && matches!(event.evt, said_hotkey::KeyEvt::Paste))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn paste_shortcut_seen_since(_since: std::time::Instant) -> bool {
+    false
+}
+
+fn normalized_clipboard_candidate(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn clipboard_content_was_added(polished: &str, user_kept: &str, clipboard: &str) -> bool {
+    let polished = normalized_clipboard_candidate(polished);
+    let kept = normalized_clipboard_candidate(user_kept);
+    let clipboard = normalized_clipboard_candidate(clipboard);
+    if clipboard.chars().count() < 4
+        || polished.is_empty()
+        || kept.is_empty()
+        || clipboard == polished
+        || !kept.contains(&clipboard)
+    {
+        return false;
+    }
+
+    let Some(offset) = kept.find(&clipboard) else {
+        return false;
+    };
+    let clip_end = offset + clipboard.len();
+    let is_surrounding_addition =
+        kept[..offset].trim().is_empty() || kept[clip_end..].trim().is_empty();
+    if !is_surrounding_addition {
+        return false;
+    }
+
+    let without_clipboard = format!("{} {}", &kept[..offset], &kept[clip_end..]);
+    let remaining = normalized_clipboard_candidate(&without_clipboard);
+    remaining == polished || shares_word_overlap_ratio(&remaining, &polished) >= 0.6
+}
+
+fn shares_word_overlap_ratio(candidate: &str, reference: &str) -> f64 {
+    let candidate_words: std::collections::HashSet<String> = candidate
+        .split_whitespace()
+        .map(alnum_word_core)
+        .filter(|word| word.chars().count() > 2)
+        .map(str::to_lowercase)
+        .collect();
+    let reference_words: std::collections::HashSet<String> = reference
+        .split_whitespace()
+        .map(alnum_word_core)
+        .filter(|word| word.chars().count() > 2)
+        .map(str::to_lowercase)
+        .collect();
+    if reference_words.is_empty() {
+        return 0.0;
+    }
+    let shared = reference_words
+        .iter()
+        .filter(|word| candidate_words.contains(*word))
+        .count();
+    shared as f64 / reference_words.len() as f64
+}
 
 /// Compute edit-watch timeouts scaled by sentence length.
 ///
@@ -7951,7 +8316,22 @@ fn cancel_edit_watcher(app: &tauri::AppHandle, reason: &str) {
     };
     if let Some(prev) = guard.take() {
         tracing::info!("[edit-watch] cancelling watcher — {reason}");
-        prev.cancel();
+        prev.cancel.cancel();
+    }
+}
+
+fn finalize_edit_watcher(app: &tauri::AppHandle, reason: &str) {
+    let st = app.state::<EditWatcherState>();
+    let mut guard = match st.0.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!("[edit-watch] watcher state lock poisoned; recovering");
+            e.into_inner()
+        }
+    };
+    if let Some(prev) = guard.take() {
+        tracing::info!("[edit-watch] finalizing watcher — {reason}");
+        prev.finalize.cancel();
     }
 }
 
@@ -7962,10 +8342,9 @@ fn start_edit_watcher(
     recording_id: String,
     polished: String,
     watch_start: std::time::Instant,
-    target_pid: Option<i32>,
-    pre_paste_text: Option<String>,
+    anchor: EditCaptureAnchor,
 ) {
-    let token = {
+    let control = {
         let st = app.state::<EditWatcherState>();
         let mut guard = match st.0.lock() {
             Ok(g) => g,
@@ -7976,56 +8355,60 @@ fn start_edit_watcher(
         };
         if let Some(prev) = guard.take() {
             tracing::info!("[edit-watch] cancelling previous watcher");
-            prev.cancel();
+            prev.cancel.cancel();
             std::thread::yield_now();
         }
-        let token = CancellationToken::new();
-        *guard = Some(token.clone());
-        token
+        let control =
+            new_edit_watcher_control(EDIT_WATCHER_GENERATION.fetch_add(1, Ordering::Relaxed) + 1);
+        *guard = Some(control.clone());
+        control
     };
 
     let app_for_task = app.clone();
+    let task_generation = control.generation;
     tauri::async_runtime::spawn(async move {
         watch_for_edit(
-            token.clone(),
+            control.cancel.clone(),
+            control.finalize.clone(),
             back_arc,
             app_for_task.clone(),
             client_run_id,
             recording_id,
             polished,
             watch_start,
-            target_pid,
-            pre_paste_text,
+            anchor,
         )
         .await;
 
-        if !token.is_cancelled() {
-            if let Ok(mut guard) = app_for_task.state::<EditWatcherState>().0.lock() {
+        if let Ok(mut guard) = app_for_task.state::<EditWatcherState>().0.lock() {
+            if edit_watcher_generation_is_current(guard.as_ref(), task_generation) {
                 *guard = None;
             }
         }
     });
 }
 
-/// After pasting, poll the focused text element for up to 30 seconds.
-/// When the user stops typing for 5 s (or switches apps), emit "edit-detected"
-/// so the frontend can ask "Save this preference?" before writing to SQLite.
+/// After pasting, poll the focused text element through the sentence-scaled reading
+/// window. Once editing starts, allow up to 120 seconds total and wait for the
+/// sentence-scaled post-edit idle period before classifying the owned field value.
 async fn watch_for_edit(
-    token: CancellationToken,
+    cancel_token: CancellationToken,
+    finalize_token: CancellationToken,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
     app: tauri::AppHandle,
     client_run_id: Option<String>,
     recording_id: String,
     polished: String,                // the AI-generated text we pasted
     watch_start: std::time::Instant, // captured at the call site, right after paste
-    target_pid: Option<i32>,
-    pre_paste_text: Option<String>, // field text BEFORE AirNote typed (from ScreenContextState)
+    mut anchor: EditCaptureAnchor,
 ) {
     use std::time::Instant;
 
+    let clipboard_at_watch_start = read_clipboard_text_readonly().await;
+
     // Let the paste animation settle and focus move into the text field.
     // 400ms covers paste animation (~200ms) + AX cache start; retries handle the rest.
-    if !cancellable_sleep(&token, Duration::from_millis(400)).await {
+    if !cancellable_sleep(&cancel_token, Duration::from_millis(400)).await {
         tracing::info!("[edit-watch] watcher cancelled before start for {recording_id}");
         return;
     }
@@ -8035,14 +8418,15 @@ async fn watch_for_edit(
     // whatever happens to be frontmost after our HUD/status UI has updated.
     let focused_pid_after_paste =
         blocking_ax_option("focused_pid after-paste", paster::focused_pid).await;
-    let initial_pid = target_pid.or(focused_pid_after_paste);
+    let initial_pid = anchor.target_pid.or(focused_pid_after_paste);
 
     // Attempt to get the initial field value.  Chrome / Electron may still be
     // building their AX cache even after the pre-unlock at recording-start, so
     // we retry a few times with increasing delays before declaring "AX blind".
     let post_paste = {
-        let mut val =
-            blocking_ax_option(
+        let mut val = anchor.post_paste_text.clone();
+        if val.is_empty() {
+            val = blocking_ax_option(
                 "read_focused_value_first initial",
                 move || match initial_pid {
                     Some(pid) => paster::read_focused_value_first_for_pid(pid),
@@ -8051,9 +8435,10 @@ async fn watch_for_edit(
             )
             .await
             .unwrap_or_default();
+        }
         if val.is_empty() {
             // 2nd attempt after 300 ms
-            if !cancellable_sleep(&token, Duration::from_millis(300)).await {
+            if !cancellable_sleep(&cancel_token, Duration::from_millis(300)).await {
                 tracing::info!(
                     "[edit-watch] watcher cancelled during initial retry for {recording_id}"
                 );
@@ -8071,7 +8456,7 @@ async fn watch_for_edit(
         }
         if val.is_empty() {
             // 3rd attempt after another 500 ms — AX tree should be ready by now
-            if !cancellable_sleep(&token, Duration::from_millis(500)).await {
+            if !cancellable_sleep(&cancel_token, Duration::from_millis(500)).await {
                 tracing::info!(
                     "[edit-watch] watcher cancelled during initial retry for {recording_id}"
                 );
@@ -8089,14 +8474,28 @@ async fn watch_for_edit(
         }
         val
     };
+    if anchor.post_paste_text.is_empty() && !post_paste.is_empty() {
+        anchor.post_paste_text = post_paste.clone();
+        anchor.owned_span =
+            derive_owned_text_span(anchor.pre_paste_text.as_deref(), &post_paste, &polished);
+        #[cfg(target_os = "macos")]
+        if anchor.field_fingerprint.is_none() {
+            anchor.field_fingerprint =
+                initial_pid.and_then(paster::focused_element_fingerprint_for_pid);
+        }
+    }
 
     let mut last_val = post_paste.clone();
-    let mut best_candidate = post_paste.clone();
+    let mut observations = EditObservationTimeline::default();
     let mut idle_at = Instant::now();
     let started = Instant::now();
     let mut last_change_at = Instant::now();
     let mut current_interval = EDIT_WATCH_FAST_INTERVAL;
     let mut last_pid = initial_pid;
+    let mut ownership_lost_reason: Option<&'static str> = None;
+    let mut finalize_requested = finalize_token.is_cancelled();
+    let mut field_empty_since: Option<Instant> = None;
+    let mut explicit_boundary: Option<&'static str> = None;
 
     // Scale timeouts by sentence length — long sentences need more reading time
     let word_count = polished.split_whitespace().count();
@@ -8115,38 +8514,39 @@ async fn watch_for_edit(
 
     tracing::info!(
         "[edit-watch] watching {recording_id} — target_pid={:?} focused_after_paste={:?} initial field readable: {} (len={})",
-        target_pid,
+        anchor.target_pid,
         focused_pid_after_paste,
         !post_paste.is_empty(),
         post_paste.len(),
     );
 
-    // Poll loop: adaptive cadence.  No mid-loop side effects — we only read AX
-    // and watch for app switches.  Clipboard verification (Cmd+A+C) is
-    // strictly an end-of-loop, same-app operation; doing it during the loop
-    // disrupts the user's typing in AX-blind apps like Claude input.
-    loop {
-        if !cancellable_sleep(&token, current_interval).await {
-            tracing::info!("[edit-watch] watcher cancelled for {recording_id}");
-            return;
+    // Poll loop: adaptive cadence. No mid-loop side effects: AX and pasteboard
+    // reads are non-mutating, and app/field/submit boundaries close the session.
+    while !finalize_requested {
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                tracing::info!("[edit-watch] watcher cancelled for {recording_id}");
+                return;
+            }
+            _ = finalize_token.cancelled() => {
+                finalize_requested = true;
+                tracing::info!("[edit-watch] finalize requested for {recording_id}");
+                break;
+            }
+            _ = tokio::time::sleep(current_interval) => {}
         }
 
-        // Check the frontmost PID first. With a locked target PID we keep
-        // monitoring that original app even if focus moves; without one, keep
-        // the old safety behavior and stop before reading another app's field.
+        // Leaving the target app closes this edit session. The last owned value
+        // remains valid, but text entered after the switch cannot belong to it.
         let now_pid = blocking_ax_option("focused_pid poll", paster::focused_pid).await;
-        let pid_switched = matches!(
-            (initial_pid, now_pid),
-            (Some(a), Some(b)) if a != b
-        );
-        if pid_switched && target_pid.is_none() {
+        let pid_switched = edit_watch_crossed_app_boundary(initial_pid, now_pid);
+        if pid_switched {
             app_switched_during_capture = true;
+            explicit_boundary = Some("app_switched");
             tracing::info!(
-                "[edit-watch] app_switched_skip for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
+                "[edit-watch] app boundary for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
             );
             break;
-        } else if pid_switched {
-            app_switched_during_capture = true;
         }
 
         // Detect if target app exited — stop polling a dead process
@@ -8202,9 +8602,24 @@ async fn watch_for_edit(
             );
         }
         if now_val != last_val {
+            #[cfg(target_os = "macos")]
+            if let (Some(pid), Some(expected)) = (initial_pid, anchor.field_fingerprint) {
+                let observed = blocking_ax_option("field fingerprint after change", move || {
+                    paster::focused_element_fingerprint_for_pid(pid)
+                })
+                .await;
+                if observed != Some(expected) {
+                    explicit_boundary = Some("field_changed");
+                    tracing::info!(
+                        "[edit-watch] field boundary for {recording_id} — finalizing last owned state"
+                    );
+                    break;
+                }
+            }
             idle_at = Instant::now();
             last_change_at = Instant::now();
             current_interval = EDIT_WATCH_FAST_INTERVAL;
+            field_empty_since = now_val.is_empty().then(Instant::now);
             if now_val != post_paste {
                 if !saw_user_edit {
                     tracing::info!(
@@ -8214,14 +8629,29 @@ async fn watch_for_edit(
                 }
                 saw_user_edit = true;
             }
-            // Only promote to best_candidate if the value still shares words
-            // with the polished text (guards against Send-cleared placeholders).
-            if shares_word_overlap(&now_val, &polished) {
-                best_candidate = now_val.clone();
+            if let Err(reason) = observations.record(
+                &anchor,
+                &post_paste,
+                &now_val,
+                started.elapsed().as_millis() as u64,
+            ) {
+                ownership_lost_reason = Some(reason);
+                tracing::info!(
+                    "[edit-watch] ownership lost for {recording_id} — {reason}; refusing changed field state"
+                );
+                break;
             }
             last_val = now_val;
         } else if last_change_at.elapsed() > Duration::from_secs(2) {
             current_interval = EDIT_WATCH_SLOW_INTERVAL;
+        }
+
+        if field_empty_since
+            .is_some_and(|empty_since| empty_since.elapsed() >= EDIT_WATCH_EMPTY_FIELD_BOUNDARY)
+        {
+            explicit_boundary = Some("field_cleared");
+            tracing::info!("[edit-watch] field-clear boundary for {recording_id}");
+            break;
         }
 
         let active_idle_timeout = if saw_user_edit {
@@ -8258,25 +8688,66 @@ async fn watch_for_edit(
         }
     }
 
-    // If the final field value lost all overlap with our polished text (e.g. the
-    // user sent the message and the input reverted to a placeholder), use the last
-    // meaningful intermediate value instead.
-    let effective_val = if shares_word_overlap(&last_val, &polished) {
-        last_val.clone()
-    } else if best_candidate != post_paste {
+    if finalize_requested {
+        explicit_boundary = Some("new_recording");
+        let final_value = blocking_ax_option("finalize current value", move || match initial_pid {
+            Some(pid) => paster::read_focused_value_fast_for_pid(pid),
+            None => paster::read_focused_value_fast(),
+        })
+        .await;
+        if let Some(now_val) = final_value {
+            let mut final_field_is_owned = true;
+            #[cfg(target_os = "macos")]
+            if let (Some(pid), Some(expected)) = (initial_pid, anchor.field_fingerprint) {
+                let observed = blocking_ax_option("finalize field fingerprint", move || {
+                    paster::focused_element_fingerprint_for_pid(pid)
+                })
+                .await;
+                if observed != Some(expected) {
+                    explicit_boundary = Some("field_changed");
+                    final_field_is_owned = false;
+                }
+            }
+            if final_field_is_owned && ownership_lost_reason.is_none() && now_val != last_val {
+                saw_user_edit = now_val != post_paste;
+                if let Err(reason) = observations.record(
+                    &anchor,
+                    &post_paste,
+                    &now_val,
+                    started.elapsed().as_millis() as u64,
+                ) {
+                    ownership_lost_reason = Some(reason);
+                }
+                last_val = now_val;
+            }
+        }
+    }
+
+    if let Some(reason) = ownership_lost_reason {
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|guard| guard.clone()),
+        ) {
+            telemetry::on_edit_excluded(&ep, run_id, reason);
+        }
+        return;
+    }
+
+    // A submit can clear the field after several valid edits. Recover the latest
+    // anchored state rather than guessing from word overlap or a single snapshot.
+    let effective_val = effective_owned_field_value(&anchor, &last_val, &observations);
+    if effective_val != last_val {
         tracing::info!(
-            "[edit-watch] last_val lost overlap with polished (sent message?); using best_candidate"
+            "[edit-watch] final field unavailable (sent message?); using latest owned observation"
         );
-        best_candidate.clone()
-    } else {
-        last_val.clone()
-    };
+    }
 
     let final_front_pid = blocking_ax_option("focused_pid final", paster::focused_pid).await;
     tracing::info!(
-        "[edit-watch] done watching {recording_id} — field changed: {}, target still frontmost: {}",
+        "[edit-watch] done watching {recording_id} — field changed: {}, target still frontmost: {}, boundary={:?}",
         effective_val != post_paste,
         matches!((initial_pid, final_front_pid), (Some(a), Some(b)) if a == b),
+        explicit_boundary,
     );
 
     // ── Determine user_kept + capture_method ───────────────────────────────────
@@ -8303,12 +8774,21 @@ async fn watch_for_edit(
             }
             return;
         }
-        user_kept = extract_kept(
-            &polished,
-            &post_paste,
-            &effective_val,
-            pre_paste_text.as_deref(),
-        );
+        user_kept = match extract_owned_text(&anchor, &effective_val) {
+            Ok(text) => text,
+            Err(reason) => {
+                tracing::info!(
+                    "[edit-watch] ownership lost for {recording_id} — {reason}; skipping classification"
+                );
+                if let (Some(run_id), Some(ep)) = (
+                    client_run_id.as_deref(),
+                    back_arc.lock().ok().and_then(|guard| guard.clone()),
+                ) {
+                    telemetry::on_edit_excluded(&ep, run_id, reason);
+                }
+                return;
+            }
+        };
         capture_method = "ax";
         tracing::info!(
             "[edit-watch] ax_capture for {recording_id}: {:?} → {:?}",
@@ -8400,10 +8880,26 @@ async fn watch_for_edit(
 
     let ep_opt = back_arc.lock().ok().and_then(|g| g.clone());
     if let Some(ref ep) = ep_opt {
+        let clipboard_at_capture = read_clipboard_text_readonly().await;
+        let paste_shortcut_seen = paste_shortcut_seen_since(watch_start);
+        let clipboard_addition_seen = clipboard_at_watch_start
+            .as_deref()
+            .is_some_and(|clipboard| clipboard_content_was_added(&polished, &user_kept, clipboard))
+            || clipboard_at_capture.as_deref().is_some_and(|clipboard| {
+                clipboard_content_was_added(&polished, &user_kept, clipboard)
+            });
+        let matches_clipboard = paste_shortcut_seen || clipboard_addition_seen;
+        if matches_clipboard {
+            tracing::info!(
+                "[edit-watch] follow-up paste detected for {recording_id}; shortcut={} clipboard_addition={}",
+                paste_shortcut_seen,
+                clipboard_addition_seen,
+            );
+        }
         let capture_meta = api::CaptureMeta {
             time_since_paste_ms: watch_start.elapsed().as_millis() as u64,
             app_switched: app_switched_during_capture,
-            matches_clipboard: false,
+            matches_clipboard,
         };
         let mut edit_trace = said_core::dictation_trace::DictationTrace::default();
         edit_trace.add_stage(said_core::dictation_trace::TraceStageInput {
@@ -8423,6 +8919,14 @@ async fn watch_for_edit(
                 "saw_user_edit": saw_user_edit,
                 "initial_pid": initial_pid,
                 "final_front_pid": final_front_pid,
+                "boundary": explicit_boundary,
+                "field_fingerprint": anchor.field_fingerprint,
+                "owned_span_start_chars": anchor.owned_span.as_ref().map(|span| span.start_chars),
+                "owned_span_len_chars": anchor.owned_span.as_ref().map(|span| span.len_chars),
+                "observation_count": observations.total_observations,
+                "retained_observation_count": observations.retained_count(),
+                "dropped_observation_count": observations.dropped_count(),
+                "observation_span_ms": observations.elapsed_span_ms(),
             }),
             ..Default::default()
         });
@@ -8434,7 +8938,7 @@ async fn watch_for_edit(
             capture_method,
             capture_meta,
             client_run_id.as_deref(),
-            pre_paste_text.as_deref(),
+            anchor.pre_paste_text.as_deref(),
             Some(edit_trace.into_value()),
         )
         .await
@@ -8565,12 +9069,15 @@ async fn watch_for_edit(
                         "vocab-review",
                         serde_json::json!({
                             "candidates": candidates,
+                            "detected_changes": &resp.changes,
+                            "review_session_id": &resp.review_session_id,
                             "recording_id": recording_id,
                         }),
                     );
                     tracing::info!(
-                        "[edit-watch] review card: {} candidate(s)",
+                        "[edit-watch] review card: {} candidate(s), {} detected change(s)",
                         resp.review_candidates.len(),
+                        resp.changes.len(),
                     );
                 }
 
@@ -8765,76 +9272,6 @@ fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
         }
     }
     false
-}
-
-/// Given what we pasted (`polished`), where the field was right after paste
-/// (`post_paste`), the final field value (`last_val`), and optionally the field
-/// text from BEFORE AirNote typed (`pre_paste`), extract only the user's edited
-/// version of AirNote's output — stripping any pre-existing text.
-fn extract_kept(
-    polished: &str,
-    post_paste: &str,
-    last_val: &str,
-    pre_paste: Option<&str>,
-) -> String {
-    // ── Strategy 1: use pre_paste to reliably find prefix/suffix ─────────
-    // pre_paste = field content before AirNote typed.  post_paste = field content
-    // after AirNote typed.  The common prefix between them is text before cursor;
-    // the common suffix is text after cursor.  Whatever is in the middle of
-    // post_paste is what AirNote actually inserted (after any app normalization).
-    // We strip the same prefix/suffix from last_val to get the user's edit.
-    if let Some(pre) = pre_paste {
-        if !pre.is_empty() && post_paste.len() > pre.len() {
-            let prefix_bytes = common_prefix_bytes(pre, post_paste);
-            let pre_rest = &pre[prefix_bytes..];
-            let post_rest = &post_paste[prefix_bytes..];
-            let suffix_bytes = common_suffix_bytes(pre_rest, post_rest);
-
-            let prefix = &post_paste[..prefix_bytes];
-            let suffix = if suffix_bytes > 0 && suffix_bytes <= pre_rest.len() {
-                &pre_rest[pre_rest.len() - suffix_bytes..]
-            } else {
-                ""
-            };
-
-            if last_val.starts_with(prefix) {
-                let after_prefix = &last_val[prefix.len()..];
-                if !suffix.is_empty() {
-                    if let Some(middle) = after_prefix.strip_suffix(suffix) {
-                        tracing::info!(
-                            "[edit-watch] extract_kept via pre_paste: prefix={}b suffix={}b",
-                            prefix_bytes,
-                            suffix_bytes,
-                        );
-                        return middle.trim().to_string();
-                    }
-                }
-                tracing::info!(
-                    "[edit-watch] extract_kept via pre_paste prefix only: {}b",
-                    prefix_bytes,
-                );
-                return after_prefix.trim().to_string();
-            }
-        }
-    }
-
-    // ── Strategy 2 (fallback): find polished verbatim in post_paste ──────
-    let Some(offset) = post_paste.find(polished.trim()) else {
-        return last_val.to_string();
-    };
-
-    let prefix = &post_paste[..offset];
-    let after_end = offset + polished.trim().len();
-    let suffix = &post_paste[after_end..];
-
-    if let Some(lv_after_prefix) = last_val.strip_prefix(prefix) {
-        if let Some(edited) = lv_after_prefix.strip_suffix(suffix) {
-            return edited.trim().to_string();
-        }
-        return lv_after_prefix.trim().to_string();
-    }
-
-    last_val.to_string()
 }
 
 fn common_prefix_bytes(a: &str, b: &str) -> usize {
@@ -9536,7 +9973,7 @@ fn main() {
                     }
                     if !notch_active {
                         tracing::info!(
-                            "[status-bar] startup create skipped — HUD will be created on demand"
+                            "[status-bar] startup preload scheduled — HUD will be created hidden after ready"
                         );
                     }
                 }
@@ -10203,7 +10640,6 @@ fn main() {
             set_status_bar_interactive,
             get_backend_endpoint,
             get_preferences,
-            list_polish_models,
             get_stt_runtime,
             patch_preferences,
             get_history,
@@ -10272,6 +10708,8 @@ fn main() {
             delete_vocabulary_term,
             confirm_term,
             confirm_batch,
+            get_next_edit_review_session,
+            skip_edit_review_session,
             block_correction,
             reset_all_vocabulary,
             star_vocabulary_term,
@@ -10383,6 +10821,8 @@ fn main() {
                 } else {
                     show_main_window(app);
                 }
+                #[cfg(target_os = "macos")]
+                schedule_status_bar_startup_preload(app);
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
@@ -10554,7 +10994,12 @@ mod dictation_audio_level_tests {
 
 #[cfg(test)]
 mod edit_watch_timeout_tests {
-    use super::edit_watch_timeouts;
+    use super::{
+        EDIT_WATCH_MAX_OBSERVATIONS, EditCaptureAnchor, EditObservationTimeline,
+        clipboard_content_was_added, derive_owned_text_span, edit_watch_crossed_app_boundary,
+        edit_watch_timeouts, edit_watcher_generation_is_current, effective_owned_field_value,
+        extract_owned_text, new_edit_watcher_control,
+    };
 
     #[test]
     fn gives_user_time_to_read_before_first_edit() {
@@ -10575,5 +11020,225 @@ mod edit_watch_timeout_tests {
         assert!(max.as_secs() >= 60);
         assert!(no_edit_idle.as_secs() >= 25);
         assert!(post_edit_idle.as_secs() >= 25);
+    }
+
+    #[test]
+    fn app_switch_closes_the_owned_edit_session() {
+        assert!(!edit_watch_crossed_app_boundary(Some(101), Some(101)));
+        assert!(edit_watch_crossed_app_boundary(Some(101), Some(202)));
+        assert!(!edit_watch_crossed_app_boundary(Some(101), None));
+        assert!(!edit_watch_crossed_app_boundary(None, Some(202)));
+    }
+
+    #[test]
+    fn rapid_dictation_finalizes_old_watch_without_hard_cancel() {
+        let previous = new_edit_watcher_control(7);
+        previous.finalize.cancel();
+        assert!(previous.finalize.is_cancelled());
+        assert!(!previous.cancel.is_cancelled());
+
+        let current = new_edit_watcher_control(8);
+        assert!(!edit_watcher_generation_is_current(Some(&current), 7));
+        assert!(edit_watcher_generation_is_current(Some(&current), 8));
+        assert!(!edit_watcher_generation_is_current(None, 8));
+    }
+
+    #[test]
+    fn detects_clipboard_text_appended_after_dictation() {
+        assert!(clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal. https://example.com/spec",
+            "https://example.com/spec",
+        ));
+    }
+
+    #[test]
+    fn detects_clipboard_text_prepended_before_dictation() {
+        assert!(clipboard_content_was_added(
+            "Please review the proposal.",
+            "Context from the client: Please review the proposal.",
+            "Context from the client:",
+        ));
+    }
+
+    #[test]
+    fn does_not_treat_word_correction_as_clipboard_addition() {
+        assert!(!clipboard_content_was_added(
+            "Please check the CQLite migration.",
+            "Please check the SQLite migration.",
+            "SQLite",
+        ));
+    }
+
+    #[test]
+    fn ignores_short_or_unrelated_clipboard_content() {
+        assert!(!clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal. yes",
+            "yes",
+        ));
+        assert!(!clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal carefully.",
+            "unrelated clipboard text",
+        ));
+    }
+
+    #[test]
+    fn owned_span_comes_from_immediate_pre_and_post_snapshots() {
+        let span = derive_owned_text_span(
+            Some("Hello  Thanks"),
+            "Hello AirNote output Thanks",
+            "AirNote output",
+        )
+        .expect("inserted span");
+        assert_eq!(span.start_chars, 6);
+        assert_eq!(span.len_chars, 14);
+        assert_eq!(span.text, "AirNote output");
+    }
+
+    #[test]
+    fn owned_span_handles_replaced_selection_and_unicode() {
+        let span =
+            derive_owned_text_span(Some("Start पुराना end"), "Start नया text end", "नया text")
+                .expect("replacement span");
+        assert_eq!(span.start_chars, 6);
+        assert_eq!(span.len_chars, 8);
+        assert_eq!(span.text, "नया text");
+    }
+
+    #[test]
+    fn owned_span_without_baseline_requires_unique_output() {
+        assert!(
+            derive_owned_text_span(None, "prefix unique output suffix", "unique output").is_some()
+        );
+        assert!(derive_owned_text_span(None, "same then same", "same").is_none());
+    }
+
+    #[test]
+    fn owned_text_extraction_requires_unchanged_surrounding_baseline() {
+        let span = derive_owned_text_span(
+            Some("Before  After"),
+            "Before AirNote output After",
+            "AirNote output",
+        );
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before AirNote output After".to_string(),
+            owned_span: span,
+        };
+        assert_eq!(
+            extract_owned_text(&anchor, "Before corrected output After"),
+            Ok("corrected output".to_string()),
+        );
+        assert_eq!(
+            extract_owned_text(&anchor, "Changed corrected output After"),
+            Err("prefix_mismatch"),
+        );
+        assert_eq!(
+            extract_owned_text(&anchor, "Before corrected output Changed"),
+            Err("suffix_mismatch"),
+        );
+    }
+
+    #[test]
+    fn observation_timeline_preserves_multiple_owned_edits() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before CQLite and MacOps After".to_string(),
+            owned_span: derive_owned_text_span(
+                Some("Before  After"),
+                "Before CQLite and MacOps After",
+                "CQLite and MacOps",
+            ),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Before SQLite and MacOps After",
+                500,
+            ),
+            Ok(true),
+        );
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Before SQLite and MACOBS After",
+                900,
+            ),
+            Ok(true),
+        );
+        assert_eq!(timeline.total_observations, 2);
+        assert_eq!(timeline.retained_count(), 2);
+        assert_eq!(timeline.elapsed_span_ms(), Some(400));
+        assert_eq!(
+            timeline.latest_field_value(),
+            Some("Before SQLite and MACOBS After"),
+        );
+        assert_eq!(
+            effective_owned_field_value(&anchor, "Before SQLite and MACOBS After", &timeline,),
+            "Before SQLite and MACOBS After",
+        );
+    }
+
+    #[test]
+    fn field_change_finalizes_prior_owned_edit_without_reading_new_field() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: None,
+            post_paste_text: "Original output".to_string(),
+            owned_span: derive_owned_text_span(None, "Original output", "Original output"),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        timeline
+            .record(&anchor, &anchor.post_paste_text, "Corrected output", 500)
+            .unwrap();
+
+        assert_eq!(
+            effective_owned_field_value(&anchor, "Corrected output", &timeline),
+            "Corrected output",
+        );
+    }
+
+    #[test]
+    fn observation_timeline_is_bounded_and_rejects_unowned_changes() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before original After".to_string(),
+            owned_span: derive_owned_text_span(
+                Some("Before  After"),
+                "Before original After",
+                "original",
+            ),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        for index in 0..EDIT_WATCH_MAX_OBSERVATIONS + 5 {
+            let value = format!("Before edit-{index} After");
+            assert_eq!(
+                timeline.record(&anchor, &anchor.post_paste_text, &value, index as u64,),
+                Ok(true),
+            );
+        }
+        assert_eq!(timeline.retained_count(), EDIT_WATCH_MAX_OBSERVATIONS);
+        assert_eq!(timeline.dropped_count(), 5);
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Changed edit outside the anchor After",
+                100,
+            ),
+            Err("prefix_mismatch"),
+        );
     }
 }

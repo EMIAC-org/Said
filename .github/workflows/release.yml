@@ -153,21 +153,13 @@ jobs:
           security find-identity -v -p codesigning
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      # ── macOS: CLI binary + AirNote.app + DMG + notarization ───────────────
-      - name: Build CLI binary (Mac)
-        if: matrix.platform == 'darwin'
-        shell: bash
-        run: |
-          cargo build -p said --release --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/airnote airnote-${{ matrix.target }}
-          chmod +x airnote-${{ matrix.target }}
-
+      # ── macOS: AirNote.app + DMG + notarization ────────────────────────────
       - name: Build airnote-backend sidecar (Mac)
         if: matrix.platform == 'darwin'
         shell: bash
         timeout-minutes: 10
         run: |
-          cargo build -p said-backend --release --target ${{ matrix.target }} --features local-stt,metal
+          cargo build -p said-backend --release --target ${{ matrix.target }}
           mkdir -p desktop/src-tauri/binaries
           cp "target/${{ matrix.target }}/release/airnote-backend" \
             "desktop/src-tauri/binaries/airnote-backend-${{ matrix.target }}"
@@ -303,9 +295,6 @@ jobs:
           echo "DMG is signed, notarized, stapled, and Gatekeeper-verified: $DMG_OUT"
 
       # ── Windows: sidecars + Tauri NSIS installer ───────────────────────────
-      #    The CLI binary (`said`) is skipped on Windows for v3.0 — only the
-      #    desktop app ships. Bring the CLI up in a follow-up if power users
-      #    request it.
       - name: Build AirNote.exe + NSIS installer (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -324,8 +313,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           mkdir -p release-artifacts
-          cp airnote-${{ matrix.target }} release-artifacts/
-
           # DMG for manual download
           cp "target/${{ matrix.target }}/release/bundle/dmg/${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg" release-artifacts/
 

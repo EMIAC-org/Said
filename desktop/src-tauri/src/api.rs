@@ -894,38 +894,6 @@ pub async fn patch_preferences(
     })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolishModelEntry {
-    pub key: String,
-    pub label: String,
-    pub provider: String,
-    pub model_id: String,
-    pub beta_only: bool,
-    pub available: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListPolishModelsResponse {
-    pub models: Vec<PolishModelEntry>,
-    pub selected_model: String,
-}
-
-pub async fn list_polish_models(
-    ep: &BackendEndpoint,
-    beta: bool,
-) -> Result<ListPolishModelsResponse, String> {
-    let url = format!("{}/v1/polish/models?beta={}", ep.url, beta);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("list polish models failed: {e}"))?
-        .json::<ListPolishModelsResponse>()
-        .await
-        .map_err(|e| format!("parse polish models failed: {e}"))
-}
-
 // ── History ───────────────────────────────────────────────────────────────────
 
 pub async fn get_history(
@@ -1655,6 +1623,8 @@ pub struct ClassifyEditResponse {
     pub reason: String,
     pub pending_id: Option<String>,
     #[serde(default)]
+    pub review_session_id: Option<String>,
+    #[serde(default)]
     pub learned: bool,
     #[serde(default)]
     pub notify: bool,
@@ -1683,6 +1653,24 @@ pub struct ClassifyEditResponse {
     /// Changes the user should review before learning.
     #[serde(default)]
     pub review_candidates: Vec<ReviewCandidateResponse>,
+    /// Every deterministic change detected in the final owned text. This is
+    /// intentionally broader than `review_candidates`, which contains only the
+    /// subset eligible for learning or explicit review.
+    #[serde(default)]
+    pub changes: Vec<AnalyzedChangeResponse>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AnalyzedChangeResponse {
+    pub original: String,
+    pub corrected: String,
+    pub reason: String,
+    #[serde(default)]
+    pub should_learn: bool,
+    #[serde(default)]
+    pub confidence: f64,
+    #[serde(default)]
+    pub skip_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1724,6 +1712,8 @@ pub struct ConfirmBatchRequestItem {
     pub corrected: String,
     #[serde(default)]
     pub context: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1736,10 +1726,24 @@ pub struct ConfirmBatchResponse {
     pub server_owned: bool,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct EditReviewSessionResponse {
+    pub id: String,
+    pub recording_id: String,
+    pub ai_output: String,
+    pub user_kept: String,
+    #[serde(default)]
+    pub review_candidates: Vec<ReviewCandidateResponse>,
+    #[serde(default)]
+    pub detected_changes: Vec<AnalyzedChangeResponse>,
+    pub created_at_ms: i64,
+}
+
 pub async fn confirm_batch(
     ep: &BackendEndpoint,
     items: &[ConfirmBatchRequestItem],
     recording_id: Option<&str>,
+    review_session_id: Option<&str>,
 ) -> Result<ConfirmBatchResponse, String> {
     let url = format!("{}/v1/confirm-batch", ep.url);
     let items_json: Vec<serde_json::Value> = items
@@ -1749,12 +1753,14 @@ pub async fn confirm_batch(
                 "original": item.original,
                 "corrected": item.corrected,
                 "context": item.context,
+                "tag": item.tag,
             })
         })
         .collect();
     let body = serde_json::json!({
         "items": items_json,
         "recording_id": recording_id,
+        "review_session_id": review_session_id,
     });
     Client::new()
         .post(&url)
@@ -1767,6 +1773,44 @@ pub async fn confirm_batch(
         .json::<ConfirmBatchResponse>()
         .await
         .map_err(|e| format!("parse confirm batch: {e}"))
+}
+
+pub async fn get_next_edit_review_session(
+    ep: &BackendEndpoint,
+) -> Result<Option<EditReviewSessionResponse>, String> {
+    let url = format!("{}/v1/edit-review-sessions/next", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("get next edit review session failed: {e}"))?
+        .json::<Option<EditReviewSessionResponse>>()
+        .await
+        .map_err(|e| format!("parse next edit review session: {e}"))
+}
+
+pub async fn skip_edit_review_session(
+    ep: &BackendEndpoint,
+    session_id: &str,
+) -> Result<(), String> {
+    let url = format!("{}/v1/edit-review-sessions/{session_id}/skip", ep.url);
+    let response = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("skip edit review session failed: {e}"))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "skip edit review session returned {}",
+            response.status()
+        ))
+    }
 }
 
 /// Classify an edit using the four-way classifier.

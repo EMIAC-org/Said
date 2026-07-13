@@ -186,6 +186,9 @@ def polish_transcript(
     est_tokens = max(len(transcript) // 4, 64)
     max_tokens = min(est_tokens * 2 + 256, 8192)
 
+    completion_field = (
+        "max_completion_tokens" if route.get("provider") == "cerebras" else "max_tokens"
+    )
     payload: dict[str, Any] = {
         "model": route["model"],
         "messages": [
@@ -193,7 +196,7 @@ def polish_transcript(
             {"role": "user", "content": user_message},
         ],
         "temperature": float(route["temperature"]),
-        "max_tokens": max_tokens,
+        completion_field: max_tokens,
         "stream": False,
     }
     if route.get("provider") == "groq" and "gpt-oss" in str(route.get("model", "")):
@@ -201,6 +204,9 @@ def polish_transcript(
         payload["reasoning_effort"] = "low"
     extra = route.get("extra_payload")
     if isinstance(extra, dict):
+        extra = dict(extra)
+        if route.get("provider") == "cerebras" and "max_tokens" in extra:
+            extra["max_completion_tokens"] = extra.pop("max_tokens")
         payload.update(extra)
     url = f"{route['base_url']}/chat/completions"
     req = urllib.request.Request(

@@ -70,7 +70,6 @@ just release 2.1.0                # tag + push (run after bump + commit)
 
 # Cargo only (no Tauri)
 cargo build -p said-backend --release
-cargo build -p said --release     # standalone CLI
 cargo check --workspace           # fast type-check, no codegen
 
 # JS
@@ -88,7 +87,6 @@ cd desktop && npm ci              # reinstall deps
 /crates/core          shared transcript metadata + polish helpers
 /crates/paster        HID typing into focused field + 30s edit watch
 /crates/backend       local Axum daemon — STT, LLM, SQLite, learning pipeline
-/crates/said          standalone CLI binary
 /crates/control-plane Fly.io cloud backend (Postgres) — EXCLUDED from workspace
 /desktop/src-tauri    Tauri v2 shell — spawns airnote-backend, 39 commands
 /desktop/src          React + Vite UI
