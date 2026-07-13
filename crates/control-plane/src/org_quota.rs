@@ -1,20 +1,12 @@
-//! Org-level metering and runtime quota enforcement.
+//! Org-level usage metering.
+//!
+//! Runtime polish is intentionally unlimited. Usage is still recorded for
+//! operational visibility, but it must never block a request.
 
-use axum::{Json, http::StatusCode};
 use chrono::NaiveDate;
-use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::AppState;
-
-pub fn org_daily_polish_limit(tier: &str) -> i32 {
-    match tier.trim().to_ascii_lowercase().as_str() {
-        "enterprise" => 10_000,
-        "team" => 2_000,
-        "free" => 50,
-        _ => 500,
-    }
-}
 
 pub async fn org_tier(state: &AppState, org_id: Uuid) -> Result<String, sqlx::Error> {
     let tier: Option<String> =
@@ -37,32 +29,6 @@ pub async fn org_polish_count_today(state: &AppState, org_id: Uuid) -> Result<i3
     .await?;
 
     Ok(count.unwrap_or(0))
-}
-
-pub async fn check_runtime_quota(
-    state: &AppState,
-    org_id: Uuid,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    let tier = org_tier(state, org_id).await.map_err(|_| quota_db_err())?;
-    let limit = org_daily_polish_limit(&tier);
-    let used = org_polish_count_today(state, org_id)
-        .await
-        .map_err(|_| quota_db_err())?;
-
-    if used >= limit {
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({
-                "error": "quota exceeded",
-                "error_code": "quota_exceeded",
-                "org_id": org_id,
-                "limit": limit,
-                "used": used,
-            })),
-        ));
-    }
-
-    Ok(())
 }
 
 pub async fn record_org_usage(
@@ -91,11 +57,4 @@ pub async fn record_org_usage(
     .execute(&state.db)
     .await?;
     Ok(())
-}
-
-fn quota_db_err() -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({"error": "database error"})),
-    )
 }

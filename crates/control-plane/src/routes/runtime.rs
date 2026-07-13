@@ -48,7 +48,7 @@ use crate::voice_polish_standalone::{
     build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
     build_voice_system_prompt_with_recent, build_voice_user_message,
 };
-use crate::{AppState, auth::AuthUser, memory_hygiene, org_quota, tenant};
+use crate::{AppState, auth::AuthUser, memory_hygiene, tenant};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
@@ -1073,9 +1073,6 @@ pub async fn vocabulary_meaning(
     };
 
     let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
-    if let Some(org_id) = tenant_ctx.active_org_id {
-        org_quota::check_runtime_quota(&state, org_id).await?;
-    }
     let selected_model = normalize_voice_polish_model(&req.selected_model);
     let route = selected_polish_route(&selected_model);
     let active_org_id = tenant_ctx
@@ -2202,9 +2199,6 @@ pub async fn problem_solve(
 ) -> Result<Json<ProblemSolveResponse>, (StatusCode, Json<Value>)> {
     let inbound_start = Instant::now();
     let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
-    if let Some(org_id) = tenant_ctx.active_org_id {
-        org_quota::check_runtime_quota(&state, org_id).await?;
-    }
     let total_start = Instant::now();
     let transcript = req.transcript.trim();
     if transcript.is_empty() {
@@ -2560,9 +2554,6 @@ async fn execute_voice_polish(
 ) -> Result<VoicePolishResponse, (StatusCode, Json<Value>)> {
     let inbound_start = Instant::now();
     let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
-    if let Some(org_id) = tenant_ctx.active_org_id {
-        org_quota::check_runtime_quota(&state, org_id).await?;
-    }
     let tenant_ms = inbound_start.elapsed().as_millis() as i64;
     let total_start = Instant::now();
     let transcript = req.transcript.trim();
