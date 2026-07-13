@@ -46,6 +46,45 @@ python lab/polish_lab.py --compare-models
 | `prompt_system.md` | Editable system prompt |
 | `run_prompt_matrix.py` | Many prompts × few routes (prompt A/B) |
 
+## Manual future-server context loop
+
+Use this before building any retrieval or learning automation. It sends one
+**frozen raw STT transcript** and one manually edited, hardcoded system prompt
+to the configured polish model. It does not simulate aliases, retrieval,
+profiles, or refresh logic.
+
+```bash
+# Create/update a frozen STT cache once.
+python lab/polish_lab.py /path/to/recording.wav
+
+# Edit this file by hand between runs.
+# lab/future_server_prompt.md
+
+# Run a baseline or a small prompt variation against the same transcript.
+python lab/context_prompt_lab.py --from-cache --label baseline
+python lab/context_prompt_lab.py --from-cache --label term-plus-type
+
+# Or test a copied historical raw transcript directly.
+python lab/context_prompt_lab.py \
+  --transcript "hello bhai main corps ka IPO check karo" \
+  --expected "Hello bhai, MACOBS ka IPO check karo." \
+  --label macobs-context
+```
+
+Each run snapshots the exact prompt, user message, transcript, response, and
+optional user-kept expectation to `lab/context_prompt_runs/` (gitignored). Keep
+the transcript fixed while changing one context hypothesis at a time:
+
+1. no context;
+2. canonical term only;
+3. add type;
+4. add one usage summary or example;
+5. add a confirmed heard-form clue;
+6. test stale/unrelated context as a negative control.
+
+Do not automate retrieval or refresh logic until the manual prompt iterations
+show which context blocks improve recovery without causing unsupported terms.
+
 ## Model catalog
 
 Edit `model_catalog.py` to change candidates.

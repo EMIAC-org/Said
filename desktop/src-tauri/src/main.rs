@@ -3911,34 +3911,6 @@ fn schedule_release_mic_cleanup(
     });
 }
 
-/// Best-effort fetch of the user's starred vocabulary keyterms from the local
-/// backend, used to bias the on-device Swift STT model toward proper nouns it
-/// would otherwise mangle (Kubernetes, n8n, EMIAC, names). Tight timeout because
-/// this runs on the recording-start path — a slow or failed fetch returns no
-/// terms (no biasing) rather than delaying dictation.
-#[cfg(target_os = "macos")]
-async fn fetch_stt_keyterms(ep: &BackendEndpoint) -> Vec<String> {
-    #[derive(serde::Deserialize)]
-    struct BiasKeyterms {
-        #[serde(default)]
-        keyterms: Vec<String>,
-    }
-    match reqwest::Client::new()
-        .get(format!("{}/v1/stt/bias", ep.url))
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_millis(400))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => resp
-            .json::<BiasKeyterms>()
-            .await
-            .map(|b| b.keyterms)
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
 /// Start recording. Called when user presses Caps Lock (or taps the button).
 fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     do_start_recording_inner(shared, app, true);

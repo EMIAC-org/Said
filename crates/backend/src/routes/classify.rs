@@ -2797,64 +2797,6 @@ fn infer_format_rule(polish: &str, kept: &str) -> String {
     }
 }
 
-/// Generate a meaning for a term using Groq (simple prompt, no classification).
-async fn generate_meaning_for_term(
-    http: &reqwest::Client,
-    groq_key: &str,
-    term: &str,
-    context: &str,
-) -> Option<String> {
-    use serde_json::json;
-
-    let prompt = format!(
-        "Given this sentence: \"{context}\"\n\
-         The term \"{term}\" is a proper noun, technical term, or brand name.\n\
-         Draft a concise 1-sentence meaning for \"{term}\" based on the context.\n\
-         Return ONLY the meaning text, nothing else."
-    );
-
-    let body = json!({
-        "model": "llama-3.1-8b-instant",
-        "temperature": 0.1,
-        "max_tokens": 100,
-        "messages": [
-            { "role": "user", "content": prompt }
-        ]
-    });
-
-    let resp = http
-        .post("https://api.groq.com/openai/v1/chat/completions")
-        .header("Authorization", format!("Bearer {groq_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let json: serde_json::Value = resp.json().await.ok()?;
-    let meaning = json
-        .get("choices")?
-        .get(0)?
-        .get("message")?
-        .get("content")?
-        .as_str()?
-        .trim()
-        .trim_matches('"')
-        .to_string();
-
-    if meaning.is_empty() {
-        None
-    } else {
-        info!("[classify-det] groq meaning for {term:?}: {meaning:?}");
-        Some(meaning)
-    }
-}
-
 // ── Deterministic edit pair extraction (used by Step 5) ─────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
