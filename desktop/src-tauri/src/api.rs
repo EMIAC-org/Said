@@ -5,7 +5,7 @@
 
 use futures::StreamExt;
 use reqwest::Client;
-use said_core::transcript::TranscriptMeta;
+use said_core::{text::Utf8LineBuffer, transcript::TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
@@ -657,7 +657,7 @@ where
     S: StreamExt<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
     F: FnMut(PolishEvent),
 {
-    let mut buf = String::new();
+    let mut line_buffer = Utf8LineBuffer::default();
     let mut done_event: Option<PolishDone> = None;
     let mut last_error: Option<String> = None;
     // Track the most recently seen `event:` line so we can dispatch correctly
@@ -665,12 +665,14 @@ where
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
 
-        // Process complete SSE lines
-        while let Some(nl) = buf.find('\n') {
-            let line = buf[..nl].trim().to_string();
-            buf = buf[nl + 1..].to_string();
+        // HTTP chunks can split a multi-byte UTF-8 character. Decode only
+        // after a complete SSE line has arrived.
+        for raw_line in line_buffer
+            .push(&chunk)
+            .map_err(|e| format!("invalid UTF-8 in SSE stream: {e}"))?
+        {
+            let line = raw_line.trim().to_string();
 
             if line.is_empty() {
                 event_name.clear();

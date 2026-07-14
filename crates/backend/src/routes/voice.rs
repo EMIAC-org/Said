@@ -18,7 +18,10 @@ use axum::{
     },
 };
 use futures::StreamExt;
-use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
+use said_core::{
+    text::Utf8LineBuffer,
+    transcript::{TranscriptMeta, TranscriptOrigin},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::convert::Infallible;
@@ -1214,7 +1217,7 @@ async fn run_server_runtime_voice_stream(
     }
 
     let mut byte_stream = resp.bytes_stream();
-    let mut buffer = String::new();
+    let mut line_buffer = Utf8LineBuffer::default();
     let mut event_name = String::from("message");
     let mut data_lines: Vec<String> = Vec::new();
     let mut parsed_done: Option<ServerRuntimeVoiceResponse> = None;
@@ -1223,11 +1226,13 @@ async fn run_server_runtime_voice_stream(
 
     while let Some(chunk) = byte_stream.next().await {
         let chunk = chunk.map_err(|e| format!("server runtime stream read failed: {e}"))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-        while let Some(newline_pos) = buffer.find('\n') {
-            let mut line = buffer[..newline_pos].to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+        // HTTP chunks can split a multi-byte UTF-8 character. Decode only
+        // after a complete SSE line has arrived.
+        for mut line in line_buffer
+            .push(&chunk)
+            .map_err(|e| format!("server runtime stream contained invalid UTF-8: {e}"))?
+        {
             if line.ends_with('\r') {
                 line.pop();
             }
