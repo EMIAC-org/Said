@@ -878,23 +878,11 @@ struct WhisperCppConfig {
     romanize: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct DictationLocalAsrConfig {
-    pub model: PathBuf,
-    pub language: String,
-    pub max_context_tokens: i32,
-    pub prompt: Option<String>,
-    pub suppress_non_speech: bool,
-    pub no_fallback: bool,
-    pub no_speech_threshold: Option<f32>,
-    pub logprob_threshold: Option<f32>,
-    pub entropy_threshold: Option<f32>,
-    pub vad_model: Option<PathBuf>,
-    pub vad_threshold: f32,
-    pub vad_speech_pad_ms: i32,
-    pub vad_min_silence_ms: i32,
-    pub romanize: bool,
-}
+// Resolved per-request dictation settings live in the shared `asr-core` crate so
+// the desktop app and the isolated GPU worker share one definition. Re-exported
+// here so existing `meeting_engine::DictationLocalAsrConfig` references (and the
+// `resolve_dictation_local_asr_config` builder below) keep working unchanged.
+pub use asr_core::DictationLocalAsrConfig;
 
 #[derive(Clone, Debug)]
 struct TranscriptPaths {

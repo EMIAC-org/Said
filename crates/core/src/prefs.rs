@@ -64,6 +64,18 @@ pub struct DesktopPrefs {
     /// Read synchronously by the recording pipeline before each capture.
     #[serde(default)]
     pub browser_context_enabled: bool,
+
+    /// Windows dictation STT provider: `"auto"` (default — on-device when this
+    /// machine has a usable GPU and the local model, hosted otherwise),
+    /// `"local"`, or `"hosted"`. Read synchronously by the dictation pipeline
+    /// per clip, so the Settings toggle applies to the very next dictation.
+    /// macOS ignores it (dictation is always on-device there).
+    #[serde(default = "default_dictation_stt")]
+    pub dictation_stt: String,
+}
+
+fn default_dictation_stt() -> String {
+    "auto".into()
 }
 
 fn default_channel() -> String {
@@ -79,6 +91,7 @@ impl Default for DesktopPrefs {
             launch_at_login: false,
             beta_mode: false,
             browser_context_enabled: false,
+            dictation_stt: default_dictation_stt(),
         }
     }
 }
@@ -139,6 +152,7 @@ mod tests {
         assert!(!p.message_polish_mode);
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
+        assert_eq!(p.dictation_stt, "auto");
 
         let partial = r#"{ "sentry_disabled": true }"#;
         let p: DesktopPrefs = serde_json::from_str(partial).unwrap();
@@ -158,6 +172,7 @@ mod tests {
             launch_at_login: true,
             beta_mode: true,
             browser_context_enabled: true,
+            dictation_stt: "hosted".into(),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
@@ -167,5 +182,6 @@ mod tests {
         assert!(back.launch_at_login);
         assert!(back.beta_mode);
         assert!(back.browser_context_enabled);
+        assert_eq!(back.dictation_stt, "hosted");
     }
 }

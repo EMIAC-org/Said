@@ -21,10 +21,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_A, VK_BACK, VK_C, VK_CONTROL, VK_V,
 };
 
-use crate::win_paster::{
-    exact_match_needles, is_high_surrogate, is_low_surrogate, text_to_clipboard_utf16,
-    text_to_utf16_units,
-};
+use crate::win_paster::{exact_match_needles, text_to_clipboard_utf16, text_to_utf16_units};
 
 // ── Permissions ───────────────────────────────────────────────────────────────
 //
@@ -262,14 +259,6 @@ fn unicode_input(unit: u16, keyup: bool) -> INPUT {
     }
 }
 
-/// Send a single down+up pair for one UTF-16 code unit.
-fn send_unicode_unit(unit: u16) {
-    let inputs = [unicode_input(unit, false), unicode_input(unit, true)];
-    unsafe {
-        SendInput(&inputs, size_of::<INPUT>() as i32);
-    }
-}
-
 /// Synthesize a single keystroke (VK code) with both down and up events.
 fn send_vk(vk: VIRTUAL_KEY, keydown: bool) {
     let mut flags = KEYBD_EVENT_FLAGS(0);
@@ -308,13 +297,36 @@ pub fn type_text(text: &str) -> Result<bool, String> {
     if text.is_empty() {
         return Ok(false);
     }
+
+    // Build every down+up event up front and inject them as atomic batches via a
+    // few SendInput calls. The previous one-SendInput-per-character loop
+    // interleaved with real user input and dropped/reordered characters in fast
+    // or busy apps — which is precisely why long inserts used to fall back to a
+    // clipboard paste (and hit the clipboard-restore race). Batched injection is
+    // reliable, so direct typing is the default and the clipboard stays out of
+    // the common path. Surrogate pairs need no special flag — Windows reassembles
+    // them from the ordered KEYEVENTF_UNICODE events.
     let units = text_to_utf16_units(text);
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(units.len() * 2);
     for &unit in &units {
-        // Each UTF-16 unit is sent independently. Windows reassembles
-        // surrogate pairs on the receiving end based on the order — we just
-        // emit them in sequence.
-        let _ = is_high_surrogate(unit) || is_low_surrogate(unit); // doc-only; see win_paster
-        send_unicode_unit(unit);
+        inputs.push(unicode_input(unit, false));
+        inputs.push(unicode_input(unit, true));
+    }
+
+    // SendInput is atomic per call relative to other input; cap the per-call size
+    // so a very long dictation still injects in a bounded number of syscalls.
+    const MAX_EVENTS_PER_CALL: usize = 512;
+    for batch in inputs.chunks(MAX_EVENTS_PER_CALL) {
+        let injected = unsafe { SendInput(batch, size_of::<INPUT>() as i32) };
+        if injected as usize != batch.len() {
+            // SendInput refuses injection into a higher-integrity (elevated)
+            // target window. Report failure so the caller falls back to a
+            // clipboard paste rather than silently dropping the text.
+            return Err(format!(
+                "SendInput injected {injected}/{} events (blocked by target?)",
+                batch.len()
+            ));
+        }
     }
     Ok(true)
 }
@@ -497,6 +509,58 @@ fn write_clipboard_unicode(text: &str) -> Result<(), String> {
     write_clipboard_format_bytes(CF_UNICODETEXT.0 as u32, &bytes)
 }
 
+/// Insert `text` at the caret preferring direct keystroke injection, using a
+/// clipboard paste only when injection is unavailable/blocked. Mirrors the macOS
+/// `type_or_paste_at_cursor` so the reconcile/replace paths never reach for the
+/// clipboard on the common path.
+fn type_or_paste_at_cursor(text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    match type_text(text) {
+        Ok(true) => Ok(()),
+        Ok(false) => paste_via_clipboard(text, false),
+        Err(e) => {
+            tracing::warn!("[paster] direct typing failed ({e}); clipboard fallback");
+            paste_via_clipboard(text, false)
+        }
+    }
+}
+
+/// Block until a clipboard paste has been consumed by the focused app, so the
+/// caller can safely restore the user's previous clipboard.
+///
+/// Instead of a fixed sleep — which races a slow/busy target and lets the restore
+/// win, so the app pastes the *previous* clipboard contents — poll the focused
+/// field via UIAutomation until it reflects `pasted`, bounded by a hard timeout.
+/// When the field can't be read (password fields, a11y-blind controls) fall back
+/// to a short conservative delay.
+fn wait_until_paste_consumed(pasted: &str) {
+    use std::time::{Duration, Instant};
+    const FLOOR_MS: u64 = 40; // let the synthetic Ctrl+V reach the queue first
+    const POLL_MS: u64 = 25;
+    const MAX_WAIT_MS: u64 = 800; // hard ceiling so we never hang the caller
+    const BLIND_MS: u64 = 300; // used when the field isn't UIA-readable
+
+    std::thread::sleep(Duration::from_millis(FLOOR_MS));
+    let start = Instant::now();
+    loop {
+        match crate::uia::value(true, None, 60) {
+            Some(v) if v.contains(pasted) => return, // confirmed landed
+            Some(_) => {}                            // readable, not there yet
+            None => {
+                if start.elapsed() >= Duration::from_millis(BLIND_MS) {
+                    return;
+                }
+            }
+        }
+        if start.elapsed() >= Duration::from_millis(MAX_WAIT_MS) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(POLL_MS));
+    }
+}
+
 /// Replace the current clipboard contents with `text`, send Ctrl+V to the
 /// focused app, then restore the original clipboard.
 fn paste_via_clipboard(text: &str, select_all_first: bool) -> Result<(), String> {
@@ -524,10 +588,11 @@ fn paste_via_clipboard(text: &str, select_all_first: bool) -> Result<(), String>
     // 4. Send Ctrl+V.
     send_chord(VK_CONTROL, VK_V);
 
-    // 5. Give the receiving app a moment to consume the clipboard before
-    //    we restore the prior contents (otherwise the restore races the
-    //    paste and the wrong text lands).
-    std::thread::sleep(std::time::Duration::from_millis(80));
+    // 5. Wait until the paste has actually landed in the focused field before
+    //    restoring the prior clipboard — confirmed via UIAutomation rather than a
+    //    fixed sleep. The old 80ms guess is exactly what let a slow/busy target
+    //    read the *restored* (old) clipboard and paste the wrong text.
+    wait_until_paste_consumed(text);
 
     restore_clipboard(saved);
     Ok(())
@@ -544,14 +609,14 @@ pub fn paste_replacing(text: &str) -> Result<(), String> {
 pub fn replace_typed_suffix(typed_text: &str, replacement: &str) -> Result<(), String> {
     let chars_to_delete = typed_text.chars().count();
     if chars_to_delete == 0 {
-        return paste(replacement);
+        return type_or_paste_at_cursor(replacement);
     }
     for _ in 0..chars_to_delete {
         send_vk(VK_BACK, true);
         send_vk(VK_BACK, false);
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    paste(replacement)
+    type_or_paste_at_cursor(replacement)
 }
 
 pub fn reconcile_typed_text(typed_text: &str, replacement: &str) -> Result<bool, String> {
@@ -581,7 +646,7 @@ fn replace_selected_text(replacement: &str) -> Result<(), String> {
         delete_selection();
         Ok(())
     } else {
-        paste(replacement)
+        type_or_paste_at_cursor(replacement)
     }
 }
 
