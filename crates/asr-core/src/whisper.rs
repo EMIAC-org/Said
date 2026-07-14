@@ -121,9 +121,7 @@ impl WhisperEngine {
 
     #[must_use]
     pub fn is_loaded_for(&self, model: &Path) -> bool {
-        self.loaded
-            .as_ref()
-            .is_some_and(|l| l.model_path == model)
+        self.loaded.as_ref().is_some_and(|l| l.model_path == model)
     }
 
     /// Whether any model is currently resident (used for idle-unload logging).
@@ -364,7 +362,10 @@ fn audio_ctx_for_secs(secs: f32) -> i32 {
 fn looks_degenerate(text: &str) -> bool {
     let words: Vec<String> = text
         .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
         .filter(|w| !w.is_empty())
         .collect();
     if words.len() < 8 {

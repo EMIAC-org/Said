@@ -197,7 +197,10 @@ mod tests {
             classify_status(401, ""),
             HostedSttError::Auth { status: 401 }
         ));
-        assert!(matches!(classify_status(429, ""), HostedSttError::RateLimited));
+        assert!(matches!(
+            classify_status(429, ""),
+            HostedSttError::RateLimited
+        ));
         assert!(matches!(
             classify_status(502, ""),
             HostedSttError::Service { status: 502 }

@@ -57,7 +57,7 @@ export interface AppSnapshot {
 // ── Backend types (mirrored from airnote-backend) ────────────────────────────
 
 export interface SttRuntimeInfo {
-  /** Provider the next dictation will use: "deepinfra" or "on-device/whisper". */
+  /** Provider the next dictation will use: deepinfra, Whisper, or Nemotron. */
   dictation_provider: string;
   /** Dictation can transcribe right now (model present / key baked). */
   dictation_ready: boolean;
@@ -69,6 +69,10 @@ export interface SttRuntimeInfo {
   whisper_installed: boolean;
   whisper_ready: boolean;
   whisper_vad_installed: boolean;
+  /** Selected implementation when dictation is local. */
+  local_stt_model: string;
+  /** Whether the optional Q8 Nemotron model is installed. */
+  nemotron_installed: boolean;
 }
 
 export interface Preferences {

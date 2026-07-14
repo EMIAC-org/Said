@@ -1087,6 +1087,8 @@ export interface DesktopPrefs {
   browser_context_enabled: boolean;
   /** Windows dictation STT provider; applies to the next dictation. */
   dictation_stt: "auto" | "local" | "hosted";
+  /** Local ASR implementation. Meetings always retain Oriserve Whisper. */
+  local_stt_model: "oriserve" | "nemotron";
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -1099,6 +1101,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       beta_mode: false,
       browser_context_enabled: false,
       dictation_stt: "auto",
+      local_stt_model: "oriserve",
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");

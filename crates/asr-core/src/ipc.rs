@@ -74,7 +74,10 @@ pub fn write_message<W: Write, M: Serialize>(w: &mut W, msg: &M) -> io::Result<(
     let bytes = bincode::serialize(msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("encode: {e}")))?;
     if bytes.len() > MAX_FRAME_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     w.write_all(&(bytes.len() as u32).to_le_bytes())?;
     w.write_all(&bytes)?;
@@ -88,7 +91,10 @@ pub fn read_message<R: Read, M: DeserializeOwned>(r: &mut R) -> io::Result<M> {
     r.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf) as usize;
     if len > MAX_FRAME_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;

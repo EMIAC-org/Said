@@ -2,6 +2,7 @@
 
 mod api;
 mod app_identity; // resolve target_app pid → bundle-id/exe + app icon (App Identity Service)
+mod asr; // adaptive, process-isolated on-device dictation ASR (GPU worker + CPU safety)
 mod backend;
 mod backend_guard;
 mod browser_context; // opt-in: active browser tab → site host (AppleScript, macOS)
@@ -14,9 +15,9 @@ mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plan
 mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
-mod asr; // adaptive, process-isolated on-device dictation ASR (GPU worker + CPU safety)
 mod hud_manager;
 mod meeting_engine;
+mod nemotron; // optional experimental GGUF local-ASR provider; never used by Meetings
 mod notch_sidecar;
 mod whisper_dictation_stream; // crash-recovery PCM tap during on-device dictation (batch-only STT)
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
@@ -2999,7 +3000,7 @@ async fn get_preferences(backend: State<'_, BackendState>) -> Result<api::Prefer
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
     /// Provider the next dictation will use (see dictation_stt.rs):
-    /// "deepinfra" or "on-device/whisper".
+    /// "deepinfra", "on-device/whisper", or "on-device/nemotron".
     dictation_provider: &'static str,
     /// Dictation can transcribe right now (model present / key baked).
     dictation_ready: bool,
@@ -3011,6 +3012,10 @@ struct SttRuntimeInfo {
     whisper_installed: bool,
     whisper_ready: bool,
     whisper_vad_installed: bool,
+    /// Selected local ASR implementation: "oriserve" or "nemotron".
+    local_stt_model: String,
+    /// Whether the optional Q8 Nemotron model is fully present on disk.
+    nemotron_installed: bool,
 }
 
 #[tauri::command]
@@ -3018,14 +3023,17 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
     let whisper_installed = dictation_stt::model_installed();
     let whisper_ready = whisper_installed && dictation_stt::runtime_ready();
     let whisper_vad_installed = dictation_stt::vad_installed();
+    let desktop_prefs = said_core::prefs::load();
     let info = SttRuntimeInfo {
         dictation_provider: dictation_stt::provider_name(),
         dictation_ready: dictation_stt::dictation_ready(),
-        dictation_stt_pref: said_core::prefs::load().dictation_stt,
+        dictation_stt_pref: desktop_prefs.dictation_stt,
         dictation_auto_provider: dictation_stt::auto_provider_name(),
         whisper_installed,
         whisper_ready,
         whisper_vad_installed,
+        local_stt_model: desktop_prefs.local_stt_model,
+        nemotron_installed: nemotron::installed(),
     };
 
     if let Ok(ep) = get_endpoint(&backend) {
@@ -7183,12 +7191,22 @@ fn set_desktop_prefs(
     if previous.launch_at_login != prefs.launch_at_login {
         apply_launch_at_login(&app, prefs.launch_at_login)?;
     }
-    if previous.dictation_stt != prefs.dictation_stt {
+    if previous.dictation_stt != prefs.dictation_stt
+        || previous.local_stt_model != prefs.local_stt_model
+    {
+        if previous.local_stt_model == "nemotron" && prefs.local_stt_model != "nemotron" {
+            // The cache owns roughly the model's mapped memory. Releasing it
+            // on switch keeps the experimental option from consuming RAM
+            // after the user has returned to the stable Whisper path.
+            nemotron::unload();
+        }
         // Warm the newly selected provider off-thread so the next dictation
         // doesn't pay its setup cost (model load / HTTP client).
         tracing::info!(
             from = %previous.dictation_stt,
             to = %prefs.dictation_stt,
+            previous_local_model = %previous.local_stt_model,
+            local_model = %prefs.local_stt_model,
             "[prefs] dictation STT provider changed — prewarming"
         );
         std::thread::Builder::new()
@@ -10728,6 +10746,9 @@ fn main() {
             // Backed by `<data_dir>/desktop_prefs.json`, not the SQLite preferences DB.
             get_desktop_prefs,
             set_desktop_prefs,
+            nemotron::nemotron_model_status,
+            nemotron::download_nemotron_model,
+            nemotron::delete_nemotron_model,
             // Developer log viewer
             read_backend_log,
             backend_log_location,

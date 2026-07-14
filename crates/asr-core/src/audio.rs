@@ -49,7 +49,11 @@ fn decode_to_mono_16k(wav_data: &[u8]) -> Result<Vec<f32>, AsrError> {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
-        other => return Err(AsrError::BadWav(format!("unsupported WAV bit depth: {other}"))),
+        other => {
+            return Err(AsrError::BadWav(format!(
+                "unsupported WAV bit depth: {other}"
+            )));
+        }
     };
 
     let channels = channels.max(1);

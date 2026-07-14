@@ -36,7 +36,7 @@ pub struct PreTranscript {
 }
 
 /// Stable identifier of the provider the next dictation will use (status UI,
-/// logs): `"on-device/whisper"` or `"deepinfra"`.
+/// logs): `"on-device/whisper"`, `"on-device/nemotron"`, or `"deepinfra"`.
 pub fn provider_name() -> &'static str {
     provider::name()
 }
@@ -94,18 +94,78 @@ mod on_device {
 
     use super::PreTranscript;
 
-    pub(super) const NAME: &str = "on-device/whisper";
+    const WHISPER_NAME: &str = "on-device/whisper";
+    const NEMOTRON_NAME: &str = "on-device/nemotron";
+
+    fn uses_nemotron() -> bool {
+        said_core::prefs::load().local_stt_model == "nemotron"
+    }
+
+    pub(super) fn name() -> &'static str {
+        if uses_nemotron() {
+            NEMOTRON_NAME
+        } else {
+            WHISPER_NAME
+        }
+    }
 
     pub(super) fn ready() -> bool {
-        super::model_installed() && super::runtime_ready()
+        if uses_nemotron() {
+            crate::nemotron::installed()
+        } else {
+            super::model_installed() && super::runtime_ready()
+        }
     }
 
     /// Pre-load the whisper model so the first utterance skips the model load.
     pub(super) fn prewarm() {
-        crate::asr::prewarm_default_language();
+        if uses_nemotron() {
+            crate::nemotron::prewarm();
+        } else {
+            crate::asr::prewarm_default_language();
+        }
     }
 
     pub(super) async fn transcribe(wav: &[u8], language: &str) -> Result<PreTranscript, String> {
+        if uses_nemotron() {
+            if !crate::nemotron::installed() {
+                return Err(
+                    "Nemotron is selected but not installed. Download it in Settings → Speech recognition."
+                        .into(),
+                );
+            }
+
+            let wav = wav.to_vec();
+            let language = language.to_string();
+            let output = tokio::task::spawn_blocking(move || {
+                crate::nemotron::transcribe_wav_bytes(&wav, &language)
+            })
+            .await
+            .map_err(|error| format!("Nemotron speech worker failed: {error}"))??;
+            let word_count = output.transcript.split_whitespace().count();
+            tracing::info!(
+                duration_ms = output.duration_ms,
+                language = output.language.as_deref().unwrap_or("unreported"),
+                model = crate::nemotron::MODEL_NAME,
+                "[dictation_stt] Nemotron local ASR complete"
+            );
+            return Ok(PreTranscript {
+                transcript: output.transcript.clone(),
+                meta: TranscriptMeta {
+                    enriched_transcript: output.transcript,
+                    confidence: 1.0,
+                    mean_word_confidence: 1.0,
+                    low_confidence_count: 0,
+                    word_count,
+                    languages: output.language.into_iter().collect(),
+                    model: format!("local:{}", crate::nemotron::MODEL_FILE),
+                    duration_ms: output.duration_ms,
+                    origin: TranscriptOrigin::DictationLocal,
+                    ..TranscriptMeta::default()
+                },
+            });
+        }
+
         if !super::model_installed() {
             return Err(
                 "Local speech model is required. Download the on-device model in Settings.".into(),
@@ -221,7 +281,11 @@ mod provider {
             tracing::info!(
                 gpu_active = gpu,
                 model_installed = model,
-                resolved = if selected == Selected::OnDevice { "on-device" } else { "hosted" },
+                resolved = if selected == Selected::OnDevice {
+                    "on-device"
+                } else {
+                    "hosted"
+                },
                 "[dictation_stt] Auto provider resolved for this session"
             );
             selected
@@ -230,7 +294,7 @@ mod provider {
 
     fn name_of(s: Selected) -> &'static str {
         match s {
-            Selected::OnDevice => super::on_device::NAME,
+            Selected::OnDevice => super::on_device::name(),
             Selected::Hosted => HOSTED_NAME,
         }
     }
@@ -376,11 +440,11 @@ mod provider {
     use super::PreTranscript;
 
     pub(super) fn name() -> &'static str {
-        super::on_device::NAME
+        super::on_device::name()
     }
 
     pub(super) fn auto_name() -> &'static str {
-        super::on_device::NAME
+        super::on_device::name()
     }
 
     pub(super) fn ready() -> bool {

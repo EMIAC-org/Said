@@ -72,10 +72,20 @@ pub struct DesktopPrefs {
     /// macOS ignores it (dictation is always on-device there).
     #[serde(default = "default_dictation_stt")]
     pub dictation_stt: String,
+
+    /// Selected implementation when dictation runs locally.  This deliberately
+    /// does not affect Meetings, which are permanently pinned to the small
+    /// Oriserve Whisper model.
+    #[serde(default = "default_local_stt_model")]
+    pub local_stt_model: String,
 }
 
 fn default_dictation_stt() -> String {
     "auto".into()
+}
+
+fn default_local_stt_model() -> String {
+    "oriserve".into()
 }
 
 fn default_channel() -> String {
@@ -92,6 +102,7 @@ impl Default for DesktopPrefs {
             beta_mode: false,
             browser_context_enabled: false,
             dictation_stt: default_dictation_stt(),
+            local_stt_model: default_local_stt_model(),
         }
     }
 }
@@ -153,6 +164,7 @@ mod tests {
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
         assert_eq!(p.dictation_stt, "auto");
+        assert_eq!(p.local_stt_model, "oriserve");
 
         let partial = r#"{ "sentry_disabled": true }"#;
         let p: DesktopPrefs = serde_json::from_str(partial).unwrap();
@@ -161,6 +173,7 @@ mod tests {
         assert!(!p.message_polish_mode);
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
+        assert_eq!(p.local_stt_model, "oriserve");
     }
 
     #[test]
@@ -173,6 +186,7 @@ mod tests {
             beta_mode: true,
             browser_context_enabled: true,
             dictation_stt: "hosted".into(),
+            local_stt_model: "nemotron".into(),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
@@ -183,5 +197,6 @@ mod tests {
         assert!(back.beta_mode);
         assert!(back.browser_context_enabled);
         assert_eq!(back.dictation_stt, "hosted");
+        assert_eq!(back.local_stt_model, "nemotron");
     }
 }

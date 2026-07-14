@@ -203,7 +203,9 @@ impl WorkerClient {
                 // Stray late acks (e.g. a prewarm) — ignore and keep waiting.
                 Ok(_) => continue,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(WorkerError::Dead("worker transcription timed out".to_string()));
+                    return Err(WorkerError::Dead(
+                        "worker transcription timed out".to_string(),
+                    ));
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(WorkerError::Dead("worker exited mid-request".to_string()));
