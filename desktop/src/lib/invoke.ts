@@ -1085,6 +1085,8 @@ export interface DesktopPrefs {
   launch_at_login: boolean;
   beta_mode: boolean;
   browser_context_enabled: boolean;
+  /** Windows dictation STT provider; applies to the next dictation. */
+  dictation_stt: "auto" | "local" | "hosted";
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -1096,6 +1098,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       launch_at_login: false,
       beta_mode: false,
       browser_context_enabled: false,
+      dictation_stt: "auto",
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");

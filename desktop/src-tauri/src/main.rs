@@ -2,6 +2,7 @@
 
 mod api;
 mod app_identity; // resolve target_app pid → bundle-id/exe + app icon (App Identity Service)
+mod asr; // adaptive, process-isolated on-device dictation ASR (GPU worker + CPU safety)
 mod backend;
 mod backend_guard;
 mod browser_context; // opt-in: active browser tab → site host (AppleScript, macOS)
@@ -15,7 +16,6 @@ mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
 mod hud_manager;
-mod local_asr;
 mod meeting_engine;
 mod notch_sidecar;
 mod whisper_dictation_stream; // crash-recovery PCM tap during on-device dictation (batch-only STT)
@@ -877,16 +877,16 @@ struct EditTargetState(Mutex<Option<i32>>);
 /// "MACOBS", the LLM knows "main corps" is likely "MACOBS").
 struct ScreenContextState(Mutex<Option<String>>);
 
-async fn local_pre_transcript(
+async fn stt_pre_transcript(
     wav: &[u8],
     language: &str,
-    prompt: Option<String>,
-) -> Result<dictation_stt::LocalTranscript, String> {
+) -> Result<dictation_stt::PreTranscript, String> {
     let started = std::time::Instant::now();
-    let transcript = dictation_stt::transcribe_wav_bytes(wav, language, prompt).await?;
+    let transcript = dictation_stt::transcribe_wav_bytes(wav, language).await?;
     tracing::info!(
-        "[finish] local speech transcript ready in {}ms chars={} words={}",
+        "[finish] speech transcript ready in {}ms provider={} chars={} words={}",
         started.elapsed().as_millis(),
+        dictation_stt::provider_name(),
         transcript.transcript.len(),
         transcript.transcript.split_whitespace().count()
     );
@@ -2277,16 +2277,17 @@ fn toggle_message_polish_mode(app: &tauri::AppHandle) {
     );
 }
 
+/// Insert dictation output into the focused field. Delegates the direct-first /
+/// clipboard-fallback policy to `paster::insert_text` (one source of truth). The
+/// returned bool is `used_clipboard`, which the edit-watcher uses to decide how
+/// to reconcile later.
 fn insert_text_prefer_direct(label: &str, text: &str) -> (Result<(), String>, bool) {
-    match paster::type_text(text) {
-        Ok(true) => (Ok(()), false),
-        Ok(false) => {
-            tracing::warn!("[{label}] direct typing unavailable — falling back to clipboard paste");
-            (paster::paste(text), true)
-        }
+    match paster::insert_text(text) {
+        Ok(paster::InsertMethod::Typed) => (Ok(()), false),
+        Ok(paster::InsertMethod::Clipboard) => (Ok(()), true),
         Err(e) => {
-            tracing::warn!("[{label}] direct typing failed: {e} — falling back to clipboard paste");
-            (paster::paste(text), true)
+            tracing::warn!("[{label}] text insert failed: {e}");
+            (Err(e), true)
         }
     }
 }
@@ -2997,6 +2998,16 @@ async fn get_preferences(backend: State<'_, BackendState>) -> Result<api::Prefer
 
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
+    /// Provider the next dictation will use (see dictation_stt.rs):
+    /// "deepinfra" or "on-device/whisper".
+    dictation_provider: &'static str,
+    /// Dictation can transcribe right now (model present / key baked).
+    dictation_ready: bool,
+    /// The user's provider preference on Windows: "auto" | "local" | "hosted".
+    dictation_stt_pref: String,
+    /// What "auto" resolves to on this machine (GPU + model capability probe).
+    dictation_auto_provider: &'static str,
+    // On-device whisper status — powers meetings everywhere and dictation on macOS.
     whisper_installed: bool,
     whisper_ready: bool,
     whisper_vad_installed: bool,
@@ -3007,22 +3018,20 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
     let whisper_installed = dictation_stt::model_installed();
     let whisper_ready = whisper_installed && dictation_stt::runtime_ready();
     let whisper_vad_installed = dictation_stt::vad_installed();
+    let info = SttRuntimeInfo {
+        dictation_provider: dictation_stt::provider_name(),
+        dictation_ready: dictation_stt::dictation_ready(),
+        dictation_stt_pref: said_core::prefs::load().dictation_stt,
+        dictation_auto_provider: dictation_stt::auto_provider_name(),
+        whisper_installed,
+        whisper_ready,
+        whisper_vad_installed,
+    };
 
-    match get_endpoint(&backend) {
-        Ok(ep) => {
-            let _ = api::get_preferences(&ep).await;
-            Ok(SttRuntimeInfo {
-                whisper_installed,
-                whisper_ready,
-                whisper_vad_installed,
-            })
-        }
-        Err(_) => Ok(SttRuntimeInfo {
-            whisper_installed,
-            whisper_ready,
-            whisper_vad_installed,
-        }),
+    if let Ok(ep) = get_endpoint(&backend) {
+        let _ = api::get_preferences(&ep).await;
     }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -3912,38 +3921,6 @@ fn schedule_release_mic_cleanup(
     });
 }
 
-/// Best-effort fetch of a tiny vocabulary prompt for local Whisper. This is a
-/// soft ASR hint only; the post-ASR meaning-first retriever remains authoritative.
-async fn fetch_stt_bias_prompt(ep: &BackendEndpoint, language: &str) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct BiasPack {
-        #[serde(default)]
-        keyterms: Vec<String>,
-        #[serde(default)]
-        prompt: String,
-    }
-    match reqwest::Client::new()
-        .get(format!("{}/v1/stt/bias", ep.url))
-        .query(&[("language", language)])
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_millis(150))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            resp.json::<BiasPack>().await.ok().and_then(|b| {
-                if b.prompt.trim().is_empty() {
-                    None
-                } else {
-                    tracing::debug!("[local_asr] using {} STT bias keyterm(s)", b.keyterms.len());
-                    Some(b.prompt)
-                }
-            })
-        }
-        _ => None,
-    }
-}
-
 /// Start recording. Called when user presses Caps Lock (or taps the button).
 fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     do_start_recording_inner(shared, app, true);
@@ -4334,7 +4311,10 @@ fn do_start_recording_inner(
                     }
                 });
             }
-            tracing::info!("[speech] local batch transcript will run on release");
+            tracing::info!(
+                "[speech] batch transcript will run on release (provider={})",
+                dictation_stt::provider_name()
+            );
             whisper_dictation_stream::spawn_dictation_recovery_drain(recording_id, chunk_recv);
             return;
         }
@@ -4573,44 +4553,38 @@ fn do_finish_recording(
 
         let pre_transcript = if let Some(levels) = dictation_wav_is_no_speech(&wav) {
             tracing::warn!(
-                "[finish] no speech energy detected — suppressing local transcript (peak={:.5}, rms={:.5}, samples={})",
+                "[finish] no speech energy detected — suppressing transcription (peak={:.5}, rms={:.5}, samples={})",
                 levels.peak,
                 levels.rms,
                 levels.samples,
             );
-            None
+            Err("No speech detected — try speaking again.".to_string())
         } else {
-            let stt_bias_prompt = back_arc2.lock().ok().and_then(|endpoint| endpoint.clone());
-            let stt_bias_prompt = match stt_bias_prompt {
-                Some(ep) => fetch_stt_bias_prompt(&ep, &stt_language).await,
-                None => None,
-            };
-            match local_pre_transcript(&wav, &stt_language, stt_bias_prompt).await {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    tracing::warn!("[finish] local speech failed: {e}");
-                    None
-                }
-            }
+            stt_pre_transcript(&wav, &stt_language).await
         };
 
-        if pre_transcript.is_none() {
-            let message = "Local speech recognition failed. Download or repair the local speech model in Settings.";
-            emit_voice_error_quiet(&app2, message);
-            let snap = {
-                let mut d = match shared2.lock() {
-                    Ok(g) => g,
-                    Err(_) => return,
+        // The provider's errors are complete, actionable sentences (offline,
+        // missing model, rejected key, …) — surface them verbatim.
+        let pre_transcript = match pre_transcript {
+            Ok(t) => Some(t),
+            Err(message) => {
+                tracing::warn!("[finish] speech transcription failed: {message}");
+                emit_voice_error_quiet(&app2, &message);
+                let snap = {
+                    let mut d = match shared2.lock() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    d.finish_err(message)
                 };
-                d.finish_err(message.to_string())
-            };
-            recovery::clear();
-            sync_tray(&app2, &snap);
-            emit_app_state(&app2, &snap);
-            emit_meeting_stt_status(&app2);
-            clear_long_dictation_finishing(&app2, "no_pre_transcript");
-            return;
-        }
+                recovery::clear();
+                sync_tray(&app2, &snap);
+                emit_app_state(&app2, &snap);
+                emit_meeting_stt_status(&app2);
+                clear_long_dictation_finishing(&app2, "no_pre_transcript");
+                return;
+            }
+        };
 
         let screen_context = app2
             .try_state::<ScreenContextState>()
@@ -5095,7 +5069,7 @@ async fn run_problem_command(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
     wav: Vec<u8>,
     client_run_id: Option<String>,
-    pre_transcript: Option<dictation_stt::LocalTranscript>,
+    pre_transcript: Option<dictation_stt::PreTranscript>,
     screen_context: Option<String>,
     app: &tauri::AppHandle,
     edit_target_pid: Option<i32>,
@@ -5362,7 +5336,7 @@ async fn run_voice_polish_sse(
     wav: Vec<u8>,
     target_app: Option<String>,
     client_run_id: Option<String>,
-    pre_transcript: Option<dictation_stt::LocalTranscript>,
+    pre_transcript: Option<dictation_stt::PreTranscript>,
     repair_mode: Option<String>,
     screen_context: Option<String>,
     message_polish_override: Option<bool>,
@@ -6231,7 +6205,9 @@ fn paste_latest(latest: State<'_, LatestResult>) -> Result<bool, String> {
         }
         Some(t) => {
             tracing::info!("[paste_latest] pasting {} chars", t.len());
-            paster::paste(&t).map_err(|e| format!("paste failed: {e}"))?;
+            // Direct-first (never clobbers the clipboard); clipboard only if
+            // injection is blocked.
+            paster::insert_text(&t).map_err(|e| format!("paste failed: {e}"))?;
             Ok(true)
         }
     }
@@ -6666,14 +6642,26 @@ fn retry_recording_spawn(
             .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
-        let stt_bias_prompt = back_arc2.lock().ok().and_then(|endpoint| endpoint.clone());
-        let stt_bias_prompt = match stt_bias_prompt {
-            Some(ep) => fetch_stt_bias_prompt(&ep, &stt_language).await,
-            None => None,
+        // The polish backend requires a pre_transcript, so an STT failure ends
+        // the retry here with the provider's own actionable message instead of
+        // a confusing backend 400.
+        let pre_transcript = match stt_pre_transcript(&wav, &stt_language).await {
+            Ok(t) => Some(t),
+            Err(message) => {
+                tracing::warn!("[retry] speech transcription failed: {message}");
+                emit_voice_error_quiet(&app2, &message);
+                let snap = {
+                    let mut d = match shared2.lock() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    d.finish_err(message)
+                };
+                sync_tray(&app2, &snap);
+                emit_app_state(&app2, &snap);
+                return;
+            }
         };
-        let pre_transcript = local_pre_transcript(&wav, &stt_language, stt_bias_prompt)
-            .await
-            .ok();
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
@@ -7194,6 +7182,19 @@ fn set_desktop_prefs(
     said_core::prefs::save(&prefs)?;
     if previous.launch_at_login != prefs.launch_at_login {
         apply_launch_at_login(&app, prefs.launch_at_login)?;
+    }
+    if previous.dictation_stt != prefs.dictation_stt {
+        // Warm the newly selected provider off-thread so the next dictation
+        // doesn't pay its setup cost (model load / HTTP client).
+        tracing::info!(
+            from = %previous.dictation_stt,
+            to = %prefs.dictation_stt,
+            "[prefs] dictation STT provider changed — prewarming"
+        );
+        std::thread::Builder::new()
+            .name("dictation-stt-prewarm".into())
+            .spawn(dictation_stt::prewarm)
+            .ok();
     }
     Ok(())
 }
@@ -9629,9 +9630,10 @@ fn main() {
                             meeting_engine::ensure_bundled_silero_vad();
                             // Ensure a model is selected if any is installed.
                             meeting_engine::ensure_active_model_sync();
-                            // Warm dictation's in-process ASR worker so the
-                            // first real utterance avoids a fresh model load.
-                            local_asr::prewarm_default_language();
+                            // Warm this platform's dictation provider so the
+                            // first real utterance avoids setup costs (macOS:
+                            // model load; Windows: key check + HTTP client).
+                            dictation_stt::prewarm();
                             recovery_handle
                                 .state::<meeting_engine::MeetingEngineState>()
                                 .requeue_interrupted_meetings();

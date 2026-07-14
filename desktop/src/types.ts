@@ -57,6 +57,15 @@ export interface AppSnapshot {
 // ── Backend types (mirrored from airnote-backend) ────────────────────────────
 
 export interface SttRuntimeInfo {
+  /** Provider the next dictation will use: "deepinfra" or "on-device/whisper". */
+  dictation_provider: string;
+  /** Dictation can transcribe right now (model present / key baked). */
+  dictation_ready: boolean;
+  /** The user's provider preference on Windows: "auto" | "local" | "hosted". */
+  dictation_stt_pref: string;
+  /** What "auto" resolves to on this machine (GPU + model capability probe). */
+  dictation_auto_provider: string;
+  // On-device whisper status — powers meetings everywhere and dictation on macOS.
   whisper_installed: boolean;
   whisper_ready: boolean;
   whisper_vad_installed: boolean;

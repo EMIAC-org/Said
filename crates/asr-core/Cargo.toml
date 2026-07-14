@@ -1,0 +1,41 @@
+[package]
+name              = "asr-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true
+
+# Shared, backend-agnostic speech-to-text core. Compiled twice with different
+# features:
+#   * by the desktop app  → default (CPU) or `metal` (macOS in-process engine)
+#   * by the GPU worker    → `vulkan` (isolated out-of-process engine, Win/Linux)
+# The `vulkan` code path (device probe + ggml-vulkan FFI) is entirely behind the
+# `vulkan` feature, so the app never links the Vulkan loader or ash.
+[dependencies]
+serde   = { workspace = true }
+tracing = { workspace = true }
+bincode = "1.3"
+# Physical-core count for the realtime decode profile (whisper is bound by
+# physical cores; scheduling onto hyperthreads slows it down).
+num_cpus = "1.16"
+
+said-core = { path = "../core" }
+
+# whisper.cpp bindings. GPU backends are opt-in per-feature; default = CPU.
+whisper-rs     = { version = "0.16", default-features = false }
+# Dynamic Vulkan loader for capability/device probing. `Entry::load()` loads the
+# loader at runtime (no static vulkan-1.dll import), so a probe on a driverless
+# machine returns Err instead of failing to start.
+ash            = { version = "0.38", optional = true }
+
+[features]
+default = []
+# macOS in-process GPU (reliable; no worker needed).
+metal   = ["whisper-rs/metal"]
+# Windows/Linux isolated GPU worker. Pulls whisper's Vulkan backend + the ash probe.
+vulkan  = ["whisper-rs/vulkan", "dep:ash"]

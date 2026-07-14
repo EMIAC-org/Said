@@ -2033,3 +2033,36 @@ pub use imp_windows::*;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use imp_other::*;
+
+/// How [`insert_text`] delivered the text into the focused field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertMethod {
+    /// Injected directly as keystrokes — the user's clipboard was never touched.
+    Typed,
+    /// Fell back to a clipboard paste (direct injection was unavailable/blocked).
+    Clipboard,
+}
+
+/// Insert `text` into the focused field using the safest strategy for the host:
+/// **direct keystroke injection first** (which never touches the user's
+/// clipboard), falling back to a clipboard paste only when direct injection is
+/// unavailable — no Accessibility grant on macOS, or `SendInput` blocked by an
+/// elevated target on Windows.
+///
+/// This is the canonical "put this text in the focused field" entry point.
+/// Prefer it over calling [`type_text`]/[`paste`] directly, so the direct-first
+/// policy — and thus "never clobber the clipboard on the common path" — lives in
+/// exactly one place instead of being re-derived at each call site.
+pub fn insert_text(text: &str) -> Result<InsertMethod, String> {
+    if text.is_empty() {
+        return Ok(InsertMethod::Typed);
+    }
+    match type_text(text) {
+        Ok(true) => Ok(InsertMethod::Typed),
+        Ok(false) => paste(text).map(|()| InsertMethod::Clipboard),
+        Err(e) => {
+            tracing::warn!("[paster] direct typing failed ({e}); falling back to clipboard paste");
+            paste(text).map(|()| InsertMethod::Clipboard)
+        }
+    }
+}

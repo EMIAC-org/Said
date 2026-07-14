@@ -51,6 +51,10 @@ tauri-plugin-autostart = "2.5.1"
 
 # Workspace crates
 said-core     = { path = "../../crates/core" }
+# On-device dictation ASR core. Default features = CPU in-process engine; macOS
+# adds `metal` below. The Vulkan GPU path is NOT here — it lives only in the
+# isolated `airnote-asr-gpu` sidecar, so the app links no Vulkan loader.
+asr-core      = { path = "../../crates/asr-core" }
 said-hotkey   = { path = "../../crates/hotkey" }
 said-paster   = { path = "../../crates/paster" }
 said-recorder = { path = "../../crates/recorder" }
@@ -69,12 +73,18 @@ libc            = "0.2"
 block           = "0.1"
 tauri-nspanel   = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
 screencapturekit = { version = "6.1.0", features = ["macos_13_0"] }
-whisper-rs      = { version = "0.16", features = ["metal"] }
-
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-whisper-rs = "0.16"
+# macOS runs the in-process ASR engine on Metal (reliable; no worker process).
+asr-core        = { path = "../../crates/asr-core", features = ["metal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Windows dictation is HOSTED (DeepInfra whisper-large-v3-turbo) — see
+# dictation_stt.rs for the platform seam. asr-cloud is the OpenAI-compatible
+# transcription client; it is Windows-only so macOS builds never pull it.
+asr-cloud = { path = "../../crates/asr-cloud" }
+# NOTE: the desktop app no longer links whisper/Vulkan directly. On-device
+# dictation runs through `asr-core` — CPU in-process here — while the GPU (Vulkan)
+# path lives entirely in the isolated `airnote-asr-gpu` sidecar. The app therefore
+# has no vulkan-1.dll dependency, and a GPU/driver crash cannot take it down.
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Media_Audio",

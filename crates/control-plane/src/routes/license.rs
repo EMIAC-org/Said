@@ -21,7 +21,6 @@ pub async fn check(
                 .await
                 .unwrap_or_else(|_| "team".into());
             let features = license_features(&tier);
-            let daily_limit = org_quota::org_daily_polish_limit(&tier);
             let used = org_quota::org_polish_count_today(&state, org_id)
                 .await
                 .unwrap_or(0);
@@ -33,7 +32,8 @@ pub async fn check(
                 "scope": "org",
                 "org_id": org_id,
                 "limits": {
-                    "daily_polishes": daily_limit,
+                    "daily_polishes": null,
+                    "unlimited": true,
                     "used_today": used,
                 },
             }));
@@ -54,19 +54,14 @@ pub async fn check(
     .unwrap_or_else(|| "free".into());
 
     let features = license_features(&tier);
-    let daily_limit = match tier.as_str() {
-        "pro" => 500,
-        "team" => 2000,
-        _ => 50,
-    };
-
     Json(json!({
         "tier": tier,
         "active": true,
         "features": features,
         "scope": "personal",
         "limits": {
-            "daily_polishes": daily_limit,
+            "daily_polishes": null,
+            "unlimited": true,
         },
     }))
 }

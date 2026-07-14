@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptOrigin {
     DictationLocal,
+    /// Dictation transcribed by a hosted (cloud) STT provider — the Windows path.
+    DictationHosted,
     MeetingLocal,
     #[default]
     #[serde(other)]
