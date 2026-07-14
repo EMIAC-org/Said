@@ -1,0 +1,22 @@
+[package]
+name              = "asr-cloud"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true
+
+# Hosted (cloud) speech-to-text. The cloud counterpart of `asr-core`: where
+# asr-core runs whisper on-device, this crate speaks the OpenAI-compatible
+# `POST {base_url}/audio/transcriptions` protocol that DeepInfra, OpenAI, Groq
+# and Fireworks all implement — so a provider is a config preset, not a client.
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+tokio      = { workspace = true }
+reqwest    = { workspace = true }

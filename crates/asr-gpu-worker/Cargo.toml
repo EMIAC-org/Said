@@ -1,0 +1,21 @@
+[package]
+name    = "airnote-asr-gpu"
+version = "2.4.3"
+edition = "2021"
+publish = false
+
+# EXCLUDED from the workspace (see root Cargo.toml `exclude`) so its `vulkan`
+# feature on asr-core is never feature-unified into the desktop app. Built
+# standalone as a sidecar, exactly like control-plane / airnote-backend:
+#   cargo build --release --manifest-path crates/asr-gpu-worker/Cargo.toml
+# On Windows this must run under the Ninja + short-target Vulkan recipe (see
+# scripts/build-windows.ps1) because of ggml-vulkan's shader-gen MAX_PATH issue.
+
+[dependencies]
+asr-core           = { path = "../asr-core", features = ["vulkan"] }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 2
+# Keep whisper's Vulkan symbols; small binary isn't the priority for a sidecar.

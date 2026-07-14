@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Check, Cpu, Download, Loader2, Trash2 } from "lucide-react";
+import { Check, Cloud, Cpu, Download, Loader2, Trash2 } from "lucide-react";
 import type { Preferences, SttRuntimeInfo } from "../types";
-import { getSttRuntime } from "../lib/invoke";
+import { getDesktopPrefs, getSttRuntime, setDesktopPrefs, type DesktopPrefs } from "../lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "../lib/onDeviceModel";
 import { ReclaimOldModelsRow, type ReclaimResult } from "./ReclaimOldModelsRow";
 import { friendlyError } from "../lib/friendlyError";
@@ -36,8 +36,13 @@ interface DictationSttSectionProps {
   platform: string;
 }
 
-export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpdated, platform: _platform }: DictationSttSectionProps) {
+export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpdated, platform }: DictationSttSectionProps) {
+  // Windows dictation is provider-selectable (see dictation_stt.rs): Auto
+  // (capability-routed), On-device, or Cloud. macOS is always on-device.
+  // The on-device whisper model still powers meetings on every platform.
+  const selectableProvider = platform === "windows";
   const [runtime, setRuntime] = useState<SttRuntimeInfo | null>(null);
+  const [desktopPrefs, setDesktopPrefsState] = useState<DesktopPrefs | null>(null);
   const [whisperModel, setWhisperModel] = useState<DictationModelStatus | null>(null);
   const [whisperDownload, setWhisperDownload] = useState<MeetingModelProgress | null>(null);
   const [confirmDeleteWhisper, setConfirmDeleteWhisper] = useState(false);
@@ -61,17 +66,35 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
 
   const refresh = useCallback(async () => {
     try {
-      const [rt, wstatus] = await Promise.all([
+      const [rt, dp, wstatus] = await Promise.all([
         getSttRuntime(),
+        getDesktopPrefs().catch(() => null),
         invoke<DictationModelStatus>("dictation_model_status").catch(() => null),
       ]);
       if (!mounted.current) return;
       setRuntime(rt);
+      if (dp) setDesktopPrefsState(dp);
       if (wstatus) setWhisperModel(wstatus);
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  // Switch the dictation provider; applies to the very next dictation.
+  const selectProvider = useCallback(
+    async (choice: DesktopPrefs["dictation_stt"]) => {
+      if (!desktopPrefs || desktopPrefs.dictation_stt === choice) return;
+      const next = { ...desktopPrefs, dictation_stt: choice };
+      setDesktopPrefsState(next);
+      try {
+        await setDesktopPrefs(next);
+        await refresh();
+      } catch (e) {
+        setError(friendlyError(e));
+      }
+    },
+    [desktopPrefs, refresh],
+  );
 
   useEffect(() => {
     mounted.current = true;
@@ -175,26 +198,99 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
       <div className="px-5 py-4 border-b" style={{ borderColor: "hsl(var(--surface-3))" }}>
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
-          Dictation uses the local whisper.cpp model on this device.
+          {selectableProvider
+            ? "Choose how dictation is transcribed on this device. Meetings always use the on-device model."
+            : "Dictation uses the local whisper.cpp model on this device."}
         </p>
       </div>
 
       <div className="px-5 py-4 flex flex-col gap-3">
-        <div
-          className="rounded-xl px-3 py-2.5 border"
-          style={{ borderColor: "hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
-        >
-          <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
-            <Cpu size={14} />
-            Local speech engine
-            {runtime?.whisper_ready && <Check size={14} className="ml-auto text-primary" />}
+        {selectableProvider ? (
+          <div
+            className="rounded-xl border overflow-hidden"
+            style={{ borderColor: "hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
+          >
+            {(
+              [
+                {
+                  id: "auto" as const,
+                  icon: <Check size={14} />,
+                  label: "Auto",
+                  badge: "Recommended",
+                  desc:
+                    runtime?.dictation_auto_provider === "on-device/whisper"
+                      ? "Best for this device — uses the on-device engine (GPU detected)"
+                      : "Best for this device — uses the cloud engine (no usable GPU found)",
+                },
+                {
+                  id: "local" as const,
+                  icon: <Cpu size={14} />,
+                  label: "On-device",
+                  badge: null,
+                  desc: "Private and offline. Fast with a supported GPU; needs the local model",
+                },
+                {
+                  id: "hosted" as const,
+                  icon: <Cloud size={14} />,
+                  label: "Cloud",
+                  badge: null,
+                  desc: "Whisper large-v3 on AirNote's speech service. Internet required",
+                },
+              ]
+            ).map((opt, i) => {
+              const selected = (desktopPrefs?.dictation_stt ?? "auto") === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => void selectProvider(opt.id)}
+                  className="w-full text-left px-3 py-2.5 flex items-start gap-2.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                  style={i > 0 ? { borderTop: "1px solid hsl(var(--surface-3))" } : undefined}
+                >
+                  <span
+                    className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"
+                    style={{
+                      borderColor: selected ? "hsl(var(--primary))" : "hsl(var(--surface-4))",
+                      background: selected ? "hsl(var(--primary))" : "transparent",
+                    }}
+                  >
+                    {selected && <Check size={11} strokeWidth={3} className="text-white" />}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+                      {opt.label}
+                      {opt.badge && (
+                        <span
+                          className="text-[9px] px-1.5 py-px rounded-full font-semibold uppercase tracking-wide"
+                          style={{ background: "hsl(var(--primary) / 0.18)", color: "hsl(var(--primary))" }}
+                        >
+                          {opt.badge}
+                        </span>
+                      )}
+                    </span>
+                    <span className="block text-[11px] text-muted-foreground mt-0.5">{opt.desc}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
-          <p className="text-[11px] text-muted-foreground mt-1">
-            {runtime?.whisper_ready
-              ? "Ready for dictation and meetings"
-              : "Local speech model required before dictation can run"}
-          </p>
-        </div>
+        ) : (
+          <div
+            className="rounded-xl px-3 py-2.5 border"
+            style={{ borderColor: "hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}
+          >
+            <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
+              <Cpu size={14} />
+              Local speech engine
+              {runtime?.whisper_ready && <Check size={14} className="ml-auto text-primary" />}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              {runtime?.whisper_ready
+                ? "Ready for dictation and meetings"
+                : "Local speech model required before dictation can run"}
+            </p>
+          </div>
+        )}
 
         <div className="rounded-xl px-4 py-3" style={{ background: "hsl(var(--surface-2))" }}>
           <div className="flex items-center justify-between gap-3">
@@ -215,7 +311,9 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
                     ? `Installed · ${formatSize(whisperModel.size_bytes)}`
                     : whisperDownload
                       ? `Downloading… ${whisperDownloadPct ?? 0}%`
-                      : `On-device Hinglish model · ${NEW_MODEL_SIZE_HINT}`}
+                      : selectableProvider
+                        ? `Used for meetings and on-device dictation · ${NEW_MODEL_SIZE_HINT}`
+                        : `On-device Hinglish model · ${NEW_MODEL_SIZE_HINT}`}
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
