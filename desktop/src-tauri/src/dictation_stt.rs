@@ -73,9 +73,9 @@ pub async fn transcribe_wav_bytes(wav: &[u8], language: &str) -> Result<PreTrans
     provider::transcribe(wav, language).await
 }
 
-/// Transcribe a meeting-mode chunk with the shared 148 MB local Oriserve
-/// model. This deliberately bypasses the platform dictation policy: Windows
-/// dictation can use Together, but meeting audio must never go to hosted STT.
+/// Transcribe a legacy meeting-mode chunk with the native meeting provider.
+/// Capable Apple Silicon uses the same Q4 model recommended at onboarding;
+/// Windows and Intel Macs stay on local Oriserve and never use hosted STT.
 pub async fn transcribe_meeting_wav_bytes(
     wav: &[u8],
     language: &str,
@@ -85,30 +85,55 @@ pub async fn transcribe_meeting_wav_bytes(
     let started = std::time::Instant::now();
     let wav = wav.to_vec();
     let language = language.to_string();
-    let local =
-        tokio::task::spawn_blocking(move || crate::asr::transcribe_wav_bytes(wav, language))
-            .await
-            .map_err(|error| format!("meeting local speech worker failed: {error}"))??;
-    let duration_ms = local.total_ms.max(started.elapsed().as_millis() as u64);
-    let word_count = local.transcript.split_whitespace().count();
+    let use_nemotron_q4 = crate::meeting_engine::meetings_use_nemotron_q4();
+    let local = tokio::task::spawn_blocking(move || {
+        if use_nemotron_q4 {
+            let output = crate::nemotron::transcribe_wav_bytes_for(
+                crate::nemotron::Variant::Q4,
+                &wav,
+                &language,
+            )?;
+            Ok::<_, String>((
+                output.transcript,
+                output.language.unwrap_or(language),
+                crate::nemotron::Variant::Q4.display_name().to_string(),
+                output.duration_ms,
+                "local_nemotron".to_string(),
+            ))
+        } else {
+            let output = crate::asr::transcribe_wav_bytes(wav, language)?;
+            Ok((
+                output.transcript,
+                output.language,
+                output.model,
+                output.total_ms,
+                "local_whisper".to_string(),
+            ))
+        }
+    })
+    .await
+    .map_err(|error| format!("meeting local speech worker failed: {error}"))??;
+    let (transcript, language, model, local_duration_ms, provider) = local;
+    let duration_ms = local_duration_ms.max(started.elapsed().as_millis() as u64);
+    let word_count = transcript.split_whitespace().count();
 
     tracing::info!(
-        total_ms = local.total_ms,
-        model = %local.model,
+        total_ms = local_duration_ms,
+        model = %model,
         "[dictation_stt] local meeting ASR complete"
     );
 
     Ok(PreTranscript {
-        transcript: local.transcript.clone(),
+        transcript: transcript.clone(),
         meta: TranscriptMeta {
-            enriched_transcript: local.transcript,
+            enriched_transcript: transcript,
             confidence: 1.0,
             mean_word_confidence: 1.0,
             low_confidence_count: 0,
             word_count,
-            languages: vec![local.language],
-            model: local.model,
-            provider: "local_whisper".to_string(),
+            languages: vec![language],
+            model,
+            provider,
             path: "meeting_local_batch".to_string(),
             duration_ms,
             origin: said_core::transcript::TranscriptOrigin::MeetingLocal,

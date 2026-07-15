@@ -222,8 +222,18 @@ pub fn prewarm() {
 
 /// Runs batch transcription after a completed Caps-Lock recording.
 pub fn transcribe_wav_bytes(wav: &[u8], requested_language: &str) -> Result<Output, String> {
-    let started = Instant::now();
     let variant = selected_variant().ok_or_else(|| "Nemotron is not selected.".to_string())?;
+    transcribe_wav_bytes_for(variant, wav, requested_language)
+}
+
+/// Run a specific installed Nemotron variant. Meetings use this instead of the
+/// user's current dictation preference: the hardware policy owns that choice.
+pub fn transcribe_wav_bytes_for(
+    variant: Variant,
+    wav: &[u8],
+    requested_language: &str,
+) -> Result<Output, String> {
+    let started = Instant::now();
     let pcm = asr_core::audio::prepare(wav).map_err(|error| error.to_string())?;
     let model = loaded_model(variant)?;
     let mut session = model

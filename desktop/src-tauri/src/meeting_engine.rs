@@ -621,7 +621,7 @@ struct LiveAudioChunk {
 
 #[derive(Clone, Debug)]
 struct LiveTranscriptConfig {
-    whisper: WhisperCppConfig,
+    provider: MeetingAsrProvider,
     context_samples: usize,
     step_samples: usize,
     min_samples: usize,
@@ -876,6 +876,45 @@ struct WhisperCppConfig {
     vad_min_silence_ms: i32,
     // Romanize Devanagari output into Roman Hinglish (no-op on Latin text).
     romanize: bool,
+}
+
+/// A real meeting transcription backend, selected from the same hardware policy
+/// that drives onboarding. Q4 is used only on capable Apple Silicon Macs;
+/// Windows and Intel Macs retain the compact Whisper/Oriserve meeting engine.
+#[derive(Clone, Debug)]
+enum MeetingAsrProvider {
+    Whisper(WhisperCppConfig),
+    NemotronQ4,
+}
+
+impl MeetingAsrProvider {
+    fn provider_name(&self) -> &'static str {
+        match self {
+            Self::Whisper(_) => "whisper.cpp",
+            Self::NemotronQ4 => "transcribe-cpp",
+        }
+    }
+
+    fn model_name(&self) -> String {
+        match self {
+            Self::Whisper(config) => config.model.to_string_lossy().to_string(),
+            Self::NemotronQ4 => crate::nemotron::Variant::Q4.display_name().to_string(),
+        }
+    }
+
+    fn language(&self) -> String {
+        match self {
+            Self::Whisper(config) => config.language.clone(),
+            Self::NemotronQ4 => "hi".to_string(),
+        }
+    }
+
+    fn romanize(&self) -> bool {
+        match self {
+            Self::Whisper(config) => config.romanize,
+            Self::NemotronQ4 => true,
+        }
+    }
 }
 
 // Resolved per-request dictation settings live in the shared `asr-core` crate so
@@ -2485,8 +2524,8 @@ fn run_transcription_job(
         let mut transcription = transcription_state.lock_recover();
         transcription.text_path = Some(transcript_paths.text.clone());
         transcription.json_path = Some(transcript_paths.json.clone());
-        transcription.language = Some(DEFAULT_WHISPER_LANGUAGE.to_string());
-        transcription.provider = Some("whisper.cpp".to_string());
+        transcription.language = None;
+        transcription.provider = None;
         transcription.model = None;
         transcription.latency_ms = None;
         transcription.text = None;
@@ -2543,6 +2582,7 @@ fn run_transcription_job(
             &plan.summary,
             "skipped_empty_audio",
             None,
+            None,
             DEFAULT_WHISPER_LANGUAGE,
             "",
             None,
@@ -2558,14 +2598,14 @@ fn run_transcription_job(
         return JobOutcome::Terminal(message);
     }
 
-    let config = match resolve_whisper_cpp_config() {
-        Ok(config) => config,
+    let provider = match resolve_meeting_asr_provider() {
+        Ok(provider) => provider,
         Err(e) => {
-            let cleanup = MeetingCleanupSnapshot::skipped("skipped_missing_whisper", e.clone());
+            let cleanup = MeetingCleanupSnapshot::skipped("skipped_missing_local_model", e.clone());
             {
                 let mut transcription = transcription_state.lock_recover();
                 transcription.running = false;
-                transcription.status = "skipped_missing_whisper".to_string();
+                transcription.status = "skipped_missing_local_model".to_string();
                 transcription.progress = None;
                 transcription.cleanup = cleanup.clone();
                 transcription.final_diarization = MeetingFinalDiarizationSnapshot::skipped(
@@ -2578,7 +2618,8 @@ fn run_transcription_job(
             write_transcript_artifact(
                 &transcript_paths,
                 &plan.summary,
-                "skipped_missing_whisper",
+                "skipped_missing_local_model",
+                None,
                 None,
                 DEFAULT_WHISPER_LANGUAGE,
                 "",
@@ -2595,8 +2636,9 @@ fn run_transcription_job(
 
     {
         let mut transcription = transcription_state.lock_recover();
-        transcription.language = Some(config.language.clone());
-        transcription.model = Some(config.model.to_string_lossy().to_string());
+        transcription.language = Some(provider.language());
+        transcription.provider = Some(provider.provider_name().to_string());
+        transcription.model = Some(provider.model_name());
     }
 
     if let Some(outcome) =
@@ -2617,40 +2659,30 @@ fn run_transcription_job(
         }
     };
 
-    // Fast path: reuse the durable live transcript when eligible (auto/recovery
-    // only). Falls back to a full re-transcription otherwise — always correct.
-    let transcribe_result = if plan.prefer_live_reuse && live_reuse_enabled() {
-        match finalize_done_from_live(plan, &config, Some(&cancel_requested)) {
-            Some(done) => {
-                tracing::info!(meeting_id, "[meeting_engine] finalize_source=live");
-                Ok(done)
-            }
-            None => {
-                tracing::info!(
-                    meeting_id,
-                    "[meeting_engine] finalize_source=batch (full pass)"
-                );
-                transcribe_meeting_plan(
+    // Live reuse needs Whisper's per-word confidence and re-decode contract.
+    // Nemotron still streams caption windows, but always takes the authoritative
+    // final batch pass so the stored meeting remains complete.
+    let transcribe_result = match &provider {
+        MeetingAsrProvider::Whisper(config) if plan.prefer_live_reuse && live_reuse_enabled() => {
+            match finalize_done_from_live(plan, config, Some(&cancel_requested)) {
+                Some(done) => {
+                    tracing::info!(meeting_id, "[meeting_engine] finalize_source=live");
+                    Ok(done)
+                }
+                None => transcribe_meeting_plan(
                     plan,
-                    &config,
+                    &provider,
                     Some(&cancel_requested),
                     Some(&report_progress),
-                )
+                ),
             }
         }
-    } else {
-        if plan.prefer_live_reuse {
-            tracing::info!(
-                meeting_id,
-                "[meeting_engine] finalize_source=batch (live-reuse disabled via AIRNOTE_MEETING_LIVE_REUSE)"
-            );
-        }
-        transcribe_meeting_plan(
+        _ => transcribe_meeting_plan(
             plan,
-            &config,
+            &provider,
             Some(&cancel_requested),
             Some(&report_progress),
-        )
+        ),
     };
 
     match transcribe_result {
@@ -2663,12 +2695,14 @@ fn run_transcription_job(
             // Confidence-gated second pass: re-decode only the low-confidence
             // segments before cleanup/romanize/speaker-naming run on the text.
             // Env-gated (AIRNOTE_MEETING_REDECODE) and fail-safe.
-            refine_low_confidence_segments(
-                &mut done,
-                &config,
-                &transcript_paths,
-                Some(&cancel_requested),
-            );
+            if let MeetingAsrProvider::Whisper(config) = &provider {
+                refine_low_confidence_segments(
+                    &mut done,
+                    config,
+                    &transcript_paths,
+                    Some(&cancel_requested),
+                );
+            }
             let cleanup_config = meeting_cleanup_config();
             let cleanup_provider = cleanup_config
                 .as_ref()
@@ -2720,7 +2754,7 @@ fn run_transcription_job(
             // using the Groq cleanup pipeline (per-segment, alignment preserved),
             // falling back to the deterministic romanizer if the LLM doesn't line
             // up. Live captions stayed in native script; deepseek does the summary.
-            if config.romanize && said_core::script::contains_devanagari(&done.transcript) {
+            if provider.romanize() && said_core::script::contains_devanagari(&done.transcript) {
                 let groq = meeting_cleanup_config()
                     .and_then(|cfg| transliterate_segments_with_llm(&mut done.segments, cfg));
                 if let Err(e) = groq {
@@ -2750,8 +2784,12 @@ fn run_transcription_job(
                 &transcript_paths,
                 &done.summary,
                 "completed",
-                Some(&config),
-                &config.language,
+                match &provider {
+                    MeetingAsrProvider::Whisper(config) => Some(config),
+                    MeetingAsrProvider::NemotronQ4 => None,
+                },
+                Some(&provider),
+                &provider.language(),
                 &done.transcript,
                 Some(done.latency_ms),
                 cleaned_transcript.as_deref(),
@@ -2781,7 +2819,7 @@ fn run_transcription_job(
                 }
                 return JobOutcome::Cancelled(e);
             }
-            tracing::warn!(error = %e, "[meeting_engine] whisper.cpp transcription failed");
+            tracing::warn!(error = %e, "[meeting_engine] local meeting transcription failed");
             let terminal = matches!(classify_meeting_job_error(&e), JobOutcome::Terminal(_))
                 || is_last_attempt;
             if !terminal {
@@ -2795,8 +2833,12 @@ fn run_transcription_job(
                 &transcript_paths,
                 &plan.summary,
                 "failed",
-                Some(&config),
-                &config.language,
+                match &provider {
+                    MeetingAsrProvider::Whisper(config) => Some(config),
+                    MeetingAsrProvider::NemotronQ4 => None,
+                },
+                Some(&provider),
+                &provider.language(),
                 "",
                 None,
                 None,
@@ -4978,9 +5020,9 @@ fn start_live_transcript_worker(
         live.session_id = Some(session.session_id.clone());
         live.running = true;
         live.status = "running".to_string();
-        live.provider = Some("whisper.cpp".to_string());
-        live.model = Some(config.whisper.model.to_string_lossy().to_string());
-        live.language = Some(config.whisper.language.clone());
+        live.provider = Some(config.provider.provider_name().to_string());
+        live.model = Some(config.provider.model_name());
+        live.language = Some(config.provider.language());
         live.error = None;
         live.dropped_audio_chunks = 0;
     }
@@ -5202,14 +5244,17 @@ fn transcribe_live_window(
     }
 
     let paths = transcript_paths_for_stem(live_dir, &stem);
-    let done = transcribe_with_whisper_cpp_for(
-        &summary,
-        &paths,
-        &config.whisper,
-        source.track(),
-        config.timeout,
-        None,
-    )?;
+    let done = match &config.provider {
+        MeetingAsrProvider::Whisper(whisper) => transcribe_with_whisper_cpp_for(
+            &summary,
+            &paths,
+            whisper,
+            source.track(),
+            config.timeout,
+            None,
+        )?,
+        MeetingAsrProvider::NemotronQ4 => transcribe_with_nemotron_q4_for(&summary, None)?,
+    };
     let segments = label_transcript_segments(
         &done,
         source.source_label(),
@@ -5244,7 +5289,7 @@ fn transcribe_live_window(
     if let Err(e) = persist_live_window(
         live_dir,
         &chunks,
-        &paths.whisper_json,
+        (matches!(&config.provider, MeetingAsrProvider::Whisper(_))).then_some(&paths.whisper_json),
         start_ms,
         config,
         &summary,
@@ -5261,6 +5306,34 @@ fn transcribe_live_window(
     );
 
     Ok(chunks)
+}
+
+/// Nemotron exposes final text rather than Whisper JSON segments. For a live
+/// window the window itself is the truthful timestamp boundary; the final pass
+/// uses the same chunk contract, so captions and saved artifacts stay aligned.
+fn transcribe_with_nemotron_q4_for(
+    summary: &MicCaptureSummary,
+    cancel_check: Option<&dyn Fn() -> bool>,
+) -> Result<WhisperTranscriptionDone, String> {
+    fail_if_cancelled(cancel_check, "Nemotron")?;
+    repair_wav_header_sizes(&summary.path)?;
+    let wav = fs::read(&summary.path)
+        .map_err(|e| format!("failed to read meeting WAV for Nemotron: {e}"))?;
+    let output =
+        crate::nemotron::transcribe_wav_bytes_for(crate::nemotron::Variant::Q4, &wav, "hi")?;
+    let transcript = output.transcript.trim().to_string();
+    if transcript.is_empty() {
+        return Err("Nemotron returned no speech transcript".to_string());
+    }
+    Ok(WhisperTranscriptionDone {
+        transcript: transcript.clone(),
+        latency_ms: output.duration_ms,
+        segments: vec![RawTranscriptSegment {
+            start_ms: 0,
+            end_ms: summary.duration_ms,
+            text: transcript,
+        }],
+    })
 }
 
 fn write_pcm_window_wav(path: &Path, samples: Vec<i16>) -> Result<MicCaptureSummary, String> {
@@ -5327,12 +5400,13 @@ struct LiveManifest {
     last_covered_ms: u64,
 }
 
-/// Persist one window's deduped segments (with per-word confidence pulled from
-/// the window's `*.whisper.json`) and advance the coverage manifest. Best-effort.
+/// Persist one window's deduped segments and advance the coverage manifest.
+/// Whisper contributes per-word confidence; Nemotron's current local API only
+/// returns final text, so its records intentionally have no word confidences.
 fn persist_live_window(
     live_dir: &Path,
     chunks: &[MeetingLiveTranscriptChunk],
-    whisper_json: &Path,
+    whisper_json: Option<&Path>,
     window_start_ms: u64,
     config: &LiveTranscriptConfig,
     summary: &MicCaptureSummary,
@@ -5342,8 +5416,8 @@ fn persist_live_window(
     write_live_manifest(
         live_dir,
         &LiveManifest {
-            model: config.whisper.model.to_string_lossy().to_string(),
-            language: config.whisper.language.clone(),
+            model: config.provider.model_name(),
+            language: config.provider.language(),
             last_covered_ms: covered_end_ms,
         },
     )?;
@@ -5351,8 +5425,8 @@ fn persist_live_window(
         return Ok(());
     }
     // Per-word confidences for this window (times relative to the window start).
-    let conf_segs = fs::read(whisper_json)
-        .ok()
+    let conf_segs = whisper_json
+        .and_then(|path| fs::read(path).ok())
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .map(|json| said_core::redecode_flagging::conf_segments_from_whisper_json_full(&json))
         .unwrap_or_default();
@@ -6739,9 +6813,109 @@ fn meeting_track_config(config: &WhisperCppConfig, audio_path: &Path) -> Whisper
     per_track
 }
 
+fn transcribe_with_nemotron_q4(
+    summary: &MicCaptureSummary,
+    track: MeetingAudioTrack,
+    cancel_check: Option<&dyn Fn() -> bool>,
+    progress: Option<&dyn Fn(WhisperChunkProgress)>,
+) -> Result<WhisperTranscriptionDone, String> {
+    let started = Instant::now();
+    let chunk_ms = final_asr_chunk_ms();
+    if summary.duration_ms <= chunk_ms {
+        if let Some(progress) = progress {
+            progress(WhisperChunkProgress {
+                track,
+                current: 1,
+                total: 1,
+            });
+        }
+        return transcribe_with_nemotron_q4_for(summary, cancel_check);
+    }
+
+    let chunks = write_wav_asr_chunks(summary, chunk_ms)?;
+    let total = chunks.len() as u64;
+    let mut segments = Vec::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        fail_if_cancelled(cancel_check, "Nemotron")?;
+        if let Some(progress) = progress {
+            progress(WhisperChunkProgress {
+                track,
+                current: (index + 1) as u64,
+                total,
+            });
+        }
+        if !has_transcribable_audio(&chunk.summary) {
+            continue;
+        }
+        match transcribe_with_nemotron_q4_for(&chunk.summary, cancel_check) {
+            Ok(done) => segments.extend(done.segments.into_iter().map(|mut segment| {
+                segment.start_ms = chunk.start_ms.saturating_add(segment.start_ms);
+                segment.end_ms = chunk.start_ms.saturating_add(segment.end_ms);
+                segment
+            })),
+            Err(error) if error.contains("No speech detected") || error.contains("no speech") => {}
+            Err(error) => {
+                return Err(format!(
+                    "Nemotron chunk {}/{} at {} failed: {error}",
+                    index + 1,
+                    total,
+                    format_timestamp_ms(chunk.start_ms)
+                ));
+            }
+        }
+    }
+    let transcript = segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if transcript.is_empty() {
+        return Err("Nemotron returned no speech transcript".to_string());
+    }
+    if let Some(chunk_dir) = chunks
+        .first()
+        .and_then(|chunk| chunk.summary.path.parent())
+        .map(Path::to_path_buf)
+    {
+        let _ = fs::remove_dir_all(chunk_dir);
+    }
+    Ok(WhisperTranscriptionDone {
+        transcript,
+        latency_ms: started.elapsed().as_millis() as u64,
+        segments,
+    })
+}
+
+fn transcribe_with_meeting_provider(
+    summary: &MicCaptureSummary,
+    paths: &TranscriptPaths,
+    provider: &MeetingAsrProvider,
+    track: MeetingAudioTrack,
+    cancel_check: Option<&dyn Fn() -> bool>,
+    progress: Option<&dyn Fn(WhisperChunkProgress)>,
+) -> Result<WhisperTranscriptionDone, String> {
+    match provider {
+        MeetingAsrProvider::Whisper(config) => {
+            let track_config = meeting_track_config(config, &summary.path);
+            transcribe_with_whisper_cpp(
+                summary,
+                paths,
+                &track_config,
+                track,
+                cancel_check,
+                progress,
+            )
+        }
+        MeetingAsrProvider::NemotronQ4 => {
+            transcribe_with_nemotron_q4(summary, track, cancel_check, progress)
+        }
+    }
+}
+
 fn transcribe_meeting_plan(
     plan: &MeetingTranscriptionPlan,
-    config: &WhisperCppConfig,
+    provider: &MeetingAsrProvider,
     cancel_check: Option<&dyn Fn() -> bool>,
     progress: Option<&dyn Fn(MeetingProcessingProgress)>,
 ) -> Result<MeetingPlanTranscriptionDone, String> {
@@ -6787,11 +6961,10 @@ fn transcribe_meeting_plan(
                 plan.mic.peak
             ));
         }
-        let mic_config = meeting_track_config(config, &plan.mic.path);
-        let mic_done = transcribe_with_whisper_cpp(
+        let mic_done = transcribe_with_meeting_provider(
             &plan.mic,
             &mic_paths,
-            &mic_config,
+            provider,
             MeetingAudioTrack::Mic,
             cancel_check,
             Some(&report_chunk_progress),
@@ -6813,11 +6986,10 @@ fn transcribe_meeting_plan(
     };
 
     let mic_result = if has_transcribable_audio(&plan.mic) {
-        let mic_config = meeting_track_config(config, &plan.mic.path);
-        Some(transcribe_with_whisper_cpp(
+        Some(transcribe_with_meeting_provider(
             &plan.mic,
             &mic_paths,
-            &mic_config,
+            provider,
             MeetingAudioTrack::Mic,
             cancel_check,
             Some(&report_chunk_progress),
@@ -6835,11 +7007,10 @@ fn transcribe_meeting_plan(
     }
     let system_paths = transcript_paths_for_wav(&system_summary.path);
     let system_result = if has_transcribable_audio(system_summary) {
-        let system_config = meeting_track_config(config, &system_summary.path);
-        Some(transcribe_with_whisper_cpp(
+        Some(transcribe_with_meeting_provider(
             system_summary,
             &system_paths,
-            &system_config,
+            provider,
             MeetingAudioTrack::System,
             cancel_check,
             Some(&report_chunk_progress),
@@ -9237,6 +9408,7 @@ fn write_transcript_artifact(
     summary: &MicCaptureSummary,
     status: &str,
     config: Option<&WhisperCppConfig>,
+    asr_provider: Option<&MeetingAsrProvider>,
     language: &str,
     transcript: &str,
     latency_ms: Option<u64>,
@@ -9270,10 +9442,15 @@ fn write_transcript_artifact(
     let diarization_json_path = diarization_path_for_transcript(paths);
     let artifact = MeetingTranscriptArtifact {
         schema_version: 1,
-        provider: "whisper.cpp".to_string(),
+        provider: asr_provider
+            .map(MeetingAsrProvider::provider_name)
+            .unwrap_or("whisper.cpp")
+            .to_string(),
         status: status.to_string(),
         language: Some(language.to_string()),
-        model: config.map(|config| config.model.to_string_lossy().to_string()),
+        model: asr_provider
+            .map(MeetingAsrProvider::model_name)
+            .or_else(|| config.map(|config| config.model.to_string_lossy().to_string())),
         source_wav: summary.path.to_string_lossy().to_string(),
         source_wavs,
         diarization_json_path: diarization_json_path
@@ -13642,25 +13819,44 @@ pub fn dictation_whisper_model_installed() -> bool {
     selected_whisper_model_path().is_some()
 }
 
-/// Meetings always transcribe locally with the shared 148 MB Oriserve Hinglish
-/// model. Keep this check at the native boundary so Windows cannot fall back to
-/// hosted STT through a stale UI or direct IPC call.
-pub fn require_meeting_local_model() -> Result<(), String> {
-    if dictation_whisper_model_installed() {
-        Ok(())
-    } else {
-        Err(
-            "Meetings use a local model. Download the 148 MB Oriserve Hinglish model to start; cloud transcription is not used for meetings."
+/// Resolve the local engine that Meetings actually uses on this device. This is
+/// deliberately independent from the user's Dictation toggle: on a capable
+/// Apple Silicon Mac the recommended Q4 model powers both products, while
+/// Windows and Intel Macs retain the compact Oriserve requirement.
+fn resolve_meeting_asr_provider() -> Result<MeetingAsrProvider, String> {
+    let policy = crate::stt_policy::current();
+    if meeting_policy_uses_nemotron_q4(&policy) {
+        if crate::nemotron::installed(crate::nemotron::Variant::Q4) {
+            return Ok(MeetingAsrProvider::NemotronQ4);
+        }
+        return Err(
+            "Meetings use this Mac's recommended local model, Nemotron Streaming 3.5 (Q4). Download it from Settings → Speech recognition before starting a meeting."
                 .to_string(),
-        )
+        );
     }
+    resolve_whisper_cpp_config().map(MeetingAsrProvider::Whisper)
 }
 
-/// The meeting engine invokes whisper.cpp after capture, so validate its
-/// complete local stack before recording any audio.
+/// The current machine's meeting model is Q4 only on capable Apple Silicon.
+/// The UI uses this policy through `local_model_inventory`; keeping it explicit
+/// here prevents stale IPC calls from routing a Windows meeting to cloud STT.
+pub fn meetings_use_nemotron_q4() -> bool {
+    meeting_policy_uses_nemotron_q4(&crate::stt_policy::current())
+}
+
+fn meeting_policy_uses_nemotron_q4(policy: &crate::stt_policy::SttSetupPolicy) -> bool {
+    policy.local_pref() == Some(crate::stt_policy::NEMOTRON_Q4_PREF)
+}
+
+/// Validate the native meeting dependency before capture begins. Windows and
+/// Intel Macs require Oriserve; high-memory Apple Silicon requires Q4.
+pub fn require_meeting_local_model() -> Result<(), String> {
+    resolve_meeting_asr_provider().map(|_| ())
+}
+
+/// Validate the complete local stack before recording any audio.
 pub fn ensure_meeting_local_transcription_ready() -> Result<(), String> {
-    require_meeting_local_model()?;
-    resolve_whisper_cpp_config().map(|_| ())
+    resolve_meeting_asr_provider().map(|_| ())
 }
 
 pub fn dictation_whisper_runtime_ready() -> bool {
@@ -14328,13 +14524,17 @@ fn find_silero_vad_model(dir: &Path) -> Option<PathBuf> {
 }
 
 fn resolve_live_transcript_config() -> Result<LiveTranscriptConfig, String> {
-    let mut whisper = resolve_whisper_cpp_config()
-        .map_err(|e| format!("live transcript requires whisper.cpp; {e}"))?;
-    whisper.max_context_tokens = env_i32_at_least(
-        "AIRNOTE_MEETING_LIVE_WHISPER_MAX_CONTEXT_TOKENS",
-        DEFAULT_LIVE_WHISPER_MAX_CONTEXT_TOKENS,
-        -1,
-    );
+    let provider = match resolve_meeting_asr_provider()? {
+        MeetingAsrProvider::Whisper(mut whisper) => {
+            whisper.max_context_tokens = env_i32_at_least(
+                "AIRNOTE_MEETING_LIVE_WHISPER_MAX_CONTEXT_TOKENS",
+                DEFAULT_LIVE_WHISPER_MAX_CONTEXT_TOKENS,
+                -1,
+            );
+            MeetingAsrProvider::Whisper(whisper)
+        }
+        MeetingAsrProvider::NemotronQ4 => MeetingAsrProvider::NemotronQ4,
+    };
 
     let context_secs = env_u64(
         "AIRNOTE_MEETING_LIVE_TRANSCRIPT_CONTEXT_SECS",
@@ -14366,7 +14566,7 @@ fn resolve_live_transcript_config() -> Result<LiveTranscriptConfig, String> {
     .clamp(10, 15 * 60);
 
     Ok(LiveTranscriptConfig {
-        whisper,
+        provider,
         context_samples: context_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
         step_samples: step_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
         min_samples: min_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
@@ -14897,6 +15097,23 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meetings_follow_the_onboarding_local_model_recommendation() {
+        let high_memory_apple_silicon =
+            crate::stt_policy::policy_for("macos", "arm64", false, 9 * 1024 * 1024 * 1024);
+        let eight_gib_apple_silicon =
+            crate::stt_policy::policy_for("macos", "arm64", false, 8 * 1024 * 1024 * 1024);
+        let windows =
+            crate::stt_policy::policy_for("windows", "x86_64", false, 32 * 1024 * 1024 * 1024);
+        let intel_mac =
+            crate::stt_policy::policy_for("macos", "x86_64", false, 32 * 1024 * 1024 * 1024);
+
+        assert!(meeting_policy_uses_nemotron_q4(&high_memory_apple_silicon));
+        assert!(!meeting_policy_uses_nemotron_q4(&eight_gib_apple_silicon));
+        assert!(!meeting_policy_uses_nemotron_q4(&windows));
+        assert!(!meeting_policy_uses_nemotron_q4(&intel_mac));
+    }
 
     #[test]
     fn bundled_whisper_candidates_include_windows_exe_names() {
@@ -16433,6 +16650,7 @@ mod tests {
             &summary,
             "completed",
             None,
+            None,
             "en",
             "[00:00 You] Hello.\n[00:00 Speaker 1] Hi.",
             Some(10),
@@ -17375,6 +17593,7 @@ mod tests {
             &paths,
             &summary,
             "completed",
+            None,
             None,
             DEFAULT_WHISPER_LANGUAGE,
             "hello from the saved transcript",
