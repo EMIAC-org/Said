@@ -450,6 +450,9 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
       })
       .catch((e) => {
         console.warn("[meeting_engine] start failed:", e);
+        if (!cancelled) {
+          setEngineError(e instanceof Error ? e.message : String(e));
+        }
       });
 
     return () => {

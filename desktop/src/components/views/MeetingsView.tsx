@@ -33,7 +33,7 @@ import {
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { exportMeetingToLark } from "@/lib/enterprise";
 import { openExternal } from "@/lib/invoke";
-import { NEW_MODEL_FILE } from "@/lib/onDeviceModel";
+import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DigestView } from "@/components/views/DigestView";
@@ -1203,7 +1203,9 @@ export function MeetingsView({
     return () => clearInterval(id);
   }, [refreshHasModel]);
 
-  // First-run provisioning: there is no model picker, so just fetch Oriserve.
+  // Meetings have one local-only model. Downloading is an explicit user action:
+  // do not silently start a cloud route or a surprise download when they press
+  // New Meeting.
   const downloadMeetingModel = useCallback(async () => {
     if (downloadingModel) return;
     setDownloadingModel(true);
@@ -1276,8 +1278,10 @@ export function MeetingsView({
       /* permission probe failed — fall through; capture surfaces its own error */
     }
 
-    if (hasModel === false) {
-      void downloadMeetingModel();
+    if (hasModel !== true) {
+      if (hasModel === false) {
+        setError(`Download ${NEW_MODEL_NAME} before starting a meeting. Meetings never use cloud transcription.`);
+      }
       return;
     }
     // Never start a second meeting while one is already recording — show a popup
@@ -2243,26 +2247,30 @@ export function MeetingsView({
       className="flex h-full flex-col overflow-hidden"
       style={{ background: "hsl(var(--surface-2))" }}
     >
-      {hasModel === false ? (
+      {hasModel !== true ? (
         <div
           className="flex flex-wrap items-center gap-3 px-5 py-2.5"
           style={{ background: "hsl(var(--chip-amber-bg))", borderBottom: "1px solid hsl(var(--chip-amber-fg) / 0.22)" }}
         >
           <AlertTriangle size={15} className="flex-shrink-0" style={{ color: "hsl(var(--chip-amber-fg))" }} />
           <span className="min-w-0 flex-1 text-[12px] text-foreground">
-            <span className="font-semibold">Transcription model not installed yet.</span> Meetings
-            can't be transcribed until the model finishes downloading.
+            <span className="font-semibold">Meetings use {NEW_MODEL_NAME} locally ({NEW_MODEL_SIZE_HINT}).</span>{" "}
+            {hasModel === null
+              ? "Checking whether it is installed…"
+              : "Download it to start a meeting. Your Dictation cloud/local choice never changes meeting transcription."}
           </span>
-          <button
-            type="button"
-            onClick={() => void downloadMeetingModel()}
-            disabled={downloadingModel}
-            className="flex h-7 flex-shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold disabled:opacity-70"
-            style={{ background: "hsl(var(--chip-amber-fg))", color: "hsl(var(--background))" }}
-          >
-            {downloadingModel ? <Loader2 size={13} className="animate-spin" /> : null}
-            {downloadingModel ? "Downloading…" : "Download model"}
-          </button>
+          {hasModel === false ? (
+            <button
+              type="button"
+              onClick={() => void downloadMeetingModel()}
+              disabled={downloadingModel}
+              className="flex h-7 flex-shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold disabled:opacity-70"
+              style={{ background: "hsl(var(--chip-amber-fg))", color: "hsl(var(--background))" }}
+            >
+              {downloadingModel ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              {downloadingModel ? "Downloading…" : `Download ${NEW_MODEL_SIZE_HINT}`}
+            </button>
+          ) : null}
         </div>
       ) : null}
       <div
@@ -2323,10 +2331,10 @@ export function MeetingsView({
               </IconButton>
               <button
                 onClick={handleNewMeeting}
-                disabled={creating || hasModel === false}
+                disabled={creating || hasModel !== true}
                 className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                 style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                title={hasModel === false ? "Install a transcription model first" : "New Meeting"}
+                title={hasModel === true ? "New Meeting" : `Meetings require ${NEW_MODEL_NAME} (${NEW_MODEL_SIZE_HINT})`}
               >
                 {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
               </button>

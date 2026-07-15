@@ -847,13 +847,18 @@ struct ScreenContextState(Mutex<Option<String>>);
 async fn stt_pre_transcript(
     wav: &[u8],
     language: &str,
+    is_meeting: bool,
 ) -> Result<dictation_stt::PreTranscript, String> {
     let started = std::time::Instant::now();
-    let transcript = dictation_stt::transcribe_wav_bytes(wav, language).await?;
+    let transcript = if is_meeting {
+        dictation_stt::transcribe_meeting_wav_bytes(wav, language).await?
+    } else {
+        dictation_stt::transcribe_wav_bytes(wav, language).await?
+    };
     tracing::info!(
         "[finish] speech transcript ready in {}ms provider={} chars={} words={}",
         started.elapsed().as_millis(),
-        dictation_stt::provider_name(),
+        transcript.meta.provider,
         transcript.transcript.len(),
         transcript.transcript.split_whitespace().count()
     );
@@ -4759,10 +4764,16 @@ fn do_finish_recording(
             // session cancels it instead of submitting an empty utterance.
             drop(live_nemotron.take());
             Err("No speech detected — try speaking again.".to_string())
+        } else if is_meeting {
+            // Meetings have a hard local-only speech path. Ignore any stale
+            // live cloud session rather than letting it change the model a
+            // meeting uses on Windows.
+            drop(live_nemotron.take());
+            stt_pre_transcript(&wav, &stt_language, true).await
         } else if let Some(live_nemotron) = live_nemotron.take() {
             finish_live_nemotron_transcript(live_nemotron).await
         } else {
-            stt_pre_transcript(&wav, &stt_language).await
+            stt_pre_transcript(&wav, &stt_language, false).await
         };
 
         // The provider's errors are complete, actionable sentences (offline,
@@ -6699,7 +6710,7 @@ fn retry_recording_spawn(
         // The polish backend requires a pre_transcript, so an STT failure ends
         // the retry here with the provider's own actionable message instead of
         // a confusing backend 400.
-        let pre_transcript = match stt_pre_transcript(&wav, &stt_language).await {
+        let pre_transcript = match stt_pre_transcript(&wav, &stt_language, false).await {
             Ok(t) => Some(t),
             Err(message) => {
                 tracing::warn!("[retry] speech transcription failed: {message}");
@@ -7313,6 +7324,7 @@ fn start_meeting_stt(
     meeting_mode: State<'_, MeetingModeState>,
     state: State<'_, SharedApp>,
 ) -> Result<MeetingSttStatus, String> {
+    meeting_engine::require_meeting_local_model()?;
     let was_inactive = meeting_mode.enter();
     tracing::info!("[meeting_mode] entered — auto-starting recording");
     if let Err(err) = meeting_mode.ensure_echo_reference() {

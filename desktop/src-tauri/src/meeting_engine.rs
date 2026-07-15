@@ -3034,11 +3034,12 @@ pub fn meeting_engine_start_session(
     app: AppHandle,
     state: State<'_, MeetingEngineState>,
     meeting_id: Option<String>,
-) -> MeetingEngineStatus {
+) -> Result<MeetingEngineStatus, String> {
+    ensure_meeting_local_transcription_ready()?;
     tracing::info!(meeting_id = ?meeting_id, "[meeting_engine] start session");
     let status = state.start(meeting_id, Some(app.clone()));
     emit_main(&app, STATUS_EVENT, status.clone());
-    status
+    Ok(status)
 }
 
 /// The session id doubles as the on-disk artifact directory name, so a
@@ -13639,6 +13640,27 @@ pub fn meeting_cleanup_legacy_whisper_models() -> Result<WhisperModelCleanupResu
 
 pub fn dictation_whisper_model_installed() -> bool {
     selected_whisper_model_path().is_some()
+}
+
+/// Meetings always transcribe locally with the shared 148 MB Oriserve Hinglish
+/// model. Keep this check at the native boundary so Windows cannot fall back to
+/// hosted STT through a stale UI or direct IPC call.
+pub fn require_meeting_local_model() -> Result<(), String> {
+    if dictation_whisper_model_installed() {
+        Ok(())
+    } else {
+        Err(
+            "Meetings use a local model. Download the 148 MB Oriserve Hinglish model to start; cloud transcription is not used for meetings."
+                .to_string(),
+        )
+    }
+}
+
+/// The meeting engine invokes whisper.cpp after capture, so validate its
+/// complete local stack before recording any audio.
+pub fn ensure_meeting_local_transcription_ready() -> Result<(), String> {
+    require_meeting_local_model()?;
+    resolve_whisper_cpp_config().map(|_| ())
 }
 
 pub fn dictation_whisper_runtime_ready() -> bool {
