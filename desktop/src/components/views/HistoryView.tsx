@@ -4,10 +4,10 @@ import {
   RefreshCw, Monitor, ChevronDown, Undo2, AlertTriangle, FileDown,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { Recording } from "@/types";
 import {
   deleteRecording,
-  listHistory,
   getAppIcon,
   downloadRecordingAudio as saveRecordingAudio,
   getRecordingAudioBytes,
@@ -15,6 +15,13 @@ import {
   revealDownloadedFile,
 } from "@/lib/invoke";
 import { friendlyError } from "@/lib/friendlyError";
+import {
+  getHistoryCacheSnapshot,
+  invalidateHistoryCache,
+  loadCachedHistoryPage,
+  refreshHistoryCache,
+  subscribeHistoryCache,
+} from "@/lib/historyUiCache";
 
 // App-icon cache shared across all rows: app_key → data URL (or null miss).
 // Dedups in-flight lookups so N rows pasted into the same app cost one backend
@@ -546,15 +553,15 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
 
 // ── Skeleton ──────────────────────────────────────────────────────────────────
 
-function Skeleton() {
+function HistorySkeleton() {
   return (
     <div className="space-y-3">
       {[0, 1, 2, 3].map((i) => (
         <div key={i} className="flex gap-3 rounded-xl px-4 py-3.5" style={{ boxShadow: "inset 0 0 0 1px hsl(var(--border))" }}>
-          <div className="w-8 h-8 rounded-lg animate-pulse" style={{ background: "hsl(var(--surface-4))" }} />
+          <Skeleton className="w-8 h-8 rounded-lg" />
           <div className="flex-1 space-y-2 pt-1">
-            <div className="h-3 rounded animate-pulse" style={{ background: "hsl(var(--surface-4))", width: `${70 - i * 8}%` }} />
-            <div className="h-2.5 rounded animate-pulse" style={{ background: "hsl(var(--surface-4))", width: "40%" }} />
+            <Skeleton className="h-3" style={{ width: `${70 - i * 8}%` }} />
+            <Skeleton className="h-2.5 w-2/5" />
           </div>
         </div>
       ))}
@@ -569,9 +576,19 @@ function Skeleton() {
 // ~50 ≈ a day of normal use; older days are one click away.
 const PAGE_SIZE = 50;
 
+function mergeVisibleHistory(current: Recording[], latest: Recording[]): Recording[] {
+  const byId = new Map(current.map((recording) => [recording.id, recording]));
+  for (const recording of latest) byId.set(recording.id, recording);
+  return [...byId.values()]
+    .sort((a, b) => b.timestamp_ms - a.timestamp_ms)
+    .slice(0, Math.max(PAGE_SIZE, current.length));
+}
+
 export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSuccess?: (path: string) => void; refreshKey?: number }) {
-  const [recordings, setRecordings] = useState<Recording[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [recordings, setRecordings] = useState<Recording[]>(() =>
+    getHistoryCacheSnapshot().recordings?.slice(0, PAGE_SIZE) ?? [],
+  );
+  const [loading, setLoading] = useState(() => getHistoryCacheSnapshot().recordings === undefined);
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState("all");
@@ -587,7 +604,7 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
   const loadHistory = useCallback(async (soft = false) => {
     if (soft) setRefreshing(true);
     try {
-      const recs = await listHistory(PAGE_SIZE);
+      const recs = await refreshHistoryCache({ limit: PAGE_SIZE, force: soft });
       setRecordings(recs);
       setHasMore(recs.length >= PAGE_SIZE);
     } finally {
@@ -603,7 +620,7 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
     setLoadingMore(true);
     try {
       const oldest = recordings[recordings.length - 1]?.timestamp_ms;
-      const older = await listHistory(PAGE_SIZE, oldest);
+      const older = oldest === undefined ? [] : await loadCachedHistoryPage(PAGE_SIZE, oldest);
       if (older.length > 0) {
         setRecordings((prev) => {
           const seen = new Set(prev.map((r) => r.id));
@@ -617,6 +634,17 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
   }, [recordings]);
 
   useEffect(() => { void loadHistory(); }, [loadHistory, refreshKey]);
+  useEffect(() => {
+    const sync = () => {
+      const snapshot = getHistoryCacheSnapshot();
+      const cached = snapshot.recordings;
+      if (!cached || snapshot.stale) return;
+      setRecordings((current) => mergeVisibleHistory(current, cached.slice(0, PAGE_SIZE)));
+      setLoading(false);
+    };
+    sync();
+    return subscribeHistoryCache(sync);
+  }, []);
   useEffect(() => () => {
     stopSharedAudio();
     // Flush pending deletes so a delete made just before leaving still persists
@@ -662,10 +690,13 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
     setRecordings((prev) => prev.filter((r) => r.id !== rec.id));
     const commit = () => {
       pendingDeletes.current.delete(rec.id);
-      deleteRecording(rec.id).catch(() => {
-        push({ kind: "error", title: "Couldn’t delete", sub: "It’s back in your history.", duration: 4000 });
-        setRecordings((prev) => insertSorted(prev, rec));
-      });
+      deleteRecording(rec.id)
+        .then(() => invalidateHistoryCache())
+        .catch(() => {
+          invalidateHistoryCache();
+          push({ kind: "error", title: "Couldn’t delete", sub: "It’s back in your history.", duration: 4000 });
+          setRecordings((prev) => insertSorted(prev, rec));
+        });
     };
     const timer = setTimeout(commit, 5000);
     pendingDeletes.current.set(rec.id, { timer, commit });
@@ -692,6 +723,7 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
     const commit = () => {
       pendingDeletes.current.delete("__all__");
       void Promise.allSettled(snapshot.map((r) => deleteRecording(r.id))).then((res) => {
+        invalidateHistoryCache();
         const failed = res.filter((r) => r.status === "rejected").length;
         if (failed > 0) {
           push({ kind: "error", title: `Couldn’t delete ${failed} recording${failed !== 1 ? "s" : ""}`, sub: "Refreshing…", duration: 4000 });
@@ -800,7 +832,7 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
 
         {/* Loading */}
         {loading ? (
-          <Skeleton />
+          <HistorySkeleton />
         ) : recordings.length === 0 ? (
           <div className="h-[50vh] flex items-center justify-center">
             <div className="text-center px-8">

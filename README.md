@@ -82,7 +82,7 @@ A hand-written 80-glyph Devanagari→Roman romanizer ([`script.rs`](crates/backe
 
 ### Wispr-Flow speed, on the free tier
 
-**~150–400 ms time-to-first-token** measured through Groq's LPU hardware ([`groq.rs:4`](crates/backend/src/llm/groq.rs)). Polished text streams into your focused field token-by-token while you're still letting go of the key.
+**~150–400 ms time-to-first-token** measured through the streaming polish path. Tokens appear in AirNote's live preview, then the final polished result is inserted into the focused field once to avoid partial-text reconciliation errors.
 
 Local whisper.cpp speech recognition runs on-device first; the backend only receives transcript text for polishing.
 

@@ -16,7 +16,6 @@ use tower_http::cors::{Any, CorsLayer};
 pub mod auth;
 pub mod cp_client;
 pub mod embedder;
-pub mod formatting;
 pub mod legacy_learning;
 pub mod llm;
 pub mod number_format;

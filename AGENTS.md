@@ -17,7 +17,7 @@ Core runtime (platform-specific code paths shown):
 3. `desktop/src-tauri/src/dictation_stt.rs` runs local whisper.cpp speech recognition
 4. `backend /v1/voice` (Axum SSE) requires the local transcript and polishes it via streaming LLM
 5. `script.rs` Devanagari→Roman guard runs after every token (Hinglish guarantee)
-6. `paster` types token-by-token into the focused app
+6. SSE tokens update AirNote's preview; `paster` inserts the final polished output once
    - macOS: `CGEventKeyboardSetUnicodeString` (Accessibility permission)
    - Windows: `SendInput(KEYEVENTF_UNICODE)` (no permission required)
 7. A 30s edit watch classifies corrections (4-way) → validates (3 gates) → persists to SQLite
@@ -102,7 +102,7 @@ Build it standalone: `cd crates/control-plane && cargo build`.
 ## Architecture — Key Files
 
 ```
-crates/paster/src/lib.rs              type_text() — HID typing loop (6ms delays, critical)
+crates/paster/src/lib.rs              type_text() — final HID insertion loop (6ms delays, critical)
 crates/backend/src/routes/voice.rs    main SSE endpoint — STT → LLM polish → stream
 crates/backend/src/llm/script.rs      80-glyph Devanagari→Roman romanizer
 crates/backend/src/llm/classifier.rs  4-way edit classifier

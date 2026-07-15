@@ -36,6 +36,7 @@ interface NavItem {
 
 const GENERAL_NAV: NavItem[] = [
   { id: "dashboard",  label: "Dashboard",  icon: <LayoutDashboard size={15} /> },
+  { id: "insights",   label: "Insights",   icon: <Activity size={15} /> },
   { id: "history",    label: "History",    icon: <History         size={15} /> },
   { id: "vocabulary", label: "Vocabulary", icon: <BookOpen        size={15} /> },
   { id: "learnings",  label: "Learnings",  icon: <Sparkles        size={15} />, badge: "New" },

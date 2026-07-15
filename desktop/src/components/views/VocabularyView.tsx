@@ -4,20 +4,24 @@ import {
   Pencil, ChevronDown, Undo2, RotateCw, Wand2, ArrowRight,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
-  listVocabulary,
-  listVocabularyAliases,
   addVocabularyTerm,
   deleteVocabularyTerm,
   resetAllVocabulary,
   starVocabularyTerm,
   patchVocabularyTerm,
-  onVocabularyChanged,
   requestNotifications,
   type VocabRow,
   type VocabAlias,
 } from "@/lib/invoke";
 import { friendlyError } from "@/lib/friendlyError";
+import {
+  getVocabularyCacheSnapshot,
+  invalidateVocabularyCache,
+  refreshVocabularyCache,
+  subscribeVocabularyCache,
+} from "@/lib/vocabularyUiCache";
 
 // Backend caps a manual term at 64 chars (routes/vocabulary.rs create()).
 const MAX_TERM_LEN = 64;
@@ -80,7 +84,7 @@ interface TermInfo {
 }
 
 const STATUS_META: Record<StatusKey, { label: string; color: string; bg: string; blurb: string }> = {
-  correcting: { label: "Correcting", color: "hsl(150 60% 58%)", bg: "hsl(150 60% 50% / 0.14)", blurb: "Auto-fixes STT mishearings in your dictation" },
+  correcting: { label: "Correcting", color: "hsl(var(--chip-lime-fg))", bg: "hsl(var(--chip-lime-bg))", blurb: "Auto-fixes STT mishearings in your dictation" },
   starred:    { label: "Pinned hint",  color: "hsl(var(--chip-amber-fg))", bg: "hsl(var(--chip-amber-bg))", blurb: "Kept prominent for local speech and polish hints" },
   glossary:   { label: "Glossary hint", color: "hsl(var(--chip-blue-fg))", bg: "hsl(var(--chip-blue-bg))", blurb: "Given to the polish model as a soft hint" },
   idle:       { label: "Idle", color: "hsl(var(--muted-foreground))", bg: "hsl(var(--surface-4))", blurb: "Known, but not correcting or biasing yet — correct it once in use to teach a fix" },
@@ -141,7 +145,7 @@ const TOAST_ICON: Record<ToastKind, React.ReactNode> = {
   info: <Sparkles size={12} />,
 };
 const TOAST_TINT: Record<ToastKind, { bg: string; fg: string }> = {
-  success: { bg: "hsl(150 60% 50% / 0.16)", fg: "hsl(150 60% 62%)" },
+  success: { bg: "hsl(var(--chip-lime-bg))", fg: "hsl(var(--chip-lime-fg))" },
   error: { bg: "hsl(2 70% 60% / 0.16)", fg: "hsl(2 78% 66%)" },
   info: { bg: "hsl(var(--primary) / 0.16)", fg: "hsl(var(--primary))" },
 };
@@ -565,15 +569,15 @@ function StatusChips({ value, counts, onChange }: {
 
 // ── Loading skeleton ──────────────────────────────────────────────────────────
 
-function Skeleton() {
+function VocabularySkeleton() {
   return (
     <div className="space-y-2">
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} className="flex items-center gap-3 rounded-xl px-4 py-3" style={{ boxShadow: "inset 0 0 0 1px hsl(var(--border))", background: "hsl(var(--surface-1))" }}>
-          <div className="w-8 h-8 rounded-lg animate-pulse flex-shrink-0" style={{ background: "hsl(var(--surface-4))" }} />
+          <Skeleton className="w-8 h-8 rounded-lg flex-shrink-0" />
           <div className="flex-1 space-y-2">
-            <div className="h-3 rounded animate-pulse" style={{ width: `${55 - i * 6}%`, background: "hsl(var(--surface-4))" }} />
-            <div className="h-2.5 rounded animate-pulse w-1/4" style={{ background: "hsl(var(--surface-4))" }} />
+            <Skeleton className="h-3" style={{ width: `${55 - i * 6}%` }} />
+            <Skeleton className="h-2.5 w-1/4" />
           </div>
         </div>
       ))}
@@ -584,9 +588,12 @@ function Skeleton() {
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 export function VocabularyView() {
-  const [rows, setRows] = useState<VocabRow[]>([]);
-  const [aliases, setAliases] = useState<VocabAlias[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState<VocabRow[]>(() => getVocabularyCacheSnapshot().terms ?? []);
+  const [aliases, setAliases] = useState<VocabAlias[]>(() => getVocabularyCacheSnapshot().aliases ?? []);
+  const [loading, setLoading] = useState(() => {
+    const cached = getVocabularyCacheSnapshot();
+    return cached.terms === undefined || cached.aliases === undefined;
+  });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<SortKey>("fixes");
@@ -603,19 +610,27 @@ export function VocabularyView() {
   const pendingDeletes = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; commit: () => void }>());
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const refresh = useCallback(async () => {
-    const [vocab, al] = await Promise.all([listVocabulary(), listVocabularyAliases()]);
-    setRows(vocab.terms.filter((r) => !pendingDeletes.current.has(r.term)));
-    setAliases(al.aliases);
+  const refresh = useCallback(async (force = false) => {
+    const cached = await refreshVocabularyCache({ force });
+    setRows((cached.terms ?? []).filter((row) => !pendingDeletes.current.has(row.term)));
+    setAliases(cached.aliases ?? []);
     setLoading(false);
   }, []);
 
   useEffect(() => {
+    const sync = () => {
+      const cached = getVocabularyCacheSnapshot();
+      if (cached.terms === undefined || cached.aliases === undefined || cached.stale) return;
+      setRows(cached.terms.filter((row) => !pendingDeletes.current.has(row.term)));
+      setAliases(cached.aliases);
+      setLoading(false);
+    };
+    sync();
+    const unsubscribeCache = subscribeVocabularyCache(sync);
     void refresh();
-    const unsub = onVocabularyChanged(refresh);
     requestNotifications().catch(() => {});
     return () => {
-      unsub();
+      unsubscribeCache();
       pendingDeletes.current.forEach(({ timer, commit }) => { clearTimeout(timer); commit(); });
       pendingDeletes.current.clear();
       if (flashTimer.current) clearTimeout(flashTimer.current);
@@ -676,6 +691,7 @@ export function VocabularyView() {
     setAdding(true);
     try {
       await addVocabularyTerm(term);
+      invalidateVocabularyCache();
       setAddValue("");
       setRows((prev) => [{ term, weight: 1.5, use_count: 0, last_used: Date.now(), source: "manual", meaning: null, term_type: null, example_context: null }, ...prev.filter((r) => r.term !== term)]);
       flash(term);
@@ -703,7 +719,10 @@ export function VocabularyView() {
     const commit = () => {
       pendingDeletes.current.delete(term);
       deleteVocabularyTerm(term)
-        .then(() => refresh())
+        .then(() => {
+          invalidateVocabularyCache();
+          return refresh(true);
+        })
         .catch((err) => {
           setRows((prev) => [row, ...prev.filter((r) => r.term !== term)]);
           push({ kind: "error", title: `Couldn’t delete “${term}”`, sub: friendlyError(err), duration: 5000 });
@@ -735,6 +754,7 @@ export function VocabularyView() {
     setRows((prev) => prev.map((r) => r.term === row.term ? { ...r, source: wasStarred ? "manual" : "starred", weight: wasStarred ? 1.5 : 3.0 } : r));
     try {
       await starVocabularyTerm(row.term);
+      invalidateVocabularyCache();
       if (!wasStarred) push({ kind: "success", title: `Pinned “${row.term}”`, sub: "Kept prominent for local speech and polish hints.", duration: 3500 });
     } catch (err) {
       await refresh();
@@ -749,6 +769,7 @@ export function VocabularyView() {
       pendingDeletes.current.forEach(({ timer }) => clearTimeout(timer));
       pendingDeletes.current.clear();
       await resetAllVocabulary();
+      invalidateVocabularyCache();
       setRows([]); setAliases([]); setShowResetConfirm(false);
       push({ kind: "success", title: "Learning reset", sub: "Vocabulary, learned fixes and preferences were cleared.", duration: 4500 });
     } catch (err) {
@@ -884,7 +905,7 @@ export function VocabularyView() {
 
         {/* ── Body ── */}
         {loading ? (
-          <Skeleton />
+          <VocabularySkeleton />
         ) : empty ? (
           <div className="flex items-center justify-center py-16">
             <div className="text-center px-8">
@@ -947,7 +968,11 @@ export function VocabularyView() {
         <VocabDetailModal
           info={detailInfo}
           onClose={() => setDetailTerm(null)}
-          onSaved={() => { refresh(); push({ kind: "success", title: "Saved", duration: 2500 }); }}
+          onSaved={() => {
+            invalidateVocabularyCache();
+            void refresh(true);
+            push({ kind: "success", title: "Saved", duration: 2500 });
+          }}
           onError={(m) => push({ kind: "error", title: "Couldn’t save", sub: m, duration: 5000 })}
           onStar={handleStar}
           onDelete={handleDelete}
