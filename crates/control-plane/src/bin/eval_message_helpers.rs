@@ -4,18 +4,16 @@
 //! can prove the persona-leak bug ("tum kon ho" -> the model introduces itself)
 //! is gone and stays gone.
 //!
-//! It runs every case twice per provider: once through the OLD baseline prompt
+//! It runs every case twice: once through the OLD baseline prompt
 //! (verbatim copy of the prompt that shipped the bug) and once through the NEW
 //! prompt from `said_control_plane::message_helpers`. One run shows the bug
 //! breaking on baseline and holding on the fix.
 //!
 //! Usage (from crates/control-plane):
 //!   DEEPSEEK_API_KEY=... cargo run --bin eval_message_helpers
-//!   DEEPSEEK_API_KEY=... cargo run --bin eval_message_helpers -- --model deepseek --repeats 3
-//!   CEREBRAS_API_KEY=... cargo run --bin eval_message_helpers -- --model cerebras
+//!   DEEPSEEK_API_KEY=... cargo run --bin eval_message_helpers -- --repeats 3
 //!
 //! Flags:
-//!   --model deepseek|cerebras   provider to hit (default deepseek)
 //!   --repeats N                 run each case N times (catch nondeterminism; default 1)
 //!   --mode polish|to_english|both   which NEW-prompt modes to test (default both)
 //!   --no-baseline               skip the OLD-prompt column
@@ -452,66 +450,29 @@ fn corpus() -> Vec<Case> {
 
 // ── Model calls (exact server params) ────────────────────────────────────────
 
-#[derive(Clone, Copy)]
-enum Provider {
-    DeepSeek,
-    Cerebras,
-}
-
-async fn call_model(
-    client: &reqwest::Client,
-    provider: Provider,
-    system: &str,
-    user: &str,
-) -> Result<String, String> {
+async fn call_model(client: &reqwest::Client, system: &str, user: &str) -> Result<String, String> {
     let est_in = user.len() / 4;
-    let (url, key, body) = match provider {
-        Provider::DeepSeek => {
-            let base = std::env::var("DEEPSEEK_BASE_URL")
-                .unwrap_or_else(|_| "https://api.deepseek.com".to_string())
-                .trim_end_matches('/')
-                .to_string();
-            let model = std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
-                .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
-            let max_tokens = (est_in * 2 + 256).min(4096);
-            let body = serde_json::json!({
-                "model": model,
-                "temperature": 0.0,
-                "top_p": 0.9,
-                "max_tokens": max_tokens,
-                "stream": false,
-                "thinking": { "type": "disabled" },
-                "messages": [
-                    { "role": "system", "content": system },
-                    { "role": "user", "content": user }
-                ]
-            });
-            let key = std::env::var("DEEPSEEK_API_KEY").unwrap_or_default();
-            (format!("{base}/v1/chat/completions"), key, body)
-        }
-        Provider::Cerebras => {
-            let model = "gpt-oss-120b".to_string();
-            let max_tokens = ((est_in * 2 + 256).min(8192)).max(4096);
-            let body = serde_json::json!({
-                "model": model,
-                "temperature": 0.0,
-                "top_p": 0.9,
-                "max_tokens": max_tokens,
-                "stream": false,
-                "reasoning_effort": "low",
-                "messages": [
-                    { "role": "system", "content": system },
-                    { "role": "user", "content": user }
-                ]
-            });
-            let key = std::env::var("CEREBRAS_API_KEY").unwrap_or_default();
-            (
-                "https://api.cerebras.ai/v1/chat/completions".to_string(),
-                key,
-                body,
-            )
-        }
-    };
+    let base = std::env::var("DEEPSEEK_BASE_URL")
+        .unwrap_or_else(|_| "https://api.deepseek.com".to_string())
+        .trim_end_matches('/')
+        .to_string();
+    let model = std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+    let max_tokens = (est_in * 2 + 256).min(4096);
+    let body = serde_json::json!({
+        "model": model,
+        "temperature": 0.0,
+        "top_p": 0.9,
+        "max_tokens": max_tokens,
+        "stream": false,
+        "thinking": { "type": "disabled" },
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ]
+    });
+    let key = std::env::var("DEEPSEEK_API_KEY").unwrap_or_default();
+    let url = format!("{base}/v1/chat/completions");
     if key.trim().is_empty() {
         return Err("API key env var is empty".to_string());
     }
@@ -557,7 +518,6 @@ fn strip_reasoning(s: &str) -> String {
 // ── Runner ───────────────────────────────────────────────────────────────────
 
 struct Args {
-    provider: Provider,
     repeats: usize,
     modes: Vec<HelperMode>,
     baseline: bool,
@@ -565,7 +525,6 @@ struct Args {
 }
 
 fn parse_args() -> Args {
-    let mut provider = Provider::DeepSeek;
     let mut repeats = 1usize;
     let mut modes = vec![HelperMode::Polish, HelperMode::ToEnglish];
     let mut baseline = true;
@@ -574,12 +533,6 @@ fn parse_args() -> Args {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--model" => {
-                i += 1;
-                if argv.get(i).map(String::as_str) == Some("cerebras") {
-                    provider = Provider::Cerebras;
-                }
-            }
             "--repeats" => {
                 i += 1;
                 repeats = argv.get(i).and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
@@ -602,18 +555,10 @@ fn parse_args() -> Args {
         i += 1;
     }
     Args {
-        provider,
         repeats,
         modes,
         baseline,
         only,
-    }
-}
-
-fn provider_name(p: Provider) -> &'static str {
-    match p {
-        Provider::DeepSeek => "deepseek",
-        Provider::Cerebras => "cerebras",
     }
 }
 
@@ -630,11 +575,10 @@ async fn main() {
     let args = parse_args();
     let client = reqwest::Client::new();
     let cases = corpus();
-    let provider = args.provider;
 
     println!(
         "\n=== eval_message_helpers · model={} · repeats={} · modes={} ===",
-        provider_name(provider),
+        "deepseek",
         args.repeats,
         args.modes
             .iter()
@@ -663,7 +607,7 @@ async fn main() {
             let mut fails: Vec<String> = Vec::new();
             let mut last_out = String::new();
             for _ in 0..args.repeats {
-                match call_model(&client, provider, &sys, &usr).await {
+                match call_model(&client, &sys, &usr).await {
                     Ok(out) => {
                         last_out = out.clone();
                         fails = run_gates(&case.gates, &out);
@@ -705,7 +649,7 @@ async fn main() {
             let mut fails: Vec<String> = Vec::new();
             let mut last_out = String::new();
             for _ in 0..args.repeats {
-                match call_model(&client, provider, &sys, &usr).await {
+                match call_model(&client, &sys, &usr).await {
                     Ok(out) => {
                         last_out = out.clone();
                         fails = run_gates(&case.gates, &out);
@@ -743,10 +687,7 @@ async fn main() {
         }
     }
 
-    println!(
-        "\n──────────── SUMMARY ({}) ────────────",
-        provider_name(provider)
-    );
+    println!("\n──────────── SUMMARY ({}) ────────────", "deepseek");
     if args.baseline {
         println!(
             "BASELINE (old prompt):  {}/{} passed  ({:.0}%)",

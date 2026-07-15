@@ -65,11 +65,9 @@ pub struct DesktopPrefs {
     #[serde(default)]
     pub browser_context_enabled: bool,
 
-    /// Windows dictation STT provider: `"auto"` (default — on-device when this
-    /// machine has a usable GPU and the local model, hosted otherwise),
-    /// `"local"`, or `"hosted"`. Read synchronously by the dictation pipeline
-    /// per clip, so the Settings toggle applies to the very next dictation.
-    /// macOS ignores it (dictation is always on-device there).
+    /// Dictation STT route. The desktop device policy owns valid values:
+    /// Apple Silicon can use `"local"` or `"cloud-nemotron-3.5"`; Windows
+    /// and Intel Macs are locked to the live Nemotron route.
     #[serde(default = "default_dictation_stt")]
     pub dictation_stt: String,
 
@@ -81,7 +79,7 @@ pub struct DesktopPrefs {
 }
 
 fn default_dictation_stt() -> String {
-    "auto".into()
+    "local".into()
 }
 
 fn default_local_stt_model() -> String {
@@ -119,7 +117,13 @@ pub fn load() -> DesktopPrefs {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return DesktopPrefs::default();
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    let mut prefs: DesktopPrefs = serde_json::from_str(&text).unwrap_or_default();
+    // The desktop policy resolves all legacy values on startup. Keep the
+    // JSON reader tolerant so an old preferences file can always be opened.
+    if prefs.dictation_stt == "hosted" || prefs.dictation_stt == "cloud-whisper-large-v3" {
+        prefs.dictation_stt = "local".into();
+    }
+    prefs
 }
 
 /// Atomically persist the prefs file. Creates the parent dir if needed.
@@ -163,7 +167,7 @@ mod tests {
         assert!(!p.message_polish_mode);
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
-        assert_eq!(p.dictation_stt, "auto");
+        assert_eq!(p.dictation_stt, "local");
         assert_eq!(p.local_stt_model, "oriserve");
 
         let partial = r#"{ "sentry_disabled": true }"#;
@@ -185,7 +189,7 @@ mod tests {
             launch_at_login: true,
             beta_mode: true,
             browser_context_enabled: true,
-            dictation_stt: "hosted".into(),
+            dictation_stt: "cloud-nemotron-3.5".into(),
             local_stt_model: "nemotron".into(),
         };
         let json = serde_json::to_string(&prefs).unwrap();
@@ -196,7 +200,7 @@ mod tests {
         assert!(back.launch_at_login);
         assert!(back.beta_mode);
         assert!(back.browser_context_enabled);
-        assert_eq!(back.dictation_stt, "hosted");
+        assert_eq!(back.dictation_stt, "cloud-nemotron-3.5");
         assert_eq!(back.local_stt_model, "nemotron");
     }
 }

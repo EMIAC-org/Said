@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nemotron 3.5 ASR — AirNote research</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    :root { --font-display:'Space Grotesk',system-ui,sans-serif; --font-body:'Plus Jakarta Sans',system-ui,sans-serif; --font-mono:'JetBrains Mono',monospace; --bg-primary:#0a0a0f; --bg-secondary:#11111a; --bg-card:#16161f; --bg-elevated:#1d1d28; --text-primary:#f4f4f8; --text-secondary:#b4b4c2; --text-muted:#6f6f80; --accent-primary:#7c5cff; --accent-secondary:#22d3ee; --accent-success:#34d399; --accent-warning:#fbbf24; --accent-danger:#f87171; --border-soft:rgba(255,255,255,.10); --border-subtle:rgba(255,255,255,.06); --radius-md:12px; --radius-lg:20px; --container:1060px; }
+    * { box-sizing:border-box; } html { scroll-behavior:smooth; } body { margin:0; background:var(--bg-primary); color:var(--text-primary); font:16px/1.6 var(--font-body); -webkit-font-smoothing:antialiased; } a { color:var(--accent-secondary); } .wrap { max-width:var(--container); margin:auto; padding:44px 24px 72px; } nav { display:flex; justify-content:space-between; color:var(--text-muted); font-size:13px; margin-bottom:58px; } h1,h2,h3 { font-family:var(--font-display); line-height:1.13; letter-spacing:-.025em; } h1 { font-size:clamp(2.7rem,7vw,5.4rem); max-width:900px; margin:0 0 18px; } h2 { margin:50px 0 16px; font-size:1.75rem; } h3 { font-size:1.1rem; margin:0 0 8px; } .eyebrow { color:var(--accent-secondary); text-transform:uppercase; letter-spacing:.14em; font:600 12px var(--font-mono); } .lede { color:var(--text-secondary); max-width:800px; font-size:1.2rem; } .verdict { margin:32px 0; padding:24px; border:1px solid rgba(251,191,36,.35); border-radius:var(--radius-lg); background:linear-gradient(120deg,rgba(251,191,36,.12),transparent 60%); } .verdict strong { color:var(--accent-warning); } .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; } .card { border:1px solid var(--border-soft); border-radius:var(--radius-md); padding:20px; background:var(--bg-card); } .number { font:600 2rem var(--font-display); color:var(--accent-secondary); } .muted { color:var(--text-secondary); } .compare { display:grid; grid-template-columns:180px 1fr 1fr; border:1px solid var(--border-soft); border-radius:var(--radius-md); overflow:hidden; margin-top:18px; } .compare > div { padding:14px; border-bottom:1px solid var(--border-subtle); } .compare > div:nth-child(3n+1) { color:var(--text-muted); font-size:.88rem; } .compare .head { font-weight:700; color:var(--text-primary) !important; background:var(--bg-elevated); } .callout { border-left:3px solid var(--accent-primary); padding:5px 0 5px 18px; color:var(--text-secondary); } .danger { border-color:var(--accent-danger); } ul { padding-left:20px; } li { margin:8px 0; } .dot { display:inline-block; width:9px; height:9px; margin-left:6px; border-radius:50%; vertical-align:middle; } .high{background:var(--accent-success)} .medium{background:var(--accent-warning)} .low{background:var(--text-muted)} .source { font-size:.87rem; color:var(--text-muted); } footer { margin-top:62px; padding-top:28px; border-top:1px solid var(--border-soft); color:var(--text-muted); font-size:.85rem; } .source-list { columns:2; padding-left:18px; } button { background:var(--accent-primary); border:0; color:white; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:600; } @media(max-width:720px){ .grid{grid-template-columns:1fr}.compare{grid-template-columns:115px 1fr 1fr;font-size:.84rem}.compare>div{padding:10px}.source-list{columns:1} nav{margin-bottom:32px} }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <nav><span>AirNote model research</span><span>14 Jul 2026</span></nav>
+    <div class="eyebrow">NVIDIA Nemotron 3.5 ASR Streaming 0.6B</div>
+    <h1>This is the first NVIDIA option worth testing for AirNote.</h1>
+    <p class="lede">Unlike Parakeet TDT v3, it supports Hindi and is built for real streaming. It still is not a safe replacement for our Hinglish-specialized local model until we validate Roman-Hinglish output, code-switching, latency, and laptop packaging.</p>
+
+    <section class="verdict"><strong>Verdict — investigate, don’t replace.</strong><br>Build a side-by-side benchmark first. The upside is real; treating it as a model-file swap would be a mistake.</section>
+
+    <section class="grid">
+      <article class="card"><div class="number">600M</div><h3>Parameters</h3><p class="muted">A cache-aware FastConformer encoder plus RNN-T decoder.</p></article>
+      <article class="card"><div class="number">40</div><h3>Current language locales</h3><p class="muted">The current NVIDIA card says 40, not the screenshot’s 28. Hindi is transcription-ready.</p></article>
+      <article class="card"><div class="number">80ms</div><h3>Lowest chunk setting</h3><p class="muted">A genuine latency/quality control, from 80 ms through 1.12 s.</p></article>
+    </section>
+
+    <h2>What NVIDIA actually ships</h2>
+    <p>Nemotron 3.5 ASR Streaming is a June 2026 multilingual streaming model. Its cache-aware encoder retains context from prior chunks, rather than repeatedly transcribing overlapping buffers. The official model card supports automatic language detection, punctuation/capitalization, and emits a detected language tag that an app must strip before insertion.<span class="dot high" title="Primary NVIDIA model card"></span></p>
+    <p class="callout">Hindi (<code>hi-IN</code>) is in the model’s 19 “transcription-ready” locales, alongside English, Arabic, Japanese, Korean, Vietnamese and European languages. That makes it categorically more relevant than the Parakeet model you showed earlier.</p>
+    <p class="callout danger"><strong>Important gap:</strong> NVIDIA does not claim Hinglish or Roman-Hinglish accuracy. “Hindi supported” does not prove it will correctly handle mixed sentences such as “bhai PR merge kar do, then deploy karna,” nor that it returns the Roman form AirNote needs.</p>
+
+    <h2>Compared with AirNote’s 148 MB local model</h2>
+    <div class="compare" role="table">
+      <div class="head">Dimension</div><div class="head">AirNote today</div><div class="head">Nemotron 3.5</div>
+      <div>Primary purpose</div><div>Hindi / Roman-Hinglish dictation</div><div>Real-time multilingual transcription</div>
+      <div>Language support</div><div>English, Hindi, Hinglish-oriented workflow</div><div>40 locales, including transcription-ready Hindi; Hinglish unvalidated</div>
+      <div>Streaming</div><div>Press/release recording, then transcription</div><div>Native incremental streaming; 80 ms–1.12 s runtime choice</div>
+      <div>Model package</div><div>~148 MB Whisper GGML FP16</div><div>Screenshot: 716 MB Q8_0; official checkpoint: 2.37 GB</div>
+      <div>Engine</div><div>whisper.cpp / Rust whisper-rs</div><div>NeMo / PyTorch officially; separate FastConformer-RNNT engine</div>
+      <div>Output</div><div>AirNote romanizes Hindi output</div><div>Text in input language, punctuation/capitalization, optional language tag</div>
+      <div>Mac / Windows path</div><div>Already Metal / Vulkan / CPU integrated</div><div>Officially listed for Linux + NVIDIA stack; desktop path needs a separate validated runtime</div>
+    </div>
+
+    <h2>Features that could materially help AirNote</h2>
+    <ul>
+      <li><strong>Real partial transcription while the user speaks.</strong> This could eventually make dictation feel immediate, rather than waiting after Caps Lock release.</li>
+      <li><strong>Auto language ID.</strong> We presently force Hinglish through Whisper’s Hindi mode. Nemotron can choose among its supported locales, which may reduce bad manual routing for pure English/Hindi.</li>
+      <li><strong>One latency knob.</strong> We could benchmark 320–560 ms for accuracy and 80–160 ms for live captions using the same checkpoint.</li>
+      <li><strong>Native punctuation and casing.</strong> Helpful before polish, though this is not a substitute for AirNote’s personal-context polish layer.</li>
+      <li><strong>A credible Hindi benchmark.</strong> NVIDIA reports 6.81 WER on FLEURS Hindi at a 1.12 s chunk with language ID. This cannot be compared to Oriserve until both run on the same AirNote clips.</li>
+    </ul>
+
+    <h2>What would make adoption expensive or risky</h2>
+    <ul>
+      <li>It is <strong>not Whisper-compatible</strong>. Our current local STT path is hard-wired to Whisper/GGML; this needs a second engine and provider contract.</li>
+      <li>The screenshot’s 716 MB Q8_0 is about <strong>4.8×</strong> our 148 MB download. Even a community Q4 GGUF is about 458 MB; that is not NVIDIA’s official runtime.</li>
+      <li>NVIDIA officially documents NeMo on Linux/NVIDIA hardware. A Mac and Windows implementation may be possible through an alternate native/ONNX/GGUF runtime, but it must be treated as its own product integration—not assumed from the model card.</li>
+      <li>Streaming partials create a UX problem: partial text can change as more audio arrives. We would need a stable/unstable-token policy before typing into arbitrary focused apps.</li>
+    </ul>
+
+    <h2>Recommended next move</h2>
+    <p><strong>Do a narrow benchmark before any integration:</strong> 30–50 real clips split among English, pure Hindi, Roman Hinglish, Hindi-English code switching, names/technical terms, and noisy audio. Score word error, Romanization correctness, term errors, final latency, partial-text stability, model download/RAM, and CPU/GPU behavior.</p>
+    <p class="callout">Pass condition: it must beat—or meaningfully broaden—Oriserve on Hindi/Hinglish without compromising the existing local lane. Until then, keep Oriserve as the default and treat Nemotron as an optional experimental provider.</p>
+
+    <button id="copy">Copy key takeaways</button>
+    <footer>
+      <h3>Sources</h3>
+      <ul class="source-list">
+        <li><a href="https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b" target="_blank" rel="noopener">NVIDIA model card</a> — architecture, language tiers, WER, model size, official runtime.</li>
+        <li><a href="https://docs.nvidia.com/nim/speech/latest/asr/deploy-asr-models/nemotron-asr-streaming.html" target="_blank" rel="noopener">NVIDIA Speech NIM docs</a> — multilingual auto-detection and streaming deployment.</li>
+        <li><a href="https://huggingface.co/blog/nvidia/fine-tuning-nemotron-35-asr" target="_blank" rel="noopener">NVIDIA technical blog</a> — cache-aware streaming and latency presets.</li>
+        <li><a href="https://huggingface.co/cstr/nemotron-3.5-asr-streaming-GGUF" target="_blank" rel="noopener">Community GGUF conversion</a> — package-size reference only; not an official NVIDIA runtime.</li>
+      </ul>
+      <p class="source">Confidence: green = primary NVIDIA source; claims about a desktop GGUF are community evidence and should be benchmarked independently.</p>
+    </footer>
+  </main>
+  <script>
+    document.getElementById('copy').addEventListener('click', async () => {
+      await navigator.clipboard.writeText('Nemotron 3.5 is a 600M true-streaming multilingual ASR model with Hindi support. It is worth benchmarking for AirNote, but not replacing Oriserve: Hinglish/Roman-Hinglish is unproven, it is 4.8x larger in the shown Q8 package, and needs a separate runtime.');
+      document.getElementById('copy').textContent = 'Copied';
+    });
+  </script>
+</body>
+</html>

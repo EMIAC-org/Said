@@ -1085,10 +1085,20 @@ export interface DesktopPrefs {
   launch_at_login: boolean;
   beta_mode: boolean;
   browser_context_enabled: boolean;
-  /** Windows dictation STT provider; applies to the next dictation. */
-  dictation_stt: "auto" | "local" | "hosted";
-  /** Local ASR implementation. Meetings always retain Oriserve Whisper. */
-  local_stt_model: "oriserve" | "nemotron";
+  /** Enforced device route: local or live Cloud Nemotron. */
+  dictation_stt: "local" | "cloud-nemotron-3.5";
+  /** Hardware-assigned local model. Meetings retain their own Oriserve path. */
+  local_stt_model: "oriserve" | "nemotron-q4";
+}
+
+export interface SttSetupPolicy {
+  platform: string;
+  cpu_family: "apple_silicon" | "intel" | "windows_or_other";
+  total_memory_bytes: number;
+  setup_kind: "cloud_locked" | "local_required";
+  local_model: "oriserve" | "nemotron-q4" | null;
+  local_model_name: string | null;
+  local_model_size_hint: string | null;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -1100,7 +1110,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       launch_at_login: false,
       beta_mode: false,
       browser_context_enabled: false,
-      dictation_stt: "auto",
+      dictation_stt: "local",
       local_stt_model: "oriserve",
     };
   }
@@ -1110,6 +1120,36 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
 export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("set_desktop_prefs", { prefs });
+}
+
+/**
+ * Make the installed local speech model the active dictation route. Call this
+ * only after the downloader has confirmed the model exists; that ordering
+ * avoids switching a user away from live speech to a missing local model.
+ */
+export async function selectLocalDictationRoute(): Promise<DesktopPrefs> {
+  const current = await getDesktopPrefs();
+  const next: DesktopPrefs = { ...current, dictation_stt: "local" };
+  if (current.dictation_stt !== "local") {
+    await setDesktopPrefs(next);
+  }
+  return next;
+}
+
+/** Immutable device policy used for forced speech setup and Settings. */
+export async function getSttSetupPolicy(): Promise<SttSetupPolicy> {
+  if (!isTauriRuntime()) {
+    return {
+      platform: "macos",
+      cpu_family: "apple_silicon",
+      total_memory_bytes: 16 * 1024 * 1024 * 1024,
+      setup_kind: "local_required",
+      local_model: "nemotron-q4",
+      local_model_name: "Nemotron Streaming 3.5 (Q4)",
+      local_model_size_hint: "~496 MB",
+    };
+  }
+  return tauriInvoke<SttSetupPolicy>("get_stt_setup_policy");
 }
 
 /** Prompt macOS Automation consent for running browsers (upfront, on Enable).

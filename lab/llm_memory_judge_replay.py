@@ -479,7 +479,7 @@ def main() -> int:
     )
     parser.add_argument("--max-judge-calls", type=int, default=60)
     parser.add_argument("--emit-confidence", type=float, default=0.90)
-    parser.add_argument("--slug", default="cerebras-gpt-oss")
+    parser.add_argument("--slug", default="openrouter-gemma-4-nitro")
     args = parser.parse_args()
 
     corpus = args.corpus or judge.latest_corpus()

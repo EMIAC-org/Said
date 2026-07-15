@@ -932,8 +932,8 @@ pub async fn repair_transcript(
         let groq_key = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
-        let cerebras_key = prefs.cerebras_api_key.clone()
-            .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
+        let openrouter_key = std::env::var("OPENROUTER_API_KEY")
+            .ok()
             .unwrap_or_default();
         let deepinfra_key = prefs.deepinfra_api_key.clone()
             .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
@@ -965,7 +965,7 @@ pub async fn repair_transcript(
                 &groq_key,
                 &gateway_key,
                 &gemini_key,
-                &cerebras_key,
+                &openrouter_key,
                 &deepinfra_key,
                 openai_token_opt.as_deref(),
                 &llm_provider_for_task,
@@ -1337,7 +1337,7 @@ async fn run_local_voice_polish_no_stream(
     gateway_key: String,
     gemini_key: String,
     groq_key: String,
-    cerebras_key: String,
+    openrouter_key: String,
     deepinfra_key: String,
     system_prompt: String,
     user_message: String,
@@ -1363,7 +1363,7 @@ async fn run_local_voice_polish_no_stream(
         &groq_key,
         &gateway_key,
         &gemini_key,
-        &cerebras_key,
+        &openrouter_key,
         &deepinfra_key,
         openai_token_opt.as_deref(),
         &llm_provider,
@@ -1744,8 +1744,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let groq_key = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
-        let cerebras_key = prefs.cerebras_api_key.clone()
-            .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
+        let openrouter_key = std::env::var("OPENROUTER_API_KEY")
+            .ok()
             .unwrap_or_default();
         let deepinfra_key = prefs.deepinfra_api_key.clone()
             .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
@@ -2451,7 +2451,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         gateway_key.clone(),
                         gemini_key.clone(),
                         groq_key.clone(),
-                        cerebras_key.clone(),
+                        openrouter_key.clone(),
                         deepinfra_key.clone(),
                         system_prompt.clone(),
                         user_message.clone(),
@@ -2507,7 +2507,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         gateway_key.clone(),
                         gemini_key.clone(),
                         groq_key.clone(),
-                        cerebras_key.clone(),
+                        openrouter_key.clone(),
                         deepinfra_key.clone(),
                         system_prompt.clone(),
                         user_message.clone(),
@@ -2572,7 +2572,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let gk          = gateway_key.clone();
             let gk_gemini   = gemini_key.clone();
             let gk_groq     = groq_key.clone();
-            let gk_cerebras = cerebras_key.clone();
+            let gk_openrouter = openrouter_key.clone();
             let gk_deepinfra = deepinfra_key.clone();
 
             info!("[timing] LLM start — route={:?}", route.label());
@@ -2585,7 +2585,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     &gk_groq,
                     &gk,
                     &gk_gemini,
-                    &gk_cerebras,
+                    &gk_openrouter,
                     &gk_deepinfra,
                     openai_token_opt.as_deref(),
                     &llm_provider_for_task,

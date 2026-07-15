@@ -58,6 +58,9 @@ asr-core      = { path = "../../crates/asr-core" }
 said-hotkey   = { path = "../../crates/hotkey" }
 said-paster   = { path = "../../crates/paster" }
 said-recorder = { path = "../../crates/recorder" }
+# Cloud STT owns both explicit Together transports: HTTP Whisper and realtime
+# WebSocket Nemotron. It is shared by macOS and Windows.
+asr-cloud     = { path = "../../crates/asr-cloud" }
 
 # Recording (still needed; cpal uses its own thread model)
 cpal  = "0.15"
@@ -88,10 +91,6 @@ transcribe-cpp  = { version = "0.1.3", default-features = false, features = ["me
 # the desktop process would undermine that crash boundary. A future dedicated
 # Nemotron worker can opt into transcribe-cpp's dynamic Vulkan backend.
 transcribe-cpp = { version = "0.1.3", default-features = false }
-# Windows dictation is HOSTED (DeepInfra whisper-large-v3-turbo) — see
-# dictation_stt.rs for the platform seam. asr-cloud is the OpenAI-compatible
-# transcription client; it is Windows-only so macOS builds never pull it.
-asr-cloud = { path = "../../crates/asr-cloud" }
 # NOTE: the desktop app no longer links whisper/Vulkan directly. On-device
 # dictation runs through `asr-core` — CPU in-process here — while the GPU (Vulkan)
 # path lives entirely in the isolated `airnote-asr-gpu` sidecar. The app therefore

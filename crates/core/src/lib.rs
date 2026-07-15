@@ -30,9 +30,9 @@ pub struct Mode {
 }
 
 pub const MODES: &[Mode] = &[Mode {
-    key: "cerebras-gemma-4",
-    label: "Gemma 4 31B (Cerebras)",
-    model: polish::model::CEREBRAS_POLISH_MODEL_GEMMA_4,
+    key: polish::model::DEFAULT_POLISH_MODEL_KEY,
+    label: "Gemma 4 31B (OpenRouter Nitro)",
+    model: polish::model::OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO,
     icon: "fast",
 }];
 

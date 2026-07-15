@@ -17,15 +17,73 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use transcribe_cpp::{Model, RunOptions};
 
-pub const MODEL_FILE: &str = "nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf";
 pub const MODEL_NAME: &str = "Nemotron Streaming 3.5";
-pub const MODEL_SIZE_BYTES: u64 = 751_094_240;
-const MODEL_SHA256: &str = "b94545b313b3223fda7b2857a52681da813935c2127643d1e9ff0c23d988089c";
-const MODEL_URL: &str = "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/main/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf";
 const DOWNLOAD_EVENT: &str = "nemotron-model-download";
+
+/// Downloadable quantizations of the same Nemotron architecture.  Keep this
+/// explicit rather than treating the filename as user input: every download is
+/// size- and SHA-256-checked before it can be used for dictation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    Q4,
+    Q8,
+}
+
+impl Variant {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "q4" => Ok(Self::Q4),
+            "q8" => Ok(Self::Q8),
+            _ => Err("Unknown Nemotron model. Choose Q4 or Q8.".to_string()),
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Q4 => "q4",
+            Self::Q8 => "q8",
+        }
+    }
+
+    pub const fn file(self) -> &'static str {
+        match self {
+            Self::Q4 => "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
+            Self::Q8 => "nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf",
+        }
+    }
+
+    pub const fn size_bytes(self) -> u64 {
+        match self {
+            Self::Q4 => 495_831_520,
+            Self::Q8 => 751_094_240,
+        }
+    }
+
+    const fn sha256(self) -> &'static str {
+        match self {
+            Self::Q4 => "41c99fa5fb6f3d35f68e79adc3e755eca2232a8d921178bd647b71194792b8fd",
+            Self::Q8 => "b94545b313b3223fda7b2857a52681da813935c2127643d1e9ff0c23d988089c",
+        }
+    }
+
+    fn url(self) -> String {
+        format!(
+            "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/main/{}",
+            self.file()
+        )
+    }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Q4 => "Nemotron Streaming 3.5 (Q4)",
+            Self::Q8 => "Nemotron Streaming 3.5 (Q8)",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelStatus {
+    pub variant: String,
     pub installed: bool,
     pub size_bytes: u64,
     pub path: String,
@@ -47,10 +105,15 @@ pub struct Output {
     pub duration_ms: u64,
 }
 
-static MODEL: OnceLock<Mutex<Option<Model>>> = OnceLock::new();
+struct CachedModel {
+    variant: Variant,
+    model: Model,
+}
+
+static MODEL: OnceLock<Mutex<Option<CachedModel>>> = OnceLock::new();
 static DOWNLOAD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn cache() -> &'static Mutex<Option<Model>> {
+fn cache() -> &'static Mutex<Option<CachedModel>> {
     MODEL.get_or_init(|| Mutex::new(None))
 }
 
@@ -58,14 +121,50 @@ fn download_lock() -> &'static Mutex<()> {
     DOWNLOAD_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub fn model_path() -> PathBuf {
-    said_core::paths::data_dir().join("models").join(MODEL_FILE)
+fn model_path(variant: Variant) -> PathBuf {
+    said_core::paths::data_dir()
+        .join("models")
+        .join(variant.file())
 }
 
-pub fn installed() -> bool {
-    fs::metadata(model_path())
-        .map(|metadata| metadata.is_file() && metadata.len() == MODEL_SIZE_BYTES)
+pub fn installed(variant: Variant) -> bool {
+    fs::metadata(model_path(variant))
+        .map(|metadata| metadata.is_file() && metadata.len() == variant.size_bytes())
         .unwrap_or(false)
+}
+
+/// `nemotron` was the Q8-only preference in the previous release. Preserve it
+/// as Q8 so an existing user never silently changes models after updating.
+pub fn selected_variant() -> Option<Variant> {
+    selected_variant_for(&said_core::prefs::load().local_stt_model)
+}
+
+pub fn selected_variant_for(value: &str) -> Option<Variant> {
+    match value {
+        "nemotron-q4" => Some(Variant::Q4),
+        "nemotron" | "nemotron-q8" => Some(Variant::Q8),
+        _ => None,
+    }
+}
+
+pub fn is_selected() -> bool {
+    selected_variant().is_some()
+}
+
+pub fn is_nemotron_pref(value: &str) -> bool {
+    selected_variant_for(value).is_some()
+}
+
+pub fn selected_installed() -> bool {
+    selected_variant().is_some_and(installed)
+}
+
+pub fn selected_model_file() -> &'static str {
+    selected_variant().unwrap_or(Variant::Q8).file()
+}
+
+pub fn selected_model_name() -> &'static str {
+    selected_variant().unwrap_or(Variant::Q8).display_name()
 }
 
 pub fn unload() {
@@ -74,37 +173,49 @@ pub fn unload() {
     }
 }
 
-fn loaded_model() -> Result<Model, String> {
-    if !installed() {
+fn loaded_model(variant: Variant) -> Result<Model, String> {
+    if !installed(variant) {
         return Err(format!(
-            "{MODEL_NAME} is not installed. Download it in Settings → Speech recognition."
+            "{} is not installed. Download it in Settings → Speech recognition.",
+            variant.display_name()
         ));
     }
     let mut cached = cache()
         .lock()
         .map_err(|_| "Nemotron model cache is unavailable".to_string())?;
-    if let Some(model) = cached.as_ref() {
-        return Ok(model.clone());
+    if let Some(cached_model) = cached.as_ref()
+        && cached_model.variant == variant
+    {
+        return Ok(cached_model.model.clone());
     }
-    let path = model_path();
-    let model =
-        Model::load(&path).map_err(|error| format!("Couldn't load {MODEL_NAME}: {error}"))?;
+    // Do not keep Q4 and Q8 mapped together. A user can safely compare them
+    // without paying both models' RAM cost.
+    *cached = None;
+    let path = model_path(variant);
+    let model = Model::load(&path)
+        .map_err(|error| format!("Couldn't load {}: {error}", variant.display_name()))?;
     tracing::info!(
-        model = MODEL_FILE,
+        model = variant.file(),
         backend = %model.backend(),
         architecture = %model.arch(),
         "[nemotron] local model loaded"
     );
-    *cached = Some(model.clone());
+    *cached = Some(CachedModel {
+        variant,
+        model: model.clone(),
+    });
     Ok(model)
 }
 
 /// Best-effort model load performed away from the UI/hotkey thread.
 pub fn prewarm() {
-    if !installed() {
+    let Some(variant) = selected_variant() else {
+        return;
+    };
+    if !installed(variant) {
         return;
     }
-    if let Err(error) = loaded_model() {
+    if let Err(error) = loaded_model(variant) {
         tracing::warn!(%error, "[nemotron] prewarm failed");
     }
 }
@@ -112,11 +223,12 @@ pub fn prewarm() {
 /// Runs batch transcription after a completed Caps-Lock recording.
 pub fn transcribe_wav_bytes(wav: &[u8], requested_language: &str) -> Result<Output, String> {
     let started = Instant::now();
+    let variant = selected_variant().ok_or_else(|| "Nemotron is not selected.".to_string())?;
     let pcm = asr_core::audio::prepare(wav).map_err(|error| error.to_string())?;
-    let model = loaded_model()?;
+    let model = loaded_model(variant)?;
     let mut session = model
         .session()
-        .map_err(|error| format!("Couldn't start {MODEL_NAME}: {error}"))?;
+        .map_err(|error| format!("Couldn't start {}: {error}", variant.display_name()))?;
     let options = RunOptions {
         // Auto-detect for Hinglish/auto: forcing either side of a code-switched
         // utterance is exactly the behaviour we need to evaluate before leaving
@@ -126,7 +238,7 @@ pub fn transcribe_wav_bytes(wav: &[u8], requested_language: &str) -> Result<Outp
     };
     let result = session
         .run(&pcm, &options)
-        .map_err(|error| format!("{MODEL_NAME} transcription failed: {error}"))?;
+        .map_err(|error| format!("{} transcription failed: {error}", variant.display_name()))?;
     let transcript = strip_terminal_language_tag(result.text).trim().to_string();
     if transcript.is_empty() {
         return Err("No speech detected — try speaking again.".to_string());
@@ -164,25 +276,31 @@ fn strip_terminal_language_tag(text: String) -> String {
 }
 
 #[tauri::command]
-pub fn nemotron_model_status() -> ModelStatus {
-    let path = model_path();
+pub fn nemotron_model_status(variant: String) -> Result<ModelStatus, String> {
+    let variant = Variant::parse(&variant)?;
+    let path = model_path(variant);
     let size_bytes = fs::metadata(&path)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    ModelStatus {
-        installed: installed(),
+    Ok(ModelStatus {
+        variant: variant.key().to_string(),
+        installed: installed(variant),
         size_bytes,
         path: path.to_string_lossy().to_string(),
-    }
+    })
 }
 
 #[tauri::command]
-pub fn delete_nemotron_model() -> Result<(), String> {
-    if said_core::prefs::load().local_stt_model == "nemotron" {
-        return Err("Switch dictation back to Oriserve before removing Nemotron.".to_string());
+pub fn delete_nemotron_model(variant: String) -> Result<(), String> {
+    let variant = Variant::parse(&variant)?;
+    if selected_variant() == Some(variant) {
+        return Err(
+            "Switch dictation to Oriserve or the other Nemotron model before removing this model."
+                .to_string(),
+        );
     }
     unload();
-    let path = model_path();
+    let path = model_path(variant);
     if path.exists() {
         fs::remove_file(&path).map_err(|error| format!("couldn't delete {MODEL_NAME}: {error}"))?;
     }
@@ -192,36 +310,37 @@ pub fn delete_nemotron_model() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn download_nemotron_model(app: AppHandle) -> Result<(), String> {
-    if installed() {
+pub async fn download_nemotron_model(app: AppHandle, variant: String) -> Result<(), String> {
+    let variant = Variant::parse(&variant)?;
+    if installed(variant) {
         return Ok(());
     }
     let app_for_task = app.clone();
-    tauri::async_runtime::spawn_blocking(move || download_blocking(&app_for_task))
+    tauri::async_runtime::spawn_blocking(move || download_blocking(&app_for_task, variant))
         .await
         .map_err(|error| format!("Nemotron download task failed: {error}"))?
 }
 
-fn download_blocking(app: &AppHandle) -> Result<(), String> {
+fn download_blocking(app: &AppHandle, variant: Variant) -> Result<(), String> {
     let _single_download = download_lock()
         .lock()
         .map_err(|_| "Nemotron download registry is unavailable".to_string())?;
-    if installed() {
+    if installed(variant) {
         return Ok(());
     }
-    let dest = model_path();
+    let dest = model_path(variant);
     let dir = dest
         .parent()
         .ok_or_else(|| "Nemotron model path has no parent directory".to_string())?;
     fs::create_dir_all(dir).map_err(|error| format!("couldn't create models folder: {error}"))?;
-    let part = dir.join(format!("{MODEL_FILE}.part"));
+    let part = dir.join(format!("{}.part", variant.file()));
     let emit = |received: u64, status: &str, error: Option<String>| {
         let _ = app.emit(
             DOWNLOAD_EVENT,
             DownloadProgress {
-                name: MODEL_FILE.to_string(),
+                name: variant.file().to_string(),
                 received,
-                total: MODEL_SIZE_BYTES,
+                total: variant.size_bytes(),
                 status: status.to_string(),
                 error,
             },
@@ -237,7 +356,7 @@ fn download_blocking(app: &AppHandle) -> Result<(), String> {
         .build()
         .map_err(|error| fail(format!("Nemotron HTTP client failed: {error}"), 0))?;
     let mut response = client
-        .get(MODEL_URL)
+        .get(variant.url())
         .send()
         .map_err(|error| fail(format!("Nemotron download request failed: {error}"), 0))?;
     if !response.status().is_success() {
@@ -247,7 +366,7 @@ fn download_blocking(app: &AppHandle) -> Result<(), String> {
         ));
     }
     if let Some(total) = response.content_length() {
-        if total != MODEL_SIZE_BYTES {
+        if total != variant.size_bytes() {
             return Err(fail(
                 format!("Nemotron download has an unexpected size ({total} bytes)"),
                 0,
@@ -285,16 +404,17 @@ fn download_blocking(app: &AppHandle) -> Result<(), String> {
     file.flush().ok();
     let _ = file.sync_all();
     drop(file);
-    if received != MODEL_SIZE_BYTES {
+    if received != variant.size_bytes() {
         return Err(fail(
             format!(
-                "Nemotron download ended with the wrong size ({received}/{MODEL_SIZE_BYTES} bytes)"
+                "Nemotron download ended with the wrong size ({received}/{} bytes)",
+                variant.size_bytes()
             ),
             received,
         ));
     }
     let checksum = format!("{:x}", hasher.finalize());
-    if checksum != MODEL_SHA256 {
+    if checksum != variant.sha256() {
         return Err(fail(
             "Nemotron download failed its integrity check. Please try again.".to_string(),
             received,
@@ -333,5 +453,19 @@ mod tests {
             strip_terminal_language_tag("hello <not-a-tag>".to_string()),
             "hello <not-a-tag>"
         );
+    }
+
+    #[test]
+    fn q4_and_q8_metadata_are_explicit_and_legacy_q8_stays_stable() {
+        assert_eq!(
+            Variant::Q4.file(),
+            "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf"
+        );
+        assert_eq!(Variant::Q4.size_bytes(), 495_831_520);
+        assert_eq!(Variant::Q8.size_bytes(), 751_094_240);
+        assert_eq!(selected_variant_for("nemotron-q4"), Some(Variant::Q4));
+        assert_eq!(selected_variant_for("nemotron-q8"), Some(Variant::Q8));
+        assert_eq!(selected_variant_for("nemotron"), Some(Variant::Q8));
+        assert_eq!(selected_variant_for("oriserve"), None);
     }
 }

@@ -53,8 +53,8 @@ fn groq_key_for_learning(prefs: Option<&crate::store::prefs::Preferences>) -> St
         .and_then(|p| p.groq_api_key.clone())
         .or_else(|| std::env::var("GROQ_API_KEY").ok())
         .or_else(|| {
-            // Only pass true Groq keys to the Groq endpoint. Generic gateway or
-            // Cerebras keys belong to the server-runtime fallback below.
+            // Only pass true Groq keys to the Groq endpoint. Generic gateway
+            // keys must never be sent to a direct provider endpoint.
             std::env::var("GATEWAY_API_KEY")
                 .ok()
                 .filter(|key| key.trim_start().starts_with("gsk_"))

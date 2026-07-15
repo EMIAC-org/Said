@@ -10,7 +10,7 @@ live control-plane endpoint:
 
 so the *actual* production system prompt (crates/core/src/polish/prompt.rs +
 crates/control-plane/src/voice_polish_standalone.rs), the actual model
-(Cerebras gpt-oss-120b by default), the account's stored profile, and all
+(OpenRouter Nitro Gemma 4 31B by default), the account's stored profile, and all
 server post-processing guards run exactly as in production. That makes this the
 right loop for iterating on the system prompt: edit the prompt source → restart
 the server → re-run this → read failures → repeat.
@@ -29,7 +29,7 @@ Usage:
     python3 lab/server_bench.py --limit 6            # smoke subset
     python3 lab/server_bench.py --categories injection,over_correction
     python3 lab/server_bench.py --tone neutral --output-language hinglish
-    python3 lab/server_bench.py --model cerebras-gpt-oss
+    python3 lab/server_bench.py --model openrouter-gemma-4-nitro
     python3 lab/server_bench.py --label baseline     # names the run dir
 """
 

@@ -1,13 +1,13 @@
 //! Plug-and-play polish dispatch — one module per provider.
 //!
-//! Providers: `groq`, `cerebras`, `deepinfra`, `gateway`, `gemini_direct`, `openai_codex`.
+//! Providers: `openrouter`, `groq`, `deepinfra`, `gateway`, `gemini_direct`, `openai_codex`.
 //! Model routing is resolved in `said_core::polish::model`.
 
 use reqwest::Client;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use super::{PolishResult, cerebras, deepinfra, gateway, gemini_direct, groq, openai_codex};
+use super::{PolishResult, deepinfra, gateway, gemini_direct, groq, openai_codex, openrouter};
 use said_core::polish::model::{PolishRoute, resolve_polish_route};
 
 pub fn voice_polish_route(selected_model: &str) -> PolishRoute {
@@ -20,7 +20,7 @@ pub async fn stream_polish_routed(
     groq_key: &str,
     gateway_key: &str,
     gemini_key: &str,
-    cerebras_key: &str,
+    openrouter_key: &str,
     deepinfra_key: &str,
     openai_access_token: Option<&str>,
     llm_provider: &str,
@@ -74,10 +74,10 @@ pub async fn stream_polish_routed(
             )
             .await
         }
-        "cerebras" => {
-            cerebras::stream_polish(
+        "openrouter" => {
+            openrouter::stream_polish(
                 client,
-                cerebras_key,
+                openrouter_key,
                 &route.model,
                 system_prompt,
                 user_message,

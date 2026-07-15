@@ -14,7 +14,10 @@
 //   v3 → adds the optional "browser context" step (macOS) after the hotkey.
 //   v4 → re-shows the model step after the update-gate cleanup fix.
 //   v5 → re-shows the model step and silently removes unsupported old STT models.
-export const MIGRATION_VERSION = 5;
+//   v6 → applies the device-specific dictation contract: Windows and Intel
+//        Macs are fixed to live Nemotron; Apple Silicon must install its
+//        hardware-assigned local model before continuing.
+export const MIGRATION_VERSION = 6;
 
 const STORAGE_KEY = "said:migration-done";
 

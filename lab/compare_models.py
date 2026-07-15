@@ -186,7 +186,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--provider",
-        choices=("groq", "cerebras", "deepinfra"),
+        choices=("groq", "together", "deepinfra"),
         action="append",
         help="Limit to provider(s); repeat flag for multiple",
     )
@@ -212,7 +212,7 @@ def main() -> int:
     routes = available_lab_routes(LAB_MODEL_CATALOG, providers=providers, slugs=slugs)
     if not routes:
         raise SystemExit(
-            "No models available. Set GROQ_API_KEY, DEEPINFRA_API_KEY, and/or CEREBRAS_API_KEY in .env"
+            "No models available. Set GROQ_API_KEY, DEEPINFRA_API_KEY, and/or OPENROUTER_API_KEY in .env"
         )
 
     prompt_path = args.prompt.expanduser().resolve()

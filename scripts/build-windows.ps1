@@ -206,8 +206,7 @@ if ($Clean) {
 # ---- Bundle build-time keys (option_env!) -----------------------------------
 # said-desktop bakes two keys via option_env! so users never enter them:
 #   DEEPSEEK_API_KEY  — meeting summaries (meeting_engine.rs)
-#   DEEPINFRA_API_KEY — hosted Windows dictation STT, whisper-large-v3-turbo
-#                       (dictation_stt.rs; Windows dictation is cloud-only)
+#   TOGETHER_API_KEY  — Together AI live Nemotron Windows dictation STT
 # Keys must be set BEFORE the backend build (said-core compiles there) and stay
 # set through the tauri build; the crates' build.rs rerun-if-env-changed
 # directives re-bake on change. Loaded from repo-root .env, then unset after the
@@ -217,7 +216,7 @@ $EnvFile = Join-Path $RepoRoot '.env'
 $ScriptSetKeys = @()
 $BundledKeys = @(
   @{ name = 'DEEPSEEK_API_KEY';  purpose = 'meeting summaries' }
-  @{ name = 'DEEPINFRA_API_KEY'; purpose = 'hosted dictation STT (Windows dictation will be UNAVAILABLE)' }
+  @{ name = 'TOGETHER_API_KEY';  purpose = 'Together AI dictation STT (cloud choices will be unavailable)' }
 )
 foreach ($k in $BundledKeys) {
   $n = $k.name
@@ -230,7 +229,7 @@ foreach ($k in $BundledKeys) {
   else { Warn "$n not set (env or .env) - $($k.purpose) will FAIL in the build until it is added to .env." }
 }
 # Belt-and-suspenders re-bake of the said-desktop option_env! sites (DeepSeek in
-# meeting_engine.rs, DeepInfra in dictation_stt.rs); said-core's keys re-bake via
+# meeting_engine.rs, Together AI in dictation_stt.rs); said-core's keys re-bake via
 # crates/core/build.rs rerun-if-env-changed.
 Touch $MeetingRs
 Touch $DictationStt

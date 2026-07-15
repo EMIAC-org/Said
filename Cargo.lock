@@ -237,10 +237,13 @@ dependencies = [
 name = "asr-cloud"
 version = "2.4.3"
 dependencies = [
- "reqwest 0.12.28",
+ "base64 0.22.1",
+ "futures-util",
+ "hound",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
 ]
 

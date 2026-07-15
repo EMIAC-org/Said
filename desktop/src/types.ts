@@ -57,21 +57,22 @@ export interface AppSnapshot {
 // ── Backend types (mirrored from airnote-backend) ────────────────────────────
 
 export interface SttRuntimeInfo {
-  /** Provider the next dictation will use: deepinfra, Whisper, or Nemotron. */
+  /** Provider the next dictation will use after device-policy enforcement. */
   dictation_provider: string;
   /** Dictation can transcribe right now (model present / key baked). */
   dictation_ready: boolean;
-  /** The user's provider preference on Windows: "auto" | "local" | "hosted". */
+  /** Effective persisted route: local or live Cloud Nemotron. */
   dictation_stt_pref: string;
-  /** What "auto" resolves to on this machine (GPU + model capability probe). */
+  /** Policy-default route for diagnostic/status UI. */
   dictation_auto_provider: string;
-  // On-device whisper status — powers meetings everywhere and dictation on macOS.
+  // On-device Oriserve status — powers meetings everywhere and local dictation
+  // only when the Apple-Silicon policy selects it.
   whisper_installed: boolean;
   whisper_ready: boolean;
   whisper_vad_installed: boolean;
   /** Selected implementation when dictation is local. */
   local_stt_model: string;
-  /** Whether the optional Q8 Nemotron model is installed. */
+  /** Whether the policy-selected optional Nemotron model is installed. */
   nemotron_installed: boolean;
 }
 
@@ -93,7 +94,7 @@ export interface Preferences {
   gateway_api_key:    string | null;
   gemini_api_key:     string | null;
   groq_api_key:       string | null;
-  cerebras_api_key:   string | null;
+  together_api_key:   string | null;
   deepinfra_api_key:  string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider:       string;
@@ -116,7 +117,7 @@ export interface PrefsUpdate {
   gateway_api_key?:    string | null;
   gemini_api_key?:     string | null;
   groq_api_key?:       string | null;
-  cerebras_api_key?:   string | null;
+  together_api_key?:   string | null;
   deepinfra_api_key?:  string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider?:       string;

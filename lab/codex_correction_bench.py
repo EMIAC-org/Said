@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Compare Codex Spark and Cerebras Gemma 4 on AirNote correction cases.
+"""Compare Codex Spark and OpenRouter Nitro Gemma 4 31B on correction cases.
 
 Uses the existing stress-suite cases and deterministic server_bench scorecard.
-Spark is invoked through Codex CLI; Gemma is invoked through direct Cerebras
+Spark is invoked through Codex CLI; Gemma is invoked through OpenRouter
 chat completions. This is a useful product-behavior comparison, but the two
 transport paths are intentionally reported separately.
 
@@ -27,8 +27,8 @@ from typing import Any
 LAB = Path(__file__).resolve().parent
 REPO = LAB.parent
 OUT_DIR = LAB / "model_runs"
-CEREBRAS_BASE = "https://api.cerebras.ai/v1"
-GEMMA_MODEL = "gemma-4-31b"
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+GEMMA_MODEL = "google/gemma-4-31b-it:nitro"
 SPARK_MODEL = "gpt-5.3-codex-spark"
 DEFAULT_CATEGORIES = {"dev_garble", "garble_hard", "over_correction"}
 
@@ -50,12 +50,12 @@ def call_gemma(
         ],
         "temperature": 0.0,
         # Long cases need room to preserve the final clause. This is still a
-        # bounded reservation rather than Cerebras's full context window.
-        "max_completion_tokens": 1024,
+        "max_tokens": 1024,
+        "reasoning": {"enabled": False},
         "stream": False,
     }
     request = urllib.request.Request(
-        f"{CEREBRAS_BASE}/chat/completions",
+        f"{OPENROUTER_BASE}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -148,14 +148,14 @@ def write_report(
         "benchmark_type": "correction_behavior_agent_vs_direct_api",
         "categories": sorted(categories),
         "spark": {"model": SPARK_MODEL, "transport": "codex_exec", "summary": spark_stats, "results": spark},
-        "gemma": {"model": GEMMA_MODEL, "transport": "cerebras_chat_completions", "summary": gemma_stats, "results": gemma},
+        "gemma": {"model": GEMMA_MODEL, "transport": "openrouter_chat_completions", "summary": gemma_stats, "results": gemma},
     }
     (run_dir / "results.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
 
     lines = [
-        f"# Correction benchmark: Codex Spark vs Cerebras Gemma 4 - {stamp}",
+        f"# Correction benchmark: Codex Spark vs OpenRouter Nitro Gemma 4 31B - {stamp}",
         "",
         "Cases and scoring come from `lab/stress_suite.py` and `lab/server_bench.py`.",
         "Spark is an authenticated Codex agent invocation; Gemma is a direct API call.",
@@ -221,9 +221,9 @@ def main() -> int:
         return 0
 
     polish_lab.load_dotenv()
-    api_key = os.getenv("CEREBRAS_API_KEY", "").strip()
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        raise SystemExit("Set CEREBRAS_API_KEY in the gitignored root .env")
+        raise SystemExit("Set OPENROUTER_API_KEY in the gitignored root .env")
     system_prompt = render_production_system_prompt()
     spark_results: list[dict[str, Any]] = []
     gemma_results: list[dict[str, Any]] = []

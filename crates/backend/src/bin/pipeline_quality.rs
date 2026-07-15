@@ -984,7 +984,7 @@ fn make_test_prefs() -> Preferences {
         gateway_api_key: None,
         gemini_api_key: None,
         groq_api_key: None,
-        cerebras_api_key: None,
+        together_api_key: None,
         deepinfra_api_key: None,
         llm_provider: "groq".to_string(),
     }

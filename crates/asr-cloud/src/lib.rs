@@ -1,46 +1,20 @@
-//! Hosted (cloud) speech-to-text.
+//! Together AI live Nemotron speech-to-text transport.
 //!
-//! The cloud counterpart of `asr-core`: where asr-core runs whisper on-device,
-//! this crate transcribes by calling a hosted OpenAI-compatible
-//! `POST {base_url}/audio/transcriptions` endpoint. DeepInfra, OpenAI, Groq and
-//! Fireworks all implement that protocol, so a provider is a [`HostedSttConfig`]
-//! preset (base URL + model + key) — never a new client implementation.
-//!
-//! Providers:
-//! * [`deepinfra`] — `openai/whisper-large-v3-turbo` on DeepInfra
-//!   (<https://docs.deepinfra.com/api-reference/audio/openai-audio-transcriptions>)
-//!
-//! This crate is transport-only. It knows nothing about platforms, dictation
-//! flows, or where the API key comes from — callers resolve the key and decide
-//! when hosted transcription is the right provider.
+//! AirNote uses the realtime WebSocket API exclusively for cloud dictation.
+//! This crate knows nothing about platform selection, recorder lifecycle, or
+//! API-key ownership.
 
-use std::time::Duration;
+mod realtime;
+pub mod together;
 
-mod client;
-pub mod deepinfra;
+pub use realtime::{
+    LiveTranscriptEvent, LiveTranscriptionController, LiveTranscriptionInput,
+    TogetherRealtimeClient, live_transcription_input,
+};
 
-pub use client::HostedSttClient;
-
-/// Everything needed to reach one hosted transcription provider.
+/// A completed cloud transcription.
 #[derive(Debug, Clone)]
-pub struct HostedSttConfig {
-    /// API root that exposes `/audio/transcriptions`, e.g. `https://api.deepinfra.com/v1`.
-    pub base_url: String,
-    /// Provider model identifier, e.g. `openai/whisper-large-v3-turbo`.
-    pub model: String,
-    /// Bearer token for the `Authorization` header.
-    pub api_key: String,
-    /// TCP connect budget. Kept short so an offline machine fails fast with an
-    /// actionable message instead of hanging the dictation pipeline.
-    pub connect_timeout: Duration,
-    /// Whole-request budget (upload + inference + download). Sized for
-    /// multi-minute dictations on slow uplinks; typical clips finish in 1–4s.
-    pub request_timeout: Duration,
-}
-
-/// A completed hosted transcription.
-#[derive(Debug, Clone)]
-pub struct HostedTranscription {
+pub struct CloudTranscription {
     /// Transcript text as returned by the model (whitespace-trimmed).
     pub text: String,
     /// ISO-639-1 language the model detected in the audio, when reported.
@@ -53,13 +27,13 @@ pub struct HostedTranscription {
     pub model: String,
 }
 
-/// Why a hosted transcription failed.
+/// Why a cloud transcription failed.
 ///
 /// `Display` renders each variant as a complete, user-facing sentence — the
 /// desktop shows these verbatim in the dictation error UI, so they must say
 /// what happened *and* what to do about it.
 #[derive(Debug, Clone)]
-pub enum HostedSttError {
+pub enum CloudSttError {
     /// The config carried no API key. End-users cannot fix this (keys are
     /// baked at build time) — the message targets whoever ships the build.
     MissingApiKey { provider: String, env_var: String },
@@ -79,51 +53,51 @@ pub enum HostedSttError {
     InvalidResponse { detail: String },
 }
 
-impl HostedSttError {
+impl CloudSttError {
     /// Transient failures are worth one immediate retry (a blip, a throttle, a
     /// bad gateway); the rest are deterministic and retrying just adds latency.
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
-            HostedSttError::Offline
-                | HostedSttError::Timeout { .. }
-                | HostedSttError::RateLimited
-                | HostedSttError::Service { .. }
+            CloudSttError::Offline
+                | CloudSttError::Timeout { .. }
+                | CloudSttError::RateLimited
+                | CloudSttError::Service { .. }
         )
     }
 }
 
-impl std::fmt::Display for HostedSttError {
+impl std::fmt::Display for CloudSttError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HostedSttError::MissingApiKey { provider, env_var } => write!(
+            CloudSttError::MissingApiKey { provider, env_var } => write!(
                 f,
                 "Speech service unavailable — no {provider} key in this build (bake {env_var} at build time, or set it as an env var)."
             ),
-            HostedSttError::Offline => write!(
+            CloudSttError::Offline => write!(
                 f,
                 "Couldn't reach the speech service — check your internet connection and try again."
             ),
-            HostedSttError::Timeout { budget_secs } => write!(
+            CloudSttError::Timeout { budget_secs } => write!(
                 f,
                 "The speech service didn't respond within {budget_secs}s — check your connection and try again."
             ),
-            HostedSttError::Auth { status } => write!(
+            CloudSttError::Auth { status } => write!(
                 f,
                 "The speech service rejected this build's key (HTTP {status}) — rebuild with a valid key."
             ),
-            HostedSttError::RateLimited => {
+            CloudSttError::RateLimited => {
                 write!(f, "The speech service is busy — try again in a moment.")
             }
-            HostedSttError::Service { status } => write!(
+            CloudSttError::Service { status } => write!(
                 f,
                 "The speech service hit an internal error (HTTP {status}) — try again."
             ),
-            HostedSttError::Rejected { status, detail } => write!(
+            CloudSttError::Rejected { status, detail } => write!(
                 f,
                 "The speech service rejected the audio (HTTP {status}): {detail}"
             ),
-            HostedSttError::InvalidResponse { detail } => write!(
+            CloudSttError::InvalidResponse { detail } => write!(
                 f,
                 "The speech service returned an unreadable response: {detail}"
             ),
@@ -131,7 +105,19 @@ impl std::fmt::Display for HostedSttError {
     }
 }
 
-impl std::error::Error for HostedSttError {}
+impl std::error::Error for CloudSttError {}
+
+pub(crate) fn classify_http_status(status: u16, detail: &str) -> CloudSttError {
+    match status {
+        401 | 403 => CloudSttError::Auth { status },
+        429 => CloudSttError::RateLimited,
+        500..=599 => CloudSttError::Service { status },
+        _ => CloudSttError::Rejected {
+            status,
+            detail: detail.to_string(),
+        },
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -139,21 +125,21 @@ mod tests {
 
     #[test]
     fn errors_render_as_actionable_sentences() {
-        let cases: Vec<HostedSttError> = vec![
-            HostedSttError::MissingApiKey {
-                provider: "DeepInfra".into(),
-                env_var: "DEEPINFRA_API_KEY".into(),
+        let cases: Vec<CloudSttError> = vec![
+            CloudSttError::MissingApiKey {
+                provider: "Together AI".into(),
+                env_var: "TOGETHER_API_KEY".into(),
             },
-            HostedSttError::Offline,
-            HostedSttError::Timeout { budget_secs: 75 },
-            HostedSttError::Auth { status: 401 },
-            HostedSttError::RateLimited,
-            HostedSttError::Service { status: 502 },
-            HostedSttError::Rejected {
+            CloudSttError::Offline,
+            CloudSttError::Timeout { budget_secs: 75 },
+            CloudSttError::Auth { status: 401 },
+            CloudSttError::RateLimited,
+            CloudSttError::Service { status: 502 },
+            CloudSttError::Rejected {
                 status: 422,
                 detail: "audio too short".into(),
             },
-            HostedSttError::InvalidResponse {
+            CloudSttError::InvalidResponse {
                 detail: "expected JSON".into(),
             },
         ];
@@ -170,20 +156,20 @@ mod tests {
 
     #[test]
     fn only_blips_and_throttles_are_transient() {
-        assert!(HostedSttError::Offline.is_transient());
-        assert!(HostedSttError::Timeout { budget_secs: 1 }.is_transient());
-        assert!(HostedSttError::RateLimited.is_transient());
-        assert!(HostedSttError::Service { status: 500 }.is_transient());
-        assert!(!HostedSttError::Auth { status: 401 }.is_transient());
+        assert!(CloudSttError::Offline.is_transient());
+        assert!(CloudSttError::Timeout { budget_secs: 1 }.is_transient());
+        assert!(CloudSttError::RateLimited.is_transient());
+        assert!(CloudSttError::Service { status: 500 }.is_transient());
+        assert!(!CloudSttError::Auth { status: 401 }.is_transient());
         assert!(
-            !HostedSttError::Rejected {
+            !CloudSttError::Rejected {
                 status: 422,
                 detail: String::new()
             }
             .is_transient()
         );
         assert!(
-            !HostedSttError::MissingApiKey {
+            !CloudSttError::MissingApiKey {
                 provider: String::new(),
                 env_var: String::new()
             }
