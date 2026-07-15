@@ -16,6 +16,7 @@ mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
 mod hud_manager;
+mod local_models;
 mod meeting_engine;
 mod nemotron; // optional experimental GGUF local-ASR provider; never used by Meetings
 mod notch_sidecar;
@@ -10805,6 +10806,10 @@ fn main() {
             nemotron::nemotron_model_status,
             nemotron::download_nemotron_model,
             nemotron::delete_nemotron_model,
+            local_models::local_model_inventory,
+            local_models::choose_installed_local_model,
+            local_models::remove_unused_local_dictation_models,
+            local_models::delete_all_local_speech_models,
             // Developer log viewer
             read_backend_log,
             backend_log_location,

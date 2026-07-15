@@ -13400,10 +13400,21 @@ pub fn dictation_model_status() -> DictationModelStatus {
 /// Remove the on-device dictation model file (frees ~148 MB). Idempotent.
 #[tauri::command]
 pub fn delete_dictation_model() -> Result<(), String> {
+    let prefs = said_core::prefs::load();
+    if prefs.dictation_stt == crate::stt_policy::LOCAL_PREF
+        && prefs.local_stt_model == crate::stt_policy::ORISERVE_PREF
+    {
+        return Err(
+            "Switch dictation to Cloud Nemotron before removing the active Oriserve model."
+                .to_string(),
+        );
+    }
     let path = said_core::paths::whisper_model_path();
     if path.is_file() {
         fs::remove_file(&path).map_err(|e| format!("couldn't delete model: {e}"))?;
     }
+    let part = path.with_extension("bin.part");
+    let _ = fs::remove_file(part);
     Ok(())
 }
 
@@ -13710,10 +13721,11 @@ pub async fn meeting_download_silero_vad_model(app: AppHandle) -> Result<(), Str
 #[tauri::command]
 pub fn meeting_delete_silero_vad_model() -> Result<(), String> {
     let path = meeting_whisper_models_dir().join(SILERO_VAD_MODEL_NAME);
-    if !path.is_file() {
-        return Err("Silero VAD model is not installed".to_string());
+    if path.is_file() {
+        fs::remove_file(&path).map_err(|e| format!("couldn't delete Silero VAD model: {e}"))?;
     }
-    fs::remove_file(&path).map_err(|e| format!("couldn't delete Silero VAD model: {e}"))?;
+    let part = meeting_whisper_models_dir().join(format!("{SILERO_VAD_MODEL_NAME}.part"));
+    let _ = fs::remove_file(part);
     Ok(())
 }
 

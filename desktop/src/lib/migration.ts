@@ -16,7 +16,10 @@
 //   v6 → applies the device-specific dictation contract: Windows and Intel
 //        Macs are fixed to live Nemotron; Apple Silicon must install its
 //        hardware-assigned local model before continuing.
-export const MIGRATION_VERSION = 6;
+//   v7 → inventories already-downloaded models before changing selection,
+//        offers existing users Continue or Upgrade, and protects the Oriserve
+//        Meetings dependency during normal cleanup.
+export const MIGRATION_VERSION = 7;
 
 const STORAGE_KEY = "said:migration-done";
 
