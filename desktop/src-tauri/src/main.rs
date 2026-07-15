@@ -16,6 +16,7 @@ mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
 mod hud_manager;
+mod local_models;
 mod meeting_engine;
 mod nemotron; // optional experimental GGUF local-ASR provider; never used by Meetings
 mod notch_sidecar;
@@ -846,13 +847,18 @@ struct ScreenContextState(Mutex<Option<String>>);
 async fn stt_pre_transcript(
     wav: &[u8],
     language: &str,
+    is_meeting: bool,
 ) -> Result<dictation_stt::PreTranscript, String> {
     let started = std::time::Instant::now();
-    let transcript = dictation_stt::transcribe_wav_bytes(wav, language).await?;
+    let transcript = if is_meeting {
+        dictation_stt::transcribe_meeting_wav_bytes(wav, language).await?
+    } else {
+        dictation_stt::transcribe_wav_bytes(wav, language).await?
+    };
     tracing::info!(
         "[finish] speech transcript ready in {}ms provider={} chars={} words={}",
         started.elapsed().as_millis(),
-        dictation_stt::provider_name(),
+        transcript.meta.provider,
         transcript.transcript.len(),
         transcript.transcript.split_whitespace().count()
     );
@@ -2126,6 +2132,7 @@ fn show_meeting_pill(app: tauri::AppHandle) {
                 panel.order_front_regardless();
                 return;
             }
+            let main_was_visible = hud_manager::main_window_is_visible(&app_for_main);
             match PanelBuilder::<_, MeetingPillPanel>::new(&app_for_main, "meeting-pill")
                 .url(tauri::WebviewUrl::App(url.into()))
                 .title("AirNote Meeting")
@@ -2166,6 +2173,7 @@ fn show_meeting_pill(app: tauri::AppHandle) {
                     panel.order_front_regardless();
                     make_pill_transparent_macos(&app_for_main);
                     tracing::info!("[meeting-pill] NSPanel created");
+                    hud_manager::restore_after_no_activate_panel(&app_for_main, main_was_visible);
                 }
                 Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
             }
@@ -4758,10 +4766,16 @@ fn do_finish_recording(
             // session cancels it instead of submitting an empty utterance.
             drop(live_nemotron.take());
             Err("No speech detected — try speaking again.".to_string())
+        } else if is_meeting {
+            // Meetings have a hard local-only speech path. Ignore any stale
+            // live cloud session rather than letting it change the model a
+            // meeting uses on Windows.
+            drop(live_nemotron.take());
+            stt_pre_transcript(&wav, &stt_language, true).await
         } else if let Some(live_nemotron) = live_nemotron.take() {
             finish_live_nemotron_transcript(live_nemotron).await
         } else {
-            stt_pre_transcript(&wav, &stt_language).await
+            stt_pre_transcript(&wav, &stt_language, false).await
         };
 
         // The provider's errors are complete, actionable sentences (offline,
@@ -5796,6 +5810,7 @@ async fn run_voice_polish_sse(
     let Some(transcript) = pre_transcript else {
         return Err("Local transcript is required before voice polish".into());
     };
+    let speech_identity = telemetry::speech_identity(&transcript.meta);
     tracing::info!("[pipeline] sending WAV + local transcript to backend");
     let done_result = api::stream_voice_polish(
         &ep,
@@ -6024,8 +6039,6 @@ async fn run_voice_polish_sse(
         let audio_seconds = wav_len as f64 / (16_000.0 * 2.0);
         let word_count = done.polished.split_whitespace().count() as i32;
         let char_count = done.polished.chars().count() as i32;
-        let speech_model = said_core::stt::telemetry_speech_model().to_string();
-        let speech_path = said_core::stt::telemetry_speech_path().to_string();
         telemetry::on_pipeline_done(
             &ep,
             run_id,
@@ -6043,8 +6056,9 @@ async fn run_voice_polish_sse(
                 success: !done.polished.is_empty() || output_pasted,
                 error_code: None,
                 used_clipboard_fallback,
-                speech_model,
-                speech_path,
+                speech_provider: speech_identity.provider.clone(),
+                speech_model: speech_identity.model.clone(),
+                speech_path: speech_identity.path.clone(),
                 polished_preview: done.polished.clone(),
             },
         );
@@ -6698,7 +6712,7 @@ fn retry_recording_spawn(
         // The polish backend requires a pre_transcript, so an STT failure ends
         // the retry here with the provider's own actionable message instead of
         // a confusing backend 400.
-        let pre_transcript = match stt_pre_transcript(&wav, &stt_language).await {
+        let pre_transcript = match stt_pre_transcript(&wav, &stt_language, false).await {
             Ok(t) => Some(t),
             Err(message) => {
                 tracing::warn!("[retry] speech transcription failed: {message}");
@@ -7312,6 +7326,7 @@ fn start_meeting_stt(
     meeting_mode: State<'_, MeetingModeState>,
     state: State<'_, SharedApp>,
 ) -> Result<MeetingSttStatus, String> {
+    meeting_engine::require_meeting_local_model()?;
     let was_inactive = meeting_mode.enter();
     tracing::info!("[meeting_mode] entered — auto-starting recording");
     if let Err(err) = meeting_mode.ensure_echo_reference() {
@@ -10805,6 +10820,10 @@ fn main() {
             nemotron::nemotron_model_status,
             nemotron::download_nemotron_model,
             nemotron::delete_nemotron_model,
+            local_models::local_model_inventory,
+            local_models::choose_installed_local_model,
+            local_models::remove_unused_local_dictation_models,
+            local_models::delete_all_local_speech_models,
             // Developer log viewer
             read_backend_log,
             backend_log_location,

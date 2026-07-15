@@ -454,32 +454,32 @@ mod tests {
     use super::normalize_runtime_selected_model;
 
     #[test]
-    fn all_legacy_model_aliases_normalize_to_openrouter_nitro_gemma() {
+    fn all_legacy_model_aliases_normalize_to_deepinfra_gemma() {
         assert_eq!(
             normalize_runtime_selected_model("smart".into()),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
         assert_eq!(
             normalize_runtime_selected_model("maverick".into()),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
         assert_eq!(
             normalize_runtime_selected_model(
                 "meta-llama/llama-4-maverick-17b-128e-instruct".into()
             ),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
         assert_eq!(
             normalize_runtime_selected_model("meta-llama/llama-4-scout-17b-16e-instruct".into()),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
     }
 
     #[test]
-    fn normalizes_any_stale_model_to_openrouter_nitro_gemma() {
+    fn normalizes_any_stale_model_to_deepinfra_gemma() {
         assert_eq!(
             normalize_runtime_selected_model("anything-stale".into()),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
     }
 }

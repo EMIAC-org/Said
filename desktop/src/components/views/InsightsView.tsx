@@ -30,7 +30,8 @@ import {
 } from "@/lib/vocabularyUiCache";
 import {
   currentInsightStreak,
-  longestInsightStreak,
+  buildHeatmapDays,
+  longestInsightStreakInWindow,
 } from "@/lib/insights";
 import type { Recording } from "@/types";
 
@@ -44,11 +45,6 @@ const CONSERVATIVE_SPEAKING_WPM = 120;
 function rangeCutoff(range: ActivityRange): number {
   if (range === "all") return 0;
   return Date.now() - (range === "30d" ? 30 : 90) * DAY_MS;
-}
-
-function localDayKey(timestampMs: number): string {
-  const date = new Date(timestampMs);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function formatDuration(minutes: number): string {
@@ -101,7 +97,7 @@ export function InsightsView() {
   const pace = audioSeconds > 0 ? Math.round((pacedWords / audioSeconds) * 60) : 0;
   const savedMinutes = Math.max(0, words / TYPING_WPM - words / CONSERVATIVE_SPEAKING_WPM);
   const currentStreak = currentInsightStreak(recordings);
-  const longestStreak = longestInsightStreak(recordings);
+  const longestStreak = longestInsightStreakInWindow(recordings);
 
   const appMap = new Map<string, { words: number; sessions: number }>();
   for (const recording of visible) {
@@ -232,22 +228,7 @@ function MetricCard({ icon, label, value, suffix, detail }: { icon: React.ReactN
 }
 
 function ActivityHeatmap({ recordings, currentStreak, longestStreak }: { recordings: Recording[]; currentStreak: number; longestStreak: number }) {
-  const totalDays = 16 * 7;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const start = new Date(today);
-  start.setDate(today.getDate() - (totalDays - 1));
-  const byDay = new Map<string, number>();
-  for (const recording of recordings) {
-    const key = localDayKey(recording.timestamp_ms);
-    byDay.set(key, (byDay.get(key) ?? 0) + recording.word_count);
-  }
-  const days = Array.from({ length: totalDays }, (_, index) => {
-    const date = new Date(start);
-    date.setDate(start.getDate() + index);
-    const words = byDay.get(localDayKey(date.getTime())) ?? 0;
-    return { date, words };
-  });
+  const days = buildHeatmapDays(recordings, 16);
   const maxWords = Math.max(1, ...days.map((day) => day.words));
 
   return (
@@ -256,9 +237,12 @@ function ActivityHeatmap({ recordings, currentStreak, longestStreak }: { recordi
       <div className="insights-streak-line"><strong>{currentStreak} day streak</strong><span>Longest: {longestStreak} days</span></div>
       <div className="insights-heatmap" aria-label="Daily dictated words over the last 16 weeks">
         {days.map((day) => {
+          if (day.isFuture) {
+            return <span key={day.key} className="heat-level-future" title="Future" aria-hidden />;
+          }
           const ratio = day.words / maxWords;
           const level = day.words === 0 ? 0 : ratio < 0.25 ? 1 : ratio < 0.5 ? 2 : ratio < 0.75 ? 3 : 4;
-          return <span key={day.date.toISOString()} className={`heat-level-${level}`} title={`${day.date.toLocaleDateString()}: ${day.words.toLocaleString()} words`} />;
+          return <span key={day.key} className={`heat-level-${level}`} title={`${day.date.toLocaleDateString()}: ${day.words.toLocaleString()} words`} />;
         })}
       </div>
       <div className="insights-heat-legend"><span>Less</span>{[0, 1, 2, 3, 4].map((level) => <i key={level} className={`heat-level-${level}`} />)}<span>More</span></div>

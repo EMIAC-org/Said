@@ -28,7 +28,7 @@ import {
 import type { AppSnapshot, Preferences } from "@/types";
 import {
   getPreferences, invoke, patchPreferences,
-  getDesktopPrefs, getSttSetupPolicy, selectLocalDictationRoute, setDesktopPrefs, requestBrowserAutomation,
+  chooseInstalledLocalModel, getDesktopPrefs, getSttSetupPolicy, setDesktopPrefs, requestBrowserAutomation,
   type SttSetupPolicy,
 } from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
@@ -570,7 +570,8 @@ export function OnboardingFlow({
     setKeySaving(true);
     setKeyError("");
     try {
-      await selectLocalDictationRoute();
+      if (!sttPolicy?.local_model) throw new Error("No local model is assigned to this device.");
+      await chooseInstalledLocalModel(sttPolicy.local_model);
       onLocalModelReady?.();
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
@@ -579,7 +580,7 @@ export function OnboardingFlow({
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone, completedThroughCurrentStep, localModelInstalled, onLocalModelReady, selectLocalDictationRoute]);
+  }, [advanceToNextUndone, completedThroughCurrentStep, localModelInstalled, onLocalModelReady, sttPolicy?.local_model]);
 
   const handleDictationDownload = useCallback(async () => {
     setDictationBusy(true);
@@ -595,7 +596,8 @@ export function OnboardingFlow({
         const status = await invoke<DictationModelStatus>("dictation_model_status");
         if (!status.installed) throw new Error("Oriserve Hinglish did not install correctly. Try again.");
       }
-      await selectLocalDictationRoute();
+      if (!sttPolicy?.local_model) throw new Error("No local model is assigned to this device.");
+      await chooseInstalledLocalModel(sttPolicy.local_model);
       await refreshSttSetup();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -603,7 +605,7 @@ export function OnboardingFlow({
     } finally {
       setDictationBusy(false);
     }
-  }, [refreshSttSetup, selectLocalDictationRoute, sttPolicy?.local_model]);
+  }, [refreshSttSetup, sttPolicy?.local_model]);
 
   const handleDictationCancel = useCallback(async () => {
     await invoke("meeting_cancel_model_download", { name: NEW_MODEL_FILE }).catch(() => {});

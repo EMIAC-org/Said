@@ -287,14 +287,14 @@ mod tests {
     use super::{normalize_record_hotkey, normalize_selected_model, validate_polish_model_key};
 
     #[test]
-    fn normalizes_smart_model_aliases_to_openrouter_nitro_gemma_4() {
+    fn normalizes_smart_model_aliases_to_deepinfra_gemma_4() {
         assert_eq!(
             normalize_selected_model("smart"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
         assert_eq!(
             normalize_selected_model("maverick"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
     }
 
@@ -302,28 +302,31 @@ mod tests {
     fn validate_replaces_retired_catalog_keys() {
         assert_eq!(
             validate_polish_model_key("phi4"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
         assert_eq!(
             validate_polish_model_key("groq-scout"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
     }
 
     #[test]
     fn normalize_replaces_retired_catalog_keys() {
-        assert_eq!(normalize_selected_model("phi4"), "openrouter-gemma-4-nitro");
+        assert_eq!(
+            normalize_selected_model("phi4"),
+            "deepinfra-gemma-4-26b-a4b"
+        );
         assert_eq!(
             normalize_selected_model("groq-scout"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
         assert_eq!(
             normalize_selected_model("groq-70b"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
         assert_eq!(
             normalize_selected_model("legacy-provider-model"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
     }
 
@@ -331,20 +334,23 @@ mod tests {
     fn normalizes_scout_alias_to_current_key() {
         assert_eq!(
             validate_polish_model_key("scout"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
     }
 
     #[test]
     fn normalizes_fast_model_aliases_to_current_key() {
-        assert_eq!(normalize_selected_model("fast"), "openrouter-gemma-4-nitro");
+        assert_eq!(
+            normalize_selected_model("fast"),
+            "deepinfra-gemma-4-26b-a4b"
+        );
         assert_eq!(
             normalize_selected_model("llama-3.1-8b-instant"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
         assert_eq!(
             normalize_selected_model("deepseek"),
-            "openrouter-gemma-4-nitro"
+            "deepinfra-gemma-4-26b-a4b"
         );
     }
 

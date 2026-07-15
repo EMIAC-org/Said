@@ -74,6 +74,7 @@ pub fn normalize_prefs(prefs: DesktopPrefs) -> DesktopPrefs {
 fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> DesktopPrefs {
     if policy.is_cloud_locked() {
         prefs.dictation_stt = CLOUD_NEMOTRON_PREF.to_string();
+        prefs.local_stt_compat_override = None;
         return prefs;
     }
 
@@ -83,10 +84,38 @@ fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> Desk
     if prefs.dictation_stt != CLOUD_NEMOTRON_PREF {
         prefs.dictation_stt = LOCAL_PREF.to_string();
     }
-    if let Some(model) = policy.local_pref() {
+    let compatibility_override = valid_compatibility_override(
+        prefs.local_stt_compat_override.as_deref(),
+        policy.local_pref(),
+    );
+    if let Some(model) = compatibility_override {
         prefs.local_stt_model = model.to_string();
+        prefs.local_stt_compat_override = Some(model.to_string());
+    } else {
+        prefs.local_stt_compat_override = None;
+        if let Some(model) = policy.local_pref() {
+            prefs.local_stt_model = model.to_string();
+        }
     }
     prefs
+}
+
+/// Compatibility overrides exist only for high-memory Apple Silicon machines
+/// whose recommended model is Q4. Eight-GB machines remain pinned to Oriserve;
+/// accepting Q4/Q8 there would reintroduce the memory failures this policy was
+/// created to prevent.
+fn valid_compatibility_override<'a>(
+    requested: Option<&'a str>,
+    recommended: Option<&str>,
+) -> Option<&'a str> {
+    if recommended != Some(NEMOTRON_Q4_PREF) {
+        return None;
+    }
+    match requested {
+        Some(ORISERVE_PREF) => Some(ORISERVE_PREF),
+        Some("nemotron") | Some("nemotron-q8") => Some("nemotron-q8"),
+        _ => None,
+    }
 }
 
 /// Persist normalization at startup, before onboarding, Settings, or a hotkey
@@ -96,6 +125,7 @@ pub fn normalize_persisted_prefs() -> Result<DesktopPrefs, String> {
     let after = normalize_prefs(before.clone());
     if before.dictation_stt != after.dictation_stt
         || before.local_stt_model != after.local_stt_model
+        || before.local_stt_compat_override != after.local_stt_compat_override
     {
         said_core::prefs::save(&after)?;
         tracing::info!(
@@ -131,7 +161,7 @@ fn detect() -> SttSetupPolicy {
 }
 
 /// Kept pure so macOS/Windows policy outcomes are fully testable from any host.
-fn policy_for(
+pub(crate) fn policy_for(
     platform: &str,
     architecture: &str,
     rosetta_translated: bool,
@@ -265,5 +295,53 @@ mod tests {
         );
         assert_eq!(cloud.dictation_stt, CLOUD_NEMOTRON_PREF);
         assert_eq!(cloud.local_stt_model, NEMOTRON_Q4_PREF);
+    }
+
+    #[test]
+    fn high_memory_apple_silicon_preserves_valid_compatibility_override() {
+        let policy = policy_for("macos", "arm64", false, EIGHT_GIB + 1);
+        let normalized = normalize_prefs_for(
+            DesktopPrefs {
+                local_stt_model: ORISERVE_PREF.into(),
+                local_stt_compat_override: Some(ORISERVE_PREF.into()),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(normalized.local_stt_model, ORISERVE_PREF);
+        assert_eq!(
+            normalized.local_stt_compat_override.as_deref(),
+            Some(ORISERVE_PREF)
+        );
+    }
+
+    #[test]
+    fn eight_gib_mac_rejects_memory_heavy_override() {
+        let policy = policy_for("macos", "arm64", false, EIGHT_GIB);
+        let normalized = normalize_prefs_for(
+            DesktopPrefs {
+                local_stt_model: "nemotron-q8".into(),
+                local_stt_compat_override: Some("nemotron-q8".into()),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(normalized.local_stt_model, ORISERVE_PREF);
+        assert_eq!(normalized.local_stt_compat_override, None);
+    }
+
+    #[test]
+    fn cloud_locked_devices_clear_local_compatibility_override() {
+        let policy = policy_for("windows", "x86_64", false, 2 * EIGHT_GIB);
+        let normalized = normalize_prefs_for(
+            DesktopPrefs {
+                local_stt_model: "nemotron-q8".into(),
+                local_stt_compat_override: Some("nemotron-q8".into()),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(normalized.dictation_stt, CLOUD_NEMOTRON_PREF);
+        assert_eq!(normalized.local_stt_compat_override, None);
     }
 }

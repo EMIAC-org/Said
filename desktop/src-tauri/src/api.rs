@@ -2257,6 +2257,8 @@ pub struct TelemetryRunPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_clipboard_fallback: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub speech_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speech_path: Option<String>,

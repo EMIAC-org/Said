@@ -3782,6 +3782,11 @@ html.statusbar-mode.sb-dragging .sb-drag-overlay {
   background: hsl(var(--surface-4));
 }
 
+.insights-heatmap .heat-level-future {
+  background: transparent;
+  opacity: 0;
+}
+
 .insights-heatmap .heat-level-1,
 .insights-heat-legend .heat-level-1 { background: hsl(var(--primary) / 0.22); }
 .insights-heatmap .heat-level-2,

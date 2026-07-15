@@ -13,7 +13,6 @@ pub mod gemini_direct;
 pub mod groq;
 pub mod meaning;
 pub mod openai_codex;
-pub mod openrouter;
 pub mod phonetic_triage;
 pub mod phonetics;
 pub mod polish_dispatch;

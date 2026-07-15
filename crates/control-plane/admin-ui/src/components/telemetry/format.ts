@@ -7,6 +7,29 @@ export function ms(n: number | null | undefined) {
   return `${Math.round(n)} ms`
 }
 
+export function usd(n: number | null | undefined) {
+  if (n == null) return '—'
+  if (n === 0) return '$0'
+  if (Math.abs(n) < 0.01) return `$${n.toFixed(6)}`
+  if (Math.abs(n) < 1) return `$${n.toFixed(4)}`
+  return `$${n.toFixed(2)}`
+}
+
+export function speechLabel(value: string | null | undefined) {
+  if (!value) return 'Unknown'
+  const normalized = value.toLowerCase()
+  if (normalized.includes('together') && normalized.includes('nemotron')) return 'Nemotron Cloud'
+  if (normalized.includes('nemotron')) return 'Nemotron Local'
+  if (
+    normalized.includes('oriserve') ||
+    normalized.includes('hindi2hinglish') ||
+    normalized.includes('swift')
+  ) return 'Oriserve Local'
+  if (normalized.includes('whisper') || normalized.includes('ggml')) return 'Whisper Local'
+  if (normalized.includes('nova-3')) return 'Nova 3 Cloud'
+  return value
+}
+
 export function relTime(iso: string | null | undefined): string {
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()

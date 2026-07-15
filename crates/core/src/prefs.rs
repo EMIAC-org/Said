@@ -76,6 +76,12 @@ pub struct DesktopPrefs {
     /// Oriserve Whisper model.
     #[serde(default = "default_local_stt_model")]
     pub local_stt_model: String,
+
+    /// Explicit compatibility choice made during a model migration. `None`
+    /// means follow the device recommendation. A value is written only after
+    /// the native layer verifies that the older model is installed and usable.
+    #[serde(default)]
+    pub local_stt_compat_override: Option<String>,
 }
 
 fn default_dictation_stt() -> String {
@@ -101,6 +107,7 @@ impl Default for DesktopPrefs {
             browser_context_enabled: false,
             dictation_stt: default_dictation_stt(),
             local_stt_model: default_local_stt_model(),
+            local_stt_compat_override: None,
         }
     }
 }
@@ -169,6 +176,7 @@ mod tests {
         assert!(!p.beta_mode);
         assert_eq!(p.dictation_stt, "local");
         assert_eq!(p.local_stt_model, "oriserve");
+        assert_eq!(p.local_stt_compat_override, None);
 
         let partial = r#"{ "sentry_disabled": true }"#;
         let p: DesktopPrefs = serde_json::from_str(partial).unwrap();
@@ -178,6 +186,7 @@ mod tests {
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
         assert_eq!(p.local_stt_model, "oriserve");
+        assert_eq!(p.local_stt_compat_override, None);
     }
 
     #[test]
@@ -191,6 +200,7 @@ mod tests {
             browser_context_enabled: true,
             dictation_stt: "cloud-nemotron-3.5".into(),
             local_stt_model: "nemotron".into(),
+            local_stt_compat_override: Some("nemotron-q8".into()),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
@@ -202,5 +212,9 @@ mod tests {
         assert!(back.browser_context_enabled);
         assert_eq!(back.dictation_stt, "cloud-nemotron-3.5");
         assert_eq!(back.local_stt_model, "nemotron");
+        assert_eq!(
+            back.local_stt_compat_override.as_deref(),
+            Some("nemotron-q8")
+        );
     }
 }

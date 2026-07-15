@@ -1088,7 +1088,9 @@ export interface DesktopPrefs {
   /** Enforced device route: local or live Cloud Nemotron. */
   dictation_stt: "local" | "cloud-nemotron-3.5";
   /** Hardware-assigned local model. Meetings retain their own Oriserve path. */
-  local_stt_model: "oriserve" | "nemotron-q4";
+  local_stt_model: "oriserve" | "nemotron-q4" | "nemotron-q8";
+  /** Explicit decision to keep an older installed model during an upgrade. */
+  local_stt_compat_override?: "oriserve" | "nemotron-q8" | null;
 }
 
 export interface SttSetupPolicy {
@@ -1099,6 +1101,36 @@ export interface SttSetupPolicy {
   local_model: "oriserve" | "nemotron-q4" | null;
   local_model_name: string | null;
   local_model_size_hint: string | null;
+}
+
+export type LocalModelKey = "oriserve" | "nemotron-q4" | "nemotron-q8";
+
+export interface LocalModelInfo {
+  key: LocalModelKey;
+  name: string;
+  installed: boolean;
+  size_bytes: number;
+  size_hint: string;
+  recommended: boolean;
+  active_for_dictation: boolean;
+  required_for_meetings: boolean;
+  compatibility_candidate: boolean;
+  safe_to_remove: boolean;
+}
+
+export interface LocalModelInventory {
+  setup_kind: "cloud_locked" | "local_required";
+  recommended_model: LocalModelKey | null;
+  selected_model: LocalModelKey;
+  recommended_installed: boolean;
+  existing_compatible_model: LocalModelKey | null;
+  models: LocalModelInfo[];
+  reclaimable_bytes: number;
+}
+
+export interface LocalModelCleanupResult {
+  removed: { key: string; name: string; size_bytes: number }[];
+  freed_bytes: number;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -1150,6 +1182,70 @@ export async function getSttSetupPolicy(): Promise<SttSetupPolicy> {
     };
   }
   return tauriInvoke<SttSetupPolicy>("get_stt_setup_policy");
+}
+
+export async function getLocalModelInventory(): Promise<LocalModelInventory> {
+  if (!isTauriRuntime()) {
+    return {
+      setup_kind: "local_required",
+      recommended_model: "nemotron-q4",
+      selected_model: "oriserve",
+      recommended_installed: false,
+      existing_compatible_model: "oriserve",
+      models: [
+        {
+          key: "oriserve",
+          name: "Oriserve Hinglish",
+          installed: true,
+          size_bytes: 148_000_000,
+          size_hint: "~148 MB",
+          recommended: false,
+          active_for_dictation: true,
+          required_for_meetings: true,
+          compatibility_candidate: true,
+          safe_to_remove: false,
+        },
+        {
+          key: "nemotron-q4",
+          name: "Nemotron Streaming 3.5 (Q4)",
+          installed: false,
+          size_bytes: 0,
+          size_hint: "~496 MB",
+          recommended: true,
+          active_for_dictation: false,
+          required_for_meetings: false,
+          compatibility_candidate: false,
+          safe_to_remove: false,
+        },
+        {
+          key: "nemotron-q8",
+          name: "Nemotron Streaming 3.5 (Q8)",
+          installed: false,
+          size_bytes: 0,
+          size_hint: "~751 MB",
+          recommended: false,
+          active_for_dictation: false,
+          required_for_meetings: false,
+          compatibility_candidate: false,
+          safe_to_remove: false,
+        },
+      ],
+      reclaimable_bytes: 0,
+    };
+  }
+  return tauriInvoke<LocalModelInventory>("local_model_inventory");
+}
+
+export async function chooseInstalledLocalModel(model: LocalModelKey): Promise<LocalModelInventory> {
+  return tauriInvoke<LocalModelInventory>("choose_installed_local_model", { model });
+}
+
+export async function removeUnusedLocalDictationModels(): Promise<LocalModelCleanupResult> {
+  return tauriInvoke<LocalModelCleanupResult>("remove_unused_local_dictation_models");
+}
+
+export async function deleteAllLocalSpeechModels(): Promise<LocalModelCleanupResult> {
+  return tauriInvoke<LocalModelCleanupResult>("delete_all_local_speech_models");
 }
 
 /** Prompt macOS Automation consent for running browsers (upfront, on Enable).

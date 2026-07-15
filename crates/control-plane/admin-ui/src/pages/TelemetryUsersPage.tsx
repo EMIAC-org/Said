@@ -4,7 +4,7 @@ import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from '../components/Avatar'
 import { TelemetryTabs } from '../components/telemetry/TelemetryTabs'
-import { pct, relTime } from '../components/telemetry/format'
+import { pct, relTime, speechLabel, usd } from '../components/telemetry/format'
 import { Loading, Empty, ErrorBox } from '../components/States'
 import type { TelemetryUserRow } from '../types'
 
@@ -80,25 +80,21 @@ export function TelemetryUsersPage() {
         <Empty title="No members" message="No team members match your search." />
       ) : (
         <div className="card !p-0 overflow-hidden">
-          <table className="w-full">
+          <div className="overflow-x-auto overscroll-x-contain">
+          <table className="w-full min-w-[820px] table-fixed">
             <thead>
               <tr>
                 {[
-                  'User',
-                  'Runs',
-                  'Audio min',
-                  'Accept %',
-                  'Edit %',
-                  'Heavy %',
-                  'Fallback %',
-                  'STT',
-                  'Learning ok',
-                  'Last active',
-                  'Desktop',
-                ].map(h => (
+                  ['User', 'w-[27%]'],
+                  ['Usage', 'w-[14%]'],
+                  ['Quality', 'w-[16%]'],
+                  ['STT', 'w-[18%]'],
+                  ['Cost', 'w-[13%]'],
+                  ['Activity', 'w-[12%]'],
+                ].map(([h, width]) => (
                   <th
                     key={h}
-                    className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider"
+                    className={`${width} text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider`}
                   >
                     {h}
                   </th>
@@ -125,49 +121,38 @@ export function TelemetryUsersPage() {
                         </div>
                       </div>
                     </td>
-                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
-                      {u.runs}
-                    </td>
-                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
-                      {u.audio_minutes}
-                    </td>
-                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
-                      {pct(u.acceptance_rate)}
-                    </td>
-                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
-                      {pct(u.edit_rate)}
-                    </td>
-                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
-                      {pct(u.heavy_edit_rate)}
-                    </td>
-                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
-                      {pct(u.fallback_rate)}
-                    </td>
-                    <td className="text-[11px] font-mono px-5 py-3.5 border-b border-border-light text-fg-3">
-                      {u.primary_speech || '—'}
-                    </td>
-                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
-                      {u.runs > 0 ? pct(u.learning_success_rate) : '—'}
-                    </td>
-                    <td className="text-[12px] text-fg-4 px-5 py-3.5 border-b border-border-light">
-                      {relTime(u.last_active_at)}
+                    <td className="px-5 py-3.5 border-b border-border-light">
+                      <div className="text-[12px] tabular-nums">{u.runs.toLocaleString()} runs</div>
+                      <div className="text-[10px] text-fg-4 tabular-nums mt-0.5">{u.audio_minutes} min</div>
                     </td>
                     <td className="px-5 py-3.5 border-b border-border-light">
-                      <span
-                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                          u.desktop_active
-                            ? 'bg-ok-bg text-ok'
-                            : 'bg-surface-4 text-fg-3'
-                        }`}
-                      >
+                      <div className="text-[12px] tabular-nums">{pct(u.acceptance_rate)} accepted</div>
+                      <div className="text-[10px] text-fg-4 tabular-nums mt-0.5">{pct(u.heavy_edit_rate)} heavy edit</div>
+                    </td>
+                    <td
+                      title={u.primary_speech || undefined}
+                      className="text-[11px] px-5 py-3.5 border-b border-border-light text-fg-3"
+                    >
+                      {speechLabel(u.primary_speech)}
+                    </td>
+                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
+                      <div>{usd(u.costs.total_usd)}</div>
+                      <div className="text-[10px] text-fg-4">
+                        {u.costs.coverage_rate >= 1 ? 'Fully tracked' : 'Partial estimate'}
+                      </div>
+                    </td>
+                    <td className="px-5 py-3.5 border-b border-border-light">
+                      <div className="text-[11px] text-fg-3">{relTime(u.last_active_at)}</div>
+                      <div className={`text-[10px] mt-0.5 ${u.desktop_active ? 'text-ok' : 'text-fg-4'}`}>
                         {u.desktop_active ? 'Online' : 'Offline'}
-                      </span>
+                      </div>
                     </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </>

@@ -54,7 +54,7 @@ const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
 const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
 const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
-const OPENROUTER_VALIDATE_ENDPOINT: &str = "https://openrouter.ai/api/v1/models";
+const DEEPINFRA_VALIDATE_ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/models";
 const GEMINI_VALIDATE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const GATEWAY_VALIDATE_ENDPOINT: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
 const RUNTIME_PROMPT_LOG_ENV: &str = "AIRNOTE_RUNTIME_PROMPT_LOG";
@@ -1135,7 +1135,8 @@ pub async fn vocabulary_meaning(
         &user_message,
         None,
     )
-    .await?;
+    .await?
+    .text;
     update_credential_used(&state, credential.credential_id).await?;
     let meaning = cap_vocab_meaning(&raw);
     if meaning.is_empty() {
@@ -1764,7 +1765,7 @@ async fn polish_runtime_transcript(
     let model_ms = model_start.elapsed().as_millis() as i64;
 
     match output {
-        Ok(raw_output) => {
+        Ok(completion) => {
             if let Some(ref credential) = polish_credential {
                 let _ = update_credential_used(state, credential.credential_id).await;
                 insert_provider_usage(
@@ -1773,12 +1774,14 @@ async fn polish_runtime_transcript(
                     credential,
                     provider_label,
                     Some(model.as_str()),
+                    Some(&completion.usage),
                     Some(model_ms),
                     "ok",
                     None,
                 )
                 .await?;
             }
+            let raw_output = completion.text;
             insert_stage_event(
                 state,
                 run_id,
@@ -1870,6 +1873,7 @@ async fn polish_runtime_transcript(
                     credential,
                     provider_label,
                     Some(model.as_str()),
+                    None,
                     Some(model_ms),
                     "error",
                     Some("model_failed"),
@@ -2409,7 +2413,7 @@ pub async fn problem_solve(
     let model_ms = model_start.elapsed().as_millis() as i64;
 
     let output = match raw_output {
-        Ok(output) => {
+        Ok(completion) => {
             update_credential_used(&state, credential.credential_id).await?;
             insert_provider_usage(
                 &state,
@@ -2417,6 +2421,7 @@ pub async fn problem_solve(
                 &credential,
                 provider_label,
                 Some(model.as_str()),
+                Some(&completion.usage),
                 Some(model_ms),
                 "ok",
                 None,
@@ -2432,7 +2437,7 @@ pub async fn problem_solve(
                 json!({"model": model, "provider": provider_label}),
             )
             .await?;
-            scrub_problem_solve_output(&output)
+            scrub_problem_solve_output(&completion.text)
         }
         Err(err) => {
             let _ = insert_provider_usage(
@@ -2441,6 +2446,7 @@ pub async fn problem_solve(
                 &credential,
                 provider_label,
                 Some(model.as_str()),
+                None,
                 Some(model_ms),
                 "error",
                 Some("model_failed"),
@@ -2897,8 +2903,8 @@ async fn execute_voice_polish(
         total_ms.saturating_sub(model_ms),
     );
 
-    let output = match llm_result {
-        Ok(output) => output,
+    let completion = match llm_result {
+        Ok(completion) => completion,
         Err(err) => {
             let _ = insert_stage_event(
                 &state,
@@ -2917,6 +2923,7 @@ async fn execute_voice_polish(
                     credential,
                     provider_label,
                     Some(model.as_str()),
+                    None,
                     Some(model_ms),
                     "error",
                     Some("model_failed"),
@@ -2927,6 +2934,8 @@ async fn execute_voice_polish(
             return Err(err);
         }
     };
+    let polish_usage = completion.usage;
+    let output = completion.text;
 
     // Deterministic post-processing runs inline (it computes the final output),
     // but its telemetry stage events are RECORDED here and written later — every
@@ -3035,6 +3044,7 @@ async fn execute_voice_polish(
         let bg_target_app = req.target_app.clone();
         let bg_account_id = user.account_id;
         let bg_model = model.to_string();
+        let bg_polish_usage = polish_usage;
         let org_id_for_history = tenant_ctx.active_org_id;
         let org_scope_for_profile = crate::profile::resolve_org_scope(&tenant_ctx);
         let bg_profile_snapshot = profile_snapshot;
@@ -3048,6 +3058,7 @@ async fn execute_voice_polish(
                     credential,
                     &bg_provider,
                     Some(&bg_model),
+                    Some(&bg_polish_usage),
                     Some(model_ms),
                     "ok",
                     None,
@@ -3652,7 +3663,6 @@ async fn runtime_provider_secret(
     let env_fallback_present = match provider.as_str() {
         "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
-        "openrouter" => !state.openrouter_api_key.trim().is_empty(),
         "deepinfra" => !state.deepinfra_api_key.trim().is_empty(),
         _ => false,
     };
@@ -3680,7 +3690,6 @@ async fn runtime_provider_secret(
     let fallback = match provider.as_str() {
         "openai" => state.openai_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
-        "openrouter" => state.openrouter_api_key.trim(),
         "deepinfra" => state.deepinfra_api_key.trim(),
         _ => "",
     };
@@ -3737,20 +3746,42 @@ async fn insert_provider_usage(
     credential: &RuntimeProviderSecret,
     provider: &str,
     model: Option<&str>,
+    usage: Option<&crate::openai_compat_polish::ProviderUsage>,
     total_ms: Option<i64>,
     status: &str,
     error_kind: Option<&str>,
 ) -> Result<(), (StatusCode, Json<Value>)> {
+    let input_tokens = usage.and_then(|usage| usage.input_tokens);
+    let output_tokens = usage.and_then(|usage| usage.output_tokens);
+    let provider_cost = usage.and_then(|usage| usage.cost_usd);
+    let rate_card_cost = model
+        .filter(|model| model.to_ascii_lowercase().contains("gemma-4"))
+        .and_then(|_| input_tokens.zip(output_tokens))
+        .and_then(|(input, output)| crate::costs::gemma_token_cost(input, output));
+    let estimated_cost_usd = provider_cost.or(rate_card_cost);
+    let cost_source = usage
+        .and_then(|usage| usage.cost_source.as_deref())
+        .or_else(|| rate_card_cost.map(|_| crate::costs::GEMMA_RATE_SOURCE));
+    let generation_id = usage.and_then(|usage| usage.generation_id.as_deref());
+    let usage_json = usage.map(|usage| &usage.raw).unwrap_or(&Value::Null);
     sqlx::query(
         "INSERT INTO runtime_provider_usage
-            (credential_id, run_id, credential_scope, provider, model, total_ms, status, error_kind)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            (credential_id, run_id, credential_scope, provider, model,
+             input_tokens, output_tokens, estimated_cost_usd, generation_id, cost_source,
+             usage_json, total_ms, status, error_kind)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(credential.credential_id)
     .bind(run_id)
     .bind(&credential.scope)
     .bind(provider)
     .bind(model)
+    .bind(input_tokens)
+    .bind(output_tokens)
+    .bind(estimated_cost_usd)
+    .bind(generation_id)
+    .bind(cost_source)
+    .bind(usage_json)
     .bind(total_ms)
     .bind(status)
     .bind(error_kind)
@@ -3835,7 +3866,7 @@ fn provider_display_name(provider: &str) -> &'static str {
         "openai" => "OpenAI",
         "gemini" => "Gemini",
         "gateway" => "Gateway",
-        "openrouter" => "OpenRouter",
+        "deepinfra" => "DeepInfra",
         _ => "Provider",
     }
 }
@@ -3863,9 +3894,9 @@ async fn validate_provider_secret(
                 .send()
                 .await
         }
-        "openrouter" => {
+        "deepinfra" => {
             client
-                .get(OPENROUTER_VALIDATE_ENDPOINT)
+                .get(DEEPINFRA_VALIDATE_ENDPOINT)
                 .bearer_auth(secret)
                 .timeout(timeout)
                 .send()
@@ -3929,7 +3960,7 @@ async fn validate_provider_secret(
 fn normalize_provider(provider: &str) -> Result<String, (StatusCode, Json<Value>)> {
     let provider = provider.trim().to_lowercase();
     match provider.as_str() {
-        "groq" | "openai" | "gemini" | "gateway" | "openrouter" | "deepinfra" => Ok(provider),
+        "groq" | "openai" | "gemini" | "gateway" | "deepinfra" => Ok(provider),
         _ => Err(json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown provider",
@@ -4299,8 +4330,8 @@ mod tidy_casing_tests {
     }
 }
 
-/// Send every server-side polish request through the selected production route.
-/// The model registry currently resolves that route to OpenRouter Nitro Gemma 4.
+/// Send every server-side polish request through the one production route.
+/// The model registry is hard-pinned to DeepInfra Gemma 4 26B A4B.
 async fn polish_llm(
     state: &AppState,
     polish_provider: &str,
@@ -4309,46 +4340,23 @@ async fn polish_llm(
     system_prompt: &str,
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
-) -> Result<String, (StatusCode, Json<Value>)> {
+) -> Result<crate::openai_compat_polish::PolishCompletion, (StatusCode, Json<Value>)> {
     tracing::info!("[runtime] polish_llm provider={polish_provider} model={polish_model}");
     if token_tx.is_some() {
         tracing::info!(
             "[runtime] voice polish stream requested — provider={polish_provider} model={polish_model}"
         );
     }
-    match polish_provider {
-        "openrouter" => {
-            crate::openrouter::call_openrouter(
-                api_secret,
-                polish_model,
-                system_prompt,
-                user_message,
-                token_tx,
-            )
-            .await
-        }
-        "deepinfra" => {
-            crate::deepinfra::call_deepinfra(
-                api_secret,
-                polish_model,
-                system_prompt,
-                user_message,
-                token_tx,
-            )
-            .await
-        }
-        _ => {
-            call_groq(
-                state,
-                api_secret,
-                polish_model,
-                system_prompt,
-                user_message,
-                token_tx,
-            )
-            .await
-        }
-    }
+    debug_assert_eq!(polish_provider, "deepinfra");
+    let _ = state;
+    crate::deepinfra::call_deepinfra(
+        api_secret,
+        polish_model,
+        system_prompt,
+        user_message,
+        token_tx,
+    )
+    .await
 }
 
 async fn call_groq(
@@ -6606,23 +6614,23 @@ mod tests {
     }
 
     #[test]
-    fn selected_polish_model_respects_fast_and_smart() {
-        use said_core::polish::model::OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO;
+    fn selected_polish_model_resolves_deepinfra_gemma_for_legacy_names() {
+        use said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B;
         assert_eq!(
             selected_polish_model("fast"),
-            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+            DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B
         );
         assert_eq!(
             selected_polish_model("deepseek"),
-            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+            DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B
         );
         assert_eq!(
             selected_polish_model("smart"),
-            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+            DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B
         );
         assert_eq!(
             selected_polish_model("scout"),
-            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+            DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B
         );
     }
 

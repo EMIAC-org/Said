@@ -10,11 +10,11 @@ pub const GROQ_POLISH_MODEL_FAST: &str = "llama-3.1-8b-instant";
 /// Smart Groq helper model. This is not the production voice-polish route.
 pub const GROQ_POLISH_MODEL_SMART_DEFAULT: &str = "llama-3.3-70b-versatile";
 
-/// Paid Gemma 4 31B via OpenRouter's high-throughput dynamic route.
-pub const OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO: &str = "google/gemma-4-31b-it:nitro";
+/// Paid Gemma 4 26B A4B via DeepInfra's direct OpenAI-compatible API.
+pub const DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B: &str = "google/gemma-4-26B-A4B-it";
 
 /// The only selectable production polish model.
-pub const DEFAULT_POLISH_MODEL_KEY: &str = "openrouter-gemma-4-nitro";
+pub const DEFAULT_POLISH_MODEL_KEY: &str = "deepinfra-gemma-4-26b-a4b";
 
 /// One selectable polish model in the catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,9 +32,9 @@ pub struct PolishModelSpec {
 /// Curated catalog. The product exposes only what the runtime actually uses.
 pub const POLISH_MODEL_CATALOG: &[PolishModelSpec] = &[PolishModelSpec {
     key: DEFAULT_POLISH_MODEL_KEY,
-    label: "Gemma 4 31B (OpenRouter Nitro)",
-    provider: "openrouter",
-    model_id: OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO,
+    label: "Gemma 4 26B A4B (DeepInfra)",
+    provider: "deepinfra",
+    model_id: DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
     reasoning_low: false,
     beta_only: false,
 }];
@@ -76,7 +76,7 @@ pub fn normalize_selected_model(raw: &str) -> String {
     validate_polish_model_key(raw)
 }
 
-/// Production polish is hard-pinned to paid Gemma 4 31B via OpenRouter Nitro.
+/// Production polish is hard-pinned to paid Gemma 4 26B A4B via DeepInfra.
 pub fn resolve_polish_route(_selected_model: &str) -> PolishRoute {
     let spec = catalog_spec(DEFAULT_POLISH_MODEL_KEY).expect("default polish catalog entry");
     PolishRoute {
@@ -108,7 +108,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn any_legacy_selection_normalizes_to_openrouter_nitro_gemma() {
+    fn any_legacy_selection_normalizes_to_deepinfra_gemma() {
         assert_eq!(validate_polish_model_key("smart"), DEFAULT_POLISH_MODEL_KEY);
         assert_eq!(
             validate_polish_model_key("anything-old"),
@@ -117,10 +117,10 @@ mod tests {
     }
 
     #[test]
-    fn production_route_is_paid_openrouter_nitro_gemma() {
+    fn production_route_is_paid_deepinfra_gemma() {
         let route = resolve_polish_route("anything");
-        assert_eq!(route.provider, "openrouter");
-        assert_eq!(route.model, OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO);
+        assert_eq!(route.provider, "deepinfra");
+        assert_eq!(route.model, DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B);
         assert!(!route.reasoning_low);
     }
 }

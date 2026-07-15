@@ -32,7 +32,12 @@ import {
 } from "lucide-react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { exportMeetingToLark } from "@/lib/enterprise";
-import { openExternal } from "@/lib/invoke";
+import {
+  getLocalModelInventory,
+  getSttSetupPolicy,
+  openExternal,
+  type LocalModelKey,
+} from "@/lib/invoke";
 import { NEW_MODEL_FILE } from "@/lib/onDeviceModel";
 import { MeetingAiChat } from "@/components/MeetingAiChat";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -1067,10 +1072,14 @@ interface MeetingsViewProps {
   onOpenWorkspaces?: () => void;
 }
 
-// The one and only meeting transcription model: Oriserve Hinglish,
-// shared with dictation. There is no model picker; first run downloads this and
-// nothing else. Renamed in one place via `@/lib/onDeviceModel`.
-const MEETING_MODEL_NAME = NEW_MODEL_FILE;
+const WINDOWS_MEETING_MODEL: LocalModelKey = "oriserve";
+
+interface MeetingModelRequirement {
+  key: LocalModelKey;
+  name: string;
+  sizeHint: string;
+  installed: boolean;
+}
 
 export function MeetingsView({
   onJoinMeeting,
@@ -1179,21 +1188,24 @@ export function MeetingsView({
     return () => clearInterval(interval);
   }, [fetchMeetings]);
 
-  // A meeting can't be transcribed without an installed model. Poll the installed
-  // model list (null = still checking) so we can block starting + prompt to
-  // download. 30s (was 5s): this fires TWO ipc:// invokes per tick and the model
-  // set only changes on a download — at 5s it was a needless, steady drain on the
-  // ~6-connection WebView2 pool (each invoke also costs a CORS preflight). The
-  // download flow refreshes this explicitly, so 30s is plenty to clear the banner.
+  // The meeting engine follows the same hardware policy as onboarding: Q4 on a
+  // capable Apple Silicon Mac, Oriserve everywhere else. Poll at 30s because a
+  // model set changes only after a download and each invoke has IPC overhead.
   const [hasModel, setHasModel] = useState<boolean | null>(null);
+  const [meetingModel, setMeetingModel] = useState<MeetingModelRequirement | null>(null);
   const [downloadingModel, setDownloadingModel] = useState(false);
   const refreshHasModel = useCallback(async () => {
     try {
-      // Keep a model selected whenever one is installed (auto-select single).
-      await invoke("meeting_ensure_active_model").catch(() => null);
-      const models = await invoke<{ incomplete: boolean }[]>("meeting_list_whisper_models");
-      setHasModel(models.some((m) => !m.incomplete));
+      const [policy, inventory] = await Promise.all([getSttSetupPolicy(), getLocalModelInventory()]);
+      const key = policy.setup_kind === "local_required"
+        ? inventory.recommended_model
+        : WINDOWS_MEETING_MODEL;
+      const model = inventory.models.find((candidate) => candidate.key === key);
+      if (!model || !key) throw new Error("Meeting model policy is unavailable.");
+      setMeetingModel({ key, name: model.name, sizeHint: model.size_hint, installed: model.installed });
+      setHasModel(model.installed);
     } catch {
+      setMeetingModel(null);
       setHasModel(null);
     }
   }, []);
@@ -1203,13 +1215,18 @@ export function MeetingsView({
     return () => clearInterval(id);
   }, [refreshHasModel]);
 
-  // First-run provisioning: there is no model picker, so just fetch Oriserve.
+  // Download only the same local model selected by the device policy. Never
+  // fall back to a hosted STT path when a meeting starts.
   const downloadMeetingModel = useCallback(async () => {
-    if (downloadingModel) return;
+    if (downloadingModel || !meetingModel) return;
     setDownloadingModel(true);
     setError("");
     try {
-      await invoke("meeting_download_whisper_model", { name: MEETING_MODEL_NAME });
+      if (meetingModel.key === "nemotron-q4") {
+        await invoke("download_nemotron_model", { variant: "q4" });
+      } else {
+        await invoke("meeting_download_whisper_model", { name: NEW_MODEL_FILE });
+      }
       await refreshHasModel();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1217,7 +1234,7 @@ export function MeetingsView({
     } finally {
       setDownloadingModel(false);
     }
-  }, [downloadingModel, refreshHasModel]);
+  }, [downloadingModel, meetingModel, refreshHasModel]);
 
   const startNewLocalMeeting = useCallback(async () => {
     setCreating(true);
@@ -1276,8 +1293,10 @@ export function MeetingsView({
       /* permission probe failed — fall through; capture surfaces its own error */
     }
 
-    if (hasModel === false) {
-      void downloadMeetingModel();
+    if (hasModel !== true) {
+      if (hasModel === false) {
+        setError(`Download ${meetingModel?.name ?? "the recommended local model"} before starting a meeting. Meetings never use cloud transcription.`);
+      }
       return;
     }
     // Never start a second meeting while one is already recording — show a popup
@@ -1302,7 +1321,7 @@ export function MeetingsView({
     }
 
     await startNewLocalMeeting();
-  }, [downloadMeetingModel, findRunningProcessingMeeting, hasModel, startNewLocalMeeting]);
+  }, [findRunningProcessingMeeting, hasModel, meetingModel?.name, startNewLocalMeeting]);
 
   const handlePauseProcessingAndStart = useCallback(async () => {
     const warning = processingStartWarning;
@@ -2243,26 +2262,30 @@ export function MeetingsView({
       className="flex h-full flex-col overflow-hidden"
       style={{ background: "hsl(var(--surface-2))" }}
     >
-      {hasModel === false ? (
+      {hasModel !== true ? (
         <div
           className="flex flex-wrap items-center gap-3 px-5 py-2.5"
           style={{ background: "hsl(var(--chip-amber-bg))", borderBottom: "1px solid hsl(var(--chip-amber-fg) / 0.22)" }}
         >
           <AlertTriangle size={15} className="flex-shrink-0" style={{ color: "hsl(var(--chip-amber-fg))" }} />
           <span className="min-w-0 flex-1 text-[12px] text-foreground">
-            <span className="font-semibold">Transcription model not installed yet.</span> Meetings
-            can't be transcribed until the model finishes downloading.
+            <span className="font-semibold">Meetings use {meetingModel?.name ?? "this device's local model"} locally{meetingModel ? ` (${meetingModel.sizeHint})` : ""}.</span>{" "}
+            {hasModel === null
+              ? "Checking whether it is installed…"
+              : "Download it to start a meeting. This is the same model AirNote recommends for this device."}
           </span>
-          <button
-            type="button"
-            onClick={() => void downloadMeetingModel()}
-            disabled={downloadingModel}
-            className="flex h-7 flex-shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold disabled:opacity-70"
-            style={{ background: "hsl(var(--chip-amber-fg))", color: "hsl(var(--background))" }}
-          >
-            {downloadingModel ? <Loader2 size={13} className="animate-spin" /> : null}
-            {downloadingModel ? "Downloading…" : "Download model"}
-          </button>
+          {hasModel === false ? (
+            <button
+              type="button"
+              onClick={() => void downloadMeetingModel()}
+              disabled={downloadingModel}
+              className="flex h-7 flex-shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12px] font-bold disabled:opacity-70"
+              style={{ background: "hsl(var(--chip-amber-fg))", color: "hsl(var(--background))" }}
+            >
+              {downloadingModel ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              {downloadingModel ? "Downloading…" : `Download ${meetingModel?.sizeHint ?? "model"}`}
+            </button>
+          ) : null}
         </div>
       ) : null}
       <div
@@ -2323,10 +2346,10 @@ export function MeetingsView({
               </IconButton>
               <button
                 onClick={handleNewMeeting}
-                disabled={creating || hasModel === false}
+                disabled={creating || hasModel !== true}
                 className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                 style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                title={hasModel === false ? "Install a transcription model first" : "New Meeting"}
+                title={hasModel === true ? "New Meeting" : `Meetings require ${meetingModel?.name ?? "the recommended local model"}`}
               >
                 {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
               </button>
