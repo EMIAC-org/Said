@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   type AppBucketRow,
 } from "@/lib/invoke";
@@ -29,6 +30,38 @@ function prettyKey(appKey: string): string {
   const base = appKey.split("/").pop() ?? appKey;
   const last = base.replace(/\.exe$/i, "").split(".").pop() ?? base;
   return last.charAt(0).toUpperCase() + last.slice(1);
+}
+
+// ── Loading skeleton — mirrors the kanban of bucket columns ─────────────────
+function BucketsSkeleton() {
+  return (
+    <div className="flex gap-4 overflow-hidden pb-2">
+      {[0, 1, 2, 3].map((col) => (
+        <div
+          key={col}
+          className="panel p-3 flex-shrink-0 flex flex-col"
+          style={{ width: 272, minHeight: 200 }}
+        >
+          <div className="flex items-center justify-between mb-3 px-1">
+            <Skeleton className="h-3.5 w-24" />
+            <Skeleton className="h-4 w-6 rounded-md" />
+          </div>
+          <div className="space-y-2 flex-1">
+            {Array.from({ length: 3 - (col % 2) }).map((_, i) => (
+              <div
+                key={i}
+                className="rounded-xl p-3 flex items-center gap-3"
+                style={{ background: "hsl(var(--surface-4))" }}
+              >
+                <Skeleton className="w-7 h-7 rounded-lg flex-shrink-0" style={{ background: "hsl(var(--surface-3))" }} />
+                <Skeleton className="h-3" style={{ width: `${60 - i * 12}%`, background: "hsl(var(--surface-3))" }} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /**
@@ -98,11 +131,7 @@ export function BucketsView() {
             </p>
           </div>
         )}
-        {apps === undefined && (
-          <div className="panel p-5">
-            <p className="text-[12px] text-muted-foreground">Loading…</p>
-          </div>
-        )}
+        {apps === undefined && <BucketsSkeleton />}
         {apps && apps.length === 0 && (
           <div className="panel p-5">
             <p className="text-[12px] text-muted-foreground">

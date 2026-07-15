@@ -129,7 +129,7 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
 
   if (!policy) {
     return (
-      <div className="onb-error-screen">
+      <div className="mig-overlay">
         <div className="mig-card">
           {error ? (
             <>
@@ -148,7 +148,7 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
   if (policy.setup_kind === "cloud_locked") {
     const intelMac = policy.cpu_family === "intel";
     return (
-      <div className="onb-error-screen">
+      <div className="mig-overlay">
         <div className="mig-card">
           <div className="mig-badge"><Cloud size={12} /> Updated speech setup</div>
           <h2 className="mig-title">Live Nemotron is enabled.</h2>
@@ -176,7 +176,7 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
   const pct = download && download.total > 0 ? Math.min(100, Math.round((download.received / download.total) * 100)) : null;
   const downloading = pct !== null && !installed;
   return (
-    <div className="onb-error-screen">
+    <div className="mig-overlay">
       <div className="mig-card">
         <div className="mig-badge"><Cpu size={12} /> Updated local speech setup</div>
         <h2 className="mig-title">Install your local speech model.</h2>

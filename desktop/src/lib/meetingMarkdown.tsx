@@ -129,7 +129,7 @@ export function MeetingSummaryContent({ summary }: { summary: string }) {
   const blocks = parseMeetingSummary(summary);
   let headingSeen = false;
   return (
-    <div className="mt-7 space-y-4">
+    <div className="mt-6 space-y-3.5">
       {blocks.map((block, index) => {
         if (block.kind === "heading") {
           const firstHeading = !headingSeen;
@@ -137,20 +137,20 @@ export function MeetingSummaryContent({ summary }: { summary: string }) {
           return (
             <div
               key={`${block.kind}-${index}-${block.text}`}
-              className={firstHeading ? "flex items-center gap-3" : "flex items-center gap-3 border-t pt-7 mt-2"}
-              style={firstHeading ? undefined : { borderColor: "hsl(var(--surface-4))" }}
+              className={firstHeading ? "flex items-center gap-2.5" : "flex items-center gap-2.5 border-t pt-5 mt-1"}
+              style={firstHeading ? undefined : { borderColor: "hsl(var(--border))" }}
             >
               {block.index ? (
                 <span
-                  className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg text-[12px] font-bold"
-                  style={{ background: "hsl(var(--primary) / 0.16)", color: "hsl(var(--primary))" }}
+                  className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-lg text-[11px] font-bold"
+                  style={{ background: "hsl(var(--accent-violet) / 0.14)", color: "hsl(var(--accent-violet))" }}
                 >
                   {block.index}
                 </span>
               ) : (
-                <span className="h-4 w-1 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--primary))" }} />
+                <span className="h-3.5 w-1 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--accent-violet))" }} />
               )}
-              <h3 className="text-[18px] font-bold tracking-tight text-foreground">{block.text}</h3>
+              <h3 className="text-[15px] font-semibold tracking-tight text-foreground">{block.text}</h3>
             </div>
           );
         }
@@ -158,8 +158,8 @@ export function MeetingSummaryContent({ summary }: { summary: string }) {
           return (
             <blockquote
               key={`${block.kind}-${index}-${block.text}`}
-              className="rounded-r-lg border-l-[3px] py-1 pl-4 text-[15px] italic leading-8 text-muted-foreground"
-              style={{ borderColor: "hsl(var(--primary) / 0.7)", background: "hsl(var(--primary) / 0.05)" }}
+              className="rounded-r-lg border-l-[3px] py-1.5 pl-4 text-[13.5px] italic leading-relaxed text-muted-foreground"
+              style={{ borderColor: "hsl(var(--accent-violet) / 0.7)", background: "hsl(var(--accent-violet) / 0.05)" }}
             >
               {renderInlineMarkdown(block.text)}
             </blockquote>
@@ -167,18 +167,18 @@ export function MeetingSummaryContent({ summary }: { summary: string }) {
         }
         if (block.kind === "bullet") {
           return (
-            <div key={`${block.kind}-${index}-${block.text}`} className="flex gap-3 text-[16px] leading-8 text-muted-foreground">
+            <div key={`${block.kind}-${index}-${block.text}`} className="flex gap-2.5 text-[14px] leading-relaxed text-muted-foreground">
               {block.emoji ? (
-                <span className="mt-0.5 flex-shrink-0 text-[16px] leading-8">{block.emoji}</span>
+                <span className="mt-0.5 flex-shrink-0 text-[14px]">{block.emoji}</span>
               ) : (
-                <span className="mt-3.5 h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--primary))" }} />
+                <span className="mt-[9px] h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ background: "hsl(var(--accent-violet))" }} />
               )}
-              <p className="max-w-[100ch]">{renderInlineMarkdown(block.text)}</p>
+              <p className="max-w-[92ch]">{renderInlineMarkdown(block.text)}</p>
             </div>
           );
         }
         return (
-          <p key={`${block.kind}-${index}-${block.text}`} className="max-w-[102ch] text-[16px] leading-8 text-muted-foreground">
+          <p key={`${block.kind}-${index}-${block.text}`} className="max-w-[92ch] text-[14px] leading-relaxed text-muted-foreground">
             {renderInlineMarkdown(block.text)}
           </p>
         );

@@ -4376,6 +4376,12 @@ fn run_mic_capture(
 
     let _ = ready_tx.send(Ok(()));
     let _ = stop_rx.recv();
+    // CoreAudio can keep a CPAL input stream alive through its internal
+    // disconnect listener, so dropping the final external handle is not a
+    // reliable stop signal on macOS. Pause explicitly before releasing it.
+    if let Err(e) = stream.pause() {
+        tracing::warn!(error = %e, "[meeting_engine] failed to pause mic stream during teardown");
+    }
     writer_stop.store(true, Ordering::SeqCst);
     drop(stream);
     drop(audio_tx);
@@ -13365,6 +13371,13 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
 /// which the backend loads at startup.
 pub const DICTATION_MODEL_URL: &str = "https://huggingface.co/anish2305/airnote-hinglish-stt-ggml/resolve/main/ggml-oriserve-hinglish-fp16.bin";
 const DICTATION_MODEL_SIZE_HINT: u64 = 148_000_000;
+const DICTATION_MODEL_MIN_VALID_BYTES: u64 = DICTATION_MODEL_SIZE_HINT * 9 / 10;
+
+fn dictation_model_is_installed(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.len() >= DICTATION_MODEL_MIN_VALID_BYTES)
+        .unwrap_or(false)
+}
 
 #[derive(serde::Serialize)]
 pub struct DictationModelStatus {
@@ -13378,7 +13391,7 @@ pub fn dictation_model_status() -> DictationModelStatus {
     let path = said_core::paths::whisper_model_path();
     let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     DictationModelStatus {
-        installed: path.is_file(),
+        installed: dictation_model_is_installed(&path),
         size_bytes,
         path: path.to_string_lossy().to_string(),
     }
@@ -13419,8 +13432,12 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| said_core::paths::data_dir().join("models"));
-    if dest.is_file() {
+    if dictation_model_is_installed(&dest) {
         return Ok(()); // already installed — idempotent
+    }
+    if dest.is_file() {
+        fs::remove_file(&dest)
+            .map_err(|e| format!("couldn't remove incomplete speech model: {e}"))?;
     }
     {
         let mut inflight = model_downloads_inflight()

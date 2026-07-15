@@ -673,42 +673,6 @@ fn strip_voice_error_already_emitted(raw: &str) -> &str {
         .unwrap_or(raw)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LiveTypingDecision {
-    ResetAndDisable,
-    PreviewOnly,
-    TypeToken,
-}
-
-#[derive(Debug, Default)]
-struct LiveTypingGuard {
-    disabled: bool,
-    typed_tokens: usize,
-}
-
-impl LiveTypingGuard {
-    fn on_token(&mut self, token: &str) -> LiveTypingDecision {
-        if token == STREAM_RESET_SENTINEL {
-            if self.typed_tokens == 0 {
-                tracing::info!(
-                    "[main] live typing reset before target typing — keeping word-by-word enabled"
-                );
-                return LiveTypingDecision::PreviewOnly;
-            }
-            self.disabled = true;
-            return LiveTypingDecision::ResetAndDisable;
-        }
-        if self.disabled {
-            return LiveTypingDecision::PreviewOnly;
-        }
-        LiveTypingDecision::TypeToken
-    }
-
-    fn note_typed(&mut self) {
-        self.typed_tokens += 1;
-    }
-}
-
 // ── Managed state ─────────────────────────────────────────────────────────────
 
 /// Holds the local recording state machine.
@@ -5530,9 +5494,8 @@ fn emit_problem_context_event(
     );
 }
 
-/// Async SSE consumer: streams tokens from backend, types them word-by-word,
-/// and stores the result for paste-latest re-paste.
-/// In meeting mode (`is_meeting`), skips word-by-word typing entirely.
+/// Async SSE consumer: previews backend tokens, inserts the final result once,
+/// and stores it for paste-latest re-paste.
 /// Opt-in browser-context capture. If `target_app` is a browser and the
 /// `browser_context_enabled` pref is set, read the active tab's site (host only)
 /// and record it to the LOCAL backend. Fully fire-and-forget and on-device — the
@@ -5601,26 +5564,9 @@ async fn run_voice_polish_sse(
         .unwrap_or(0);
     let message_polish_mode = !suppress_local
         && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
-    if message_polish_mode {
-        tracing::info!(
-            "[pipeline] message polish mode enabled — suppressing live target typing until final output"
-        );
-    }
-
-    // Track whether word-by-word AX typing succeeded
-    let typed_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let typed_any2 = typed_any.clone();
-    let token_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let token_count2 = token_count.clone();
-    let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let fail_count2 = fail_count.clone();
-    let live_guard = std::sync::Arc::new(std::sync::Mutex::new(LiveTypingGuard {
-        disabled: message_polish_mode,
-        typed_tokens: 0,
-    }));
-    let live_guard2 = live_guard.clone();
-    let typed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let typed_text2 = typed_text.clone();
+    tracing::debug!(
+        "[pipeline] target typing waits for final server output; stream tokens are preview-only"
+    );
     let initial_field_read_t0 = std::time::Instant::now();
     let initial_field_text = if suppress_local {
         None
@@ -5698,13 +5644,8 @@ async fn run_voice_polish_sse(
     let mut on_polish_event = move |event| {
         match &event {
             api::PolishEvent::Token { token } => {
-                // Meeting / Divo: skip all typing — only emit for live preview
-                if suppress_local {
-                    let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-                    return;
-                }
                 // A newer recording superseded this run (user pressed the hotkey
-                // again to redo a mis-released take) — stop typing its tokens.
+                // again to redo a mis-released take) — stop previewing its tokens.
                 if app_clone
                     .try_state::<RecordingSessionState>()
                     .map(|s| s.generation.load(Ordering::SeqCst) != run_generation)
@@ -5712,51 +5653,11 @@ async fn run_voice_polish_sse(
                 {
                     return;
                 }
-                let decision = live_guard2
-                    .lock()
-                    .map(|mut guard| guard.on_token(token))
-                    .unwrap_or(LiveTypingDecision::PreviewOnly);
-                // Emit to UI for live preview
-                let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-                match decision {
-                    LiveTypingDecision::ResetAndDisable => {
-                        tracing::warn!(
-                            "[main] live typing reset — disabling word-by-word for this recording, will paste full output at end"
-                        );
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return;
-                    }
-                    LiveTypingDecision::PreviewOnly => {
-                        return;
-                    }
-                    LiveTypingDecision::TypeToken => {}
-                }
-                // Type word-by-word directly into focused app via AX
-                match paster::type_text(token) {
-                    Ok(true) => {
-                        if let Ok(mut guard) = live_guard2.lock() {
-                            guard.note_typed();
-                        }
-                        if let Ok(mut text) = typed_text2.lock() {
-                            text.push_str(token);
-                        }
-                        let prev = typed_any2.swap(true, std::sync::atomic::Ordering::Relaxed);
-                        let n = token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        if !prev {
-                            tracing::info!(
-                                "[main] GAP-2: word-by-word typing started — first token {:?}",
-                                token
-                            );
-                        }
-                        let _ = n;
-                    }
-                    Ok(false) => {
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tracing::warn!("[main] type_text error: {e}");
-                    }
+                // The backend uses this internal marker to invalidate an unsafe
+                // partial stream. It is never user-visible and final insertion
+                // does not need reconciliation.
+                if token != STREAM_RESET_SENTINEL {
+                    let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
                 }
             }
             api::PolishEvent::Status { phase, transcript } => {
@@ -5975,8 +5876,6 @@ async fn run_voice_polish_sse(
         }
     };
 
-    let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
-    let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output_pasted = false;
     let mut used_clipboard_fallback = false;
     // If a newer recording superseded this one, never paste the abandoned take.
@@ -5991,73 +5890,11 @@ async fn run_voice_polish_sse(
         );
     } else if suppress_local {
         tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
-    } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
-        let typed_snapshot = typed_text
-            .lock()
-            .map(|text| text.clone())
-            .unwrap_or_default();
-        if n_failed > 0 {
-            // Some tokens typed, then the stream reset or a token failed. Reconcile
-            // only the text AirNote typed for this recording; never Cmd+A the field.
-            tracing::warn!(
-                "[main] word-by-word partial: {n_typed} ok, {n_failed} failed — reconciling current typed text"
-            );
-            if !done.polished.is_empty() {
-                match paster::reconcile_current_recording(
-                    initial_field_text.as_deref(),
-                    &typed_snapshot,
-                    &done.polished,
-                ) {
-                    Ok(changed) => {
-                        if changed {
-                            tracing::info!(
-                                "[main] current typed text reconciled after partial stream"
-                            );
-                        }
-                        output_pasted = true;
-                    }
-                    Err(e) => {
-                        tracing::warn!("[main] typed-text reconciliation failed: {e}");
-                    }
-                }
-            }
-        } else if done.polished.is_empty() {
-            tracing::warn!(
-                "[main] word-by-word complete but final output is empty — keeping streamed text"
-            );
-            output_pasted = !typed_snapshot.is_empty();
-        } else if typed_snapshot == done.polished {
-            tracing::info!("[main] word-by-word complete — {n_typed} token(s) typed directly");
-            output_pasted = true;
-        } else {
-            tracing::info!(
-                "[main] word-by-word complete — final text differs, reconciling current typed text (typed_chars={} final_chars={})",
-                typed_snapshot.chars().count(),
-                done.polished.chars().count()
-            );
-            match paster::reconcile_current_recording(
-                initial_field_text.as_deref(),
-                &typed_snapshot,
-                &done.polished,
-            ) {
-                Ok(changed) => {
-                    if changed {
-                        tracing::info!("[main] current typed text reconciled with final output");
-                    }
-                    output_pasted = true;
-                }
-                Err(e) => {
-                    tracing::warn!("[main] final typed-text reconciliation failed: {e}");
-                    output_pasted = !typed_snapshot.is_empty();
-                }
-            }
-        }
     } else {
-        // Live token typing did not produce output. Insert the final result
-        // directly first so normal dictation does not touch the user's
-        // clipboard; fall back to Cmd+V only if direct typing fails.
+        // Insert only the final server result so the focused field never needs
+        // a second reconciliation mutation.
         tracing::info!(
-            "[main] live typing produced no output — direct insert final result ({} chars)",
+            "[main] direct insert final server result ({} chars)",
             done.polished.len()
         );
         if !done.polished.is_empty() {
@@ -6130,43 +5967,22 @@ async fn run_voice_polish_sse(
     }
 
     if !is_divo {
-        let typed_snapshot_for_trace = typed_text
-            .lock()
-            .map(|text| text.clone())
-            .unwrap_or_default();
         let mut paste_trace = said_core::dictation_trace::DictationTrace::default();
         paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "desktop.live_typed_snapshot",
+            stage: "desktop.final_insert",
             component: "desktop",
-            function: "paster::type_text",
-            output: (!typed_snapshot_for_trace.is_empty())
-                .then_some(typed_snapshot_for_trace.as_str()),
-            reason: Some("tokens typed before final done reconciliation"),
-            risk: Some("live_typing"),
-            metadata: serde_json::json!({
-                "typed_tokens": n_typed,
-                "failed_tokens": n_failed,
-                "typed_any": !typed_snapshot_for_trace.is_empty(),
-                "message_polish": message_polish_mode,
-                "suppress_local": suppress_local,
-                "superseded": superseded,
-            }),
-            ..Default::default()
-        });
-        paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "desktop.final_reconcile",
-            component: "desktop",
-            function: "paster::reconcile_current_recording_or_insert",
-            input: (!typed_snapshot_for_trace.is_empty())
-                .then_some(typed_snapshot_for_trace.as_str()),
+            function: "insert_text_prefer_direct",
             output: Some(done.polished.as_str()),
-            reason: Some("desktop ensured final polished text is in focused field"),
-            risk: Some("paste_reconcile"),
+            reason: Some("desktop inserted the final server output once"),
+            risk: Some("paste_insert"),
             metadata: serde_json::json!({
                 "output_pasted": output_pasted,
                 "used_clipboard_fallback": used_clipboard_fallback,
                 "output_status": output_status,
                 "initial_field_readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
+                "message_polish": message_polish_mode,
+                "suppress_local": suppress_local,
+                "superseded": superseded,
             }),
             ..Default::default()
         });
@@ -11180,35 +10996,6 @@ mod meaningful_edit_tests {
     #[test]
     fn rejects_zero_alphanumeric_word_changes() {
         assert!(!is_meaningful_edit("hello world", "hello   world"));
-    }
-}
-
-#[cfg(test)]
-mod live_typing_guard_tests {
-    use super::{LiveTypingDecision, LiveTypingGuard, STREAM_RESET_SENTINEL};
-
-    #[test]
-    fn streams_until_reset_then_previews() {
-        let mut guard = LiveTypingGuard::default();
-        assert_eq!(guard.on_token("Hello"), LiveTypingDecision::TypeToken);
-        guard.note_typed();
-        assert_eq!(guard.on_token("world"), LiveTypingDecision::TypeToken);
-        guard.note_typed();
-        assert_eq!(
-            guard.on_token(STREAM_RESET_SENTINEL),
-            LiveTypingDecision::ResetAndDisable
-        );
-        assert_eq!(guard.on_token("final"), LiveTypingDecision::PreviewOnly);
-    }
-
-    #[test]
-    fn reset_before_any_target_typing_does_not_disable_streaming() {
-        let mut guard = LiveTypingGuard::default();
-        assert_eq!(
-            guard.on_token(STREAM_RESET_SENTINEL),
-            LiveTypingDecision::PreviewOnly
-        );
-        assert_eq!(guard.on_token("final"), LiveTypingDecision::TypeToken);
     }
 }
 

@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { listHistory, downloadRecordingAudio, getRecordingAudioBytes, openExternal, getAppIcon } from "@/lib/invoke";
+import { downloadRecordingAudio, getRecordingAudioBytes, openExternal, getAppIcon } from "@/lib/invoke";
+import {
+  getHistoryCacheSnapshot,
+  refreshHistoryCache,
+  subscribeHistoryCache,
+} from "@/lib/historyUiCache";
 import { cn } from "@/lib/utils";
 import { Copy, Download, Check, Play, Square, BookOpen, ExternalLink } from "lucide-react";
 import { AppIcon, appDisplayName, useAppIdentity } from "@/components/AppIcon";
+import { EditorialDashboardSkeleton } from "@/components/views/dashboards/DashboardSkeleton";
 import type { AppSnapshot, Recording } from "@/types";
 
 interface Props {
@@ -41,14 +47,24 @@ function markGuideOpened(): void {
  * Calm reading mode rather than analytics console.
  */
 export function EditorialDashboard({ snapshot }: Props) {
-  const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [recordings, setRecordings] = useState<Recording[]>(() =>
+    getHistoryCacheSnapshot().recordings?.slice(0, 300) ?? [],
+  );
+  const [loaded, setLoaded] = useState(() => getHistoryCacheSnapshot().recordings !== undefined);
   const [guideOpened, setGuideOpened] = useState(guideWasOpened);
   const history = snapshot?.history ?? [];
 
   useEffect(() => {
-    let alive = true;
-    listHistory(300).then((r) => { if (alive) setRecordings(r); });
-    return () => { alive = false; };
+    const sync = () => {
+      const cached = getHistoryCacheSnapshot().recordings;
+      if (!cached) return;
+      setRecordings(cached.slice(0, 300));
+      setLoaded(true);
+    };
+    sync();
+    const unsubscribe = subscribeHistoryCache(sync);
+    void refreshHistoryCache({ limit: 300 });
+    return unsubscribe;
   }, [history.length]);
 
   // ── Derived: today's words + time saved ─────────────────────────────────
@@ -106,6 +122,8 @@ export function EditorialDashboard({ snapshot }: Props) {
   const latest = today;
 
   const dateLabel = useMemo(() => formatDate(new Date()), []);
+
+  if (!loaded) return <EditorialDashboardSkeleton />;
 
   return (
     <ScrollArea className="h-full">

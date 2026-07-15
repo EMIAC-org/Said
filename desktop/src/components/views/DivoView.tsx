@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Sparkles, Lock, Search, Plus, Loader2, Mic } from "lucide-react";
+import { Sparkles, Lock, Search, Plus, Mic } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Markdown } from "@/components/Markdown";
 import {
   divoListThreads,
@@ -169,8 +170,16 @@ export function DivoView({ platform }: { platform?: string }) {
           <ScrollArea className="flex-1 min-h-0">
             <div className="px-2 pb-3 flex flex-col gap-0.5">
               {loadingList ? (
-                <div className="flex items-center justify-center gap-2 py-8 text-[12px] text-muted-foreground">
-                  <Loader2 size={14} className="animate-spin" /> Loading…
+                <div className="flex flex-col gap-1 px-1 py-1">
+                  {Array.from({ length: 7 }).map((_, i) => (
+                    <div key={i} className="px-3 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <Skeleton className="h-3 flex-1" style={{ maxWidth: `${62 - i * 6}%` }} />
+                        <Skeleton className="h-2.5 w-8" />
+                      </div>
+                      <Skeleton className="h-2.5 mt-2" style={{ width: `${82 - i * 7}%` }} />
+                    </div>
+                  ))}
                 </div>
               ) : filtered.length === 0 ? (
                 <div className="px-3 py-8 text-center text-[12px] text-muted-foreground leading-relaxed">
@@ -220,8 +229,23 @@ export function DivoView({ platform }: { platform?: string }) {
           <ScrollArea className="flex-1 min-h-0">
             <div className="px-5 py-5 flex flex-col gap-5 max-w-[680px] mx-auto">
               {loadingDetail ? (
-                <div className="flex items-center justify-center gap-2 py-10 text-[12.5px] text-muted-foreground">
-                  <Loader2 size={15} className="animate-spin" /> Loading conversation…
+                <div className="flex flex-col gap-5">
+                  {[
+                    { align: "end", w: 55 },
+                    { align: "start", w: 78 },
+                    { align: "end", w: 42 },
+                    { align: "start", w: 68 },
+                  ].map((m, i) => (
+                    <div key={i} className={`flex ${m.align === "end" ? "justify-end" : "justify-start"}`}>
+                      <div
+                        className="rounded-2xl px-4 py-3 space-y-2"
+                        style={{ width: `${m.w}%`, background: "hsl(var(--surface-3))" }}
+                      >
+                        <Skeleton className="h-3 w-full" style={{ background: "hsl(var(--surface-4))" }} />
+                        <Skeleton className="h-3 w-4/5" style={{ background: "hsl(var(--surface-4))" }} />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : !detail || detail.messages.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 py-16 text-center text-muted-foreground">
