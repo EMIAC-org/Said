@@ -4,10 +4,9 @@ import { ChevronRight } from 'lucide-react'
 import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from '../components/Avatar'
-import { TelemetryStatCard } from '../components/telemetry/TelemetryStatCard'
 import { RunDetailPanel } from '../components/telemetry/RunDetailPanel'
 import { DictationInspector } from '../components/telemetry/DictationInspector'
-import { pct, ms, usd } from '../components/telemetry/format'
+import { pct, ms, speechLabel, usd } from '../components/telemetry/format'
 import { Loading, ErrorBox } from '../components/States'
 import type {
   TelemetryRun,
@@ -265,8 +264,8 @@ export function TelemetryUserPage() {
   const { member } = profile
   const name = member.lark_name || member.email
   const lat = profile.latency_ms
-
-  const flagEntries = Object.entries(profile.content_flags || {}).filter(([, v]) => v > 0)
+  const costRuns = Math.max(profile.costs.summary.runs, 1)
+  const costTracking = `STT ${pct(profile.costs.summary.stt_costed_runs / costRuns)} · polish ${pct(profile.costs.summary.polish_costed_runs / costRuns)} tracked`
 
   return (
     <>
@@ -530,182 +529,35 @@ export function TelemetryUserPage() {
         )
       ) : (
         <>
-      <div className="grid grid-cols-4 gap-3 mb-4">
-        <TelemetryStatCard label="Runs" value={String(profile.summary.runs)} sub="completed" />
-        <TelemetryStatCard
-          label="Audio"
-          value={String(profile.summary.audio_minutes)}
-          sub="minutes dictated"
-        />
-        <TelemetryStatCard
-          label="Words"
-          value={profile.summary.word_count.toLocaleString()}
-          sub={`chars ${profile.summary.char_count.toLocaleString()}`}
-        />
-        <TelemetryStatCard
-          label="Acceptance"
-          value={pct(profile.quality.acceptance_rate)}
-          sub="accepted as-is"
-        />
-      </div>
-
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <TelemetryStatCard
-          label="Edit rate"
-          value={pct(profile.quality.edit_rate)}
-          sub={`heavy ${pct(profile.quality.heavy_edit_rate)}`}
-        />
-        <TelemetryStatCard
-          label="Fallback rate"
-          value={pct(profile.quality.fallback_rate)}
-          sub="clipboard fallback"
-        />
-        <TelemetryStatCard
-          label="Latency p50 / p95"
-          value={`${ms(lat.total_p50)} / ${ms(lat.total_p95)}`}
-          sub="total pipeline"
-        />
-      </div>
-
-      <div className="grid grid-cols-4 gap-3 mb-4">
-        <TelemetryStatCard
-          label="Total cost"
-          value={usd(profile.costs.summary.total_usd)}
-          sub={`selected ${days}-day window`}
-        />
-        <TelemetryStatCard
-          label="STT cost"
-          value={usd(profile.costs.summary.stt_usd)}
-          sub={`${profile.costs.summary.cloud_stt_minutes.toFixed(1)} cloud minutes`}
-        />
-        <TelemetryStatCard
-          label="Polish cost"
-          value={usd(profile.costs.summary.polish_usd)}
-          sub="provider-reported when available"
-        />
-        <TelemetryStatCard
-          label="Cost coverage"
-          value={pct(profile.costs.summary.coverage_rate)}
-          sub={`${profile.costs.summary.stt_costed_runs} STT · ${profile.costs.summary.polish_costed_runs} polish runs`}
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 mb-4">
-        <div className="card p-4">
-          <SectionLabel>Quality breakdown</SectionLabel>
-          <CountGrid
-            items={[
-              ['accepted_as_is', profile.quality_counts.accepted_as_is],
-              ['edit_detected', profile.quality_counts.edit_detected],
-              ['heavy_edit', profile.quality_counts.heavy_edit],
-              ['deleted_entire_output', profile.quality_counts.deleted_entire_output],
-              ['re_recorded_quickly', profile.quality_counts.re_recorded_quickly],
-              ['failures', profile.quality_counts.failures],
-            ]}
-          />
-        </div>
-        <div className="card p-4">
-          <SectionLabel>Learning funnel</SectionLabel>
-          <CountGrid
-            items={[
-              ['learning_candidate', profile.learning.learning_candidate],
-              ['learning_modal_shown', profile.learning.learning_modal_shown],
-              ['learning_confirmed', profile.learning.learning_confirmed],
-              ['learning_dismissed', profile.learning.learning_dismissed],
-              ['server_learning_saved', profile.learning.server_learning_saved],
-              ['server_learning_blocked', profile.learning.server_learning_blocked],
-            ]}
-          />
-        </div>
-        <div className="card p-4">
-          <SectionLabel>Latency percentiles (ms)</SectionLabel>
-          <div className="text-[12px] space-y-1.5">
-            <div className="flex justify-between">
-              <span className="text-fg-4">transcribe</span>
-              <span className="tabular-nums">
-                {ms(lat.transcribe_p50)} / {ms(lat.transcribe_p95)}
-              </span>
+      <div className="card !p-0 overflow-hidden mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
+          {[
+            ['Dictations', profile.summary.runs.toLocaleString(), `${profile.summary.audio_minutes} min`],
+            ['Acceptance', pct(profile.quality.acceptance_rate), 'accepted as-is'],
+            ['Heavy edits', pct(profile.quality.heavy_edit_rate), `${pct(profile.quality.edit_rate)} edited`],
+            ['Latency p95', ms(lat.total_p95), `p50 ${ms(lat.total_p50)}`],
+            ['Failures', profile.quality_counts.failures.toLocaleString(), `${pct(profile.quality.fallback_rate)} fallback`],
+            ['Estimated cost', usd(profile.costs.summary.total_usd), costTracking],
+          ].map(([label, value, sub]) => (
+            <div key={label} className="px-4 py-4 border-b border-r border-border-light last:border-r-0">
+              <div className="text-[10px] font-semibold text-fg-4 uppercase tracking-wider">{label}</div>
+              <div className="text-[20px] font-semibold tabular-nums mt-1.5">{value}</div>
+              <div className="text-[10px] text-fg-4 mt-0.5">{sub}</div>
             </div>
-            <div className="flex justify-between">
-              <span className="text-fg-4">embed</span>
-              <span className="tabular-nums">
-                {ms(lat.embed_p50)} / {ms(lat.embed_p95)}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-fg-4">polish</span>
-              <span className="tabular-nums">
-                {ms(lat.polish_p50)} / {ms(lat.polish_p95)}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-fg-4">paste</span>
-              <span className="tabular-nums">
-                {ms(lat.paste_p50)} / {ms(lat.paste_p95)}
-              </span>
-            </div>
-          </div>
-        </div>
-        <div className="card p-4">
-          <SectionLabel>By mode · by app</SectionLabel>
-          <div className="text-[12px] space-y-1.5 mb-3">
-            {profile.by_mode.map(row => (
-              <div key={row.mode} className="flex justify-between">
-                <span className="font-mono text-fg-2">{row.mode}</span>
-                <span className="tabular-nums">{row.count}</span>
-              </div>
-            ))}
-            {!profile.by_mode.length && (
-              <div className="text-fg-4">No runs in window.</div>
-            )}
-          </div>
-          <div className="border-t border-border-light pt-3 text-[12px] space-y-1.5">
-            {profile.by_target_app.map((row, i) => (
-              <div key={i} className="flex justify-between">
-                <span className="truncate max-w-[70%]">{row.target_app || 'Unknown'}</span>
-                <span className="tabular-nums">{row.count}</span>
-              </div>
-            ))}
-          </div>
+          ))}
         </div>
       </div>
 
-      {profile.speech?.by_model?.length ? (
-        <div className="card p-4 mb-4">
-          <SectionLabel>speech model mix</SectionLabel>
-          <div className="grid grid-cols-2 gap-4 text-[12px]">
-            <div className="space-y-1.5">
-              {profile.speech.by_model.map(row => (
-                <div key={row.speech_model} className="flex justify-between">
-                  <span className="font-mono text-fg-2">{row.speech_model}</span>
-                  <span className="tabular-nums">
-                    {row.count} ({row.share}%)
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="space-y-1.5">
-              {(profile.speech.latency_by_model || []).map(row => (
-                <div key={row.speech_model} className="flex justify-between text-fg-3">
-                  <span className="font-mono">{row.speech_model} transcribe</span>
-                  <span className="tabular-nums">
-                    {ms(row.transcribe_p50)} / {ms(row.transcribe_p95)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="grid grid-cols-2 gap-4 mb-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className="card p-4">
-          <SectionLabel>STT cost by model</SectionLabel>
+          <SectionLabel>Speech recognition</SectionLabel>
           <div className="space-y-2 text-[12px]">
             {profile.costs.by_model.stt.map(row => (
               <div key={`${row.provider}:${row.model}`} className="flex justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="font-mono text-fg-2 truncate">{row.provider} · {row.model}</div>
+                  <div className="text-fg-2 truncate" title={`${row.provider} · ${row.model}`}>
+                    {speechLabel(`${row.provider}:${row.model}`)}
+                  </div>
                   <div className="text-[10px] text-fg-4">
                     {row.runs} runs · {row.audio_minutes.toFixed(1)} min
                   </div>
@@ -717,7 +569,7 @@ export function TelemetryUserPage() {
           </div>
         </div>
         <div className="card p-4">
-          <SectionLabel>Polish cost by model</SectionLabel>
+          <SectionLabel>Polish spend</SectionLabel>
           <div className="space-y-2 text-[12px]">
             {profile.costs.by_model.polish.map(row => (
               <div key={`${row.provider}:${row.model || 'unknown'}`} className="flex justify-between gap-3">
@@ -730,167 +582,9 @@ export function TelemetryUserPage() {
                 <span className="tabular-nums shrink-0">{usd(row.cost_usd)}</span>
               </div>
             ))}
-            {!profile.costs.by_model.polish.length && <div className="text-fg-4">No polish cost data.</div>}
+            {!profile.costs.by_model.polish.length && <div className="text-fg-4">No polish usage recorded.</div>}
           </div>
         </div>
-      </div>
-
-      <div className="card !p-0 overflow-hidden mb-4">
-        <div className="px-5 py-4 border-b border-border">
-          <SectionLabel>Daily cost derivation</SectionLabel>
-          <p className="text-[11px] text-fg-4">
-            STT at ${profile.costs.rate_card.together_nemotron_per_hour}/hour; Gemma fallback at
-            {' '}${profile.costs.rate_card.gemma_input_per_million_tokens}/${profile.costs.rate_card.gemma_output_per_million_tokens} per 1M input/output tokens.
-          </p>
-        </div>
-        <table className="w-full">
-          <thead>
-            <tr>
-              {['Date', 'Runs', 'STT', 'Polish', 'Total', 'Coverage'].map(h => (
-                <th key={h} className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {profile.costs.daily.map(row => (
-              <tr key={row.event_date}>
-                <td className="text-[12px] px-5 py-2.5 border-b border-border-light">{row.event_date}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.runs}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{usd(row.stt_usd)}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{usd(row.polish_usd)}</td>
-                <td className="text-[12px] font-semibold tabular-nums px-5 py-2.5 border-b border-border-light">{usd(row.total_usd)}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{pct(row.coverage_rate)}</td>
-              </tr>
-            ))}
-            {!profile.costs.daily.length && (
-              <tr><td colSpan={6} className="text-[12px] text-fg-4 px-5 py-4">No cost data in this window.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {flagEntries.length > 0 && (
-        <div className="card p-4 mb-4">
-          <SectionLabel>Content flags (aggregate)</SectionLabel>
-          <div className="flex flex-wrap gap-1.5">
-            {flagEntries.map(([k, v]) => (
-              <span
-                key={k}
-                className="text-[10px] px-2 py-0.5 rounded bg-info-bg text-info"
-              >
-                {k} · {v}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="card !p-0 overflow-hidden mb-4">
-        <div className="px-5 py-4 border-b border-border">
-          <SectionLabel>Daily rollups</SectionLabel>
-          <p className="text-[11px] text-fg-4">runtime_telemetry_daily</p>
-        </div>
-        <table className="w-full">
-          <thead>
-            <tr>
-              {[
-                'Date',
-                'Mode',
-                'Runs',
-                'Audio sec',
-                'Accepted',
-                'Edits',
-                'Heavy',
-                'Learning shown',
-                'Confirmed',
-                'Failures',
-                'Fallbacks',
-              ].map(h => (
-                <th
-                  key={h}
-                  className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider"
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {profile.daily_rollups.map((row, i) => (
-              <tr key={i}>
-                <td className="text-[12px] px-5 py-2.5 border-b border-border-light">{row.event_date}</td>
-                <td className="text-[11px] font-mono px-5 py-2.5 border-b border-border-light">{row.mode}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.run_count}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{Math.round(row.audio_seconds)}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.accepted_count}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.edit_count}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.heavy_edit_count}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.learning_modal_shown}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.learning_confirmed}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.failure_count}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.fallback_count}</td>
-              </tr>
-            ))}
-            {!profile.daily_rollups.length && (
-              <tr>
-                <td colSpan={11} className="text-[12px] text-fg-4 px-5 py-4">
-                  No daily rollups yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="card !p-0 overflow-hidden mb-4">
-        <div className="px-5 py-4 border-b border-border">
-          <SectionLabel>Upload batches</SectionLabel>
-          <p className="text-[11px] text-fg-4">runtime_telemetry_uploads</p>
-        </div>
-        <table className="w-full">
-          <thead>
-            <tr>
-              {['Received', 'device_id', 'client_version', 'runs', 'rollups', 'accepted', 'rejected'].map(
-                h => (
-                  <th
-                    key={h}
-                    className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider"
-                  >
-                    {h}
-                  </th>
-                ),
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {profile.uploads.map((u, i) => (
-              <tr key={i}>
-                <td className="text-[12px] px-5 py-2.5 border-b border-border-light">
-                  {new Date(u.received_at).toLocaleString()}
-                </td>
-                <td className="text-[11px] font-mono px-5 py-2.5 border-b border-border-light">
-                  {u.device_id || '—'}
-                </td>
-                <td className="text-[11px] font-mono px-5 py-2.5 border-b border-border-light">
-                  {u.client_version || '—'}
-                </td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{u.run_count}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{u.rollup_count}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{u.accepted_count}</td>
-                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{u.rejected_count}</td>
-              </tr>
-            ))}
-            {!profile.uploads.length && (
-              <tr>
-                <td colSpan={7} className="text-[12px] text-fg-4 px-5 py-4">
-                  No uploads recorded yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
       </div>
 
       <div className="card !p-0 overflow-hidden">
@@ -915,15 +609,23 @@ export function TelemetryUserPage() {
             <option value="rewrite_selection">rewrite_selection</option>
           </select>
         </div>
-        <table className="w-full">
+        <div className="overflow-x-auto overscroll-x-contain">
+        <table className="w-full min-w-[760px] table-fixed">
           <thead>
             <tr>
-              <th className="w-6" />
-              {['event_at', 'run_id', 'mode', 'target_app', 'stt', 'cost', 'audio', 'words', 'total_ms', 'edit', 'ok', 'flags'].map(
-                h => (
+              <th className="w-10" />
+              {[
+                ['When', 'w-[20%]'],
+                ['Context', 'w-[20%]'],
+                ['STT', 'w-[20%]'],
+                ['Cost', 'w-[12%]'],
+                ['Latency', 'w-[12%]'],
+                ['Result', 'w-[16%]'],
+              ].map(
+                ([h, width]) => (
                   <th
                     key={h}
-                    className="text-[10px] font-medium text-fg-4 text-left px-3 py-3 border-b border-border uppercase tracking-wider"
+                    className={`${width} text-[10px] font-medium text-fg-4 text-left px-3 py-3 border-b border-border uppercase tracking-wider`}
                   >
                     {h}
                   </th>
@@ -934,13 +636,6 @@ export function TelemetryUserPage() {
           <tbody>
             {runs.map(run => {
               const open = expandedRun === run.run_id
-              const flagSummary = run.content_flags
-                ? Object.entries(run.content_flags)
-                    .filter(([, v]) => v)
-                    .map(([k]) => k.replace('has_', ''))
-                    .slice(0, 3)
-                    .join(', ')
-                : ''
               const bucketClass =
                 run.edit_bucket === 'none'
                   ? 'bg-ok-bg text-ok'
@@ -959,56 +654,51 @@ export function TelemetryUserPage() {
                         className={`transition-transform ${open ? 'rotate-90' : ''}`}
                       />
                     </td>
-                    <td className="text-[11px] font-mono px-3 py-2.5 border-b border-border-light">
-                      {new Date(run.event_at).toLocaleString()}
+                    <td className="px-3 py-2.5 border-b border-border-light">
+                      <div className="text-[11px]">{new Date(run.event_at).toLocaleString()}</div>
+                      <div className="text-[9px] text-fg-4 font-mono mt-0.5">{run.run_id.slice(0, 8)}…</div>
                     </td>
-                    <td className="text-[11px] font-mono px-3 py-2.5 border-b border-border-light">
-                      {run.run_id}
+                    <td className="px-3 py-2.5 border-b border-border-light">
+                      <div className="text-[12px] truncate">{run.target_app || 'Unknown app'}</div>
+                      <div className="text-[9px] text-fg-4 font-mono mt-0.5">{run.mode}</div>
                     </td>
-                    <td className="text-[11px] font-mono px-3 py-2.5 border-b border-border-light">
-                      {run.mode}
-                    </td>
-                    <td className="text-[12px] px-3 py-2.5 border-b border-border-light">
-                      {run.target_app || '—'}
-                    </td>
-                    <td className="text-[10px] font-mono px-3 py-2.5 border-b border-border-light">
-                      <div>{run.speech_provider || 'unknown'}</div>
-                      <div className="text-fg-4 truncate max-w-[10rem]">{run.speech_model || '—'}</div>
+                    <td
+                      title={`${run.speech_provider || 'unknown'} · ${run.speech_model || 'unknown'}`}
+                      className="px-3 py-2.5 border-b border-border-light"
+                    >
+                      <div className="text-[11px] truncate">
+                        {speechLabel(`${run.speech_provider || ''}:${run.speech_model || ''}`)}
+                      </div>
+                      <div className="text-[9px] text-fg-4 mt-0.5">{run.speech_path || '—'}</div>
                     </td>
                     <td className="text-[11px] tabular-nums px-3 py-2.5 border-b border-border-light">
                       <div>{usd(run.total_cost_usd)}</div>
-                      <div className="text-[9px] text-fg-4">{run.cost_coverage}</div>
-                    </td>
-                    <td className="text-[12px] tabular-nums px-3 py-2.5 border-b border-border-light">
-                      {run.audio_seconds != null ? `${run.audio_seconds}s` : '—'}
-                    </td>
-                    <td className="text-[12px] tabular-nums px-3 py-2.5 border-b border-border-light">
-                      {run.word_count ?? '—'}
-                    </td>
-                    <td className="text-[12px] tabular-nums px-3 py-2.5 border-b border-border-light">
-                      {run.total_ms ?? '—'}
+                      <div className="text-[9px] text-fg-4 mt-0.5">{run.cost_coverage}</div>
                     </td>
                     <td className="px-3 py-2.5 border-b border-border-light">
-                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${bucketClass}`}>
-                        {run.edit_bucket}
-                      </span>
+                      <div className="text-[12px] tabular-nums">{ms(run.total_ms)}</div>
+                      <div className="text-[9px] text-fg-4 mt-0.5">
+                        {run.audio_seconds != null ? `${run.audio_seconds}s audio` : '—'}
+                      </div>
                     </td>
                     <td className="px-3 py-2.5 border-b border-border-light">
-                      <span
-                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                          run.success ? 'bg-ok-bg text-ok' : 'bg-live-bg text-live'
-                        }`}
-                      >
-                        {run.success ? 'ok' : 'fail'}
-                      </span>
-                    </td>
-                    <td className="text-[10px] text-fg-4 px-3 py-2.5 border-b border-border-light">
-                      {flagSummary || '—'}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                            run.success ? 'bg-ok-bg text-ok' : 'bg-live-bg text-live'
+                          }`}
+                        >
+                          {run.success ? 'ok' : 'fail'}
+                        </span>
+                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${bucketClass}`}>
+                          {run.edit_bucket}
+                        </span>
+                      </div>
                     </td>
                   </tr>
                   {open && (
                     <tr>
-                      <td colSpan={13} className="p-0 border-b border-border-light">
+                      <td colSpan={7} className="p-0 border-b border-border-light">
                         <RunDetailPanel run={run} onOpenDictation={openDictation} />
                       </td>
                     </tr>
@@ -1018,13 +708,14 @@ export function TelemetryUserPage() {
             })}
             {!runs.length && !runsLoading && (
               <tr>
-                <td colSpan={13} className="text-[12px] text-fg-4 px-5 py-4">
+                <td colSpan={7} className="text-[12px] text-fg-4 px-5 py-4">
                   No runs in this window.
                 </td>
               </tr>
             )}
           </tbody>
         </table>
+        </div>
         {runsOffset < runsTotal && (
           <div className="p-4 border-t border-border-light text-center">
             <button

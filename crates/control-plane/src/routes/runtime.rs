@@ -45,8 +45,8 @@ use uuid::Uuid;
 
 use crate::notification_hub::DesktopNotification;
 use crate::voice_polish_standalone::{
-    build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
-    build_voice_system_prompt_with_recent, build_voice_user_message, RuntimeVocabCard,
+    RuntimeVocabCard, build_rewrite_system_prompt, build_rewrite_user_message,
+    build_voice_system_prompt, build_voice_system_prompt_with_recent, build_voice_user_message,
 };
 use crate::{AppState, auth::AuthUser, memory_hygiene, tenant};
 
@@ -2600,11 +2600,8 @@ async fn execute_voice_polish(
     } else {
         req.safe_vocab_terms.clone()
     };
-    let merged_vocab = merge_vocab_terms(
-        &client_vocab_terms,
-        &server_memory.vocab_terms,
-        transcript,
-    );
+    let merged_vocab =
+        merge_vocab_terms(&client_vocab_terms, &server_memory.vocab_terms, transcript);
     let memory_ms = memory_start.elapsed().as_millis() as i64;
 
     let session_start = Instant::now();

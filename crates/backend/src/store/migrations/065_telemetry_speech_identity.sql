@@ -1,0 +1,4 @@
+-- Complete the speech_* rename introduced by migration 063. This migration is
+-- applied conditionally in Rust because older databases have stt_model/stt_path
+-- while clean installs already received speech_model/speech_path in migration
+-- 042. SQLite does not support ADD COLUMN IF NOT EXISTS.

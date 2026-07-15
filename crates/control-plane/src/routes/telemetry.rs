@@ -221,7 +221,13 @@ pub async fn batch_ingest(
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
                 $24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49
             )
-            ON CONFLICT (account_id, run_id) DO NOTHING",
+            ON CONFLICT (account_id, run_id) DO UPDATE SET
+                audio_seconds = COALESCE(EXCLUDED.audio_seconds, runtime_telemetry_runs.audio_seconds),
+                speech_provider = COALESCE(NULLIF(EXCLUDED.speech_provider, ''), runtime_telemetry_runs.speech_provider),
+                speech_model = COALESCE(NULLIF(EXCLUDED.speech_model, ''), runtime_telemetry_runs.speech_model),
+                speech_path = COALESCE(NULLIF(EXCLUDED.speech_path, ''), runtime_telemetry_runs.speech_path),
+                speech_cost_usd = COALESCE(EXCLUDED.speech_cost_usd, runtime_telemetry_runs.speech_cost_usd),
+                speech_cost_source = COALESCE(EXCLUDED.speech_cost_source, runtime_telemetry_runs.speech_cost_source)",
         )
         .bind(user.account_id)
         .bind(org_id)
@@ -2167,6 +2173,18 @@ mod tests {
         assert_eq!(provider.as_deref(), Some("together"));
         assert!((cost.unwrap_or_default() - 0.09).abs() < f64::EPSILON);
         assert!(source.is_some_and(|value| value.contains("0.09_per_hour")));
+    }
+
+    #[test]
+    fn infers_together_for_legacy_nemotron_payload() {
+        let (provider, cost, _) = speech_cost_attribution(
+            None,
+            Some("together:nvidia/nemotron-3.5-asr-streaming-0.6b/realtime"),
+            Some("websocket_live"),
+            Some(60.0),
+        );
+        assert_eq!(provider.as_deref(), Some("together"));
+        assert!((cost.unwrap_or_default() - 0.0015).abs() < f64::EPSILON);
     }
 
     #[test]
