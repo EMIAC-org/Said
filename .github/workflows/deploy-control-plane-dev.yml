@@ -89,6 +89,7 @@ jobs:
           test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is missing" && exit 1)
           test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is missing" && exit 1)
           test -n "${{ secrets.OPENROUTER_API_KEY }}" || (echo "OPENROUTER_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.TOGETHER_API_KEY }}" || (echo "TOGETHER_API_KEY is missing" && exit 1)
           test -n "${{ secrets.DEEPSEEK_API_KEY }}" || (echo "DEEPSEEK_API_KEY is missing" && exit 1)
           test -n "${{ secrets.OPENAI_API_KEY }}" || (echo "OPENAI_API_KEY is missing" && exit 1)
           test -n "${{ secrets.DEEPINFRA_API_KEY }}" || (echo "DEEPINFRA_API_KEY is missing" && exit 1)
@@ -105,6 +106,7 @@ jobs:
         shell: bash
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
@@ -113,6 +115,7 @@ jobs:
             docker-compose.yml docker-compose.dev.yml Caddyfile README.md .env.example
           {
             printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY"
+            printf 'TOGETHER_API_KEY=%s\n' "$TOGETHER_API_KEY"
             printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY"
             printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
             printf 'DEEPINFRA_API_KEY=%s\n' "$DEEPINFRA_API_KEY"
@@ -203,6 +206,9 @@ jobs:
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^OPENROUTER_API_KEY=." \
             || (echo "OPENROUTER_API_KEY was not propagated into the dev control-plane container" && exit 1)
+          docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -q "^TOGETHER_API_KEY=." \
+            || (echo "TOGETHER_API_KEY was not propagated into the dev control-plane container" && exit 1)
           docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -q "^DEEPSEEK_API_KEY=." \
             || (echo "DEEPSEEK_API_KEY was not propagated into the dev control-plane container" && exit 1)
