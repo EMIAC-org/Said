@@ -2132,6 +2132,7 @@ fn show_meeting_pill(app: tauri::AppHandle) {
                 panel.order_front_regardless();
                 return;
             }
+            let main_was_visible = hud_manager::main_window_is_visible(&app_for_main);
             match PanelBuilder::<_, MeetingPillPanel>::new(&app_for_main, "meeting-pill")
                 .url(tauri::WebviewUrl::App(url.into()))
                 .title("AirNote Meeting")
@@ -2172,6 +2173,10 @@ fn show_meeting_pill(app: tauri::AppHandle) {
                     panel.order_front_regardless();
                     make_pill_transparent_macos(&app_for_main);
                     tracing::info!("[meeting-pill] NSPanel created");
+                    hud_manager::restore_after_no_activate_panel(
+                        &app_for_main,
+                        main_was_visible,
+                    );
                 }
                 Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
             }

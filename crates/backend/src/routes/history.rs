@@ -34,6 +34,10 @@ pub async fn list(
         None => crate::store::history::list_recordings(&state.pool, &user_id, q.limit, q.before),
     };
     enrich_recordings_with_local_metadata(&state.pool, &user_id, &mut items);
+    // Server history can lag (or miss) on-device rows that have not uploaded yet.
+    // Union local-only recordings so Insights/streaks match what the user actually
+    // dictated on this Mac — without dropping server-only rows.
+    merge_local_only_recordings(&state.pool, &user_id, &q, &mut items);
     Ok(Json(items))
 }
 
@@ -258,6 +262,51 @@ fn enrich_recordings_with_local_metadata(
             merge_local_metadata(rec, local);
         }
     }
+}
+
+/// Append local SQLite rows that are missing from the (server-first) page so
+/// Insights does not under-count recent on-device dictation.
+fn merge_local_only_recordings(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    q: &HistoryQuery,
+    recordings: &mut Vec<Recording>,
+) {
+    use std::collections::HashSet;
+
+    let local_rows =
+        crate::store::history::list_recordings(pool, user_id, q.limit.max(500), q.before);
+    if local_rows.is_empty() {
+        return;
+    }
+
+    // After enrich, matched server rows carry the local id — those are covered.
+    let existing_ids: HashSet<String> = recordings.iter().map(|r| r.id.clone()).collect();
+
+    let mut added = 0usize;
+    for local in local_rows {
+        if existing_ids.contains(&local.id) {
+            continue;
+        }
+        // Server row id may still differ; skip if a page row is a time/content match.
+        if recordings
+            .iter()
+            .any(|rec| find_best_local_match(rec, std::slice::from_ref(&local)).is_some())
+        {
+            continue;
+        }
+        recordings.push(local);
+        added += 1;
+    }
+
+    if added == 0 {
+        return;
+    }
+    recordings.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+    if recordings.len() > q.limit as usize {
+        recordings.truncate(q.limit as usize);
+    }
+    tracing::debug!("[history] merged {added} local-only recording(s) into server history page");
 }
 
 fn merge_local_metadata(server: &mut Recording, local: &Recording) {

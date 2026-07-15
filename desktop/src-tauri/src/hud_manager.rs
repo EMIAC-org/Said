@@ -101,6 +101,9 @@ impl MacHudManager {
             "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
         );
 
+        // Snapshot before no_activate: Prohibited briefly hides the whole app.
+        let main_was_visible = main_window_is_visible(&self.app);
+
         match PanelBuilder::<_, StatusBarPanel>::new(&self.app, "status-bar")
             .url(tauri::WebviewUrl::App(url.into()))
             .title("AirNote")
@@ -149,6 +152,7 @@ impl MacHudManager {
                     }
                     Self::apply_interactive_to_window(&win, status_bar_interactive(&self.app));
                 }
+                restore_after_no_activate_panel(&self.app, main_was_visible);
             }
             Err(e) => tracing::warn!("[status-bar] could not create NSPanel: {e}"),
         }
@@ -455,6 +459,37 @@ fn status_bar_collection_behavior() -> CollectionBehavior {
     CollectionBehavior::new()
         .can_join_all_spaces()
         .full_screen_auxiliary()
+}
+
+/// `PanelBuilder::no_activate(true)` temporarily sets `ActivationPolicy::Prohibited`
+/// to avoid focus steal while the Tauri window is created and converted to an
+/// NSPanel. On a `Regular` (dock) app that hides the whole `NSApplication`;
+/// restoring `Regular` does **not** unhide. Undo that side effect here.
+#[cfg(target_os = "macos")]
+pub(crate) fn restore_after_no_activate_panel(app: &AppHandle, main_was_visible: bool) {
+    // Tauri's show() maps to NSApp unhide-without-activation.
+    if let Err(e) = app.show() {
+        tracing::warn!("[panel] app unhide after no_activate panel failed: {e}");
+    }
+    if !main_was_visible {
+        return;
+    }
+    // Synchronous restore — callers (panel create) already run on the AppKit
+    // main thread; do not defer via run_on_main_thread or the window stays
+    // hidden for an extra tick after launch.
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+    tracing::info!("[panel] restored main window after no_activate panel create");
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn main_window_is_visible(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
