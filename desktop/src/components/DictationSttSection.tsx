@@ -269,7 +269,11 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
           </div>
         )}
 
-        {policy.setup_kind === "local_required" && localSelected && recommended && (
+        {/* Keep the recommended model recoverable even when the user is
+            temporarily on Cloud Nemotron. Deleting a local model must not
+            hide the one download action that restores this Mac's onboarding
+            recommendation. */}
+        {policy.setup_kind === "local_required" && recommended && (localSelected || !recommended.installed) && (
           <div className="rounded-xl border px-4 py-3" style={{ borderColor: "hsl(var(--surface-3))" }} aria-live="polite">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -279,13 +283,13 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
                     ? `${active.name} is your retained working model. ${recommended.name} remains recommended.`
                     : recommended.installed
                       ? "Installed and selected for local dictation."
-                      : `${recommended.size_hint} download required for local dictation.`}
+                      : `${recommended.size_hint} download required. AirNote will switch Dictation to local when it is ready.`}
                 </p>
               </div>
               {!recommended.installed ? (
                 <button type="button" className="btn-primary shrink-0" disabled={busy || progress !== null} onClick={() => void downloadRecommended()}>
                   {busy || progress !== null ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                  {progress !== null ? `${progress}%` : "Upgrade"}
+                  {progress !== null ? `${progress}%` : `Download ${recommended.size_hint}`}
                 </button>
               ) : active?.key !== recommended.key ? (
                 <button type="button" className="btn-primary shrink-0" disabled={busy} onClick={() => void useRecommended()}>
