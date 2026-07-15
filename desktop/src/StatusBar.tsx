@@ -265,6 +265,7 @@ function reviewTagHint(tag: string): string {
     case "added": return "new word";
     case "case": return "capitalization";
     case "stt_error": return "speech recognition";
+    case "meaning_context": return "add context";
     case "polish_error": return "writing correction";
     case "format_preference": return "formatting";
     case "style_preference": return "rephrasing";

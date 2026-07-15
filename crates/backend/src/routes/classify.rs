@@ -284,6 +284,22 @@ pub struct QueuedTerm {
     pub k: i64,
 }
 
+/// A common spoken word must never become a permanent alias for a vocab term.
+/// When the user explicitly corrects one to an existing protected term, though,
+/// its sentence is still valuable semantic evidence. Offer that as a separate
+/// confirmation path: it updates the card's meaning but never creates a rule
+/// such as `Impact -> EMIAC`.
+fn should_offer_context_only_review(
+    has_existing_target: bool,
+    original: &str,
+    context: Option<&str>,
+) -> bool {
+    has_existing_target
+        && original.split_whitespace().count() == 1
+        && !original.trim().is_empty()
+        && context.is_some_and(|context| !context.trim().is_empty())
+}
+
 pub async fn classify(
     State(state): State<AppState>,
     Json(body): Json<ClassifyBody>,
@@ -1019,6 +1035,31 @@ async fn classify_inner(
                     )
                     .await;
                     if !safety.allows_learning() {
+                        let context = change.context_example.clone().or_else(|| {
+                            surrounding_sentence(&body.user_kept, canonical_for_policy)
+                        });
+                        if should_offer_context_only_review(
+                            existing_term.is_some(),
+                            original,
+                            context.as_deref(),
+                        ) {
+                            push_unique_review_candidate(
+                                &mut review_candidates,
+                                ReviewCandidate {
+                                    original: original.to_string(),
+                                    corrected: canonical_for_policy.to_string(),
+                                    term_type: term_type.to_string(),
+                                    learnable: true,
+                                    tag: "meaning_context".to_string(),
+                                    context,
+                                },
+                            );
+                            info!(
+                                "[classify] common source kept as context-only review: {:?} -> {:?}",
+                                original, canonical_for_policy
+                            );
+                            continue;
+                        }
                         let original_norm = tier2_edit_policy::normalize_token(original);
                         let corrected_norm =
                             tier2_edit_policy::normalize_token(canonical_for_policy);
@@ -3666,6 +3707,26 @@ mod tests {
         assert_eq!(candidates[0].original, "main cop");
         assert_eq!(candidates[0].corrected, "Macobs");
         assert_eq!(candidates[0].tag, "local_token_collapse");
+    }
+
+    #[test]
+    fn common_source_can_only_be_reviewed_as_context_for_an_existing_term() {
+        assert!(should_offer_context_only_review(
+            true,
+            "Impact",
+            Some("Emiac Technologies company ka profit")
+        ));
+        assert!(!should_offer_context_only_review(
+            false,
+            "Impact",
+            Some("Emiac Technologies company ka profit")
+        ));
+        assert!(!should_offer_context_only_review(
+            true,
+            "two words",
+            Some("context")
+        ));
+        assert!(!should_offer_context_only_review(true, "Impact", None));
     }
 
     #[test]

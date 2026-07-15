@@ -733,11 +733,16 @@ mod guard_tests {
 
         assert_eq!(entries.len(), RUNTIME_VOCAB_CARD_LIMIT + 1);
         assert_eq!(entries[0].term, "Term0");
-        assert!(entries[0]
-            .meaning
-            .as_deref()
-            .is_some_and(|meaning| !meaning.contains('\u{0000}')));
-        assert_eq!(entries.last().map(|entry| entry.term.as_str()), Some("LegacyTerm"));
+        assert!(
+            entries[0]
+                .meaning
+                .as_deref()
+                .is_some_and(|meaning| !meaning.contains('\u{0000}'))
+        );
+        assert_eq!(
+            entries.last().map(|entry| entry.term.as_str()),
+            Some("LegacyTerm")
+        );
     }
 
     #[test]

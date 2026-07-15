@@ -315,8 +315,10 @@ fn voice_prompt_blocks(
             format!(
                 "VOCAB CANDIDATES (soft evidence only; use only with current-transcript support):\n\
                  {entries}\n\
-                 Replace toward a vocab term only when sound or phrase evidence AND meaning/context agree. \
-                 Never introduce a vocab term from this block alone. If unsure, keep the transcript's closest spoken form.\n\n"
+                 Replace only the matching spoken span when BOTH its sound/phrase evidence AND its meaning/context fit. \
+                 Keep the candidate at that same position; never insert it elsewhere or rewrite neighboring words to force a fit. \
+                 A similar sound, app, recency, or star alone is never enough. Never introduce a vocab term from this block alone. \
+                 If unsure, keep the transcript's closest spoken form.\n\n"
             )
         }
     };
@@ -1178,6 +1180,8 @@ mod tests {
         assert!(prompt.contains("VOCAB CANDIDATES"));
         assert!(prompt.contains("MACOBS (acronym)"));
         assert!(prompt.contains("evidence: phonetic(main cops)"));
+        assert!(prompt.contains("Keep the candidate at that same position"));
+        assert!(prompt.contains("A similar sound, app, recency, or star alone is never enough"));
     }
 
     #[test]
