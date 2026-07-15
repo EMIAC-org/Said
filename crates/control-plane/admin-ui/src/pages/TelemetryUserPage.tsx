@@ -7,7 +7,7 @@ import { Avatar } from '../components/Avatar'
 import { TelemetryStatCard } from '../components/telemetry/TelemetryStatCard'
 import { RunDetailPanel } from '../components/telemetry/RunDetailPanel'
 import { DictationInspector } from '../components/telemetry/DictationInspector'
-import { pct, ms } from '../components/telemetry/format'
+import { pct, ms, usd } from '../components/telemetry/format'
 import { Loading, ErrorBox } from '../components/States'
 import type {
   TelemetryRun,
@@ -567,6 +567,29 @@ export function TelemetryUserPage() {
         />
       </div>
 
+      <div className="grid grid-cols-4 gap-3 mb-4">
+        <TelemetryStatCard
+          label="Total cost"
+          value={usd(profile.costs.summary.total_usd)}
+          sub={`selected ${days}-day window`}
+        />
+        <TelemetryStatCard
+          label="STT cost"
+          value={usd(profile.costs.summary.stt_usd)}
+          sub={`${profile.costs.summary.cloud_stt_minutes.toFixed(1)} cloud minutes`}
+        />
+        <TelemetryStatCard
+          label="Polish cost"
+          value={usd(profile.costs.summary.polish_usd)}
+          sub="provider-reported when available"
+        />
+        <TelemetryStatCard
+          label="Cost coverage"
+          value={pct(profile.costs.summary.coverage_rate)}
+          sub={`${profile.costs.summary.stt_costed_runs} STT · ${profile.costs.summary.polish_costed_runs} polish runs`}
+        />
+      </div>
+
       <div className="grid grid-cols-2 gap-4 mb-4">
         <div className="card p-4">
           <SectionLabel>Quality breakdown</SectionLabel>
@@ -674,6 +697,79 @@ export function TelemetryUserPage() {
           </div>
         </div>
       ) : null}
+
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <div className="card p-4">
+          <SectionLabel>STT cost by model</SectionLabel>
+          <div className="space-y-2 text-[12px]">
+            {profile.costs.by_model.stt.map(row => (
+              <div key={`${row.provider}:${row.model}`} className="flex justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-mono text-fg-2 truncate">{row.provider} · {row.model}</div>
+                  <div className="text-[10px] text-fg-4">
+                    {row.runs} runs · {row.audio_minutes.toFixed(1)} min
+                  </div>
+                </div>
+                <span className="tabular-nums shrink-0">{usd(row.cost_usd)}</span>
+              </div>
+            ))}
+            {!profile.costs.by_model.stt.length && <div className="text-fg-4">No STT cost data.</div>}
+          </div>
+        </div>
+        <div className="card p-4">
+          <SectionLabel>Polish cost by model</SectionLabel>
+          <div className="space-y-2 text-[12px]">
+            {profile.costs.by_model.polish.map(row => (
+              <div key={`${row.provider}:${row.model || 'unknown'}`} className="flex justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-mono text-fg-2 truncate">{row.provider} · {row.model || 'unknown'}</div>
+                  <div className="text-[10px] text-fg-4">
+                    {row.attempts} attempts · {row.input_tokens.toLocaleString()} in / {row.output_tokens.toLocaleString()} out
+                  </div>
+                </div>
+                <span className="tabular-nums shrink-0">{usd(row.cost_usd)}</span>
+              </div>
+            ))}
+            {!profile.costs.by_model.polish.length && <div className="text-fg-4">No polish cost data.</div>}
+          </div>
+        </div>
+      </div>
+
+      <div className="card !p-0 overflow-hidden mb-4">
+        <div className="px-5 py-4 border-b border-border">
+          <SectionLabel>Daily cost derivation</SectionLabel>
+          <p className="text-[11px] text-fg-4">
+            STT at ${profile.costs.rate_card.together_nemotron_per_hour}/hour; Gemma fallback at
+            {' '}${profile.costs.rate_card.gemma_input_per_million_tokens}/${profile.costs.rate_card.gemma_output_per_million_tokens} per 1M input/output tokens.
+          </p>
+        </div>
+        <table className="w-full">
+          <thead>
+            <tr>
+              {['Date', 'Runs', 'STT', 'Polish', 'Total', 'Coverage'].map(h => (
+                <th key={h} className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {profile.costs.daily.map(row => (
+              <tr key={row.event_date}>
+                <td className="text-[12px] px-5 py-2.5 border-b border-border-light">{row.event_date}</td>
+                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{row.runs}</td>
+                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{usd(row.stt_usd)}</td>
+                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{usd(row.polish_usd)}</td>
+                <td className="text-[12px] font-semibold tabular-nums px-5 py-2.5 border-b border-border-light">{usd(row.total_usd)}</td>
+                <td className="text-[12px] tabular-nums px-5 py-2.5 border-b border-border-light">{pct(row.coverage_rate)}</td>
+              </tr>
+            ))}
+            {!profile.costs.daily.length && (
+              <tr><td colSpan={6} className="text-[12px] text-fg-4 px-5 py-4">No cost data in this window.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       {flagEntries.length > 0 && (
         <div className="card p-4 mb-4">
@@ -823,7 +919,7 @@ export function TelemetryUserPage() {
           <thead>
             <tr>
               <th className="w-6" />
-              {['event_at', 'run_id', 'mode', 'target_app', 'audio', 'words', 'total_ms', 'edit', 'ok', 'flags'].map(
+              {['event_at', 'run_id', 'mode', 'target_app', 'stt', 'cost', 'audio', 'words', 'total_ms', 'edit', 'ok', 'flags'].map(
                 h => (
                   <th
                     key={h}
@@ -875,6 +971,14 @@ export function TelemetryUserPage() {
                     <td className="text-[12px] px-3 py-2.5 border-b border-border-light">
                       {run.target_app || '—'}
                     </td>
+                    <td className="text-[10px] font-mono px-3 py-2.5 border-b border-border-light">
+                      <div>{run.speech_provider || 'unknown'}</div>
+                      <div className="text-fg-4 truncate max-w-[10rem]">{run.speech_model || '—'}</div>
+                    </td>
+                    <td className="text-[11px] tabular-nums px-3 py-2.5 border-b border-border-light">
+                      <div>{usd(run.total_cost_usd)}</div>
+                      <div className="text-[9px] text-fg-4">{run.cost_coverage}</div>
+                    </td>
                     <td className="text-[12px] tabular-nums px-3 py-2.5 border-b border-border-light">
                       {run.audio_seconds != null ? `${run.audio_seconds}s` : '—'}
                     </td>
@@ -904,7 +1008,7 @@ export function TelemetryUserPage() {
                   </tr>
                   {open && (
                     <tr>
-                      <td colSpan={11} className="p-0 border-b border-border-light">
+                      <td colSpan={13} className="p-0 border-b border-border-light">
                         <RunDetailPanel run={run} onOpenDictation={openDictation} />
                       </td>
                     </tr>
@@ -914,7 +1018,7 @@ export function TelemetryUserPage() {
             })}
             {!runs.length && !runsLoading && (
               <tr>
-                <td colSpan={11} className="text-[12px] text-fg-4 px-5 py-4">
+                <td colSpan={13} className="text-[12px] text-fg-4 px-5 py-4">
                   No runs in this window.
                 </td>
               </tr>

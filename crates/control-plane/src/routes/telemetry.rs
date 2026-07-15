@@ -1,5 +1,7 @@
 //! Runtime telemetry batch ingest + org analytics.
 
+use std::collections::HashMap;
+
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -10,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{AppState, auth::AuthUser, tenant};
+use crate::{AppState, auth::AuthUser, costs, tenant};
 
 #[derive(Deserialize)]
 pub struct TelemetryBatch {
@@ -46,6 +48,7 @@ pub struct RunSummaryIn {
     pub error_code: Option<String>,
     #[serde(default)]
     pub used_clipboard_fallback: bool,
+    pub speech_provider: Option<String>,
     pub speech_model: Option<String>,
     pub speech_path: Option<String>,
     #[serde(default)]
@@ -122,6 +125,55 @@ pub struct TelemetryBatchResponse {
     pub rejected_count: usize,
 }
 
+fn clean_optional(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn speech_cost_attribution(
+    provider: Option<&str>,
+    model: Option<&str>,
+    path: Option<&str>,
+    audio_seconds: Option<f64>,
+) -> (Option<String>, Option<f64>, Option<&'static str>) {
+    let model = clean_optional(model);
+    let path = clean_optional(path);
+    let provider = clean_optional(provider).map(str::to_string).or_else(|| {
+        let model = model.unwrap_or_default().to_ascii_lowercase();
+        let path = path.unwrap_or_default().to_ascii_lowercase();
+        if model.starts_with("together:") || path.starts_with("websocket") {
+            Some("together".to_string())
+        } else if model.starts_with("local:") && model.contains("nemotron") {
+            Some("local_nemotron".to_string())
+        } else if path.starts_with("local") {
+            Some("local_whisper".to_string())
+        } else {
+            None
+        }
+    });
+
+    let normalized = provider.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let is_local = normalized == "local"
+        || normalized.starts_with("local_")
+        || matches!(normalized.as_str(), "swift_local" | "whisper_local");
+    if is_local {
+        return (provider, Some(0.0), Some("local_zero"));
+    }
+
+    let is_together_nemotron = normalized == "together"
+        && (model.is_some_and(|value| value.to_ascii_lowercase().contains("nemotron"))
+            || path.is_some_and(|value| value.to_ascii_lowercase().contains("websocket")));
+    if is_together_nemotron {
+        let cost = audio_seconds.and_then(costs::together_nemotron_cost);
+        return (
+            provider,
+            cost,
+            cost.map(|_| costs::TOGETHER_NEMOTRON_RATE_SOURCE),
+        );
+    }
+
+    (provider, None, None)
+}
+
 pub async fn batch_ingest(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -146,13 +198,20 @@ pub async fn batch_ingest(
             .unwrap_or_else(Utc::now);
         let mode = run.mode.as_deref().unwrap_or("normal_voice");
         let edit_bucket = run.edit_bucket.as_deref().unwrap_or("none");
+        let (speech_provider, speech_cost_usd, speech_cost_source) = speech_cost_attribution(
+            run.speech_provider.as_deref(),
+            run.speech_model.as_deref(),
+            run.speech_path.as_deref(),
+            run.audio_seconds,
+        );
 
         let result = sqlx::query(
             "INSERT INTO runtime_telemetry_runs (
                 account_id, org_id, run_id, recording_id, device_id, mode, target_app, platform,
                 app_version, machine_class, audio_seconds, word_count, char_count, transcribe_ms,
                 embed_ms, polish_ms, total_ms, paste_ms, success, error_code,
-                used_clipboard_fallback, speech_model, speech_path, edit_detected, edit_bucket,
+                used_clipboard_fallback, speech_provider, speech_model, speech_path,
+                speech_cost_usd, speech_cost_source, edit_detected, edit_bucket,
                 edit_distance_chars, edit_distance_words,
                 accepted_as_is, deleted_entire_output, re_recorded_quickly, learning_candidate,
                 learning_modal_shown, learning_confirmed, learning_dismissed, server_learning_saved,
@@ -160,7 +219,7 @@ pub async fn batch_ingest(
                 has_code_like_terms, mixed_language, protected_term_hit, client_version, event_at
             ) VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
-                $24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46
+                $24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49
             )
             ON CONFLICT (account_id, run_id) DO NOTHING",
         )
@@ -185,8 +244,11 @@ pub async fn batch_ingest(
         .bind(run.success)
         .bind(&run.error_code)
         .bind(run.used_clipboard_fallback)
+        .bind(&speech_provider)
         .bind(&run.speech_model)
         .bind(&run.speech_path)
+        .bind(speech_cost_usd)
+        .bind(speech_cost_source)
         .bind(run.edit_detected)
         .bind(edit_bucket)
         .bind(run.edit_distance_chars)
@@ -216,7 +278,15 @@ pub async fn batch_ingest(
         match result {
             Ok(r) if r.rows_affected() > 0 => accepted.push(run.run_id.clone()),
             Ok(_) => accepted.push(run.run_id.clone()),
-            Err(_) => rejected.push(run.run_id.clone()),
+            Err(error) => {
+                tracing::warn!(
+                    run_id = %run.run_id,
+                    account_id = %user.account_id,
+                    error = %error,
+                    "[telemetry] run ingest rejected"
+                );
+                rejected.push(run.run_id.clone());
+            }
         }
     }
 
@@ -338,6 +408,205 @@ struct LatencyPercentiles {
     polish_p95: Option<f64>,
     paste_p50: Option<f64>,
     paste_p95: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+struct CostSummary {
+    stt_usd: f64,
+    polish_usd: f64,
+    total_usd: f64,
+    cloud_stt_minutes: f64,
+    runs: i64,
+    stt_costed_runs: i64,
+    polish_costed_runs: i64,
+    coverage_rate: f64,
+}
+
+#[derive(sqlx::FromRow)]
+struct CostSummaryRow {
+    account_id: Uuid,
+    runs: i64,
+    stt_usd: f64,
+    polish_usd: f64,
+    cloud_stt_seconds: f64,
+    stt_costed_runs: i64,
+    polish_costed_runs: i64,
+}
+
+fn cost_summary_from_row(row: CostSummaryRow) -> (Uuid, CostSummary) {
+    let total_components = row.runs.saturating_mul(2);
+    let costed_components = row.stt_costed_runs + row.polish_costed_runs;
+    let summary = CostSummary {
+        stt_usd: row.stt_usd,
+        polish_usd: row.polish_usd,
+        total_usd: row.stt_usd + row.polish_usd,
+        cloud_stt_minutes: row.cloud_stt_seconds / 60.0,
+        runs: row.runs,
+        stt_costed_runs: row.stt_costed_runs,
+        polish_costed_runs: row.polish_costed_runs,
+        coverage_rate: telemetry_rate(costed_components, total_components),
+    };
+    (row.account_id, summary)
+}
+
+async fn fetch_cost_summaries(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    account_id: Option<Uuid>,
+    since: DateTime<Utc>,
+) -> Result<HashMap<Uuid, CostSummary>, sqlx::Error> {
+    let rows: Vec<CostSummaryRow> = sqlx::query_as(
+        "WITH polish_by_run AS (
+            SELECT rs.account_id, rs.client_run_id,
+                   COALESCE(SUM(pu.estimated_cost_usd), 0)::float8 AS polish_usd,
+                   bool_or(pu.estimated_cost_usd IS NOT NULL) AS has_cost
+              FROM runtime_sessions rs
+              JOIN runtime_provider_usage pu ON pu.run_id = rs.id
+             WHERE rs.client_run_id IS NOT NULL
+             GROUP BY rs.account_id, rs.client_run_id
+         )
+         SELECT r.account_id,
+                COUNT(*)::bigint AS runs,
+                COALESCE(SUM(r.speech_cost_usd), 0)::float8 AS stt_usd,
+                COALESCE(SUM(COALESCE(p.polish_usd, 0)), 0)::float8 AS polish_usd,
+                COALESCE(SUM(CASE WHEN r.speech_provider = 'together'
+                                  THEN COALESCE(r.audio_seconds, 0) ELSE 0 END), 0)::float8
+                    AS cloud_stt_seconds,
+                COUNT(*) FILTER (WHERE r.speech_cost_usd IS NOT NULL)::bigint AS stt_costed_runs,
+                COUNT(*) FILTER (WHERE COALESCE(p.has_cost, false))::bigint AS polish_costed_runs
+           FROM runtime_telemetry_runs r
+           LEFT JOIN polish_by_run p
+             ON p.account_id = r.account_id AND p.client_run_id = r.run_id
+          WHERE r.org_id = $1 AND r.event_at >= $2
+            AND ($3::uuid IS NULL OR r.account_id = $3)
+          GROUP BY r.account_id",
+    )
+    .bind(org_id)
+    .bind(since)
+    .bind(account_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(cost_summary_from_row).collect())
+}
+
+#[derive(sqlx::FromRow)]
+struct DailyCostRow {
+    event_date: NaiveDate,
+    runs: i64,
+    stt_usd: f64,
+    polish_usd: f64,
+    stt_costed_runs: i64,
+    polish_costed_runs: i64,
+}
+
+async fn fetch_daily_costs(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    account_id: Uuid,
+    since: DateTime<Utc>,
+) -> Result<Vec<Value>, sqlx::Error> {
+    let rows: Vec<DailyCostRow> = sqlx::query_as(
+        "WITH polish_by_run AS (
+            SELECT rs.account_id, rs.client_run_id,
+                   COALESCE(SUM(pu.estimated_cost_usd), 0)::float8 AS polish_usd,
+                   bool_or(pu.estimated_cost_usd IS NOT NULL) AS has_cost
+              FROM runtime_sessions rs
+              JOIN runtime_provider_usage pu ON pu.run_id = rs.id
+             WHERE rs.client_run_id IS NOT NULL
+             GROUP BY rs.account_id, rs.client_run_id
+         )
+         SELECT r.event_at::date AS event_date,
+                COUNT(*)::bigint AS runs,
+                COALESCE(SUM(r.speech_cost_usd), 0)::float8 AS stt_usd,
+                COALESCE(SUM(COALESCE(p.polish_usd, 0)), 0)::float8 AS polish_usd,
+                COUNT(*) FILTER (WHERE r.speech_cost_usd IS NOT NULL)::bigint AS stt_costed_runs,
+                COUNT(*) FILTER (WHERE COALESCE(p.has_cost, false))::bigint AS polish_costed_runs
+           FROM runtime_telemetry_runs r
+           LEFT JOIN polish_by_run p
+             ON p.account_id = r.account_id AND p.client_run_id = r.run_id
+          WHERE r.org_id = $1 AND r.account_id = $2 AND r.event_at >= $3
+          GROUP BY r.event_at::date
+          ORDER BY event_date DESC",
+    )
+    .bind(org_id)
+    .bind(account_id)
+    .bind(since)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let total_components = row.runs.saturating_mul(2);
+            json!({
+                "event_date": row.event_date,
+                "runs": row.runs,
+                "stt_usd": row.stt_usd,
+                "polish_usd": row.polish_usd,
+                "total_usd": row.stt_usd + row.polish_usd,
+                "coverage_rate": telemetry_rate(
+                    row.stt_costed_runs + row.polish_costed_runs,
+                    total_components,
+                ),
+            })
+        })
+        .collect())
+}
+
+async fn fetch_cost_model_breakdown(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    account_id: Uuid,
+    since: DateTime<Utc>,
+) -> Result<Value, sqlx::Error> {
+    let stt: Vec<(String, String, i64, f64, f64)> = sqlx::query_as(
+        "SELECT COALESCE(speech_provider, 'unknown'), COALESCE(speech_model, 'unknown'),
+                COUNT(*)::bigint, COALESCE(SUM(audio_seconds), 0)::float8,
+                COALESCE(SUM(speech_cost_usd), 0)::float8
+           FROM runtime_telemetry_runs
+          WHERE org_id = $1 AND account_id = $2 AND event_at >= $3
+          GROUP BY speech_provider, speech_model
+          ORDER BY COALESCE(SUM(speech_cost_usd), 0) DESC, COUNT(*) DESC",
+    )
+    .bind(org_id)
+    .bind(account_id)
+    .bind(since)
+    .fetch_all(db)
+    .await?;
+    let polish: Vec<(String, Option<String>, i64, i64, i64, f64)> = sqlx::query_as(
+        "SELECT pu.provider, pu.model, COUNT(*)::bigint,
+                COALESCE(SUM(pu.input_tokens), 0)::bigint,
+                COALESCE(SUM(pu.output_tokens), 0)::bigint,
+                COALESCE(SUM(pu.estimated_cost_usd), 0)::float8
+           FROM runtime_telemetry_runs r
+           JOIN runtime_sessions rs
+             ON rs.account_id = r.account_id AND rs.client_run_id = r.run_id
+           JOIN runtime_provider_usage pu ON pu.run_id = rs.id
+          WHERE r.org_id = $1 AND r.account_id = $2 AND r.event_at >= $3
+          GROUP BY pu.provider, pu.model
+          ORDER BY COALESCE(SUM(pu.estimated_cost_usd), 0) DESC, COUNT(*) DESC",
+    )
+    .bind(org_id)
+    .bind(account_id)
+    .bind(since)
+    .fetch_all(db)
+    .await?;
+    Ok(json!({
+        "stt": stt.into_iter().map(|(provider, model, runs, audio_seconds, cost_usd)| json!({
+            "provider": provider,
+            "model": model,
+            "runs": runs,
+            "audio_minutes": audio_seconds / 60.0,
+            "cost_usd": cost_usd,
+        })).collect::<Vec<_>>(),
+        "polish": polish.into_iter().map(|(provider, model, attempts, input_tokens, output_tokens, cost_usd)| json!({
+            "provider": provider,
+            "model": model,
+            "attempts": attempts,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": cost_usd,
+        })).collect::<Vec<_>>(),
+    }))
 }
 
 fn telemetry_rate(n: i64, total: i64) -> f64 {
@@ -969,9 +1238,17 @@ pub async fn list_users(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     };
 
+    let costs_by_user = fetch_cost_summaries(&state.db, org_id, None, since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let users: Vec<Value> = rows
         .into_iter()
         .map(|row| {
+            let costs = costs_by_user
+                .get(&row.account_id)
+                .copied()
+                .unwrap_or_default();
             json!({
                 "account_id": row.account_id,
                 "email": row.email,
@@ -987,6 +1264,7 @@ pub async fn list_users(
                 "learning_success_rate": telemetry_rate(row.learning_saved, row.learning_candidates),
                 "last_active_at": row.last_active_at,
                 "desktop_active": row.desktop_active,
+                "costs": costs,
                 "primary_speech": match (
                     row.primary_speech_model.as_deref(),
                     row.primary_speech_count,
@@ -1099,6 +1377,17 @@ pub async fn user_detail(
     let speech_latency = fetch_speech_latency_by_model(&state.db, org_id, account_id, since)
         .await
         .unwrap_or_default();
+    let costs = fetch_cost_summaries(&state.db, org_id, Some(account_id), since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .remove(&account_id)
+        .unwrap_or_default();
+    let daily_costs = fetch_daily_costs(&state.db, org_id, account_id, since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let cost_by_model = fetch_cost_model_breakdown(&state.db, org_id, account_id, since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let flags: (i64, i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
         "SELECT
@@ -1211,6 +1500,19 @@ pub async fn user_detail(
         },
         "latency_ms": latency_json(&latency),
         "speech": speech_json,
+        "costs": {
+            "summary": costs,
+            "daily": daily_costs,
+            "by_model": cost_by_model,
+            "rate_card": {
+                "currency": "USD",
+                "together_nemotron_per_hour": costs::TOGETHER_NEMOTRON_USD_PER_HOUR,
+                "gemma_input_per_million_tokens": costs::GEMMA_INPUT_USD_PER_MILLION,
+                "gemma_output_per_million_tokens": costs::GEMMA_OUTPUT_USD_PER_MILLION,
+                "effective_from": costs::RATE_EFFECTIVE_FROM,
+                "provider_reported_polish_cost_preferred": true,
+            },
+        },
         "by_mode": by_mode.iter().map(|(m, c)| json!({"mode": m, "count": c})).collect::<Vec<_>>(),
         "by_target_app": by_app.iter().map(|(a, c)| json!({"target_app": a, "count": c})).collect::<Vec<_>>(),
         "content_flags": {
@@ -1304,7 +1606,8 @@ pub async fn user_runs(
             "SELECT run_id, recording_id, device_id, mode, target_app, platform, app_version,
                     machine_class, audio_seconds, word_count, char_count, transcribe_ms, embed_ms,
                     polish_ms, total_ms, paste_ms, success, error_code, used_clipboard_fallback,
-                    speech_model, speech_path, edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
+                    speech_provider, speech_model, speech_path, speech_cost_usd, speech_cost_source,
+                    edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
                     accepted_as_is, deleted_entire_output, re_recorded_quickly, learning_candidate,
                     learning_modal_shown, learning_confirmed, learning_dismissed, server_learning_saved,
                     server_learning_blocked, has_numbers, has_currency, has_percent, has_email, has_url,
@@ -1329,7 +1632,8 @@ pub async fn user_runs(
             "SELECT run_id, recording_id, device_id, mode, target_app, platform, app_version,
                     machine_class, audio_seconds, word_count, char_count, transcribe_ms, embed_ms,
                     polish_ms, total_ms, paste_ms, success, error_code, used_clipboard_fallback,
-                    speech_model, speech_path, edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
+                    speech_provider, speech_model, speech_path, speech_cost_usd, speech_cost_source,
+                    edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
                     accepted_as_is, deleted_entire_output, re_recorded_quickly, learning_candidate,
                     learning_modal_shown, learning_confirmed, learning_dismissed, server_learning_saved,
                     server_learning_blocked, has_numbers, has_currency, has_percent, has_email, has_url,
@@ -1350,7 +1654,20 @@ pub async fn user_runs(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     };
 
-    let run_json: Vec<Value> = runs.into_iter().map(run_row_to_json).collect();
+    let run_ids = runs
+        .iter()
+        .map(|run| run.run_id.clone())
+        .collect::<Vec<_>>();
+    let mut usage_by_run = fetch_polish_usage_for_runs(&state.db, account_id, &run_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let run_json: Vec<Value> = runs
+        .into_iter()
+        .map(|run| {
+            let usage = usage_by_run.remove(&run.run_id).unwrap_or_default();
+            run_row_to_json(run, usage)
+        })
+        .collect();
 
     Ok(Json(json!({
         "window_days": days,
@@ -1382,8 +1699,11 @@ struct TelemetryRunRow {
     success: bool,
     error_code: Option<String>,
     used_clipboard_fallback: bool,
+    speech_provider: Option<String>,
     speech_model: Option<String>,
     speech_path: Option<String>,
+    speech_cost_usd: Option<f64>,
+    speech_cost_source: Option<String>,
     edit_detected: bool,
     edit_bucket: String,
     edit_distance_chars: Option<i32>,
@@ -1443,8 +1763,15 @@ struct TelemetryRunOut {
     success: bool,
     error_code: Option<String>,
     used_clipboard_fallback: bool,
+    speech_provider: Option<String>,
     speech_model: Option<String>,
     speech_path: Option<String>,
+    speech_cost_usd: Option<f64>,
+    speech_cost_source: Option<String>,
+    polish_attempts: Vec<PolishUsageOut>,
+    polish_cost_usd: Option<f64>,
+    total_cost_usd: Option<f64>,
+    cost_coverage: String,
     edit_detected: bool,
     edit_bucket: String,
     edit_distance_chars: Option<i32>,
@@ -1464,7 +1791,101 @@ struct TelemetryRunOut {
     received_at: DateTime<Utc>,
 }
 
-fn run_row_to_json(r: TelemetryRunRow) -> Value {
+#[derive(Debug, Clone, Serialize)]
+struct PolishUsageOut {
+    provider: String,
+    model: Option<String>,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+    cost_usd: Option<f64>,
+    cost_source: Option<String>,
+    generation_id: Option<String>,
+    status: String,
+    error_kind: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PolishUsageRow {
+    client_run_id: String,
+    provider: String,
+    model: Option<String>,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+    estimated_cost_usd: Option<f64>,
+    cost_source: Option<String>,
+    generation_id: Option<String>,
+    status: String,
+    error_kind: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+async fn fetch_polish_usage_for_runs(
+    db: &sqlx::PgPool,
+    account_id: Uuid,
+    run_ids: &[String],
+) -> Result<HashMap<String, Vec<PolishUsageOut>>, sqlx::Error> {
+    if run_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<PolishUsageRow> = sqlx::query_as(
+        "SELECT rs.client_run_id, pu.provider, pu.model, pu.input_tokens, pu.output_tokens,
+                pu.estimated_cost_usd, pu.cost_source, pu.generation_id, pu.status,
+                pu.error_kind, pu.created_at
+           FROM runtime_sessions rs
+           JOIN runtime_provider_usage pu ON pu.run_id = rs.id
+          WHERE rs.account_id = $1 AND rs.client_run_id = ANY($2)
+          ORDER BY pu.created_at ASC",
+    )
+    .bind(account_id)
+    .bind(run_ids)
+    .fetch_all(db)
+    .await?;
+    let mut by_run: HashMap<String, Vec<PolishUsageOut>> = HashMap::new();
+    for row in rows {
+        by_run
+            .entry(row.client_run_id)
+            .or_default()
+            .push(PolishUsageOut {
+                provider: row.provider,
+                model: row.model,
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cost_usd: row.estimated_cost_usd,
+                cost_source: row.cost_source,
+                generation_id: row.generation_id,
+                status: row.status,
+                error_kind: row.error_kind,
+                created_at: row.created_at,
+            });
+    }
+    Ok(by_run)
+}
+
+fn run_row_to_json(r: TelemetryRunRow, polish_attempts: Vec<PolishUsageOut>) -> Value {
+    let polish_costs = polish_attempts
+        .iter()
+        .filter_map(|attempt| attempt.cost_usd)
+        .collect::<Vec<_>>();
+    let polish_cost_usd = (!polish_costs.is_empty()).then(|| polish_costs.iter().sum::<f64>());
+    let total_cost_usd = match (r.speech_cost_usd, polish_cost_usd) {
+        (Some(stt), Some(polish)) => Some(stt + polish),
+        (Some(stt), None) if polish_attempts.is_empty() => Some(stt),
+        (None, Some(polish)) => Some(polish),
+        _ => None,
+    };
+    let cost_coverage = if r.speech_cost_usd.is_some()
+        && (!polish_attempts.is_empty()
+            && polish_attempts
+                .iter()
+                .all(|attempt| attempt.cost_usd.is_some()))
+    {
+        "complete"
+    } else if r.speech_cost_usd.is_some() || polish_cost_usd.is_some() {
+        "partial"
+    } else {
+        "unknown"
+    };
     serde_json::to_value(TelemetryRunOut {
         run_id: r.run_id,
         recording_id: r.recording_id,
@@ -1485,8 +1906,15 @@ fn run_row_to_json(r: TelemetryRunRow) -> Value {
         success: r.success,
         error_code: r.error_code,
         used_clipboard_fallback: r.used_clipboard_fallback,
+        speech_provider: r.speech_provider,
         speech_model: r.speech_model,
         speech_path: r.speech_path,
+        speech_cost_usd: r.speech_cost_usd,
+        speech_cost_source: r.speech_cost_source,
+        polish_attempts,
+        polish_cost_usd,
+        total_cost_usd,
+        cost_coverage: cost_coverage.to_string(),
         edit_detected: r.edit_detected,
         edit_bucket: r.edit_bucket,
         edit_distance_chars: r.edit_distance_chars,
@@ -1716,7 +2144,7 @@ fn ms_to_datetime(ms: i64) -> Option<DateTime<Utc>> {
 
 #[cfg(test)]
 mod tests {
-    use super::telemetry_rate;
+    use super::{speech_cost_attribution, telemetry_rate};
 
     #[test]
     fn rate_zero_total() {
@@ -1726,5 +2154,38 @@ mod tests {
     #[test]
     fn rate_normal() {
         assert!((telemetry_rate(1, 4) - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn prices_one_hour_of_together_nemotron() {
+        let (provider, cost, source) = speech_cost_attribution(
+            Some("together"),
+            Some("together:nvidia/nemotron-3.5-asr-streaming-0.6b"),
+            Some("websocket_live"),
+            Some(3600.0),
+        );
+        assert_eq!(provider.as_deref(), Some("together"));
+        assert!((cost.unwrap_or_default() - 0.09).abs() < f64::EPSILON);
+        assert!(source.is_some_and(|value| value.contains("0.09_per_hour")));
+    }
+
+    #[test]
+    fn local_speech_has_zero_variable_cost() {
+        let (_, cost, source) = speech_cost_attribution(
+            Some("local_nemotron"),
+            Some("local:nemotron-q4.gguf"),
+            Some("local_batch"),
+            Some(120.0),
+        );
+        assert_eq!(cost, Some(0.0));
+        assert_eq!(source, Some("local_zero"));
+    }
+
+    #[test]
+    fn unknown_provider_does_not_claim_zero_cost() {
+        let (_, cost, source) =
+            speech_cost_attribution(Some("legacy_cloud"), Some("unknown"), None, Some(60.0));
+        assert_eq!(cost, None);
+        assert_eq!(source, None);
     }
 }

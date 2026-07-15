@@ -7,6 +7,14 @@ export function ms(n: number | null | undefined) {
   return `${Math.round(n)} ms`
 }
 
+export function usd(n: number | null | undefined) {
+  if (n == null) return '—'
+  if (n === 0) return '$0.000000'
+  if (Math.abs(n) < 0.01) return `$${n.toFixed(6)}`
+  if (Math.abs(n) < 1) return `$${n.toFixed(4)}`
+  return `$${n.toFixed(2)}`
+}
+
 export function relTime(iso: string | null | undefined): string {
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()

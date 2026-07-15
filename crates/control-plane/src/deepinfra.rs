@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::openai_compat_polish::{gateway_err, parse_chat_completion, read_polish_stream};
+use crate::openai_compat_polish::{
+    PolishCompletion, gateway_err, parse_chat_completion, read_polish_stream,
+};
 
 const DEEPINFRA_ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 
@@ -15,7 +17,7 @@ pub async fn call_deepinfra(
     system_prompt: &str,
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
-) -> Result<String, (StatusCode, Json<Value>)> {
+) -> Result<PolishCompletion, (StatusCode, Json<Value>)> {
     let estimated_input_tokens = user_message.len() / 4;
     let max_tokens = (estimated_input_tokens * 2 + 256).min(8192) as u32;
     let stream_tokens = token_tx.is_some();

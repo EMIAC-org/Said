@@ -175,6 +175,10 @@ const MIGRATIONS: &[Migration] = &[
         id: "038_openrouter_gemma_4_nitro",
         sql: include_str!("../migrations/038_openrouter_gemma_4_nitro.sql"),
     },
+    Migration {
+        id: "039_telemetry_model_costs",
+        sql: include_str!("../migrations/039_telemetry_model_costs.sql"),
+    },
 ];
 
 /// Connect to Postgres and apply the schema.

@@ -6,6 +6,7 @@
 pub mod ai_worker;
 pub mod auth;
 pub mod codex_client;
+pub mod costs;
 pub mod deepinfra;
 pub mod format_recover;
 pub mod lark_client;

@@ -203,6 +203,45 @@ export interface TelemetryUserRow {
   last_active_at?: string | null
   desktop_active: boolean
   primary_speech?: string | null
+  costs: TelemetryCostSummary
+}
+
+export interface TelemetryCostSummary {
+  stt_usd: number
+  polish_usd: number
+  total_usd: number
+  cloud_stt_minutes: number
+  runs: number
+  stt_costed_runs: number
+  polish_costed_runs: number
+  coverage_rate: number
+}
+
+export interface TelemetryDailyCost {
+  event_date: string
+  runs: number
+  stt_usd: number
+  polish_usd: number
+  total_usd: number
+  coverage_rate: number
+}
+
+export interface TelemetryCostModelBreakdown {
+  stt: {
+    provider: string
+    model: string
+    runs: number
+    audio_minutes: number
+    cost_usd: number
+  }[]
+  polish: {
+    provider: string
+    model?: string | null
+    attempts: number
+    input_tokens: number
+    output_tokens: number
+    cost_usd: number
+  }[]
 }
 
 export interface TelemetrySpeechBreakdown {
@@ -294,8 +333,26 @@ export interface TelemetryRun {
   success: boolean
   error_code?: string | null
   used_clipboard_fallback: boolean
+  speech_provider?: string | null
   speech_model?: string | null
   speech_path?: string | null
+  speech_cost_usd?: number | null
+  speech_cost_source?: string | null
+  polish_attempts: {
+    provider: string
+    model?: string | null
+    input_tokens?: number | null
+    output_tokens?: number | null
+    cost_usd?: number | null
+    cost_source?: string | null
+    generation_id?: string | null
+    status: string
+    error_kind?: string | null
+    created_at: string
+  }[]
+  polish_cost_usd?: number | null
+  total_cost_usd?: number | null
+  cost_coverage: 'complete' | 'partial' | 'unknown'
   edit_detected: boolean
   edit_bucket: string
   edit_distance_chars?: number | null
@@ -352,6 +409,19 @@ export interface TelemetryUserProfile {
   }
   latency_ms: TelemetryLatency
   speech?: TelemetrySpeechBreakdown
+  costs: {
+    summary: TelemetryCostSummary
+    daily: TelemetryDailyCost[]
+    by_model: TelemetryCostModelBreakdown
+    rate_card: {
+      currency: string
+      together_nemotron_per_hour: number
+      gemma_input_per_million_tokens: number
+      gemma_output_per_million_tokens: number
+      effective_from: string
+      provider_reported_polish_cost_preferred: boolean
+    }
+  }
   by_mode: { mode: string; count: number }[]
   by_target_app: { target_app: string | null; count: number }[]
   content_flags: Record<string, number>

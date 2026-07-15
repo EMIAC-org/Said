@@ -2,6 +2,7 @@
 
 use std::sync::{LazyLock, Mutex};
 
+use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
 use serde::Serialize;
 
 use crate::{api, backend::BackendEndpoint};
@@ -87,9 +88,53 @@ pub struct PipelineTelemetry {
     pub success: bool,
     pub error_code: Option<String>,
     pub used_clipboard_fallback: bool,
+    pub speech_provider: String,
     pub speech_model: String,
     pub speech_path: String,
     pub polished_preview: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpeechTelemetryIdentity {
+    pub provider: String,
+    pub model: String,
+    pub path: String,
+}
+
+/// Resolve telemetry from the transcript that actually won this run. Older
+/// clients did not populate provider/path, so retain a conservative fallback
+/// without consulting the currently selected Settings model.
+pub fn speech_identity(meta: &TranscriptMeta) -> SpeechTelemetryIdentity {
+    let model = if meta.model.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        meta.model.clone()
+    };
+    let provider = if !meta.provider.trim().is_empty() {
+        meta.provider.clone()
+    } else if model.starts_with("together:") || meta.origin == TranscriptOrigin::DictationHosted {
+        "together".to_string()
+    } else if model.starts_with("local:") && model.to_ascii_lowercase().contains("nemotron") {
+        "local_nemotron".to_string()
+    } else if meta.origin == TranscriptOrigin::DictationLocal {
+        "local_whisper".to_string()
+    } else {
+        "unknown".to_string()
+    };
+    let path = if !meta.path.trim().is_empty() {
+        meta.path.clone()
+    } else if provider == "together" {
+        "websocket".to_string()
+    } else if provider.starts_with("local_") {
+        "local_batch".to_string()
+    } else {
+        "unknown".to_string()
+    };
+    SpeechTelemetryIdentity {
+        provider,
+        model,
+        path,
+    }
 }
 
 fn derive_content_flags(text: &str) -> (bool, bool, bool, bool, bool, bool, bool, bool) {
@@ -183,6 +228,7 @@ pub fn on_pipeline_done(ep: &BackendEndpoint, run_id: &str, t: PipelineTelemetry
         success: Some(t.success),
         error_code: t.error_code,
         used_clipboard_fallback: Some(t.used_clipboard_fallback),
+        speech_provider: Some(t.speech_provider),
         speech_model: Some(t.speech_model),
         speech_path: Some(t.speech_path),
         has_numbers: Some(flags.0),
@@ -296,5 +342,36 @@ pub fn on_pipeline_error(ep: &BackendEndpoint, run_id: &str, error_code: Option<
             finished_ms: now_ms(),
             success: false,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
+
+    use super::speech_identity;
+
+    #[test]
+    fn preserves_explicit_together_live_identity() {
+        let identity = speech_identity(&TranscriptMeta {
+            model: "together:nvidia/nemotron-3.5-asr-streaming-0.6b".into(),
+            provider: "together".into(),
+            path: "websocket_live".into(),
+            origin: TranscriptOrigin::DictationHosted,
+            ..TranscriptMeta::default()
+        });
+        assert_eq!(identity.provider, "together");
+        assert_eq!(identity.path, "websocket_live");
+    }
+
+    #[test]
+    fn legacy_hosted_metadata_never_falls_back_to_selected_local_model() {
+        let identity = speech_identity(&TranscriptMeta {
+            model: "together:nvidia/nemotron".into(),
+            origin: TranscriptOrigin::DictationHosted,
+            ..TranscriptMeta::default()
+        });
+        assert_eq!(identity.provider, "together");
+        assert_eq!(identity.path, "websocket");
     }
 }

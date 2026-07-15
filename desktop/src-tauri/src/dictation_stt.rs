@@ -170,6 +170,8 @@ mod on_device {
                     word_count,
                     languages: output.language.into_iter().collect(),
                     model: format!("local:{}", crate::nemotron::selected_model_file()),
+                    provider: "local_nemotron".to_string(),
+                    path: "local_batch".to_string(),
                     duration_ms: output.duration_ms,
                     origin: TranscriptOrigin::DictationLocal,
                     ..TranscriptMeta::default()
@@ -212,6 +214,8 @@ mod on_device {
                 word_count,
                 languages: vec![local.language],
                 model: local.model,
+                provider: "local_whisper".to_string(),
+                path: "local_batch".to_string(),
                 duration_ms,
                 origin: TranscriptOrigin::DictationLocal,
                 ..TranscriptMeta::default()
@@ -382,6 +386,8 @@ mod provider {
                 word_count,
                 languages: transcription.language.into_iter().collect(),
                 model: format!("together:{}", transcription.model),
+                provider: "together".to_string(),
+                path: "websocket_batch".to_string(),
                 duration_ms: transcription.latency_ms,
                 origin: TranscriptOrigin::DictationHosted,
                 ..TranscriptMeta::default()
@@ -425,6 +431,8 @@ mod provider {
                 word_count,
                 languages: transcription.language.into_iter().collect(),
                 model: format!("together:{}", transcription.model),
+                provider: "together".to_string(),
+                path: "websocket_live".to_string(),
                 duration_ms: transcription.latency_ms,
                 origin: TranscriptOrigin::DictationHosted,
                 ..TranscriptMeta::default()

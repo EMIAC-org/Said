@@ -94,6 +94,7 @@ const MIGRATION_060: &str = include_str!("migrations/060_openrouter_gemma_4_nitr
 const MIGRATION_061: &str = include_str!("migrations/061_together_gemma_4.sql");
 const MIGRATION_062: &str = include_str!("migrations/062_restore_openrouter_gemma_4_nitro.sql");
 const MIGRATION_063: &str = include_str!("migrations/063_vocab_card_fts.sql");
+const MIGRATION_064: &str = include_str!("migrations/064_telemetry_speech_provider.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -689,6 +690,25 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 63")
             .expect("failed to set user_version to 63");
     }
+
+    if version < 64 {
+        info!("running migration 064_telemetry_speech_provider");
+        let telemetry_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_run_summaries')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check telemetry table before migration 064");
+        if telemetry_exists {
+            conn.execute_batch(MIGRATION_064)
+                .expect("migration 064 failed");
+        } else {
+            warn!("migration 064 skipped: telemetry_run_summaries is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 64")
+            .expect("failed to set user_version to 64");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -985,6 +1005,17 @@ mod tests {
         assert_eq!(
             together_key_exists, 1,
             "preferences.together_api_key should exist"
+        );
+        let speech_provider_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('telemetry_run_summaries') WHERE name = 'speech_provider'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            speech_provider_exists, 1,
+            "telemetry_run_summaries.speech_provider should exist"
         );
     }
 

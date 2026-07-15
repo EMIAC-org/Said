@@ -5796,6 +5796,7 @@ async fn run_voice_polish_sse(
     let Some(transcript) = pre_transcript else {
         return Err("Local transcript is required before voice polish".into());
     };
+    let speech_identity = telemetry::speech_identity(&transcript.meta);
     tracing::info!("[pipeline] sending WAV + local transcript to backend");
     let done_result = api::stream_voice_polish(
         &ep,
@@ -6024,8 +6025,6 @@ async fn run_voice_polish_sse(
         let audio_seconds = wav_len as f64 / (16_000.0 * 2.0);
         let word_count = done.polished.split_whitespace().count() as i32;
         let char_count = done.polished.chars().count() as i32;
-        let speech_model = said_core::stt::telemetry_speech_model().to_string();
-        let speech_path = said_core::stt::telemetry_speech_path().to_string();
         telemetry::on_pipeline_done(
             &ep,
             run_id,
@@ -6043,8 +6042,9 @@ async fn run_voice_polish_sse(
                 success: !done.polished.is_empty() || output_pasted,
                 error_code: None,
                 used_clipboard_fallback,
-                speech_model,
-                speech_path,
+                speech_provider: speech_identity.provider.clone(),
+                speech_model: speech_identity.model.clone(),
+                speech_path: speech_identity.path.clone(),
                 polished_preview: done.polished.clone(),
             },
         );

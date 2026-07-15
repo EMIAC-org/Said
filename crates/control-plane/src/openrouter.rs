@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::openai_compat_polish::{gateway_err, parse_chat_completion, read_polish_stream};
+use crate::openai_compat_polish::{
+    PolishCompletion, gateway_err, parse_chat_completion, read_polish_stream,
+};
 
 const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 const MIN_COMPLETION_TOKENS: usize = 128;
@@ -21,7 +23,7 @@ pub async fn call_openrouter(
     system_prompt: &str,
     user_message: &str,
     token_tx: Option<mpsc::Sender<String>>,
-) -> Result<String, (StatusCode, Json<Value>)> {
+) -> Result<PolishCompletion, (StatusCode, Json<Value>)> {
     let max_tokens = completion_token_budget(user_message);
     let stream_tokens = token_tx.is_some();
     let body = openrouter_polish_body(

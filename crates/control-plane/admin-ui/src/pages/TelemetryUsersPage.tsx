@@ -4,7 +4,7 @@ import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { Avatar } from '../components/Avatar'
 import { TelemetryTabs } from '../components/telemetry/TelemetryTabs'
-import { pct, relTime } from '../components/telemetry/format'
+import { pct, relTime, usd } from '../components/telemetry/format'
 import { Loading, Empty, ErrorBox } from '../components/States'
 import type { TelemetryUserRow } from '../types'
 
@@ -92,6 +92,7 @@ export function TelemetryUsersPage() {
                   'Heavy %',
                   'Fallback %',
                   'STT',
+                  'Cost',
                   'Learning ok',
                   'Last active',
                   'Desktop',
@@ -145,6 +146,10 @@ export function TelemetryUsersPage() {
                     </td>
                     <td className="text-[11px] font-mono px-5 py-3.5 border-b border-border-light text-fg-3">
                       {u.primary_speech || '—'}
+                    </td>
+                    <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
+                      <div>{usd(u.costs.total_usd)}</div>
+                      <div className="text-[10px] text-fg-4">{pct(u.costs.coverage_rate)} covered</div>
                     </td>
                     <td className="text-[12px] tabular-nums px-5 py-3.5 border-b border-border-light">
                       {u.runs > 0 ? pct(u.learning_success_rate) : '—'}

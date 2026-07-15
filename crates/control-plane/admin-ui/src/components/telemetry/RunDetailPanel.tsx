@@ -1,5 +1,5 @@
 import type { TelemetryRun } from '../../types'
-import { ms } from './format'
+import { ms, usd } from './format'
 
 function Bool({ v }: { v: boolean }) {
   return (
@@ -87,9 +87,61 @@ export function RunDetailPanel({
       </Section>
       <Section title="Speech">
         <FieldGrid>
+          <Field k="speech_provider" v={run.speech_provider || '—'} mono />
           <Field k="speech_model" v={run.speech_model || '—'} mono />
           <Field k="speech_path" v={run.speech_path || '—'} mono />
+          <Field k="speech_cost" v={usd(run.speech_cost_usd)} />
+          <Field k="speech_cost_source" v={run.speech_cost_source || '—'} mono />
         </FieldGrid>
+      </Section>
+      <Section title="Cost & polish usage">
+        <FieldGrid>
+          <Field k="stt_cost" v={usd(run.speech_cost_usd)} />
+          <Field k="polish_cost" v={usd(run.polish_cost_usd)} />
+          <Field k="total_cost" v={usd(run.total_cost_usd)} />
+          <Field k="coverage" v={run.cost_coverage} mono />
+        </FieldGrid>
+        {run.polish_attempts.length ? (
+          <div className="mt-3 overflow-hidden rounded-lg border border-border-light">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  {['provider / model', 'tokens in / out', 'cost', 'source', 'status'].map(h => (
+                    <th
+                      key={h}
+                      className="text-[10px] font-medium text-fg-4 text-left px-3 py-2 border-b border-border uppercase"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {run.polish_attempts.map((attempt, index) => (
+                  <tr key={`${attempt.generation_id || attempt.created_at}-${index}`}>
+                    <td className="text-[10px] font-mono px-3 py-2 border-b border-border-light">
+                      {attempt.provider} / {attempt.model || 'unknown'}
+                    </td>
+                    <td className="text-[11px] tabular-nums px-3 py-2 border-b border-border-light">
+                      {attempt.input_tokens ?? '—'} / {attempt.output_tokens ?? '—'}
+                    </td>
+                    <td className="text-[11px] tabular-nums px-3 py-2 border-b border-border-light">
+                      {usd(attempt.cost_usd)}
+                    </td>
+                    <td className="text-[10px] font-mono px-3 py-2 border-b border-border-light">
+                      {attempt.cost_source || 'unknown'}
+                    </td>
+                    <td className="text-[10px] font-mono px-3 py-2 border-b border-border-light">
+                      {attempt.status}{attempt.error_kind ? ` · ${attempt.error_kind}` : ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-[11px] text-fg-4 mt-2">No linked server polish usage for this run.</p>
+        )}
       </Section>
       <Section title="Outcome & fallbacks">
         <FieldGrid>
