@@ -46,7 +46,7 @@ use uuid::Uuid;
 use crate::notification_hub::DesktopNotification;
 use crate::voice_polish_standalone::{
     build_rewrite_system_prompt, build_rewrite_user_message, build_voice_system_prompt,
-    build_voice_system_prompt_with_recent, build_voice_user_message,
+    build_voice_system_prompt_with_recent, build_voice_user_message, RuntimeVocabCard,
 };
 use crate::{AppState, auth::AuthUser, memory_hygiene, tenant};
 
@@ -290,6 +290,8 @@ pub struct VoicePolishRequest {
     pub screen_context: Option<String>,
     #[serde(default)]
     pub safe_vocab_terms: Vec<String>,
+    #[serde(default)]
+    pub vocab_cards: Vec<RuntimeVocabCard>,
     #[serde(default)]
     pub recent_speech_hints: Vec<String>,
     #[serde(default)]
@@ -2563,7 +2565,7 @@ async fn execute_voice_polish(
     }
 
     tracing::info!(
-        "[runtime] voice polish inbound account={} client_run_id={} selected_model_raw={} output_language={} transcript_chars={} words={} safe_vocab_terms={} recent_speech_hints={} screen_context_chars={} tenant_ms={}",
+        "[runtime] voice polish inbound account={} client_run_id={} selected_model_raw={} output_language={} transcript_chars={} words={} safe_vocab_terms={} vocab_cards={} recent_speech_hints={} screen_context_chars={} tenant_ms={}",
         user.account_id,
         req.client_run_id.as_deref().unwrap_or("none"),
         req.selected_model,
@@ -2571,6 +2573,7 @@ async fn execute_voice_polish(
         transcript.chars().count(),
         transcript.split_whitespace().count(),
         req.safe_vocab_terms.len(),
+        req.vocab_cards.len(),
         req.recent_speech_hints.len(),
         req.screen_context
             .as_ref()
@@ -2583,8 +2586,16 @@ async fn execute_voice_polish(
     let server_memory = load_runtime_memory_cached(&state, user.account_id)
         .await
         .unwrap_or_default();
+    let client_vocab_terms = if req.safe_vocab_terms.is_empty() {
+        req.vocab_cards
+            .iter()
+            .map(|card| card.term.clone())
+            .collect::<Vec<_>>()
+    } else {
+        req.safe_vocab_terms.clone()
+    };
     let merged_vocab = merge_vocab_terms(
-        &req.safe_vocab_terms,
+        &client_vocab_terms,
         &server_memory.vocab_terms,
         transcript,
     );
@@ -2605,6 +2616,7 @@ async fn execute_voice_polish(
             "endpoint": "voice_polish_probe",
             "transcript_chars": transcript.chars().count(),
             "safe_vocab_terms": merged_vocab.len(),
+            "vocab_cards": req.vocab_cards.len(),
             "recent_speech_hints": req.recent_speech_hints.len(),
             "server_vocab_count": server_memory.vocab_terms.len(),
         }),
@@ -2743,6 +2755,7 @@ async fn execute_voice_polish(
                 &tone_preset,
                 custom_prompt.as_deref(),
                 req.screen_context.as_deref(),
+                &req.vocab_cards,
                 &merged_vocab,
                 profile_md,
                 &req.recent_speech_hints,
@@ -6680,6 +6693,7 @@ mod tests {
             "neutral",
             None,
             None,
+            &[],
             &[],
             None,
             &hints,

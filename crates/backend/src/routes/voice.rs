@@ -106,6 +106,7 @@ async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest
         "target_app": &req.target_app,
         "screen_context": &req.screen_context,
         "safe_vocab_terms": &req.safe_vocab_terms,
+        "vocab_cards": &req.vocab_cards,
         "recent_speech_hints": &req.recent_speech_hints,
         "transcript": &req.transcript,
     })
@@ -125,11 +126,12 @@ async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest
                 );
             } else {
                 info!(
-                    "[voice] backend AI payload log wrote path={} run_id={} transcript_chars={} vocab_terms={} recent_speech_hints={}",
+                    "[voice] backend AI payload log wrote path={} run_id={} transcript_chars={} vocab_terms={} vocab_cards={} recent_speech_hints={}",
                     path.display(),
                     req.client_run_id.as_deref().unwrap_or("none"),
                     req.transcript.chars().count(),
                     req.safe_vocab_terms.len(),
+                    req.vocab_cards.len(),
                     req.recent_speech_hints.len()
                 );
             }
@@ -530,6 +532,11 @@ struct ServerRuntimeVoiceRequest {
     selected_model: String,
     screen_context: Option<String>,
     safe_vocab_terms: Vec<String>,
+    /// Rich, evidence-backed cards selected by the local retriever. The control
+    /// plane treats them as soft evidence; the term list below remains only for
+    /// literal-token restoration and older control-plane versions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    vocab_cards: Vec<ServerRuntimeVocabCard>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     recent_speech_hints: Vec<String>,
     /// Focused-app key (bundle-id / exe). Lets the server pick the per-app profile
@@ -538,6 +545,85 @@ struct ServerRuntimeVoiceRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     target_app: Option<String>,
     client_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ServerRuntimeVocabCard {
+    term: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    term_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meaning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    evidence: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    do_not_use_when: Option<String>,
+}
+
+const SERVER_VOCAB_CARD_LIMIT: usize = 8;
+
+fn clean_server_vocab_text(raw: &str, max_chars: usize) -> String {
+    raw.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+fn supported_vocab_term_type(term_type: Option<&str>) -> Option<String> {
+    match term_type.map(str::trim) {
+        Some("acronym" | "proper_noun" | "brand" | "code_identifier" | "phrase" | "other") => {
+            term_type.map(str::trim).map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
+fn server_vocab_cards(entries: &[VocabEntry]) -> Vec<ServerRuntimeVocabCard> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let term = clean_server_vocab_text(&entry.term, 96);
+            if term.is_empty() {
+                return None;
+            }
+
+            let clean_optional = |value: Option<&String>| {
+                value.and_then(|value| {
+                    let value = clean_server_vocab_text(value, 180);
+                    (!value.is_empty()).then_some(value)
+                })
+            };
+            Some(ServerRuntimeVocabCard {
+                term,
+                term_type: supported_vocab_term_type(entry.term_type.as_deref()),
+                meaning: clean_optional(entry.meaning.as_ref()),
+                context: clean_optional(entry.context.as_ref()),
+                aliases: entry
+                    .stt_aliases
+                    .iter()
+                    .map(|(alias, _)| clean_server_vocab_text(alias, 80))
+                    .filter(|alias| !alias.is_empty())
+                    .take(6)
+                    .collect(),
+                evidence: entry
+                    .evidence
+                    .iter()
+                    .map(|evidence| clean_server_vocab_text(evidence, 100))
+                    .filter(|evidence| !evidence.is_empty())
+                    .take(4)
+                    .collect(),
+                do_not_use_when: clean_optional(entry.do_not_use_when.as_ref()),
+            })
+        })
+        .take(SERVER_VOCAB_CARD_LIMIT)
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1152,11 +1238,10 @@ async fn run_server_runtime_voice_stream(
         .unwrap_or("https://airnote.emiactech.com")
         .to_string();
 
-    let safe_vocab_terms = vocab_entries
+    let vocab_cards = server_vocab_cards(&vocab_entries);
+    let safe_vocab_terms = vocab_cards
         .iter()
-        .map(|entry| entry.term.trim().to_string())
-        .filter(|term| !term.is_empty())
-        .take(20)
+        .map(|card| card.term.clone())
         .collect::<Vec<_>>();
 
     let req = ServerRuntimeVoiceRequest {
@@ -1165,6 +1250,7 @@ async fn run_server_runtime_voice_stream(
         selected_model,
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
+        vocab_cards,
         recent_speech_hints,
         target_app,
         client_run_id: client_run_id
@@ -1178,7 +1264,7 @@ async fn run_server_runtime_voice_stream(
     );
     let start = Instant::now();
     info!(
-        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} recent_speech_hints={} target_app={} screen_context_chars={} setup_ms={}",
+        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} vocab_cards={} recent_speech_hints={} target_app={} screen_context_chars={} setup_ms={}",
         req.client_run_id.as_deref().unwrap_or("none"),
         url,
         req.transcript.chars().count(),
@@ -1186,6 +1272,7 @@ async fn run_server_runtime_voice_stream(
         req.selected_model,
         req.output_language,
         req.safe_vocab_terms.len(),
+        req.vocab_cards.len(),
         req.recent_speech_hints.len(),
         req.target_app.as_deref().unwrap_or("none"),
         req.screen_context
@@ -3478,6 +3565,35 @@ mod recent_speech_guard_tests {
         assert!(recent_speech_hints_allowed(&[VocabEntry::from_term(
             "Macobs"
         )]));
+    }
+}
+
+#[cfg(test)]
+mod server_vocab_card_tests {
+    use super::{VocabEntry, server_vocab_cards};
+
+    #[test]
+    fn rich_retrieval_card_is_preserved_for_server_runtime() {
+        let mut entry = VocabEntry::from_term(" Macobs ");
+        entry.term_type = Some(" proper_noun ".to_string());
+        entry.meaning = Some("Internal onboarding workflow".to_string());
+        entry.context = Some("Macobs ka onboarding flow".to_string());
+        entry.stt_aliases = vec![("main cops".to_string(), 4)];
+        entry.evidence = vec!["phonetic(main cops)".to_string()];
+        entry.do_not_use_when = Some("makeup products".to_string());
+
+        let cards = server_vocab_cards(&[entry]);
+        assert_eq!(cards.len(), 1);
+        let card = &cards[0];
+        assert_eq!(card.term, "Macobs");
+        assert_eq!(card.term_type.as_deref(), Some("proper_noun"));
+        assert_eq!(
+            card.meaning.as_deref(),
+            Some("Internal onboarding workflow")
+        );
+        assert_eq!(card.aliases, ["main cops"]);
+        assert_eq!(card.evidence, ["phonetic(main cops)"]);
+        assert_eq!(card.do_not_use_when.as_deref(), Some("makeup products"));
     }
 }
 
