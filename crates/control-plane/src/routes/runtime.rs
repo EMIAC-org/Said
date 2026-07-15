@@ -54,7 +54,7 @@ const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
 const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
 const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
-const OPENROUTER_VALIDATE_ENDPOINT: &str = "https://openrouter.ai/api/v1/models";
+const DEEPINFRA_VALIDATE_ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/models";
 const GEMINI_VALIDATE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const GATEWAY_VALIDATE_ENDPOINT: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
 const RUNTIME_PROMPT_LOG_ENV: &str = "AIRNOTE_RUNTIME_PROMPT_LOG";
@@ -3622,7 +3622,6 @@ async fn runtime_provider_secret(
     let env_fallback_present = match provider.as_str() {
         "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
-        "openrouter" => !state.openrouter_api_key.trim().is_empty(),
         "deepinfra" => !state.deepinfra_api_key.trim().is_empty(),
         _ => false,
     };
@@ -3650,7 +3649,6 @@ async fn runtime_provider_secret(
     let fallback = match provider.as_str() {
         "openai" => state.openai_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
-        "openrouter" => state.openrouter_api_key.trim(),
         "deepinfra" => state.deepinfra_api_key.trim(),
         _ => "",
     };
@@ -3827,7 +3825,7 @@ fn provider_display_name(provider: &str) -> &'static str {
         "openai" => "OpenAI",
         "gemini" => "Gemini",
         "gateway" => "Gateway",
-        "openrouter" => "OpenRouter",
+        "deepinfra" => "DeepInfra",
         _ => "Provider",
     }
 }
@@ -3855,9 +3853,9 @@ async fn validate_provider_secret(
                 .send()
                 .await
         }
-        "openrouter" => {
+        "deepinfra" => {
             client
-                .get(OPENROUTER_VALIDATE_ENDPOINT)
+                .get(DEEPINFRA_VALIDATE_ENDPOINT)
                 .bearer_auth(secret)
                 .timeout(timeout)
                 .send()
@@ -3921,7 +3919,7 @@ async fn validate_provider_secret(
 fn normalize_provider(provider: &str) -> Result<String, (StatusCode, Json<Value>)> {
     let provider = provider.trim().to_lowercase();
     match provider.as_str() {
-        "groq" | "openai" | "gemini" | "gateway" | "openrouter" | "deepinfra" => Ok(provider),
+        "groq" | "openai" | "gemini" | "gateway" | "deepinfra" => Ok(provider),
         _ => Err(json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown provider",
@@ -4291,8 +4289,8 @@ mod tidy_casing_tests {
     }
 }
 
-/// Send every server-side polish request through the selected production route.
-/// The model registry currently resolves that route to OpenRouter Nitro Gemma 4.
+/// Send every server-side polish request through the one production route.
+/// The model registry is hard-pinned to DeepInfra Gemma 4 26B A4B.
 async fn polish_llm(
     state: &AppState,
     polish_provider: &str,
@@ -4308,40 +4306,16 @@ async fn polish_llm(
             "[runtime] voice polish stream requested — provider={polish_provider} model={polish_model}"
         );
     }
-    match polish_provider {
-        "openrouter" => {
-            crate::openrouter::call_openrouter(
-                api_secret,
-                polish_model,
-                system_prompt,
-                user_message,
-                token_tx,
-            )
-            .await
-        }
-        "deepinfra" => {
-            crate::deepinfra::call_deepinfra(
-                api_secret,
-                polish_model,
-                system_prompt,
-                user_message,
-                token_tx,
-            )
-            .await
-        }
-        _ => {
-            let text = call_groq(
-                state,
-                api_secret,
-                polish_model,
-                system_prompt,
-                user_message,
-                token_tx,
-            )
-            .await?;
-            Ok(crate::openai_compat_polish::PolishCompletion::without_usage(text))
-        }
-    }
+    debug_assert_eq!(polish_provider, "deepinfra");
+    let _ = state;
+    crate::deepinfra::call_deepinfra(
+        api_secret,
+        polish_model,
+        system_prompt,
+        user_message,
+        token_tx,
+    )
+    .await
 }
 
 async fn call_groq(
@@ -6599,23 +6573,23 @@ mod tests {
     }
 
     #[test]
-    fn selected_polish_model_respects_fast_and_smart() {
-        use said_core::polish::model::OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO;
+    fn selected_polish_model_resolves_deepinfra_gemma_for_legacy_names() {
+        use said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B;
         assert_eq!(
             selected_polish_model("fast"),
-            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+            DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B
         );
         assert_eq!(
             selected_polish_model("deepseek"),
-            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+            DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B
         );
         assert_eq!(
             selected_polish_model("smart"),
-            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+            DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B
         );
         assert_eq!(
             selected_polish_model("scout"),
-            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+            DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B
         );
     }
 

@@ -5,9 +5,10 @@
 pub const RATE_EFFECTIVE_FROM: &str = "2026-07-15";
 pub const TOGETHER_NEMOTRON_USD_PER_HOUR: f64 = 0.09;
 pub const TOGETHER_NEMOTRON_RATE_SOURCE: &str = "rate:together_nemotron_0.09_per_hour@2026-07-15";
-pub const GEMMA_INPUT_USD_PER_MILLION: f64 = 0.12;
-pub const GEMMA_OUTPUT_USD_PER_MILLION: f64 = 0.35;
-pub const GEMMA_RATE_SOURCE: &str = "rate:gemma_4_0.12_in_0.35_out@2026-07-15";
+pub const GEMMA_INPUT_USD_PER_MILLION: f64 = 0.105;
+pub const GEMMA_OUTPUT_USD_PER_MILLION: f64 = 0.51;
+pub const GEMMA_RATE_SOURCE: &str =
+    "rate:deepinfra_priority_gemma_4_26b_a4b_0.105_in_0.51_out@2026-07-16";
 
 pub fn together_nemotron_cost(audio_seconds: f64) -> Option<f64> {
     (audio_seconds.is_finite() && audio_seconds >= 0.0)
@@ -29,6 +30,6 @@ mod tests {
     #[test]
     fn prices_supplied_rate_card_examples() {
         assert_eq!(together_nemotron_cost(3600.0), Some(0.09));
-        assert_eq!(gemma_token_cost(1_000_000, 1_000_000), Some(0.47));
+        assert_eq!(gemma_token_cost(1_000_000, 1_000_000), Some(0.615));
     }
 }

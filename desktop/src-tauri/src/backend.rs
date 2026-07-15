@@ -131,10 +131,6 @@ pub fn spawn() -> Result<BackendHandle, String> {
         .env(
             "TOGETHER_API_KEY",
             std::env::var("TOGETHER_API_KEY").unwrap_or_default(),
-        )
-        .env(
-            "OPENROUTER_API_KEY",
-            std::env::var("OPENROUTER_API_KEY").unwrap_or_default(),
         );
 
     #[cfg(target_os = "macos")]

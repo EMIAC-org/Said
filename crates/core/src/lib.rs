@@ -31,8 +31,8 @@ pub struct Mode {
 
 pub const MODES: &[Mode] = &[Mode {
     key: polish::model::DEFAULT_POLISH_MODEL_KEY,
-    label: "Gemma 4 31B (OpenRouter Nitro)",
-    model: polish::model::OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO,
+    label: "Gemma 4 26B A4B (DeepInfra)",
+    model: polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
     icon: "fast",
 }];
 

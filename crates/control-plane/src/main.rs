@@ -63,11 +63,7 @@ struct Cli {
     #[arg(long, env = "GROQ_API_KEY", default_value = "")]
     groq_api_key: String,
 
-    /// OpenRouter API key for paid Gemma 4 31B Nitro server-runtime polish.
-    #[arg(long, env = "OPENROUTER_API_KEY", default_value = "")]
-    openrouter_api_key: String,
-
-    /// DeepInfra API key for server-runtime beta polish models (Phi-4)
+    /// DeepInfra API key for paid Gemma 4 26B A4B server-runtime polish.
     #[arg(long, env = "DEEPINFRA_API_KEY", default_value = "")]
     deepinfra_api_key: String,
 
@@ -135,10 +131,9 @@ async fn main() {
         cli.groq_api_key.clone()
     };
     info!(
-        "[cp] runtime credential env: openai={} groq={} openrouter={} deepinfra={} deepseek={} runtime_credentials_key={}",
+        "[cp] runtime credential env: openai={} groq={} deepinfra={} deepseek={} runtime_credentials_key={}",
         !cli.openai_api_key.trim().is_empty(),
         !groq_api_key.trim().is_empty(),
-        !cli.openrouter_api_key.trim().is_empty(),
         !cli.deepinfra_api_key.trim().is_empty(),
         !std::env::var("DEEPSEEK_API_KEY")
             .unwrap_or_default()
@@ -169,7 +164,6 @@ async fn main() {
         notifications,
         openai_api_key: cli.openai_api_key,
         groq_api_key,
-        openrouter_api_key: cli.openrouter_api_key,
         deepinfra_api_key: cli.deepinfra_api_key,
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         divo_base_url: cli.divo_base_url,
