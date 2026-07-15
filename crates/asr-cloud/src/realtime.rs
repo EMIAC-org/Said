@@ -143,7 +143,7 @@ impl TogetherRealtimeClient {
 
         Ok(CloudTranscription {
             text: transcript.trim().to_string(),
-            language: None,
+            language: Some(together::NEMOTRON_LANGUAGE.to_string()),
             audio_secs: Some(audio_secs),
             latency_ms: started.elapsed().as_millis() as u64,
             model: format!("{}/realtime", self.model()),
@@ -168,7 +168,7 @@ impl TogetherRealtimeClient {
 
         Ok(CloudTranscription {
             text: transcript.trim().to_string(),
-            language: None,
+            language: Some(together::NEMOTRON_LANGUAGE.to_string()),
             audio_secs: Some(audio_secs),
             latency_ms: started.elapsed().as_millis() as u64,
             model: format!("{}/realtime", self.model()),
@@ -310,9 +310,10 @@ impl TogetherRealtimeClient {
 
 fn realtime_url() -> String {
     format!(
-        "{}?intent=transcription&model={}&input_audio_format=pcm_s16le_16000&turn_detection=none",
+        "{}?intent=transcription&model={}&input_audio_format=pcm_s16le_16000&language={}&turn_detection=none",
         together::REALTIME_ENDPOINT,
         together::NEMOTRON_3_5_ASR_STREAMING_0_6B,
+        together::NEMOTRON_LANGUAGE,
     )
 }
 
@@ -540,10 +541,11 @@ mod tests {
     }
 
     #[test]
-    fn realtime_url_pins_nemotron_and_manual_commit_mode() {
+    fn realtime_url_pins_nemotron_hindi_and_manual_commit_mode() {
         let url = realtime_url();
         assert!(url.contains(together::NEMOTRON_3_5_ASR_STREAMING_0_6B));
         assert!(url.contains("input_audio_format=pcm_s16le_16000"));
+        assert!(url.contains("language=hi"));
         assert!(url.contains("turn_detection=none"));
     }
 
