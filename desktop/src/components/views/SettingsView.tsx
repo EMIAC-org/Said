@@ -565,7 +565,8 @@ export function SettingsView({
     launch_at_login: false,
     beta_mode: false,
     browser_context_enabled: false,
-    dictation_stt: "auto",
+    dictation_stt: "local",
+    local_stt_model: "oriserve",
   });
   useEffect(() => {
     void getDesktopPrefs().then(setDesktopPrefsState).catch(() => {});

@@ -310,7 +310,7 @@ CANONICAL_TARGETS = {
     "lark": "Lark",
     "macobs": "Macobs",
     "n8n": "n8n",
-    "openrouter": "OpenRouter",
+    "together": "Together AI",
     "postgres": "Postgres",
     "pytorch": "PyTorch",
     "sentry": "Sentry",
@@ -807,7 +807,7 @@ INTENT RECONSTRUCTION CONTRACT V4:
 - Preserve numbers and short tokens exactly unless the transcript clearly contains the wrong entity. Do not turn "1 API key" into "one API key" or "10" into "1080". If the transcript says "10 and resolution", keep "10 and resolution"; do not infer "1080 resolution".
 - For company/product aliases, require local context:
   - Emiac/Macobs: use only near IPO/company/vocabulary/AMEAC/MACOPS/MIA/MECOPS/MBI context, never for ordinary "Mac".
-  - Cerebras/Groq/OpenRouter/provider terms: use near API/model/provider/key/cost/developer-plan context.
+  - Together AI/Groq/provider terms: use near API/model/provider/key/cost/developer-plan context.
   - Divo: use near app/hotkey/control/Mac/Windows/code context.
 - If a memory hint conflicts with a readable current word, ignore the hint.
 - Final self-check: did any memory hint cause an unsupported correction? If yes, undo that correction."""
@@ -1252,7 +1252,7 @@ def write_report(summary: dict[str, Any], corpus: Path) -> tuple[Path, Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=None)
-    parser.add_argument("--slug", default="cerebras-gpt-oss")
+    parser.add_argument("--slug", default="openrouter-gemma-4-nitro")
     parser.add_argument("--variant", choices=["production", "intent_v1", "intent_v2", "intent_v3", "intent_v4", "literal_guard"], default="intent_v1")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=25, help="Rows to observe before first eval.")

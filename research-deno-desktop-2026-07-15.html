@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deno Desktop × AirNote — Windows migration assessment</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    :root { --font-display:'Space Grotesk','General Sans',system-ui,sans-serif; --font-body:'Plus Jakarta Sans',system-ui,sans-serif; --font-mono:'JetBrains Mono',ui-monospace,monospace; --fs-xs:.75rem; --fs-sm:.875rem; --fs-base:1rem; --fs-lg:1.125rem; --fs-xl:1.375rem; --fs-2xl:1.75rem; --fs-3xl:2.25rem; --fs-4xl:3rem; --fs-5xl:4.25rem; --lh-tight:1.15; --lh-normal:1.55; --lh-relaxed:1.75; --bg-primary:#0a0a0f; --bg-secondary:#11111a; --bg-card:#16161f; --bg-elevated:#1d1d28; --text-primary:#f4f4f8; --text-secondary:#b4b4c2; --text-muted:#6f6f80; --accent-primary:#7c5cff; --accent-secondary:#22d3ee; --accent-success:#34d399; --accent-warning:#fbbf24; --accent-danger:#f87171; --border-subtle:rgba(255,255,255,.06); --border-soft:rgba(255,255,255,.10); --border-strong:rgba(255,255,255,.18); --space-sm:.5rem; --space-md:1rem; --space-lg:1.5rem; --space-xl:2.5rem; --space-2xl:4rem; --space-3xl:6rem; --radius-md:12px; --radius-lg:20px; --radius-xl:28px; --radius-full:9999px; --shadow-md:0 8px 24px rgba(0,0,0,.35); --shadow-lg:0 24px 60px rgba(0,0,0,.5); --ease-smooth:cubic-bezier(.16,1,.3,1); }
+    * { box-sizing:border-box; } html { scroll-behavior:smooth; } body { margin:0; background:radial-gradient(1000px 600px at 80% -10%,rgba(124,92,255,.17),transparent 60%),var(--bg-primary); color:var(--text-primary); font-family:var(--font-body); font-size:var(--fs-base); line-height:var(--lh-normal); } h1,h2,h3 { font-family:var(--font-display); line-height:var(--lh-tight); letter-spacing:-.02em; } a { color:var(--accent-secondary); } .shell { width:min(1120px,calc(100% - 40px)); margin:auto; } nav { position:sticky; top:0; z-index:5; border-bottom:1px solid var(--border-subtle); background:rgba(10,10,15,.82); backdrop-filter:blur(18px); } nav .shell { display:flex; align-items:center; justify-content:space-between; min-height:58px; gap:20px; } .brand { font-family:var(--font-display); font-weight:700; font-size:var(--fs-sm); } .navlinks { display:flex; gap:18px; overflow:auto; white-space:nowrap; } .navlinks a { color:var(--text-muted); font-size:var(--fs-xs); text-decoration:none; } .hero { padding:clamp(4rem,10vw,8rem) 0 4rem; max-width:960px; } .eyebrow { display:inline-flex; gap:8px; align-items:center; border:1px solid rgba(248,113,113,.35); color:#ffb4b4; background:rgba(248,113,113,.1); border-radius:var(--radius-full); padding:6px 11px; font:500 var(--fs-xs) var(--font-mono); text-transform:uppercase; letter-spacing:.08em; } h1 { font-size:clamp(2.8rem,7vw,var(--fs-5xl)); margin:.8rem 0 1rem; } .lede { max-width:780px; color:var(--text-secondary); font-size:clamp(1.08rem,2vw,1.32rem); } .verdict { margin-top:2rem; padding:1.25rem 1.4rem; background:linear-gradient(115deg,rgba(248,113,113,.13),rgba(124,92,255,.12)); border:1px solid var(--border-strong); border-radius:var(--radius-lg); font-size:var(--fs-lg); } .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; } .card { background:rgba(22,22,31,.88); border:1px solid var(--border-soft); border-radius:var(--radius-lg); padding:1.2rem; box-shadow:var(--shadow-md); } .card .label { color:var(--text-muted); font:500 var(--fs-xs) var(--font-mono); text-transform:uppercase; letter-spacing:.08em; } .card .value { margin-top:.4rem; font-family:var(--font-display); font-size:var(--fs-xl); line-height:1.2; } section { scroll-margin-top:82px; margin:var(--space-3xl) 0; } section > h2 { font-size:clamp(1.8rem,3vw,var(--fs-3xl)); margin-bottom:.6rem; } .intro { color:var(--text-secondary); max-width:800px; margin-top:0; } .twocol { display:grid; grid-template-columns:1fr 1fr; gap:16px; } .point h3 { margin:.1rem 0 .45rem; font-size:var(--fs-xl); } .point p,.point li { color:var(--text-secondary); } ul { padding-left:1.2rem; } li+li { margin-top:.55rem; } .badge { display:inline-block; font:500 var(--fs-xs) var(--font-mono); padding:3px 8px; border:1px solid var(--border-soft); border-radius:var(--radius-full); color:var(--text-secondary); margin-bottom:.7rem; } .bad { color:#ffb4b4; border-color:rgba(248,113,113,.35); } .good { color:#8df0c1; border-color:rgba(52,211,153,.35); } .matrix { display:grid; gap:10px; } .row { display:grid; grid-template-columns:1.2fr 1fr 1fr 1fr; gap:10px; } .cell { background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-md); padding:.85rem; color:var(--text-secondary); font-size:var(--fs-sm); } .head .cell { background:transparent; color:var(--text-muted); border:none; font:500 var(--fs-xs) var(--font-mono); text-transform:uppercase; letter-spacing:.07em; } .cell strong { color:var(--text-primary); } .airnote-map { display:grid; grid-template-columns:1.2fr 1fr 1.5fr; gap:10px; } .callout { background:rgba(124,92,255,.1); border-left:3px solid var(--accent-primary); border-radius:0 var(--radius-md) var(--radius-md) 0; padding:1rem 1.1rem; color:var(--text-secondary); } .insight { margin:2.4rem 0; padding:clamp(1.4rem,3vw,2.25rem); background:var(--bg-card); border:1px solid var(--border-soft); border-radius:16px; position:relative; overflow:hidden; } .insight::before { content:""; position:absolute; top:0;left:0;width:3px;height:100%;background:var(--insight-color,var(--accent-primary)); } .insight[data-kind="why"] { --insight-color:var(--accent-primary); } .insight[data-kind="risk"] { --insight-color:var(--accent-danger); } .insight[data-kind="trojan"] { --insight-color:var(--accent-success); } .insight__kicker { color:var(--insight-color); font:600 var(--fs-xs) var(--font-display); letter-spacing:.12em; text-transform:uppercase; } .insight__title { font-size:clamp(1.5rem,3vw,2.25rem); margin:.7rem 0; } .insight__body { color:var(--text-secondary); } .cdot { display:inline-block; width:.55rem;height:.55rem;border-radius:999px;margin-left:.35rem;vertical-align:.1em;cursor:help; } .cdot-high { background:var(--accent-success); box-shadow:0 0 0 2px rgba(52,211,153,.25); } .cdot-medium { background:var(--accent-warning); box-shadow:0 0 0 2px rgba(251,191,36,.25); } .cdot-low { background:var(--text-muted); } .sources-footer { margin-top:6rem; padding:2rem 0 3rem; border-top:1px solid var(--border-soft); color:var(--text-muted); font-size:var(--fs-sm); } .sources-footer__title { font:500 var(--fs-sm) var(--font-display); text-transform:uppercase; letter-spacing:.08em; color:var(--text-secondary); } .sources-footer__list { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) max-content; gap:.5rem 1.5rem; } .sources-footer__row { display:contents; } .sources-footer__url { overflow-wrap:anywhere; } .sources-footer__use { font-style:italic; } .sources-footer__date { font:var(--fs-xs) var(--font-mono); white-space:nowrap; } button { cursor:pointer; color:var(--text-primary); background:var(--bg-elevated); border:1px solid var(--border-soft); border-radius:var(--radius-full); padding:.55rem .8rem; font:500 var(--fs-xs) var(--font-body); } #top { position:fixed; right:20px; bottom:20px; display:none; } .show { display:block!important; } .fade { opacity:0; transform:translateY(14px); transition:opacity .4s var(--ease-smooth),transform .4s var(--ease-smooth); } .fade.in { opacity:1; transform:none; }
+    @media(max-width:760px){ .grid,.twocol {grid-template-columns:1fr 1fr;} .row,.airnote-map {grid-template-columns:1fr;} .head {display:none;} .sources-footer__list {grid-template-columns:1fr;gap:.25rem;} .sources-footer__row {display:grid;gap:.12rem;margin-bottom:1rem;} }
+    @media(max-width:480px){ .grid {grid-template-columns:1fr;} .shell {width:min(100% - 28px,1120px);} h1 {font-size:2.6rem;} }
+    @media(prefers-reduced-motion:reduce){ html {scroll-behavior:auto;} .fade {opacity:1;transform:none;transition:none;} }
+    @media print { body {background:#fff;color:#111;} .card,.cell,.insight {background:#fff;border-color:#ccc;box-shadow:none;} .lede,.intro,.point p,.point li,.insight__body,.cell {color:#333;} nav,#top,button {display:none!important;} }
+  </style>
+</head>
+<body>
+  <nav><div class="shell"><div class="brand">AIRNOTE / PLATFORM DECISION</div><div class="navlinks"><a href="#verdict">Verdict</a><a href="#comfort">What it changes</a><a href="#airnote">AirNote reality</a><a href="#matrix">Compare</a><a href="#path">Recommended path</a></div></div></nav>
+  <main class="shell">
+    <header class="hero fade" id="verdict">
+      <span class="eyebrow">Architecture crosscheck · 15 July 2026</span>
+      <h1>Deno Desktop is not the Windows escape hatch AirNote needs.</h1>
+      <p class="lede">It is a promising TypeScript desktop shell, but it does not remove AirNote’s difficult Windows work. Its default renderer is still Windows WebView2; the features that matter to AirNote—global hold-to-talk, audio capture, Unicode injection, UI Automation and local ASR—still need native Windows integration.</p>
+      <div class="verdict"><strong>Verdict: do not migrate AirNote to Deno Desktop now.</strong> Confidence: <strong>94%</strong>. Treat it as an experimental shell, not a production replacement for Electron or Tauri. Deno itself says Desktop is experimental and that platform features are still landing.<span class="cdot cdot-high" title="high confidence — official Deno 2.9 announcement"></span></div>
+    </header>
+
+    <div class="grid fade" aria-label="At a glance">
+      <article class="card"><div class="label">Released</div><div class="value">25 Jun 2026<span class="cdot cdot-high" title="official Deno release"></span></div></article>
+      <article class="card"><div class="label">Default on Windows</div><div class="value">WebView2<span class="cdot cdot-high" title="official backend docs"></span></div></article>
+      <article class="card"><div class="label">Electron-like option</div><div class="value">CEF / Chromium<span class="cdot cdot-high" title="official backend docs"></span></div></article>
+      <article class="card"><div class="label">Windows updater</div><div class="value">Not supported<span class="cdot cdot-high" title="official auto-update docs"></span></div></article>
+    </div>
+
+    <section id="comfort" class="fade">
+      <h2>What Deno Desktop genuinely improves</h2>
+      <p class="intro">For a normal React/TypeScript desktop app, it is comfortable: one Deno process serves the UI, a native window/tray API exists, and UI-to-runtime calls use in-process bindings. It can cross-compile Windows x64, macOS x64/arm64 and Linux x64/arm64 from one host.<span class="cdot cdot-high" title="official Deno docs"></span></p>
+      <div class="twocol">
+        <article class="card point"><span class="badge good">Real benefit</span><h3>Less shell plumbing</h3><p>React/Vite-style UI, native windows, tray, dialogs, notifications, framework detection and a direct binding model are built in. That is friendlier than writing Tauri command wrappers for ordinary app state.</p></article>
+        <article class="card point"><span class="badge good">Real benefit</span><h3>CEF gives renderer consistency</h3><p>With CEF, Deno ships Chromium across macOS, Windows and Linux—closer to Electron’s UI behaviour than a system-webview app.</p></article>
+        <article class="card point"><span class="badge">Trade-off</span><h3>Default is not Electron-like</h3><p>The default is WebView2 on Windows, WKWebView on macOS and WebKitGTK on Linux. That is the same “host engine differs” trade-off that Tauri already makes.</p></article>
+        <article class="card point"><span class="badge bad">Production gap</span><h3>It is not a mature Windows platform</h3><p>Desktop shipped in Deno 2.9 and is explicitly experimental. That is normal for a new product, but it is the wrong timing to bet AirNote's core native path on it.</p></article>
+      </div>
+    </section>
+
+    <section id="airnote" class="fade">
+      <h2>The key distinction: app shell vs. native dictation engine</h2>
+      <p class="intro">AirNote is not a regular CRUD desktop app. The web UI is only the visible layer. The hard Windows work happens below it, where Deno Desktop currently does not provide purpose-built APIs.</p>
+      <div class="airnote-map">
+        <div class="cell"><strong>AirNote capability</strong></div><div class="cell"><strong>Current implementation</strong></div><div class="cell"><strong>What Deno Desktop changes</strong></div>
+        <div class="cell"><strong>System-wide hold-to-talk</strong></div><div class="cell"><a href="file:///Users/abhishekverma/Desktop/Cluster/Projects/Airnote%20spread/crates/hotkey/src/imp_windows.rs">Win32 <code>WH_KEYBOARD_LL</code></a>, with key suppression.</div><div class="cell">Documented keyboard events fire only while the Deno window is focused. There is no documented system-global hotkey API, so this still needs native code/FFI/addon/sidecar.<span class="cdot cdot-high" title="official docs say window events are focused-window events; conclusion is an inference"></span></div>
+        <div class="cell"><strong>Type into any foreground app</strong></div><div class="cell"><a href="file:///Users/abhishekverma/Desktop/Cluster/Projects/Airnote%20spread/crates/paster/src/imp_windows.rs">Win32 <code>SendInput(KEYEVENTF_UNICODE)</code></a> plus clipboard restore.</div><div class="cell">Not supplied by the desktop API. You keep this Rust module or rewrite it as a Windows native bridge.</div>
+        <div class="cell"><strong>Learn from edits / focused text</strong></div><div class="cell"><a href="file:///Users/abhishekverma/Desktop/Cluster/Projects/Airnote%20spread/crates/paster/src/uia.rs">Windows UI Automation</a> on an MTA worker, with timeouts to prevent a frozen app.</div><div class="cell">Not supplied. This is exactly the platform-specific reliability code a shell swap cannot eliminate.</div>
+        <div class="cell"><strong>Audio + local ASR</strong></div><div class="cell">WASAPI/cpal and a Windows GPU-worker/CPU fallback around local ASR.</div><div class="cell">Deno does not turn this into browser audio. Keep the existing native engine behind a process/API boundary or rebuild the same native integration.</div>
+        <div class="cell"><strong>Polish UI / settings / tray</strong></div><div class="cell">Tauri commands + React UI.</div><div class="cell">This is the part Deno could simplify, but it is not the source of most of AirNote’s Windows risk.</div>
+      </div>
+      <div class="callout"><strong>Important inference:</strong> a Deno rewrite changes who calls the Win32 APIs; it does not make those APIs disappear. Deno can load native libraries through FFI or Node-API addons, but that creates another ABI/packaging/test surface—and still leaves the Windows behaviour yours to own.</div>
+    </section>
+
+    <section id="matrix" class="fade">
+      <h2>Electron vs. Tauri vs. Deno Desktop for AirNote</h2>
+      <div class="matrix" role="table" aria-label="Platform comparison">
+        <div class="row head"><div class="cell">Decision dimension</div><div class="cell">Electron</div><div class="cell">Tauri today</div><div class="cell">Deno Desktop</div></div>
+        <div class="row"><div class="cell"><strong>Windows UI consistency</strong></div><div class="cell">Strong: bundled Chromium.</div><div class="cell">Depends on WebView2 / Wry.</div><div class="cell">Default: same WebView2 issue. CEF: Chromium consistency.</div></div>
+        <div class="row"><div class="cell"><strong>Native Windows ecosystem</strong></div><div class="cell">Mature Node/native-addon ecosystem; still needs native modules for hooks, injection and UIA.</div><div class="cell">Rust direct Win32 access is powerful, but asks your team to own the bindings.</div><div class="cell">Deno FFI/N-API exist, but Desktop-specific native patterns are brand new.</div></div>
+        <div class="row"><div class="cell"><strong>Release/updater readiness</strong></div><div class="cell">Mature ecosystem and Windows tooling.</div><div class="cell">Existing updater/release route; platform work remains.</div><div class="cell">MSI exists, but built-in Windows auto-update explicitly does not take effect.</div></div>
+        <div class="row"><div class="cell"><strong>Resource impact</strong></div><div class="cell">Typically 100MB+ application footprint.</div><div class="cell">Smallest shell.</div><div class="cell">WebView build can be small; CEF alone is about 150MB. That is a poor pairing with an optional ~700MB local ASR model on constrained Windows laptops.</div></div>
+        <div class="row"><div class="cell"><strong>Migration risk for AirNote</strong></div><div class="cell">High but testable with existing Rust sidecar retained.</div><div class="cell">No migration; fix known Windows adapters.</div><div class="cell"><strong>Very high.</strong> New framework plus an incomplete native desktop surface.</div></div>
+      </div>
+    </section>
+
+    <section class="insight fade" data-kind="why">
+      <div class="insight__kicker">Why this matters for AirNote</div>
+      <h2 class="insight__title">Your Windows pain is mostly privileged OS work, not Tauri UI work.</h2>
+      <div class="insight__body"><p>When a dictation app must see a physical key globally, capture sound reliably, inject Unicode into another process, and safely inspect an app’s focused control, every framework reaches the Windows boundary. Electron makes that boundary feel more familiar to JavaScript teams; Deno does not remove it. Rewriting the shell now risks losing working behaviour while you recreate it under a less-proven runtime.</p></div>
+    </section>
+
+    <section class="insight fade" data-kind="risk">
+      <div class="insight__kicker">Risk flags</div>
+      <h2 class="insight__title">Three blockers make a Deno migration the wrong production move today.</h2>
+      <div class="insight__body"><ul><li><strong>Experimental release:</strong> Deno says platform features are still landing.</li><li><strong>Windows update gap:</strong> its own auto-updater downloads and stages patches but cannot apply them on Windows.</li><li><strong>Feature mismatch:</strong> global shortcuts, foreground app injection and UI Automation are absent from the documented Desktop surface; native work would remain.</li></ul></div>
+    </section>
+
+    <section id="path" class="fade">
+      <h2>Recommendation: do not rewrite; run a bounded comparison only if needed</h2>
+      <div class="twocol">
+        <article class="card point"><span class="badge good">Recommended</span><h3>Keep Tauri, isolate the Windows engine</h3><p>Keep the working Rust dictation stack. Make the platform-sensitive parts explicit modules/contracts—hotkey, recording, paster, UI Automation and ASR worker—then test them on a small Windows hardware matrix. This attacks the actual failures without moving every subsystem at once.</p></article>
+        <article class="card point"><span class="badge">If UI shell is the issue</span><h3>Electron spike before any migration</h3><p>Build a tiny Electron shell that talks to the existing Rust backend/sidecar. Do not port the hotkey, audio, typing or learning engine. Prove packaging, startup, tray, crash reporting, signing and foreground typing on real Windows machines first.</p></article>
+        <article class="card point"><span class="badge">Deno use-case</span><h3>Keep it as a 1–2 day curiosity spike</h3><p>It is fair to prototype a settings/HUD window with CEF and call the unchanged local backend over localhost. The success criterion is developer ergonomics—not a claim that it solves native dictation. Stop if the prototype needs FFI for any core flow.</p></article>
+        <article class="card point"><span class="badge bad">Do not do</span><h3>Do not port the whole app to Deno</h3><p>No Windows updater, no documented global-input API, and no established Desktop ecosystem are unacceptable for a cross-platform voice app already debugging native reliability. There is no safe rollback once the native stack is half-rewritten.</p></article>
+      </div>
+    </section>
+
+    <section class="insight fade" data-kind="trojan">
+      <div class="insight__kicker">One-line decision</div>
+      <h2 class="insight__title">“Deno Desktop may someday be a pleasant TypeScript shell, but today it would move AirNote’s Windows complexity into a younger stack—not remove it.”</h2>
+      <div class="insight__body"><p>Revisit only after Windows updater support, documented global-input/native integration, and a sustained production track record exist.</p></div>
+    </section>
+
+    <section class="fade"><h2>Decision gate if we revisit later</h2><p class="intro">Do not judge it by a settings screen. Pass all six on two real Windows machines: global press-and-hold with suppression; microphone capture; Unicode insertion in Chrome/Slack/Notepad; UIA edit watch; packaged MSI + signed update; recovery after a renderer/runtime crash. Until then, the migration confidence stays below the threshold for production.</p></section>
+
+    <footer class="sources-footer">
+      <h2 class="sources-footer__title">Sources</h2>
+      <div class="sources-footer__list">
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://deno.com/blog/v2.9" target="_blank" rel="noopener">deno.com/blog/v2.9</a><span class="sources-footer__use">Release date, experimental status, targets, shell features</span><time class="sources-footer__date" datetime="2026-07-15">15 Jul 2026</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.deno.com/runtime/desktop/backends/" target="_blank" rel="noopener">docs.deno.com/runtime/desktop/backends</a><span class="sources-footer__use">CEF vs. WebView2, ~150MB CEF, feature variance</span><time class="sources-footer__date" datetime="2026-07-15">15 Jul 2026</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.deno.com/runtime/desktop/windows/" target="_blank" rel="noopener">docs.deno.com/runtime/desktop/windows</a><span class="sources-footer__use">Window API and focused-window keyboard events</span><time class="sources-footer__date" datetime="2026-07-15">15 Jul 2026</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.deno.com/runtime/desktop/auto_update/" target="_blank" rel="noopener">docs.deno.com/runtime/desktop/auto_update</a><span class="sources-footer__use">Windows updater limitation</span><time class="sources-footer__date" datetime="2026-07-15">15 Jul 2026</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.deno.com/runtime/desktop/distribution/" target="_blank" rel="noopener">docs.deno.com/runtime/desktop/distribution</a><span class="sources-footer__use">Windows x64 distribution/MSI and cross-compile details</span><time class="sources-footer__date" datetime="2026-07-15">15 Jul 2026</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.deno.com/runtime/fundamentals/ffi/" target="_blank" rel="noopener">docs.deno.com/runtime/fundamentals/ffi</a><span class="sources-footer__use">FFI and Node-API escape hatches</span><time class="sources-footer__date" datetime="2026-07-15">15 Jul 2026</time></div>
+      </div>
+      <p>Confidence indicators: <span class="cdot cdot-high"></span> primary-source fact; <span class="cdot cdot-medium"></span> supported inference; <span class="cdot cdot-low"></span> tentative. Local AirNote implementation links are repository evidence.</p>
+    </footer>
+  </main>
+  <button id="top" aria-label="Back to top">↑ Top</button>
+  <script>
+    const observer=new IntersectionObserver(entries=>entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('in')}),{threshold:.08}); document.querySelectorAll('.fade').forEach(e=>observer.observe(e));
+    const topButton=document.getElementById('top'); addEventListener('scroll',()=>topButton.classList.toggle('show',scrollY>600)); topButton.addEventListener('click',()=>scrollTo({top:0,behavior:'smooth'}));
+  </script>
+</body>
+</html>

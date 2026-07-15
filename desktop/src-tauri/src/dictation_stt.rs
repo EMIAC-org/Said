@@ -2,18 +2,12 @@
 //!
 //! | platform | provider |
 //! |----------|----------|
-//! | macOS    | on-device whisper (`asr-core`, Metal in-process) — always |
-//! | Windows  | user-selectable (Settings → Speech recognition): **Auto** (default), On-device, or Hosted |
+//! | Windows / Intel Mac | live Together Nemotron (fixed) |
+//! | Apple Silicon Mac | mandated local model, with an optional Cloud Nemotron switch in Settings |
 //!
-//! Windows selection, resolved per clip in a strict order:
-//!   1. `AIRNOTE_DICTATION_STT_PROVIDER=local|hosted` — diagnostics escape
-//!      hatch, pins the provider for the whole session (dev A/B, offline debug).
-//!   2. The `dictation_stt` desktop pref ("local" / "hosted") — the Settings
-//!      toggle; read per clip so a change applies to the very next dictation.
-//!   3. **Auto**: on-device iff this machine runs it *well* — usable GPU
-//!      (isolated `airnote-asr-gpu` Vulkan worker came up) + local model
-//!      installed. Otherwise hosted (DeepInfra whisper-large-v3). The
-//!      capability probe is hardware, so it's cached for the session.
+//! The platform policy in `stt_policy` is authoritative. A stale preference
+//! cannot route Windows or Intel Macs to local ASR, and Apple Silicon has only
+//! a deliberate local ↔ Cloud Nemotron choice.
 //!
 //! There is deliberately no mid-clip provider fallback: a clip runs on exactly
 //! one provider and fails loudly with an actionable message. (Within the
@@ -36,27 +30,27 @@ pub struct PreTranscript {
 }
 
 /// Stable identifier of the provider the next dictation will use (status UI,
-/// logs): `"on-device/whisper"` or `"deepinfra"`.
+/// logs): `"on-device/whisper"`, `"on-device/nemotron"`, or
+/// `"together/nemotron-realtime"`.
 pub fn provider_name() -> &'static str {
     provider::name()
 }
 
 /// True when dictation can transcribe right now (model present / key baked).
-/// Network reachability is not probed here — an offline hosted call fails
+/// Network reachability is not probed here — an offline cloud call fails
 /// fast with its own actionable error.
 pub fn dictation_ready() -> bool {
     provider::ready()
 }
 
-/// What Auto resolves to on this machine: `"on-device/whisper"` or
-/// `"deepinfra"`. Lets Settings say "Auto — on this device: On-device (GPU)".
+/// The policy-default provider for diagnostic/status UI.
 pub fn auto_provider_name() -> &'static str {
     provider::auto_name()
 }
 
 // ── On-device model status ─────────────────────────────────────────────────
-// The whisper model still powers meetings on every platform (and dictation on
-// macOS); Settings surfaces these regardless of the dictation provider.
+// Oriserve/whisper.cpp remains the meetings engine on every platform. For
+// dictation it is used only when the Apple-Silicon device policy selects it.
 
 pub fn model_installed() -> bool {
     crate::meeting_engine::dictation_whisper_model_installed()
@@ -80,11 +74,28 @@ pub async fn transcribe_wav_bytes(wav: &[u8], language: &str) -> Result<PreTrans
 }
 
 /// Warm this platform's provider at startup so the first utterance doesn't
-/// pay setup costs: on-device pre-loads the whisper model; hosted resolves the
-/// API key and builds the HTTP client — and logs loudly if the build shipped
-/// without a key, so a broken build is visible before the first dictation.
+/// pay setup costs: on-device pre-loads its model; live Nemotron resolves the
+/// API key and logs loudly if the build shipped without one, so a broken build
+/// is visible before the first dictation.
 pub fn prewarm() {
     provider::prewarm();
+}
+
+/// True only for the cloud provider that has a live WebSocket transcription
+/// contract. This is captured at recording start so changing Settings halfway
+/// through a hold cannot switch transport beneath an active session.
+pub fn uses_live_nemotron() -> bool {
+    provider::uses_live_nemotron()
+}
+
+/// Run an already-open live Nemotron recording. The recorder owns audio
+/// capture; this module owns provider credentials and converts the completed
+/// Together response into the app's provider-neutral transcript contract.
+pub async fn transcribe_live_nemotron(
+    input: asr_cloud::LiveTranscriptionInput,
+    event_tx: tokio::sync::mpsc::UnboundedSender<asr_cloud::LiveTranscriptEvent>,
+) -> Result<PreTranscript, String> {
+    provider::transcribe_live_nemotron(input, event_tx).await
 }
 
 // ── On-device engine (asr-core) — dictation on macOS; meetings everywhere ──
@@ -94,18 +105,78 @@ mod on_device {
 
     use super::PreTranscript;
 
-    pub(super) const NAME: &str = "on-device/whisper";
+    const WHISPER_NAME: &str = "on-device/whisper";
+    const NEMOTRON_NAME: &str = "on-device/nemotron";
+
+    fn uses_nemotron() -> bool {
+        crate::nemotron::is_selected()
+    }
+
+    pub(super) fn name() -> &'static str {
+        if uses_nemotron() {
+            NEMOTRON_NAME
+        } else {
+            WHISPER_NAME
+        }
+    }
 
     pub(super) fn ready() -> bool {
-        super::model_installed() && super::runtime_ready()
+        if uses_nemotron() {
+            crate::nemotron::selected_installed()
+        } else {
+            super::model_installed() && super::runtime_ready()
+        }
     }
 
     /// Pre-load the whisper model so the first utterance skips the model load.
     pub(super) fn prewarm() {
-        crate::asr::prewarm_default_language();
+        if uses_nemotron() {
+            crate::nemotron::prewarm();
+        } else {
+            crate::asr::prewarm_default_language();
+        }
     }
 
     pub(super) async fn transcribe(wav: &[u8], language: &str) -> Result<PreTranscript, String> {
+        if uses_nemotron() {
+            if !crate::nemotron::selected_installed() {
+                return Err(
+                    "Nemotron is selected but not installed. Download it in Settings → Speech recognition."
+                        .into(),
+                );
+            }
+
+            let wav = wav.to_vec();
+            let language = language.to_string();
+            let output = tokio::task::spawn_blocking(move || {
+                crate::nemotron::transcribe_wav_bytes(&wav, &language)
+            })
+            .await
+            .map_err(|error| format!("Nemotron speech worker failed: {error}"))??;
+            let word_count = output.transcript.split_whitespace().count();
+            tracing::info!(
+                duration_ms = output.duration_ms,
+                language = output.language.as_deref().unwrap_or("unreported"),
+                model = crate::nemotron::selected_model_name(),
+                "[dictation_stt] Nemotron local ASR complete"
+            );
+            return Ok(PreTranscript {
+                transcript: output.transcript.clone(),
+                meta: TranscriptMeta {
+                    enriched_transcript: output.transcript,
+                    confidence: 1.0,
+                    mean_word_confidence: 1.0,
+                    low_confidence_count: 0,
+                    word_count,
+                    languages: output.language.into_iter().collect(),
+                    model: format!("local:{}", crate::nemotron::selected_model_file()),
+                    duration_ms: output.duration_ms,
+                    origin: TranscriptOrigin::DictationLocal,
+                    ..TranscriptMeta::default()
+                },
+            });
+        }
+
         if !super::model_installed() {
             return Err(
                 "Local speech model is required. Download the on-device model in Settings.".into(),
@@ -149,93 +220,41 @@ mod on_device {
     }
 }
 
-// ── Windows: Auto / On-device / Hosted (see module docs) ───────────────────
-#[cfg(target_os = "windows")]
+// ── Enforced local / live Together Nemotron STT ─────────────────────────────
 mod provider {
     use std::sync::OnceLock;
 
-    use asr_cloud::{HostedSttClient, deepinfra};
+    use asr_cloud::{TogetherRealtimeClient, together};
     use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
 
     use super::PreTranscript;
 
-    /// Provider family only — the exact hosted model can be overridden
-    /// per-process (DEEPINFRA_STT_MODEL) and is logged per clip.
-    const HOSTED_NAME: &str = "deepinfra";
+    const TOGETHER_NEMOTRON_NAME: &str = "together/nemotron-realtime";
 
     #[derive(Clone, Copy, PartialEq)]
     enum Selected {
         OnDevice,
-        Hosted,
+        TogetherNemotron,
     }
 
-    /// Resolve which provider the next clip uses (module-doc order: env pin →
-    /// Settings pref → Auto). The pref is re-read per call so the Settings
-    /// toggle applies immediately; the pieces that are per-session (env pin,
-    /// hardware capability) are cached.
+    /// Resolve the next clip from the central device policy. Only Apple
+    /// Silicon permits a user-selected Cloud Nemotron route.
     fn selection() -> Selected {
-        if let Some(pinned) = env_pin() {
-            return pinned;
+        let policy = crate::stt_policy::current();
+        if policy.is_cloud_locked() {
+            return Selected::TogetherNemotron;
         }
-        match said_core::prefs::load().dictation_stt.as_str() {
-            "local" => Selected::OnDevice,
-            "hosted" => Selected::Hosted,
-            _ => auto_selection(),
+        if said_core::prefs::load().dictation_stt == crate::stt_policy::CLOUD_NEMOTRON_PREF {
+            Selected::TogetherNemotron
+        } else {
+            Selected::OnDevice
         }
-    }
-
-    /// Diagnostics escape hatch: pins the provider for the whole session.
-    fn env_pin() -> Option<Selected> {
-        static PIN: OnceLock<Option<Selected>> = OnceLock::new();
-        *PIN.get_or_init(|| {
-            let value = std::env::var("AIRNOTE_DICTATION_STT_PROVIDER").ok()?;
-            let pinned = match value.trim().to_ascii_lowercase().as_str() {
-                "local" => Some(Selected::OnDevice),
-                "hosted" => Some(Selected::Hosted),
-                _ => None,
-            };
-            if let Some(p) = pinned {
-                tracing::warn!(
-                    provider = if p == Selected::OnDevice { "on-device" } else { "hosted" },
-                    "[dictation_stt] AIRNOTE_DICTATION_STT_PROVIDER pins the provider this session (diagnostics mode)"
-                );
-            }
-            pinned
-        })
-    }
-
-    /// Auto: on-device iff this machine runs it well — the Vulkan GPU worker
-    /// came up AND the local model is installed. Hardware doesn't change
-    /// mid-session, so the answer is cached; the first call pays the worker
-    /// spawn + probe (~1s, done at startup prewarm in practice).
-    fn auto_selection() -> Selected {
-        static AUTO: OnceLock<Selected> = OnceLock::new();
-        *AUTO.get_or_init(|| {
-            let gpu = crate::asr::gpu_active();
-            let model = super::model_installed();
-            let selected = if gpu && model {
-                Selected::OnDevice
-            } else {
-                Selected::Hosted
-            };
-            tracing::info!(
-                gpu_active = gpu,
-                model_installed = model,
-                resolved = if selected == Selected::OnDevice {
-                    "on-device"
-                } else {
-                    "hosted"
-                },
-                "[dictation_stt] Auto provider resolved for this session"
-            );
-            selected
-        })
     }
 
     fn name_of(s: Selected) -> &'static str {
         match s {
-            Selected::OnDevice => super::on_device::NAME,
-            Selected::Hosted => HOSTED_NAME,
+            Selected::OnDevice => super::on_device::name(),
+            Selected::TogetherNemotron => TOGETHER_NEMOTRON_NAME,
         }
     }
 
@@ -243,37 +262,48 @@ mod provider {
         name_of(selection())
     }
 
+    pub(super) fn uses_live_nemotron() -> bool {
+        selection() == Selected::TogetherNemotron
+    }
+
     pub(super) fn auto_name() -> &'static str {
-        name_of(auto_selection())
+        if crate::stt_policy::current().is_cloud_locked() {
+            TOGETHER_NEMOTRON_NAME
+        } else {
+            super::on_device::name()
+        }
     }
 
     pub(super) fn ready() -> bool {
         match selection() {
             Selected::OnDevice => super::on_device::ready(),
-            Selected::Hosted => api_key().is_some(),
+            Selected::TogetherNemotron => api_key().is_some(),
         }
     }
 
     pub(super) fn prewarm() {
         match selection() {
             Selected::OnDevice => super::on_device::prewarm(),
-            Selected::Hosted => match client() {
+            Selected::TogetherNemotron => match nemotron_realtime_client() {
                 Ok(client) => tracing::info!(
                     model = client.model(),
-                    "[dictation_stt] hosted provider ready"
+                    transport = "websocket",
+                    "[dictation_stt] Together Nemotron provider ready"
                 ),
-                Err(e) => tracing::error!("[dictation_stt] hosted provider NOT ready: {e}"),
+                Err(e) => {
+                    tracing::error!("[dictation_stt] Together Nemotron provider NOT ready: {e}")
+                }
             },
         }
     }
 
-    /// DeepInfra key baked into the build at compile time — same scheme as
-    /// `DEEPSEEK_API_KEY` for meeting summaries: set `DEEPINFRA_API_KEY` in
+    /// Together AI key baked into the build at compile time — same scheme as
+    /// `DEEPSEEK_API_KEY` for meeting summaries: set `TOGETHER_API_KEY` in
     /// the build environment (scripts/build-windows.ps1 loads it from the
     /// repo-root .env) and it ships inside the binary; users never enter it.
     /// Dev builds without the bake fall back to a runtime env var.
     fn bundled_api_key() -> Option<String> {
-        option_env!("DEEPINFRA_API_KEY")
+        option_env!("TOGETHER_API_KEY")
             .map(str::trim)
             .filter(|key| !key.is_empty())
             .map(str::to_string)
@@ -281,121 +311,124 @@ mod provider {
 
     fn api_key() -> Option<String> {
         bundled_api_key().or_else(|| {
-            std::env::var(deepinfra::API_KEY_ENV)
+            std::env::var(together::API_KEY_ENV)
                 .ok()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
         })
     }
 
-    /// One process-wide client: reqwest pools the TLS connection, saving a
-    /// handshake on every dictation after the first. Construction is deferred
-    /// until the key resolves so a dev who exports the env var after launch
-    /// isn't stuck with a cached failure.
-    ///
-    /// Ops knob: `DEEPINFRA_STT_MODEL` overrides the model id at process start
-    /// (A/B-testing alternative hosted models without a rebuild). Unset =
-    /// whisper-large-v3-turbo, the production default.
-    fn client() -> Result<&'static HostedSttClient, String> {
-        static CLIENT: OnceLock<HostedSttClient> = OnceLock::new();
+    /// Nemotron's selected model is realtime-only in AirNote: it never shares
+    /// the multipart Whisper client, so an accidental HTTP fallback is impossible.
+    fn nemotron_realtime_client() -> Result<&'static TogetherRealtimeClient, String> {
+        static CLIENT: OnceLock<TogetherRealtimeClient> = OnceLock::new();
         if let Some(client) = CLIENT.get() {
             return Ok(client);
         }
         let key = api_key().ok_or_else(|| {
             format!(
-                "Speech service unavailable — no DeepInfra key in this build (bake {} at build time, or set it as an env var).",
-                deepinfra::API_KEY_ENV
+                "Speech service unavailable — no Together AI key in this build (bake {} at build time, or set it as an env var).",
+                together::API_KEY_ENV
             )
         })?;
-        let mut cfg = deepinfra::config(key);
-        if let Ok(model) = std::env::var("DEEPINFRA_STT_MODEL") {
-            let model = model.trim();
-            if !model.is_empty() {
-                cfg.model = model.to_string();
-            }
-        }
-        let client = HostedSttClient::new(cfg).map_err(|e| e.to_string())?;
+        let client = TogetherRealtimeClient::nemotron(key).map_err(|e| e.to_string())?;
         Ok(CLIENT.get_or_init(|| client))
     }
 
     pub(super) async fn transcribe(wav: &[u8], language: &str) -> Result<PreTranscript, String> {
-        if selection() == Selected::OnDevice {
+        let selected = selection();
+        if selected == Selected::OnDevice {
             return super::on_device::transcribe(wav, language).await;
         }
-        let client = client()?;
-
-        // Always send a language hint. Auto-detect labels Hinglish clips
-        // "en"/"hi" inconsistently clip-to-clip, which flips the output script
-        // mid-session; pinning Hindi keeps Hinglish stable (Devanagari Hindi,
-        // English words preserved in Latin). A concrete user preference passes
-        // through; the app's "auto" resolves to Hindi — our dictation default.
-        let hint = match language {
-            "" | "auto" => "hi",
-            lang => lang,
+        let transcription = match selected {
+            Selected::TogetherNemotron => {
+                // Only historical WAV retry/reprocess paths reach here. A
+                // newly recorded dictation opens `transcribe_live_nemotron`
+                // at key-down and never replays its completed WAV.
+                let transcription = nemotron_realtime_client()?
+                    .transcribe_wav(wav)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                transcription
+            }
+            Selected::OnDevice => unreachable!("on-device returned before cloud dispatch"),
         };
-        let hosted = client
-            .transcribe_wav(wav.to_vec(), Some(hint))
-            .await
-            .map_err(|e| e.to_string())?;
 
         tracing::info!(
-            latency_ms = hosted.latency_ms,
-            audio_secs = hosted.audio_secs.unwrap_or(0.0),
-            detected_language = hosted.language.as_deref().unwrap_or("unreported"),
+            latency_ms = transcription.latency_ms,
+            audio_secs = transcription.audio_secs.unwrap_or(0.0),
+            detected_language = transcription.language.as_deref().unwrap_or("unreported"),
             requested_language = language,
-            language_hint = hint,
-            model = %hosted.model,
-            "[dictation_stt] hosted transcription complete"
+            transport = "websocket",
+            model = %transcription.model,
+            "[dictation_stt] Together transcription complete"
         );
 
         // An empty transcript is a terminal "nothing to type" outcome — fail
         // here with the honest message instead of letting an empty
         // pre_transcript die downstream as a backend 400.
-        if hosted.text.is_empty() {
+        if transcription.text.is_empty() {
             return Err("No speech detected — try speaking again.".to_string());
         }
 
-        let word_count = hosted.text.split_whitespace().count();
+        let word_count = transcription.text.split_whitespace().count();
         Ok(PreTranscript {
-            transcript: hosted.text.clone(),
+            transcript: transcription.text.clone(),
             meta: TranscriptMeta {
-                enriched_transcript: hosted.text,
+                enriched_transcript: transcription.text,
                 confidence: 1.0,
                 mean_word_confidence: 1.0,
                 low_confidence_count: 0,
                 word_count,
-                languages: hosted.language.into_iter().collect(),
-                model: format!("deepinfra:{}", hosted.model),
-                duration_ms: hosted.latency_ms,
+                languages: transcription.language.into_iter().collect(),
+                model: format!("together:{}", transcription.model),
+                duration_ms: transcription.latency_ms,
                 origin: TranscriptOrigin::DictationHosted,
                 ..TranscriptMeta::default()
             },
         })
     }
-}
 
-// ── macOS (and other Unix): on-device whisper via asr-core ─────────────────
-#[cfg(not(target_os = "windows"))]
-mod provider {
-    use super::PreTranscript;
+    /// Finish a session that was opened at key-down and received PCM while the
+    /// user spoke. This deliberately does not consult `selection()` again:
+    /// the selection was captured when the session started, and a settings
+    /// change during a recording must not reroute its final audio.
+    pub(super) async fn transcribe_live_nemotron(
+        input: asr_cloud::LiveTranscriptionInput,
+        event_tx: tokio::sync::mpsc::UnboundedSender<asr_cloud::LiveTranscriptEvent>,
+    ) -> Result<PreTranscript, String> {
+        let transcription = nemotron_realtime_client()?
+            .transcribe_live(input, event_tx)
+            .await
+            .map_err(|e| e.to_string())?;
 
-    pub(super) fn name() -> &'static str {
-        super::on_device::NAME
-    }
+        tracing::info!(
+            latency_ms = transcription.latency_ms,
+            audio_secs = transcription.audio_secs.unwrap_or(0.0),
+            model = %transcription.model,
+            transport = "websocket-live",
+            "[dictation_stt] Together Nemotron live transcription complete"
+        );
 
-    pub(super) fn auto_name() -> &'static str {
-        super::on_device::NAME
-    }
+        if transcription.text.is_empty() {
+            return Err("No speech detected — try speaking again.".to_string());
+        }
 
-    pub(super) fn ready() -> bool {
-        super::on_device::ready()
-    }
-
-    pub(super) fn prewarm() {
-        super::on_device::prewarm();
-    }
-
-    pub(super) async fn transcribe(wav: &[u8], language: &str) -> Result<PreTranscript, String> {
-        super::on_device::transcribe(wav, language).await
+        let word_count = transcription.text.split_whitespace().count();
+        Ok(PreTranscript {
+            transcript: transcription.text.clone(),
+            meta: TranscriptMeta {
+                enriched_transcript: transcription.text,
+                confidence: 1.0,
+                mean_word_confidence: 1.0,
+                low_confidence_count: 0,
+                word_count,
+                languages: transcription.language.into_iter().collect(),
+                model: format!("together:{}", transcription.model),
+                duration_ms: transcription.latency_ms,
+                origin: TranscriptOrigin::DictationHosted,
+                ..TranscriptMeta::default()
+            },
+        })
     }
 }

@@ -28,10 +28,10 @@ import {
 import type { AppSnapshot, Preferences } from "@/types";
 import {
   getPreferences, invoke, patchPreferences,
-  getDesktopPrefs, setDesktopPrefs, requestBrowserAutomation,
+  getDesktopPrefs, getSttSetupPolicy, selectLocalDictationRoute, setDesktopPrefs, requestBrowserAutomation,
+  type SttSetupPolicy,
 } from "@/lib/invoke";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
-import { ReclaimOldModelsRow, type ReclaimResult } from "@/components/ReclaimOldModelsRow";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
@@ -99,8 +99,8 @@ function formatSize(bytes: number): string {
 const STEPS = ONBOARDING_STEP_IDS;
 
 // All desktop platforms get the same high-level onboarding order. The speech
-// recognition step renders platform-specific copy but always includes the
-// cross-platform whisper.cpp local model download.
+// recognition step reads the shared device policy before rendering: live
+// Nemotron on Windows/Intel, required local setup on Apple Silicon.
 function visibleStepsFor(): Step[] {
   return [...STEPS];
 }
@@ -130,12 +130,11 @@ export function OnboardingFlow({
   const dictationTriedRef = useRef(false);
   const [dictationModel, setDictationModel] = useState<DictationModelStatus | null>(null);
   const [dictationDownload, setDictationDownload] = useState<DictationDownloadProgress | null>(null);
+  const [sttPolicy, setSttPolicy] = useState<SttSetupPolicy | null>(null);
+  const [nemotronQ4Model, setNemotronQ4Model] = useState<DictationModelStatus | null>(null);
+  const [nemotronQ4Download, setNemotronQ4Download] = useState<DictationDownloadProgress | null>(null);
   const [dictationBusy, setDictationBusy] = useState(false);
   const [dictationError, setDictationError] = useState("");
-  // Old-model cleanup (only offered once the new model is verified installed).
-  const [reclaiming, setReclaiming] = useState(false);
-  const [reclaimResult, setReclaimResult] = useState<ReclaimResult | null>(null);
-  const [reclaimError, setReclaimError] = useState("");
   // Live "Try it" feedback so a failed first dictation is never a silent empty box.
   const [testError, setTestError] = useState("");
   const [testPhase, setTestPhase] = useState<"idle" | "recording" | "processing">("idle");
@@ -145,7 +144,6 @@ export function OnboardingFlow({
   const [workspacePreview, setWorkspacePreview] = useState<EnterpriseConnection | null>(null);
   const [userNavigatedManually, setUserNavigatedManually] = useState(false);
   const resumeSynced = useRef(false);
-  const silentLegacyModelCleanupDone = useRef(false);
 
   const [progress, setProgress] = useState<OnboardingProgress>(() =>
     computeResumeProgress(initialProgress ?? loadOnboardingProgress(), {
@@ -210,19 +208,28 @@ export function OnboardingFlow({
     }
   }, [onLocalModelReady]);
 
-  useEffect(() => {
-    void refreshDictationModel();
-  }, [refreshDictationModel]);
+  const refreshSttSetup = useCallback(async () => {
+    try {
+      const policy = await getSttSetupPolicy();
+      setSttPolicy(policy);
+      if (policy.setup_kind === "cloud_locked") return policy;
+      if (policy.local_model === "nemotron-q4") {
+        const status = await invoke<DictationModelStatus>("nemotron_model_status", { variant: "q4" });
+        setNemotronQ4Model(status);
+        if (status.installed) onLocalModelReady?.();
+      } else {
+        await refreshDictationModel();
+      }
+      return policy;
+    } catch (e) {
+      setDictationError(e instanceof Error ? e.message : String(e));
+      return null;
+    }
+  }, [onLocalModelReady, refreshDictationModel]);
 
   useEffect(() => {
-    if (silentLegacyModelCleanupDone.current || !dictationModel) return;
-    silentLegacyModelCleanupDone.current = true;
-    void invoke<ReclaimResult>("reclaim_old_models")
-      .then((result) => {
-        if (result.removed.length > 0) void refreshDictationModel();
-      })
-      .catch(() => {});
-  }, [dictationModel, refreshDictationModel]);
+    void refreshSttSetup();
+  }, [refreshSttSetup]);
 
   useEffect(() => {
     const unlistenP = listen<DictationDownloadProgress>("meeting-model-download", (event) => {
@@ -249,6 +256,24 @@ export function OnboardingFlow({
   }, [refreshDictationModel]);
 
   useEffect(() => {
+    const unlistenP = listen<DictationDownloadProgress>("nemotron-model-download", (event) => {
+      const payload = event.payload;
+      if (payload.name !== "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf") return;
+      if (payload.status === "downloading") {
+        setNemotronQ4Download(payload);
+        setDictationError("");
+      } else {
+        setNemotronQ4Download(null);
+      }
+      if (payload.status === "done") void refreshSttSetup();
+      if (payload.status === "error") setDictationError(friendlyError(payload.error, "Model download failed."));
+    });
+    return () => {
+      void unlistenP.then((fn) => fn());
+    };
+  }, [refreshSttSetup]);
+
+  useEffect(() => {
     if (resumeSynced.current) return;
     if (!snapshot) return;
     resumeSynced.current = true;
@@ -267,6 +292,9 @@ export function OnboardingFlow({
   }, [authMode]);
 
   const dictationModelInstalled = dictationModel?.installed ?? false;
+  const localModelInstalled = sttPolicy?.local_model === "nemotron-q4"
+    ? (nemotronQ4Model?.installed ?? false)
+    : dictationModelInstalled;
   const permsReady = micGranted && (isWindows || (accGranted && imGranted));
   const stepIndex = visStepIndex(step);
 
@@ -376,7 +404,7 @@ export function OnboardingFlow({
   );
 
   useEffect(() => {
-    if (!requireLocalModelSetup || workspaceOnly || !isMac || dictationModelInstalled) return;
+    if (!requireLocalModelSetup || workspaceOnly || !isMac || sttPolicy?.setup_kind !== "local_required" || localModelInstalled) return;
     if (step === "keys" && progress.stepStatus.keys !== "done") return;
     const updated = applyProgress({
       currentStep: "keys",
@@ -391,7 +419,8 @@ export function OnboardingFlow({
     progress.stepStatus,
     requireLocalModelSetup,
     step,
-    dictationModelInstalled,
+    localModelInstalled,
+    sttPolicy?.setup_kind,
     workspaceOnly,
     visStepIndex,
   ]);
@@ -534,13 +563,14 @@ export function OnboardingFlow({
   }, [step]);
 
   const chooseLocalEngine = useCallback(async () => {
-    if (!dictationModelInstalled) {
+    if (!localModelInstalled) {
       setKeyError("Download the local model first, then continue.");
       return;
     }
     setKeySaving(true);
     setKeyError("");
     try {
+      await selectLocalDictationRoute();
       onLocalModelReady?.();
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
@@ -549,41 +579,35 @@ export function OnboardingFlow({
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone, completedThroughCurrentStep, dictationModelInstalled, onLocalModelReady]);
+  }, [advanceToNextUndone, completedThroughCurrentStep, localModelInstalled, onLocalModelReady, selectLocalDictationRoute]);
 
   const handleDictationDownload = useCallback(async () => {
     setDictationBusy(true);
     setDictationError("");
     setKeyError("");
     try {
-      await invoke("download_dictation_model");
-      const status = await refreshDictationModel();
-      if (status?.installed) onLocalModelReady?.();
+      if (sttPolicy?.local_model === "nemotron-q4") {
+        await invoke("download_nemotron_model", { variant: "q4" });
+        const status = await invoke<DictationModelStatus>("nemotron_model_status", { variant: "q4" });
+        if (!status.installed) throw new Error("Nemotron Streaming 3.5 (Q4) did not install correctly. Try again.");
+      } else {
+        await invoke("download_dictation_model");
+        const status = await invoke<DictationModelStatus>("dictation_model_status");
+        if (!status.installed) throw new Error("Oriserve Hinglish did not install correctly. Try again.");
+      }
+      await selectLocalDictationRoute();
+      await refreshSttSetup();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg !== "cancelled") setDictationError(friendlyError(msg));
     } finally {
       setDictationBusy(false);
     }
-  }, [onLocalModelReady, refreshDictationModel]);
+  }, [refreshSttSetup, selectLocalDictationRoute, sttPolicy?.local_model]);
 
   const handleDictationCancel = useCallback(async () => {
     await invoke("meeting_cancel_model_download", { name: NEW_MODEL_FILE }).catch(() => {});
     setDictationDownload(null);
-  }, []);
-
-  // Reclaim extra speech-model disk. Oriserve and Silero VAD are preserved.
-  const handleReclaimOldModels = useCallback(async () => {
-    setReclaiming(true);
-    setReclaimError("");
-    try {
-      const result = await invoke<ReclaimResult>("reclaim_old_models");
-      setReclaimResult(result);
-    } catch (e) {
-      setReclaimError(friendlyError(e));
-    } finally {
-      setReclaiming(false);
-    }
   }, []);
 
   // Persist the picked hotkey immediately (applied live by the backend on
@@ -602,6 +626,7 @@ export function OnboardingFlow({
 
   // ── Step 1: Welcome ──────────────────────────────────────────────────────
   if (step === "welcome") {
+    const cloudLocked = sttPolicy?.setup_kind === "cloud_locked";
     return (
       <OnboardingShell
         step={stepIndex}
@@ -609,9 +634,9 @@ export function OnboardingFlow({
         eyebrow="Get started"
         title="Welcome to AirNote."
         subtitle={
-          isWindows
-            ? "A two-minute setup. Create your account, grant microphone access, install the local speech model, pick a dictation key — then you’ll never type by hand again."
-            : "A two-minute setup. Create your account, grant three permissions, install the local speech model, pick a dictation key — then you’ll never type by hand again."
+          cloudLocked
+            ? "A two-minute setup. Create your account, grant permissions, confirm live speech recognition, pick a dictation key — then you’ll never type by hand again."
+            : "A two-minute setup. Create your account, grant permissions, install the local speech model, pick a dictation key — then you’ll never type by hand again."
         }
         brandTagline={
           isWindows
@@ -620,8 +645,8 @@ export function OnboardingFlow({
         }
         brandKicker={isWindows ? "Built for Windows" : "Built for macOS"}
         brandQuote={
-          isWindows
-            ? "It’s like typing, except your brain is the keyboard."
+          cloudLocked
+            ? "Live speech recognition streams as you talk."
             : "Local speech recognition runs on this device."
         }
         bottomNote={<span>{isWindows ? "Windows 10/11" : "macOS 14+"}</span>}
@@ -951,28 +976,100 @@ export function OnboardingFlow({
     );
   }
 
-  // ── Step 4: Speech recognition engine ────────────────────────────────────
-  // On-device whisper.cpp is required before dictation can run.
+  // ── Step 4: Speech recognition setup ─────────────────────────────────────
+  // The shared device policy either confirms live Nemotron or requires its
+  // assigned local model before dictation can run.
   if (step === "keys") {
-    const dictationDownloadPct =
-      dictationDownload && dictationDownload.total > 0
-        ? Math.min(100, Math.round((dictationDownload.received / dictationDownload.total) * 100))
-        : null;
-    const deviceName = isWindows ? "PC" : "Mac";
+    // Do not let a transient bridge delay fall back to a guessed model. The
+    // policy is the contract; setup waits until it is known or asks to retry.
+    if (!sttPolicy) {
+      return (
+        <OnboardingShell
+          step={stepIndex}
+          totalSteps={totalSteps}
+          eyebrow="Speech recognition"
+          title={dictationError ? "Couldn’t check this Mac." : "Checking your speech setup…"}
+          subtitle={dictationError
+            ? "AirNote needs to identify this device before choosing its speech setup."
+            : "This takes a moment."}
+          brandTagline="AirNote selects one reliable speech route for this device."
+          brandKicker="Speech setup"
+          brandQuote="Your processor and memory determine the local setup when one is needed."
+          topRight={<span>{stepLabel(step)}</span>}
+          onBack={goBack}
+          {...navProps}
+        >
+          <div className="mt-7 flex flex-col gap-3">
+            {dictationError ? (
+              <>
+                <ErrorNotice error={dictationError} onRetry={() => void refreshSttSetup()} />
+                <button onClick={() => void refreshSttSetup()} className="btn-primary btn-lg w-full">Try again</button>
+              </>
+            ) : (
+              <div className="flex items-center gap-2 text-[13px] text-muted-foreground"><Loader2 size={15} className="animate-spin" /> Reading device details…</div>
+            )}
+          </div>
+        </OnboardingShell>
+      );
+    }
+
+    const cloudLocked = sttPolicy?.setup_kind === "cloud_locked";
+    const recommendedName = sttPolicy?.local_model_name ?? NEW_MODEL_NAME;
+    const recommendedSize = sttPolicy?.local_model_size_hint ?? NEW_MODEL_SIZE_HINT;
+    const selectedDownload = sttPolicy?.local_model === "nemotron-q4" ? nemotronQ4Download : dictationDownload;
+    const selectedModel = sttPolicy?.local_model === "nemotron-q4" ? nemotronQ4Model : dictationModel;
+    const downloadPct = selectedDownload && selectedDownload.total > 0
+      ? Math.min(100, Math.round((selectedDownload.received / selectedDownload.total) * 100))
+      : null;
+
+    if (cloudLocked) {
+      const intelMac = sttPolicy?.cpu_family === "intel";
+      return (
+        <OnboardingShell
+          step={stepIndex}
+          totalSteps={totalSteps}
+          eyebrow="Live speech recognition"
+          title="Live Nemotron is ready."
+          subtitle="AirNote uses live multilingual speech recognition on this device. No local speech model download is needed."
+          brandTagline="Speak naturally. AirNote streams the transcript as you talk."
+          brandKicker="Live Nemotron"
+          brandQuote={intelMac ? "This Intel Mac uses the cloud speech engine for a reliable experience." : "This PC uses the cloud speech engine for a reliable experience."}
+          topRight={<span>{stepLabel(step)}</span>}
+          onBack={goBack}
+          {...navProps}
+        >
+          <div className="mt-7 flex flex-col gap-3">
+            <div className="rounded-xl p-4" style={{ border: "1px solid hsl(var(--primary) / 0.45)", background: "hsl(var(--primary) / 0.06)" }}>
+              <div className="flex items-center gap-2">
+                <span className="w-[22px] h-[22px] rounded-[7px] grid place-items-center" style={{ background: "hsl(var(--primary))", color: "white" }}><Wifi size={13} /></span>
+                <p className="text-[13.5px] font-semibold text-foreground">Nemotron Streaming 3.5</p>
+              </div>
+              <p className="text-[11.5px] text-muted-foreground leading-relaxed mt-3">
+                AirNote opens a live secure connection when you start dictating and finalizes your transcript when you release the key. An internet connection is required.
+              </p>
+            </div>
+            <button onClick={() => advanceToNextUndone(completedThroughCurrentStep())} className="btn-primary btn-lg w-full">
+              Continue <ArrowRight size={14} />
+            </button>
+          </div>
+        </OnboardingShell>
+      );
+    }
+
     return (
       <OnboardingShell
         step={stepIndex}
         totalSteps={totalSteps}
         eyebrow="Local model"
-        title={dictationModelInstalled ? "Local speech model is ready." : "Install the local speech model."}
+        title={localModelInstalled ? "Local speech model is ready." : "Installing your local speech model."}
         subtitle={
-          dictationModelInstalled
-            ? `AirNote found ${NEW_MODEL_NAME} on this ${deviceName}. Continue when you're ready.`
-            : `AirNote transcribes on this ${deviceName}. Download the model before dictation can run.`
+          localModelInstalled
+            ? `${recommendedName} is installed and selected for this Mac.`
+            : `AirNote selected ${recommendedName} for this Apple Silicon Mac. Download it before dictation can run.`
         }
-        brandTagline={`On-device keeps your voice on this ${deviceName}.`}
+        brandTagline="On-device speech keeps dictation local and avoids per-use speech cost."
         brandKicker="Recommended · on-device"
-        brandQuote={`The local model transcribes Hinglish right on your ${deviceName} — private, works offline, no per-use cost.`}
+        brandQuote="This hardware-assigned model runs locally, privately, and offline."
         topRight={<span>{stepLabel(step)}</span>}
         onBack={goBack}
         {...navProps}
@@ -994,7 +1091,7 @@ export function OnboardingFlow({
                   <Sparkles size={13} />
                 </span>
                 <p className="text-[13.5px] font-semibold text-foreground truncate">
-                Install {NEW_MODEL_NAME}
+                {recommendedName}
                 </p>
               </div>
               <span
@@ -1005,42 +1102,33 @@ export function OnboardingFlow({
               </span>
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              Hinglish speech recognition, running entirely on this {deviceName}. Strong on
-              Hindi-English code-switching — and your voice never leaves the device. Private,
-              offline, no per-use cost.
+              AirNote selected this model from your Mac’s processor and RAM. It is the required
+              local setup for dictation and avoids cloud speech usage by default.
             </p>
             <DictationModelCard
-              modelName={NEW_MODEL_NAME}
-              installed={dictationModelInstalled}
-              sizeBytes={dictationModel?.size_bytes ?? 0}
-              sizeHint={NEW_MODEL_SIZE_HINT}
-              progressPct={dictationDownloadPct ?? null}
+              modelName={recommendedName}
+              installed={localModelInstalled}
+              sizeBytes={selectedModel?.size_bytes ?? 0}
+              sizeHint={recommendedSize}
+              progressPct={downloadPct}
               busy={dictationBusy}
               error={dictationError}
               onDownload={() => void handleDictationDownload()}
               onCancel={() => void handleDictationCancel()}
+              canCancel={sttPolicy?.local_model !== "nemotron-q4"}
             />
-
-            {dictationModelInstalled && (
-              <ReclaimOldModelsRow
-                reclaiming={reclaiming}
-                result={reclaimResult}
-                error={reclaimError}
-                onReclaim={() => void handleReclaimOldModels()}
-              />
-            )}
 
             <button
               onClick={() => void chooseLocalEngine()}
-              disabled={keySaving || !dictationModelInstalled}
+              disabled={keySaving || !localModelInstalled}
               className="btn-primary btn-lg w-full mt-3"
             >
               {keySaving
                 ? "Saving…"
-                : dictationModelInstalled
+                : localModelInstalled
                   ? "Continue"
-                  : `Download ${NEW_MODEL_NAME} · ${NEW_MODEL_SIZE_HINT}`}
-              {!keySaving && dictationModelInstalled && <ArrowRight size={14} />}
+                  : `Download ${recommendedName} · ${recommendedSize}`}
+              {!keySaving && localModelInstalled && <ArrowRight size={14} />}
             </button>
           </div>
 
@@ -1279,6 +1367,7 @@ function DictationModelCard({
   error,
   onDownload,
   onCancel,
+  canCancel = true,
 }: {
   modelName: string;
   installed: boolean;
@@ -1289,6 +1378,7 @@ function DictationModelCard({
   error: string;
   onDownload: () => void;
   onCancel: () => void;
+  canCancel?: boolean;
 }) {
   const downloading = progressPct !== null && !installed;
   return (
@@ -1323,7 +1413,7 @@ function DictationModelCard({
           >
             <Check size={11} /> Installed
           </span>
-        ) : downloading ? (
+        ) : downloading && canCancel ? (
           <button
             type="button"
             onClick={onCancel}
@@ -1333,6 +1423,10 @@ function DictationModelCard({
             <X size={12} />
             Cancel
           </button>
+        ) : downloading ? (
+          <span className="text-[11px] shrink-0 inline-flex items-center gap-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+            <Loader2 size={12} className="animate-spin" /> Downloading
+          </span>
         ) : (
           <button
             type="button"

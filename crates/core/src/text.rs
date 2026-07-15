@@ -21,9 +21,38 @@ pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Accumulates arbitrary byte chunks into complete, UTF-8 SSE lines.
+///
+/// HTTP stream chunks are byte boundaries, not character boundaries. Decoding
+/// each chunk independently can replace a split multi-byte character with
+/// `\u{FFFD}`. Newlines are ASCII and cannot occur inside a UTF-8 character, so
+/// it is safe to wait for a complete line before decoding it.
+#[derive(Debug, Default)]
+pub struct Utf8LineBuffer {
+    pending: Vec<u8>,
+}
+
+impl Utf8LineBuffer {
+    /// Adds a byte chunk and returns every newline-terminated UTF-8 line.
+    ///
+    /// Returned lines exclude their trailing `\n`; an optional `\r` is left for
+    /// callers that need to support CRLF framing.
+    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, std::string::FromUtf8Error> {
+        self.pending.extend_from_slice(chunk);
+
+        let mut lines = Vec::new();
+        while let Some(newline) = self.pending.iter().position(|&byte| byte == b'\n') {
+            let mut bytes: Vec<u8> = self.pending.drain(..=newline).collect();
+            bytes.pop(); // trailing newline
+            lines.push(String::from_utf8(bytes)?);
+        }
+        Ok(lines)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::truncate_utf8;
+    use super::{Utf8LineBuffer, truncate_utf8};
 
     #[test]
     fn returns_whole_string_when_within_budget() {
@@ -56,5 +85,20 @@ mod tests {
             let out = truncate_utf8(s, n);
             assert!(s.starts_with(out));
         }
+    }
+
+    #[test]
+    fn buffers_split_unicode_until_a_complete_line_arrives() {
+        let line = "data: {\"text\":\"A — नमस्ते\"}\n";
+        let bytes = line.as_bytes();
+        // Split after the first byte of the em dash's three-byte UTF-8 sequence.
+        let split = bytes.iter().position(|&byte| byte == 0xe2).unwrap() + 1;
+        let mut buffer = Utf8LineBuffer::default();
+
+        assert!(buffer.push(&bytes[..split]).unwrap().is_empty());
+        assert_eq!(
+            buffer.push(&bytes[split..]).unwrap(),
+            vec![line.trim_end_matches('\n')]
+        );
     }
 }

@@ -50,7 +50,7 @@ pub struct Preferences {
     pub gateway_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
     pub groq_api_key: Option<String>,
-    pub cerebras_api_key: Option<String>,
+    pub together_api_key: Option<String>,
     pub deepinfra_api_key: Option<String>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     pub llm_provider: String,
@@ -75,7 +75,7 @@ pub struct PrefsUpdate {
     pub gateway_api_key: Option<Option<String>>,
     pub gemini_api_key: Option<Option<String>>,
     pub groq_api_key: Option<Option<String>>,
-    pub cerebras_api_key: Option<Option<String>>,
+    pub together_api_key: Option<Option<String>>,
     pub deepinfra_api_key: Option<Option<String>>,
     /// LLM provider: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     pub llm_provider: Option<String>,
@@ -101,7 +101,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
                 learning_enabled, server_runtime_enabled, 0 AS server_audio_runtime_enabled, updated_at,
                 gateway_api_key, gemini_api_key, llm_provider,
-                groq_api_key, cerebras_api_key, deepinfra_api_key
+                groq_api_key, together_api_key, deepinfra_api_key
          FROM preferences WHERE user_id = ?1",
         params![user_id],
         |row| {
@@ -136,7 +136,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                     }
                 },
                 groq_api_key: row.get(17)?,
-                cerebras_api_key: row.get(18)?,
+                together_api_key: row.get(18)?,
                 deepinfra_api_key: row.get(19)?,
             })
         },
@@ -254,9 +254,9 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
         )
         .ok()?;
     }
-    if let Some(v) = update.cerebras_api_key {
+    if let Some(v) = update.together_api_key {
         conn.execute(
-            "UPDATE preferences SET cerebras_api_key = ?1, updated_at = ?2 WHERE user_id = ?3",
+            "UPDATE preferences SET together_api_key = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],
         )
         .ok()?;
@@ -287,38 +287,65 @@ mod tests {
     use super::{normalize_record_hotkey, normalize_selected_model, validate_polish_model_key};
 
     #[test]
-    fn normalizes_smart_model_aliases_to_cerebras_gemma_4() {
-        assert_eq!(normalize_selected_model("smart"), "cerebras-gemma-4");
-        assert_eq!(normalize_selected_model("maverick"), "cerebras-gemma-4");
-    }
-
-    #[test]
-    fn validate_preserves_beta_catalog_keys() {
-        assert_eq!(validate_polish_model_key("phi4"), "phi4");
-        assert_eq!(validate_polish_model_key("groq-scout"), "groq-scout");
-    }
-
-    #[test]
-    fn normalize_preserves_beta_catalog_keys() {
-        assert_eq!(normalize_selected_model("phi4"), "phi4");
-        assert_eq!(normalize_selected_model("groq-scout"), "groq-scout");
-        assert_eq!(normalize_selected_model("groq-70b"), "groq-70b");
+    fn normalizes_smart_model_aliases_to_openrouter_nitro_gemma_4() {
         assert_eq!(
-            normalize_selected_model("cerebras-gpt-oss"),
-            "cerebras-gemma-4"
+            normalize_selected_model("smart"),
+            "openrouter-gemma-4-nitro"
+        );
+        assert_eq!(
+            normalize_selected_model("maverick"),
+            "openrouter-gemma-4-nitro"
         );
     }
 
     #[test]
-    fn normalizes_scout_alias_to_groq_scout_key() {
-        assert_eq!(validate_polish_model_key("scout"), "groq-scout");
+    fn validate_replaces_retired_catalog_keys() {
+        assert_eq!(
+            validate_polish_model_key("phi4"),
+            "openrouter-gemma-4-nitro"
+        );
+        assert_eq!(
+            validate_polish_model_key("groq-scout"),
+            "openrouter-gemma-4-nitro"
+        );
     }
 
     #[test]
-    fn normalizes_fast_model_aliases_to_fast() {
-        assert_eq!(normalize_selected_model("fast"), "fast");
-        assert_eq!(normalize_selected_model("llama-3.1-8b-instant"), "fast");
-        assert_eq!(normalize_selected_model("deepseek"), "fast");
+    fn normalize_replaces_retired_catalog_keys() {
+        assert_eq!(normalize_selected_model("phi4"), "openrouter-gemma-4-nitro");
+        assert_eq!(
+            normalize_selected_model("groq-scout"),
+            "openrouter-gemma-4-nitro"
+        );
+        assert_eq!(
+            normalize_selected_model("groq-70b"),
+            "openrouter-gemma-4-nitro"
+        );
+        assert_eq!(
+            normalize_selected_model("legacy-provider-model"),
+            "openrouter-gemma-4-nitro"
+        );
+    }
+
+    #[test]
+    fn normalizes_scout_alias_to_current_key() {
+        assert_eq!(
+            validate_polish_model_key("scout"),
+            "openrouter-gemma-4-nitro"
+        );
+    }
+
+    #[test]
+    fn normalizes_fast_model_aliases_to_current_key() {
+        assert_eq!(normalize_selected_model("fast"), "openrouter-gemma-4-nitro");
+        assert_eq!(
+            normalize_selected_model("llama-3.1-8b-instant"),
+            "openrouter-gemma-4-nitro"
+        );
+        assert_eq!(
+            normalize_selected_model("deepseek"),
+            "openrouter-gemma-4-nitro"
+        );
     }
 
     #[test]

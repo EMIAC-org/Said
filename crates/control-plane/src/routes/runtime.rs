@@ -54,6 +54,7 @@ const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
 const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
 const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
+const OPENROUTER_VALIDATE_ENDPOINT: &str = "https://openrouter.ai/api/v1/models";
 const GEMINI_VALIDATE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const GATEWAY_VALIDATE_ENDPOINT: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
 const RUNTIME_PROMPT_LOG_ENV: &str = "AIRNOTE_RUNTIME_PROMPT_LOG";
@@ -1085,7 +1086,6 @@ pub async fn vocabulary_meaning(
     let started = Instant::now();
     let raw = polish_llm(
         &state,
-        active_org_id,
         route.provider,
         &credential.secret,
         &route.model,
@@ -1710,7 +1710,6 @@ async fn polish_runtime_transcript(
     let polish_credential = Some(credential);
     let output = polish_llm(
         state,
-        active_org_id,
         provider_label,
         &secret,
         &model,
@@ -2356,7 +2355,6 @@ pub async fn problem_solve(
     let model_start = Instant::now();
     let raw_output = polish_llm(
         &state,
-        active_org_id,
         provider_label,
         &credential.secret,
         &model,
@@ -2828,7 +2826,6 @@ async fn execute_voice_polish(
     let model_start = Instant::now();
     let llm_result = polish_llm(
         &state,
-        tenant_ctx.active_org_id,
         provider_label,
         &api_secret,
         &model,
@@ -3602,7 +3599,7 @@ async fn runtime_provider_secret(
     let env_fallback_present = match provider.as_str() {
         "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
-        "cerebras" => !state.cerebras_api_key.trim().is_empty(),
+        "openrouter" => !state.openrouter_api_key.trim().is_empty(),
         "deepinfra" => !state.deepinfra_api_key.trim().is_empty(),
         _ => false,
     };
@@ -3630,7 +3627,7 @@ async fn runtime_provider_secret(
     let fallback = match provider.as_str() {
         "openai" => state.openai_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
-        "cerebras" => state.cerebras_api_key.trim(),
+        "openrouter" => state.openrouter_api_key.trim(),
         "deepinfra" => state.deepinfra_api_key.trim(),
         _ => "",
     };
@@ -3785,6 +3782,7 @@ fn provider_display_name(provider: &str) -> &'static str {
         "openai" => "OpenAI",
         "gemini" => "Gemini",
         "gateway" => "Gateway",
+        "openrouter" => "OpenRouter",
         _ => "Provider",
     }
 }
@@ -3807,6 +3805,14 @@ async fn validate_provider_secret(
         "openai" => {
             client
                 .get(OPENAI_VALIDATE_ENDPOINT)
+                .bearer_auth(secret)
+                .timeout(timeout)
+                .send()
+                .await
+        }
+        "openrouter" => {
+            client
+                .get(OPENROUTER_VALIDATE_ENDPOINT)
                 .bearer_auth(secret)
                 .timeout(timeout)
                 .send()
@@ -3870,7 +3876,7 @@ async fn validate_provider_secret(
 fn normalize_provider(provider: &str) -> Result<String, (StatusCode, Json<Value>)> {
     let provider = provider.trim().to_lowercase();
     match provider.as_str() {
-        "groq" | "openai" | "gemini" | "gateway" | "cerebras" | "deepinfra" => Ok(provider),
+        "groq" | "openai" | "gemini" | "gateway" | "openrouter" | "deepinfra" => Ok(provider),
         _ => Err(json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown provider",
@@ -4051,9 +4057,6 @@ fn replace_token_core(output_word: &str, source_core: &str) -> String {
         &output_word[end..]
     )
 }
-
-/// Codex (ChatGPT) model used for polish when an org has connected ChatGPT.
-const CODEX_POLISH_MODEL: &str = "gpt-5.4-mini";
 
 /// Deterministic sentence-case + terminal punctuation for the dictation output.
 /// The light-touch polish prompt under-edits casing/punctuation; this guarantees
@@ -4243,62 +4246,10 @@ mod tidy_casing_tests {
     }
 }
 
-/// The org's connected-ChatGPT access token, transparently refreshed if expired.
-/// Returns `None` when the org hasn't connected ChatGPT (so polish stays on Groq,
-/// byte-for-byte unchanged) or when a refresh fails.
-async fn active_openai_token(state: &AppState, org_id: Uuid) -> Option<String> {
-    let row: Option<(
-        Option<String>,
-        Option<String>,
-        Option<chrono::DateTime<chrono::Utc>>,
-    )> = sqlx::query_as(
-        "SELECT openai_access_token, openai_refresh_token, openai_token_expires_at \
-         FROM orgs WHERE id = $1",
-    )
-    .bind(org_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten();
-    let (access, refresh, expires) = row?;
-    let access = access.filter(|t| !t.trim().is_empty())?;
-
-    // Still valid (60s safety margin), or no expiry recorded → use as-is.
-    let needs_refresh =
-        matches!(expires, Some(exp) if exp <= chrono::Utc::now() + chrono::Duration::seconds(60));
-    if !needs_refresh {
-        return Some(access);
-    }
-
-    // Expired → refresh via the codex client and persist the rotated tokens.
-    let refresh = refresh.filter(|t| !t.trim().is_empty())?;
-    let tokens = crate::codex_client::refresh_token(&refresh).await.ok()?;
-    let new_refresh = tokens.refresh_token.clone().unwrap_or(refresh);
-    let new_expires = chrono::Utc::now() + chrono::Duration::seconds(tokens.expires_in);
-    let _ = sqlx::query(
-        "UPDATE orgs SET openai_access_token = $1, openai_refresh_token = $2, \
-         openai_token_expires_at = $3 WHERE id = $4",
-    )
-    .bind(&tokens.access_token)
-    .bind(&new_refresh)
-    .bind(new_expires)
-    .bind(org_id)
-    .execute(&state.db)
-    .await;
-    Some(tokens.access_token)
-}
-
-/// Polish via the org's connected ChatGPT (Codex) when available, else Groq.
-///
-/// ANY Codex problem — no connection, expired/invalid token, API error, timeout,
-/// or empty output — silently falls back to Groq, so dictation can never break.
-/// Orgs that haven't connected ChatGPT take the Groq path with zero behaviour
-/// change. This mirrors the desktop's "ChatGPT polishes your dictation, falls back
-/// to Groq" model, at the cloud/org level. Desktop is unaffected (it polishes
-/// locally and never calls this endpoint).
+/// Send every server-side polish request through the selected production route.
+/// The model registry currently resolves that route to OpenRouter Nitro Gemma 4.
 async fn polish_llm(
     state: &AppState,
-    org_id: Option<Uuid>,
     polish_provider: &str,
     api_secret: &str,
     polish_model: &str,
@@ -4307,40 +4258,14 @@ async fn polish_llm(
     token_tx: Option<mpsc::Sender<String>>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
     tracing::info!("[runtime] polish_llm provider={polish_provider} model={polish_model}");
-    let wants_stream = token_tx.is_some();
-    if !wants_stream {
-        if let Some(org_id) = org_id {
-            if let Some(token) = active_openai_token(state, org_id).await {
-                let codex = tokio::time::timeout(
-                    std::time::Duration::from_secs(15),
-                    crate::codex_client::call_codex(
-                        &token,
-                        CODEX_POLISH_MODEL,
-                        system_prompt,
-                        user_message,
-                    ),
-                )
-                .await;
-                match codex {
-                    Ok(Ok(resp)) if !resp.text.trim().is_empty() => return Ok(resp.text),
-                    Ok(Ok(_)) => {
-                        tracing::warn!("[polish] codex returned empty — falling back to groq")
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!("[polish] codex failed ({e}) — falling back to groq")
-                    }
-                    Err(_) => tracing::warn!("[polish] codex timed out — falling back to groq"),
-                }
-            }
-        }
-    } else {
+    if token_tx.is_some() {
         tracing::info!(
             "[runtime] voice polish stream requested — provider={polish_provider} model={polish_model}"
         );
     }
     match polish_provider {
-        "cerebras" => {
-            crate::cerebras::call_cerebras(
+        "openrouter" => {
+            crate::openrouter::call_openrouter(
                 api_secret,
                 polish_model,
                 system_prompt,
@@ -6629,19 +6554,22 @@ mod tests {
 
     #[test]
     fn selected_polish_model_respects_fast_and_smart() {
-        use said_core::polish::model::CEREBRAS_POLISH_MODEL_GEMMA_4;
-        assert_eq!(selected_polish_model("fast"), CEREBRAS_POLISH_MODEL_GEMMA_4);
+        use said_core::polish::model::OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO;
+        assert_eq!(
+            selected_polish_model("fast"),
+            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
+        );
         assert_eq!(
             selected_polish_model("deepseek"),
-            CEREBRAS_POLISH_MODEL_GEMMA_4
+            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
         );
         assert_eq!(
             selected_polish_model("smart"),
-            CEREBRAS_POLISH_MODEL_GEMMA_4
+            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
         );
         assert_eq!(
             selected_polish_model("scout"),
-            CEREBRAS_POLISH_MODEL_GEMMA_4
+            OPENROUTER_POLISH_MODEL_GEMMA_4_NITRO
         );
     }
 

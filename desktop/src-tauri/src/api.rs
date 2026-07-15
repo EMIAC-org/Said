@@ -5,7 +5,7 @@
 
 use futures::StreamExt;
 use reqwest::Client;
-use said_core::transcript::TranscriptMeta;
+use said_core::{text::Utf8LineBuffer, transcript::TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
@@ -41,7 +41,7 @@ pub struct Preferences {
     #[serde(default)]
     pub groq_api_key: Option<String>,
     #[serde(default)]
-    pub cerebras_api_key: Option<String>,
+    pub together_api_key: Option<String>,
     #[serde(default)]
     pub deepinfra_api_key: Option<String>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
@@ -91,7 +91,7 @@ pub struct PrefsUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groq_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cerebras_api_key: Option<Option<String>>,
+    pub together_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deepinfra_api_key: Option<Option<String>>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
@@ -247,7 +247,7 @@ fn redact_pref_key_fields(raw: &str) -> String {
         "gateway_api_key",
         "gemini_api_key",
         "groq_api_key",
-        "cerebras_api_key",
+        "together_api_key",
         "deepinfra_api_key",
     ] {
         if let Some(slot) = value.get_mut(field) {
@@ -657,7 +657,7 @@ where
     S: StreamExt<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
     F: FnMut(PolishEvent),
 {
-    let mut buf = String::new();
+    let mut line_buffer = Utf8LineBuffer::default();
     let mut done_event: Option<PolishDone> = None;
     let mut last_error: Option<String> = None;
     // Track the most recently seen `event:` line so we can dispatch correctly
@@ -665,12 +665,14 @@ where
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
 
-        // Process complete SSE lines
-        while let Some(nl) = buf.find('\n') {
-            let line = buf[..nl].trim().to_string();
-            buf = buf[nl + 1..].to_string();
+        // HTTP chunks can split a multi-byte UTF-8 character. Decode only
+        // after a complete SSE line has arrived.
+        for raw_line in line_buffer
+            .push(&chunk)
+            .map_err(|e| format!("invalid UTF-8 in SSE stream: {e}"))?
+        {
+            let line = raw_line.trim().to_string();
 
             if line.is_empty() {
                 event_name.clear();

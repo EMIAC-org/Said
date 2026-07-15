@@ -90,7 +90,10 @@ const MIGRATION_056: &str = include_str!("migrations/056_site_visits.sql");
 const MIGRATION_057: &str = include_str!("migrations/057_force_cerebras_gemma_4.sql");
 const MIGRATION_058: &str = include_str!("migrations/058_edit_review_sessions.sql");
 const MIGRATION_059: &str = include_str!("migrations/059_edit_review_sessions_repair.sql");
-const MIGRATION_060: &str = include_str!("migrations/060_vocab_card_fts.sql");
+const MIGRATION_060: &str = include_str!("migrations/060_openrouter_gemma_4_nitro.sql");
+const MIGRATION_061: &str = include_str!("migrations/061_together_gemma_4.sql");
+const MIGRATION_062: &str = include_str!("migrations/062_restore_openrouter_gemma_4_nitro.sql");
+const MIGRATION_063: &str = include_str!("migrations/063_vocab_card_fts.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -620,11 +623,71 @@ fn run_migrations(pool: &DbPool) {
     }
 
     if version < 60 {
-        info!("running migration 060_vocab_card_fts");
-        conn.execute_batch(MIGRATION_060)
-            .expect("migration 060 failed");
+        info!("running migration 060_openrouter_gemma_4_nitro");
+        let preferences_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preferences')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check preferences table before migration 060");
+        if preferences_exists {
+            conn.execute_batch(MIGRATION_060)
+                .expect("migration 060 failed");
+        } else {
+            // A historical migration-repair test and some interrupted legacy
+            // installs can have a version marker without the preferences table.
+            // There is no credential or model to migrate in that state.
+            warn!("migration 060 skipped: preferences table is absent");
+        }
         conn.execute_batch("PRAGMA user_version = 60")
             .expect("failed to set user_version to 60");
+    }
+
+    if version < 61 {
+        info!("running migration 061_together_gemma_4");
+        let preferences_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preferences')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check preferences table before migration 061");
+        if preferences_exists {
+            conn.execute_batch(MIGRATION_061)
+                .expect("migration 061 failed");
+        } else {
+            warn!("migration 061 skipped: preferences table is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 61")
+            .expect("failed to set user_version to 61");
+    }
+
+    if version < 62 {
+        info!("running migration 062_restore_openrouter_gemma_4_nitro");
+        let preferences_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preferences')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check preferences table before migration 062");
+        if preferences_exists {
+            conn.execute_batch(MIGRATION_062)
+                .expect("migration 062 failed");
+        } else {
+            warn!("migration 062 skipped: preferences table is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 62")
+            .expect("failed to set user_version to 62");
+    }
+
+    if version < 63 {
+        info!("running migration 063_vocab_card_fts");
+        conn.execute_batch(MIGRATION_063)
+            .expect("migration 063 failed");
+        conn.execute_batch("PRAGMA user_version = 63")
+            .expect("failed to set user_version to 63");
     }
 }
 
@@ -689,6 +752,12 @@ fn repair_schema_gaps(pool: &DbPool) {
     add_column_if_missing(
         &conn,
         "preferences",
+        "openrouter_api_key",
+        "openrouter_api_key TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
         "record_hotkey",
         "record_hotkey TEXT NOT NULL DEFAULT 'caps_lock'",
     );
@@ -701,8 +770,8 @@ fn repair_schema_gaps(pool: &DbPool) {
     add_column_if_missing(
         &conn,
         "preferences",
-        "cerebras_api_key",
-        "cerebras_api_key TEXT",
+        "together_api_key",
+        "together_api_key TEXT",
     );
     add_column_if_missing(
         &conn,
@@ -770,7 +839,7 @@ pub fn ensure_default_user(pool: &DbPool) -> String {
     conn.execute(
         "INSERT INTO preferences (user_id, selected_model, tone_preset, language,
          auto_paste, edit_capture, polish_text_hotkey, record_hotkey, server_runtime_enabled, updated_at)
-         VALUES (?1, 'cerebras-gemma-4', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
+         VALUES (?1, 'openrouter-gemma-4-nitro', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
         params![id, now_ms],
     )
     .expect("failed to create default preferences");
@@ -868,7 +937,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 60);
+        assert_eq!(version, 63);
 
         for table in [
             "tier2_policy_weights",
@@ -905,6 +974,18 @@ mod tests {
                 .unwrap();
             assert_eq!(exists, 1, "recordings.{column} should exist");
         }
+
+        let together_key_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('preferences') WHERE name = 'together_api_key'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            together_key_exists, 1,
+            "preferences.together_api_key should exist"
+        );
     }
 
     #[test]
@@ -934,7 +1015,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 60);
+        assert_eq!(version, 63);
         assert_eq!(table_exists, 1);
     }
 }

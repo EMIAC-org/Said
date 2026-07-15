@@ -454,47 +454,32 @@ mod tests {
     use super::normalize_runtime_selected_model;
 
     #[test]
-    fn normalizes_smart_model_aliases_to_cerebras_gemma_4() {
+    fn all_legacy_model_aliases_normalize_to_openrouter_nitro_gemma() {
         assert_eq!(
             normalize_runtime_selected_model("smart".into()),
-            "cerebras-gemma-4"
+            "openrouter-gemma-4-nitro"
         );
         assert_eq!(
             normalize_runtime_selected_model("maverick".into()),
-            "cerebras-gemma-4"
+            "openrouter-gemma-4-nitro"
         );
         assert_eq!(
             normalize_runtime_selected_model(
                 "meta-llama/llama-4-maverick-17b-128e-instruct".into()
             ),
-            "cerebras-gemma-4"
+            "openrouter-gemma-4-nitro"
         );
         assert_eq!(
             normalize_runtime_selected_model("meta-llama/llama-4-scout-17b-16e-instruct".into()),
-            "groq-scout"
+            "openrouter-gemma-4-nitro"
         );
     }
 
     #[test]
-    fn normalize_preserves_beta_catalog_keys() {
-        assert_eq!(normalize_runtime_selected_model("phi4".into()), "phi4");
+    fn normalizes_any_stale_model_to_openrouter_nitro_gemma() {
         assert_eq!(
-            normalize_runtime_selected_model("groq-70b".into()),
-            "groq-70b"
+            normalize_runtime_selected_model("anything-stale".into()),
+            "openrouter-gemma-4-nitro"
         );
-        assert_eq!(
-            normalize_runtime_selected_model("cerebras-gpt-oss".into()),
-            "cerebras-gemma-4"
-        );
-    }
-
-    #[test]
-    fn normalizes_fast_model_aliases_to_fast() {
-        assert_eq!(normalize_runtime_selected_model("fast".into()), "fast");
-        assert_eq!(
-            normalize_runtime_selected_model("llama-3.1-8b-instant".into()),
-            "fast"
-        );
-        assert_eq!(normalize_runtime_selected_model("deepseek".into()), "fast");
     }
 }

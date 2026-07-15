@@ -72,9 +72,9 @@ export function classifyError(raw: unknown, fallback = "Something went wrong. Pl
   }
 
   // Transient failures — a retry is the right fix.
-  if (/cerebras.*(rate.?limit|429)|cerebras_rate_limit|x-ratelimit/.test(e)) {
+  if (/together.*(rate.?limit|429)|together_rate_limit|x-ratelimit/.test(e)) {
     return {
-      message: "Cerebras rate limit hit — wait for the reset and try again.",
+      message: "Together AI rate limit hit — wait a moment and try again.",
       action: { label: "Try again", kind: "retry" },
     };
   }

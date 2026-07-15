@@ -210,12 +210,12 @@ const VOCAB_TERMS = [
   ['Macobs', 'brand'], ['Airnote', 'brand'], ['Local Speech', 'phrase'], ['Groq', 'brand'],
   ['EMIAC', 'acronym'], ['SKU', 'acronym'], ['Hinglish', 'other'], ['Postgres', 'code_identifier'],
   ['Tauri', 'code_identifier'], ['whisper.cpp', 'code_identifier'], ['rustls', 'code_identifier'],
-  ['Lark', 'brand'], ['Zoho Books', 'brand'], ['Divo', 'brand'], ['Cerebras', 'brand'],
+  ['Lark', 'brand'], ['Zoho Books', 'brand'], ['Divo', 'brand'], ['Together AI', 'brand'],
 ]
 const STT_ALIASES: [string, string][] = [
   ['mecobs', 'Macobs'], ['air note', 'Airnote'], ['local speech', 'Local Speech'], ['grok', 'Groq'],
   ['e miac', 'EMIAC'], ['lurk', 'Lark'], ['devo', 'Divo'], ['whisper cpp', 'whisper.cpp'],
-  ['russ tls', 'rustls'], ['hing lish', 'Hinglish'], ['tau ri', 'Tauri'], ['cerebra', 'Cerebras'],
+  ['russ tls', 'rustls'], ['hing lish', 'Hinglish'], ['tau ri', 'Tauri'], ['together ai', 'Together AI'],
 ]
 const COMPANY_TERMS = [
   ['Macobs', 'brand', 9], ['Airnote', 'brand', 9], ['EMIAC', 'acronym', 8], ['Divo', 'brand', 7],

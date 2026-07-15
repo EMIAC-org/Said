@@ -654,7 +654,7 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=25)
     parser.add_argument("--directive-limit", type=int, default=8)
     parser.add_argument("--run-model", action="store_true")
-    parser.add_argument("--slug", default="cerebras-gpt-oss")
+    parser.add_argument("--slug", default="openrouter-gemma-4-nitro")
     parser.add_argument("--variant", default="intent_v4")
     args = parser.parse_args()
 

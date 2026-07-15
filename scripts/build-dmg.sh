@@ -144,6 +144,20 @@ else
   warn "DEEPSEEK_API_KEY not set — meeting summaries will fail until a key is bundled"
 fi
 
+# Together live Nemotron is required on Intel Macs and is the optional cloud
+# route on Apple Silicon. The build owns this credential; users never enter a
+# speech-provider key.
+if [ -z "${TOGETHER_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  TOGETHER_API_KEY="$(grep -E '^TOGETHER_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"')"
+fi
+if [ -n "${TOGETHER_API_KEY:-}" ]; then
+  export TOGETHER_API_KEY
+  touch "$TAURI_DIR/src/dictation_stt.rs"
+  ok "Together cloud-dictation key will be bundled into the build"
+else
+  warn "TOGETHER_API_KEY not set — live Nemotron dictation will be unavailable"
+fi
+
 # ── Tauri build ──────────────────────────────────────────────────────────────
 step "Run tauri build (--target $TARGET)"
 cd "$DESKTOP_DIR"

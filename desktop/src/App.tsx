@@ -749,9 +749,9 @@ export default function App() {
   }
 
   // Post-update required-step gate: an already-onboarded user who updated past
-  // onboarding is forced through outstanding new steps once (backend is up by
-  // now, so the model download works). They install the new model or explicitly
-  // keep their current setup — either way it stamps the version and never repeats.
+  // onboarding is forced through the current speech setup once. Apple Silicon
+  // must install its assigned local model; cloud-locked machines acknowledge
+  // their fixed live route. Completion stamps this version and never repeats.
   if (migrationDone < MIGRATION_VERSION) {
     return (
       <ModelMigrationGate

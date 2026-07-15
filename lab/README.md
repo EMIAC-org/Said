@@ -41,7 +41,7 @@ python lab/polish_lab.py --compare-models
 |---|---|
 | `polish_lab.py` | STT cache, single polish, `--compare-models` entry |
 | `compare_models.py` | Parallel shootout across catalog |
-| `model_catalog.py` | **Curated models** (Cerebras production + Groq candidates) |
+| `model_catalog.py` | **Curated models** (OpenRouter Nitro production + comparison candidates) |
 | `scoring.py` | Heuristic quality score for the 58-word dev clip |
 | `prompt_system.md` | Editable system prompt |
 | `run_prompt_matrix.py` | Many prompts × few routes (prompt A/B) |
@@ -145,14 +145,14 @@ latency benchmark.
 
 For an explicit end-to-end comparison against the current production model,
 run the dedicated harness. It measures Spark through the Codex CLI and
-`gemma-4-31b` through Cerebras, and keeps those two transport paths distinct
+`google/gemma-4-31b-it:nitro` through OpenRouter, and keeps those two transport paths distinct
 in its report:
 
 ```bash
 python lab/codex_agent_latency_bench.py --runs 5 --warmup 1
 ```
 
-It requires `CEREBRAS_API_KEY` in the gitignored root `.env`. Results are
+It requires `OPENROUTER_API_KEY` in the gitignored root `.env`. Results are
 written under `lab/latency_runs/` and are not committed.
 
 For correction quality, use the same curated stress suite and strict scorecard
@@ -166,9 +166,9 @@ Its default is the correction-critical subset: technical garble recovery and
 over-correction traps. Results go to `lab/model_runs/` and include every raw
 input and output for review.
 
-## Single-model routing (unchanged)
+## Single-model routing
 
-`polish_lab.py` without `--compare-models` uses Groq GPT OSS 120B when `GROQ_API_KEY` is set.
+`polish_lab.py` without `--compare-models` uses OpenRouter Nitro Gemma 4 31B when `OPENROUTER_API_KEY` is set.
 
 ## Latency benchmark (Groq Scout vs Groq GPT OSS)
 
@@ -236,10 +236,10 @@ the model output is compared with `user_kept`.
 # Dry-run selection/report without API calls.
 python lab/model_backed_learning_replay.py --dry-run --limit 10
 
-# Prompt variants against Cerebras GPT-OSS 120B.
-python lab/model_backed_learning_replay.py --variant production --slug cerebras-gpt-oss --limit 20
-python lab/model_backed_learning_replay.py --variant intent_v1 --slug cerebras-gpt-oss --limit 20
-python lab/model_backed_learning_replay.py --variant literal_guard --slug cerebras-gpt-oss --limit 20
+# Prompt variants against OpenRouter Nitro Gemma 4 31B.
+python lab/model_backed_learning_replay.py --variant production --slug openrouter-gemma-4-nitro --limit 20
+python lab/model_backed_learning_replay.py --variant intent_v1 --slug openrouter-gemma-4-nitro --limit 20
+python lab/model_backed_learning_replay.py --variant literal_guard --slug openrouter-gemma-4-nitro --limit 20
 ```
 
 This is the benchmark for the under-correction vs over-correction problem:

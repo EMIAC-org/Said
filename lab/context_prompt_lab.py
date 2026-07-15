@@ -39,8 +39,8 @@ import polish_lab
 
 PROMPT_PATH = LAB / "future_server_prompt.md"
 RUNS_DIR = LAB / "context_prompt_runs"
-CEREBRAS_BASE = "https://api.cerebras.ai/v1"
-PRODUCTION_MODEL = "gemma-4-31b"
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+PRODUCTION_MODEL = "google/gemma-4-31b-it:nitro"
 
 
 def runtime_user_message(transcript: str, output_language: str) -> str:
@@ -105,18 +105,18 @@ def safe_label(value: str) -> str:
 
 def production_server_route(max_tokens: int) -> dict:
     """Mirror the hard-pinned server polish route, not polish_lab's legacy default."""
-    api_key = os.getenv("CEREBRAS_API_KEY", "").strip()
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
-            "CEREBRAS_API_KEY is required: the server polish model is Cerebras Gemma 4."
+            "OPENROUTER_API_KEY is required: the server polish model is OpenRouter Nitro Gemma 4 31B."
         )
     return {
-        "provider": "cerebras",
-        "base_url": CEREBRAS_BASE,
+        "provider": "openrouter",
+        "base_url": OPENROUTER_BASE,
         "api_key": api_key,
         "model": PRODUCTION_MODEL,
         "temperature": "0.0",
-        "extra_payload": {"max_completion_tokens": max_tokens},
+        "extra_payload": {"max_tokens": min(max_tokens, 1024), "reasoning": {"enabled": False}},
     }
 
 

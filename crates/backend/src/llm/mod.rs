@@ -1,7 +1,6 @@
 pub mod alias_review;
 pub mod alias_safety;
 pub mod analyzer;
-pub mod cerebras;
 pub mod classifier;
 pub mod deepinfra;
 pub mod deepseek;
@@ -14,6 +13,7 @@ pub mod gemini_direct;
 pub mod groq;
 pub mod meaning;
 pub mod openai_codex;
+pub mod openrouter;
 pub mod phonetic_triage;
 pub mod phonetics;
 pub mod polish_dispatch;

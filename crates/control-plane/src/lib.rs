@@ -5,7 +5,6 @@
 
 pub mod ai_worker;
 pub mod auth;
-pub mod cerebras;
 pub mod codex_client;
 pub mod deepinfra;
 pub mod format_recover;
@@ -20,6 +19,7 @@ pub mod notification_hub;
 pub mod notification_worker;
 pub mod number_format;
 pub mod openai_compat_polish;
+pub mod openrouter;
 pub mod org_quota;
 pub mod profile;
 pub mod prompt_profile_telemetry;
@@ -78,8 +78,8 @@ pub struct AppState {
     /// OpenAI API key used as a platform fallback for text-model provider calls.
     pub openai_api_key: String,
     pub groq_api_key: String,
-    /// Cerebras API key for server-runtime beta polish (CEREBRAS_API_KEY).
-    pub cerebras_api_key: String,
+    /// OpenRouter API key for paid Gemma 4 31B Nitro server-runtime polish.
+    pub openrouter_api_key: String,
     /// DeepInfra API key for server-runtime beta polish (DEEPINFRA_API_KEY).
     pub deepinfra_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,

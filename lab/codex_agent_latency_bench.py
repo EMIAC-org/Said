@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Measure Codex Spark agent completion latency against Cerebras Gemma 4.
+"""Measure Codex Spark agent completion latency against OpenRouter Nitro Gemma 4 31B.
 
 This is intentionally an end-to-end comparison, not a raw model benchmark:
 Spark is invoked through the authenticated Codex CLI, while Gemma is invoked
-through Cerebras's public API. The report keeps those routes distinct.
+through OpenRouter's public API. The report keeps those routes distinct.
 
   python lab/codex_agent_latency_bench.py --runs 5 --warmup 1
   python lab/codex_agent_latency_bench.py --prompt "Reply exactly: benchmark ok"
@@ -30,8 +30,8 @@ from typing import Any
 LAB = Path(__file__).resolve().parent
 REPO = LAB.parent
 OUT_DIR = LAB / "latency_runs"
-CEREBRAS_BASE = "https://api.cerebras.ai/v1"
-GEMMA_MODEL = "gemma-4-31b"
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+GEMMA_MODEL = "google/gemma-4-31b-it:nitro"
 SPARK_MODEL = "gpt-5.3-codex-spark"
 DEFAULT_PROMPT = "Reply with exactly: latency benchmark ok"
 
@@ -132,12 +132,12 @@ def run_gemma(prompt: str, api_key: str, timeout_s: int) -> dict[str, Any]:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
-        # A small explicit cap prevents Cerebras reserving the full context window.
-        "max_completion_tokens": 64,
+        "max_tokens": 64,
+        "reasoning": {"enabled": False},
         "stream": False,
     }
     request = urllib.request.Request(
-        f"{CEREBRAS_BASE}/chat/completions",
+        f"{OPENROUTER_BASE}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -163,7 +163,7 @@ def run_gemma(prompt: str, api_key: str, timeout_s: int) -> dict[str, Any]:
     choices = body.get("choices") or []
     output = str(choices[0].get("message", {}).get("content", "")).strip() if choices else ""
     if not output:
-        return {"ok": False, "wall_s": wall_s, "error": "Cerebras returned no content"}
+        return {"ok": False, "wall_s": wall_s, "error": "OpenRouter returned no content"}
     return {"ok": True, "wall_s": wall_s, "output": output, "usage": body.get("usage", {})}
 
 
@@ -205,7 +205,7 @@ def write_report(
         "prompt": prompt,
         "warmup_runs": warmup,
         "spark": {"model": SPARK_MODEL, "transport": "codex_exec", "results": spark},
-        "gemma": {"model": GEMMA_MODEL, "transport": "cerebras_chat_completions", "results": gemma},
+        "gemma": {"model": GEMMA_MODEL, "transport": "openrouter_chat_completions", "results": gemma},
         "summary": summaries,
     }
     (run_dir / "results.json").write_text(
@@ -213,7 +213,7 @@ def write_report(
     )
 
     lines = [
-        f"# Codex Spark agent vs Cerebras Gemma 4 latency - {stamp}",
+        f"# Codex Spark agent vs OpenRouter Nitro Gemma 4 31B latency - {stamp}",
         "",
         "This is an end-to-end transport comparison, not a raw model benchmark.",
         "Spark includes the Codex CLI agent/runtime path; Gemma is a direct API call.",
@@ -262,13 +262,13 @@ def main() -> int:
         raise SystemExit("Codex CLI is not on PATH")
     if args.dry_run:
         print(f"Spark: {SPARK_MODEL} via authenticated codex exec")
-        print(f"Gemma: {GEMMA_MODEL} via Cerebras chat completions")
+        print(f"Gemma: {GEMMA_MODEL} via OpenRouter chat completions")
         print("No calls made.")
         return 0
 
-    api_key = os.getenv("CEREBRAS_API_KEY", "").strip()
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        raise SystemExit("Set CEREBRAS_API_KEY in the gitignored repo .env before running.")
+        raise SystemExit("Set OPENROUTER_API_KEY in the gitignored repo .env before running.")
 
     spark = run_target(
         "spark",
