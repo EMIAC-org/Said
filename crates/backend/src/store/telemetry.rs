@@ -674,7 +674,7 @@ mod tests {
                 "{}\n{}\n{}",
                 include_str!("migrations/041_telemetry.sql"),
                 include_str!("migrations/042_telemetry_stt.sql"),
-                include_str!("migrations/063_telemetry_speech_provider.sql"),
+                include_str!("migrations/064_telemetry_speech_provider.sql"),
             ))
             .unwrap();
 
