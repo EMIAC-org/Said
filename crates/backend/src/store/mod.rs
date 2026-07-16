@@ -96,6 +96,7 @@ const MIGRATION_062: &str = include_str!("migrations/062_restore_openrouter_gemm
 const MIGRATION_063: &str = include_str!("migrations/063_vocab_card_fts.sql");
 const MIGRATION_064: &str = include_str!("migrations/064_telemetry_speech_provider.sql");
 const MIGRATION_065: &str = include_str!("migrations/065_telemetry_speech_identity.sql");
+const MIGRATION_066: &str = include_str!("migrations/066_meeting_observability_outbox.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -778,6 +779,45 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 65")
             .expect("failed to set user_version to 65");
     }
+
+    if version < 66 {
+        info!("running migration 066_meeting_observability_outbox");
+        conn.execute_batch(MIGRATION_066)
+            .expect("migration 066 prelude failed");
+        let outbox_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'observability_outbox')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        let has_active_org: bool = outbox_exists
+            && conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('observability_outbox') WHERE name = 'active_org_id'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)
+            .unwrap_or(false);
+        if outbox_exists && !has_active_org {
+            conn.execute_batch("ALTER TABLE observability_outbox ADD COLUMN active_org_id TEXT;")
+                .expect("migration 066 failed adding active_org_id");
+        }
+        if outbox_exists {
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_observability_outbox_meeting_event
+                     ON observability_outbox (user_id, op, recording_id)
+                  WHERE recording_id IS NOT NULL
+                    AND op IN ('upsert_meeting_session', 'upsert_meeting_provider_usage');",
+            )
+            .expect("migration 066 failed creating meeting event index");
+        } else {
+            warn!("migration 066 skipped: observability_outbox is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 66")
+            .expect("failed to set user_version to 66");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -809,6 +849,12 @@ fn repair_schema_gaps(pool: &DbPool) {
     }
 
     add_column_if_missing(&conn, "local_user", "active_org_id", "active_org_id TEXT");
+    add_column_if_missing(
+        &conn,
+        "observability_outbox",
+        "active_org_id",
+        "active_org_id TEXT",
+    );
 
     // Older dev builds occasionally advanced user_version while some ALTER
     // statements were missing. Keep this startup repair idempotent so prefs
@@ -1057,7 +1103,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 65);
+        assert_eq!(version, 66);
 
         for table in [
             "tier2_policy_weights",
@@ -1146,7 +1192,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 65);
+        assert_eq!(version, 66);
         let identity: (String, String, String) = conn
             .query_row(
                 "SELECT speech_provider, speech_model, speech_path
@@ -1187,7 +1233,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 65);
+        assert_eq!(version, 66);
         assert_eq!(table_exists, 1);
     }
 }

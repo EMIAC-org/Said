@@ -996,6 +996,7 @@ struct MeetingCleanupConfig {
     auth_header_name: String,
     auth_header_value: String,
     model: String,
+    bundled_credential: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1406,12 +1407,18 @@ impl MeetingEngineState {
                 write_meeting_state(&artifact_dir, MEETING_PHASE_RECORDING, None);
             }
             *session = Some(MeetingSession {
-                session_id,
+                session_id: session_id.clone(),
                 started_at_ms,
-                artifact_dir,
+                artifact_dir: artifact_dir.clone(),
                 mic_wav_path,
                 system_wav_path,
             });
+            crate::meeting_telemetry::begin_session(
+                &artifact_dir,
+                &session_id,
+                started_at_ms,
+                started_at_ms,
+            );
             *self.last_mic_summary.lock_recover() = None;
             *self.last_system_summary.lock_recover() = None;
             *self.system_error.lock_recover() = None;
@@ -1482,6 +1489,17 @@ impl MeetingEngineState {
         let mut session_guard = self.session.lock_recover();
         *session_guard = None;
         drop(session_guard);
+
+        if transcription_plan.is_some()
+            && let Some(session) = session.as_ref()
+        {
+            crate::meeting_telemetry::begin_session(
+                &session.artifact_dir,
+                &session.session_id,
+                session.started_at_ms,
+                now_ms(),
+            );
+        }
 
         if let Some(plan) = transcription_plan {
             self.start_transcription_job(plan);
@@ -2441,6 +2459,18 @@ fn meeting_job_worker_loop(
             JobOutcome::Terminal("transcription job panicked".to_string())
         });
 
+        if let Some(artifact_dir) = job.plan.output_paths.text.parent() {
+            let status = match &outcome {
+                JobOutcome::Done => Some("completed"),
+                JobOutcome::Terminal(_) => Some("failed"),
+                JobOutcome::Cancelled(_) => Some("cancelled"),
+                JobOutcome::Retry(_) => None,
+            };
+            if let Some(status) = status {
+                crate::meeting_telemetry::finalize_session(artifact_dir, status);
+            }
+        }
+
         let mut inner = jobs.lock();
         inner.in_flight = None;
         match outcome {
@@ -2723,8 +2753,13 @@ fn run_transcription_job(
             }
 
             let cleanup_started = Instant::now();
-            let cleanup_result = cleanup_config
-                .and_then(|config| cleanup_meeting_transcript_with_llm(&done.transcript, config));
+            let cleanup_result = cleanup_config.and_then(|config| {
+                cleanup_meeting_transcript_with_llm(
+                    &done.transcript,
+                    config,
+                    job_artifact_dir.as_deref(),
+                )
+            });
             let (cleaned_transcript, cleanup) = match cleanup_result {
                 Ok(result) => (
                     Some(result.transcript.clone()),
@@ -2750,8 +2785,13 @@ fn run_transcription_job(
             // falling back to the deterministic romanizer if the LLM doesn't line
             // up. Live captions stayed in native script; deepseek does the summary.
             if provider.romanize() && said_core::script::contains_devanagari(&done.transcript) {
-                let groq = meeting_cleanup_config()
-                    .and_then(|cfg| transliterate_segments_with_llm(&mut done.segments, cfg));
+                let groq = meeting_cleanup_config().and_then(|cfg| {
+                    transliterate_segments_with_llm(
+                        &mut done.segments,
+                        cfg,
+                        job_artifact_dir.as_deref(),
+                    )
+                });
                 if let Err(e) = groq {
                     tracing::warn!(error = %e, "[meeting_engine] Groq transliteration failed; using deterministic romanizer");
                     for segment in &mut done.segments {
@@ -4157,6 +4197,7 @@ pub async fn meeting_engine_chat(
     summary: Option<String>,
     transcript_override: Option<String>,
     notes: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<MeetingChatResult, String> {
     // Resolve the transcript (this reads engine state) up front, then run the
     // blocking LLM request on a blocking thread. Declaring the command `async`
@@ -4165,12 +4206,17 @@ pub async fn meeting_engine_chat(
     // so the answer renders token-by-token; the final result is returned so the
     // frontend can replace the streamed text with the cleaned answer + metadata.
     let selected = resolve_meeting_chat_transcript(&state, transcript_override.as_deref())?;
+    let artifact_dir = meeting_id
+        .as_deref()
+        .and_then(|id| meeting_dir_for_id(id).ok())
+        .filter(|dir| dir.join(crate::meeting_telemetry::FILE_NAME).is_file());
     tauri::async_runtime::spawn_blocking(move || {
         answer_meeting_question(
             selected,
             &question,
             summary.as_deref(),
             notes.as_deref(),
+            artifact_dir.as_deref(),
             |delta| {
                 // Token-by-token from a spawn_blocking thread — marshal onto the
                 // main thread so the cross-thread emit can't contend with the
@@ -5676,6 +5722,7 @@ fn mix_i16_with_gain(mic: i16, system: i16, mic_gain: f32, system_gain: f32) -> 
 fn transliterate_segments_with_llm(
     segments: &mut [MeetingTranscriptSegment],
     config: MeetingCleanupConfig,
+    artifact_dir: Option<&Path>,
 ) -> Result<(), String> {
     if segments.is_empty() {
         return Ok(());
@@ -5692,6 +5739,8 @@ fn transliterate_segments_with_llm(
         config,
         meeting_ai_timeout(),
         meeting_ai_max_tokens(),
+        "transcript_transliteration",
+        artifact_dir,
     )?;
     let mut parsed: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
     for line in completion.content.lines() {
@@ -9740,6 +9789,8 @@ fn run_meeting_intelligence(
         config.clone(),
         meeting_ai_timeout(),
         meeting_ai_max_tokens(),
+        "meeting_intelligence",
+        target_dir.as_deref(),
     )?;
     let completion = if meeting_ai_verification_enabled() {
         let draft_json = completion.content.clone();
@@ -9749,6 +9800,7 @@ fn run_meeting_intelligence(
             config,
             completion,
             analysis_context.as_deref(),
+            target_dir.as_deref(),
         )?
     } else {
         completion
@@ -10433,6 +10485,7 @@ fn verify_meeting_intelligence(
     config: MeetingCleanupConfig,
     draft_completion: MeetingLlmCompletion,
     analysis_context: Option<&str>,
+    artifact_dir: Option<&Path>,
 ) -> Result<MeetingLlmCompletion, String> {
     let context_section = analysis_context.map_or_else(String::new, |context| {
         format!(
@@ -10450,6 +10503,8 @@ fn verify_meeting_intelligence(
         config,
         meeting_ai_timeout(),
         meeting_ai_max_tokens(),
+        "meeting_intelligence_verify",
+        artifact_dir,
     )?;
 
     Ok(MeetingLlmCompletion {
@@ -10601,6 +10656,7 @@ fn answer_meeting_question(
     question: &str,
     summary: Option<&str>,
     notes: Option<&str>,
+    artifact_dir: Option<&Path>,
     on_delta: impl FnMut(&str),
 ) -> Result<MeetingChatResult, String> {
     let question = question.trim();
@@ -10653,6 +10709,8 @@ fn answer_meeting_question(
         meeting_chat_timeout(),
         meeting_ai_max_tokens(),
         on_delta,
+        "meeting_chat",
+        artifact_dir,
     )
     .inspect_err(|e| {
         tracing::warn!(error = %e, "[meeting_engine] meeting chat request failed");
@@ -11240,6 +11298,8 @@ fn synthesize_digest_payload(
         config.clone(),
         meeting_ai_timeout(),
         meeting_ai_max_tokens(),
+        "meeting_digest",
+        None,
     )?;
     let completion = if meeting_ai_verification_enabled() {
         let draft = completion.content.clone();
@@ -11252,6 +11312,8 @@ fn synthesize_digest_payload(
             config.clone(),
             meeting_ai_timeout(),
             meeting_ai_max_tokens(),
+            "meeting_digest_verify",
+            None,
         ) {
             Ok(v) => MeetingLlmCompletion {
                 content: v.content,
@@ -11600,6 +11662,8 @@ fn run_digest_chat(
         meeting_chat_timeout(),
         meeting_ai_max_tokens(),
         on_delta,
+        "meeting_digest_chat",
+        None,
     )
     .inspect_err(|e| {
         tracing::warn!(error = %e, "[meeting_engine] digest chat request failed");
@@ -12194,6 +12258,49 @@ fn extract_json_object(content: &str) -> Option<String> {
 struct CleanupChatResponse {
     #[serde(default)]
     choices: Vec<CleanupChatChoice>,
+    #[serde(default)]
+    usage: Option<DeepSeekUsageResponse>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DeepSeekUsageResponse {
+    #[serde(default)]
+    prompt_tokens: i64,
+    #[serde(default)]
+    completion_tokens: i64,
+    #[serde(default)]
+    prompt_cache_hit_tokens: i64,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<i64>,
+    #[serde(default)]
+    completion_tokens_details: Option<DeepSeekCompletionTokenDetails>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DeepSeekCompletionTokenDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<i64>,
+}
+
+fn deepseek_usage(value: &DeepSeekUsageResponse) -> crate::meeting_telemetry::DeepSeekUsage {
+    let prompt = value.prompt_tokens.clamp(0, i32::MAX as i64) as i32;
+    let hit = value.prompt_cache_hit_tokens.clamp(0, prompt as i64) as i32;
+    let miss = value
+        .prompt_cache_miss_tokens
+        .unwrap_or(i64::from(prompt - hit))
+        .clamp(0, i64::from(prompt - hit)) as i32;
+    let completion = value.completion_tokens.clamp(0, i32::MAX as i64) as i32;
+    crate::meeting_telemetry::DeepSeekUsage {
+        prompt_tokens: hit.saturating_add(miss),
+        cache_hit_tokens: hit,
+        cache_miss_tokens: miss,
+        completion_tokens: completion,
+        reasoning_tokens: value
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|details| details.reasoning_tokens)
+            .map(|tokens| tokens.clamp(0, i64::from(completion)) as i32),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -12213,6 +12320,8 @@ struct CleanupChatMessage {
 struct ChatStreamChunk {
     #[serde(default)]
     choices: Vec<ChatStreamChoice>,
+    #[serde(default)]
+    usage: Option<DeepSeekUsageResponse>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -12260,6 +12369,8 @@ fn name_meeting_speakers_with_ai(
         config,
         meeting_speaker_naming_timeout(),
         meeting_speaker_naming_max_tokens(),
+        "speaker_naming",
+        None,
     )?;
     let names = parse_speaker_naming_response(&completion.content, segments)?;
     Ok(apply_speaker_name_map(segments, &names))
@@ -12446,6 +12557,7 @@ fn compact_transcript_text(text: &str) -> String {
 fn cleanup_meeting_transcript_with_llm(
     raw: &str,
     config: MeetingCleanupConfig,
+    artifact_dir: Option<&Path>,
 ) -> Result<MeetingCleanupResult, String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -12470,6 +12582,8 @@ fn cleanup_meeting_transcript_with_llm(
         config,
         timeout,
         max_tokens,
+        "transcript_cleanup",
+        artifact_dir,
     )?;
     let cleaned = strip_llm_transcript_wrappers(&completion.content);
     if cleaned.trim().is_empty() {
@@ -12536,7 +12650,16 @@ fn complete_meeting_llm(
     config: MeetingCleanupConfig,
     timeout: Duration,
     max_tokens: u64,
+    feature_stage: &str,
+    artifact_dir: Option<&Path>,
 ) -> Result<MeetingLlmCompletion, String> {
+    let telemetry = crate::meeting_telemetry::CallGuard::new(
+        artifact_dir,
+        feature_stage,
+        &config.provider,
+        &config.model,
+        config.bundled_credential,
+    );
     let mut body = serde_json::json!({
         "model": &config.model,
         "stream": false,
@@ -12623,6 +12746,11 @@ fn complete_meeting_llm(
             config.provider
         )
     })?;
+    let usage = response
+        .usage
+        .as_ref()
+        .map(deepseek_usage)
+        .unwrap_or_default();
     let content = response
         .choices
         .first()
@@ -12634,6 +12762,7 @@ fn complete_meeting_llm(
             config.provider
         ));
     }
+    telemetry.success(usage);
 
     Ok(MeetingLlmCompletion {
         content: content.trim().to_string(),
@@ -12655,7 +12784,16 @@ fn complete_meeting_llm_streaming(
     timeout: Duration,
     max_tokens: u64,
     mut on_delta: impl FnMut(&str),
+    feature_stage: &str,
+    artifact_dir: Option<&Path>,
 ) -> Result<MeetingLlmCompletion, String> {
+    let telemetry = crate::meeting_telemetry::CallGuard::new(
+        artifact_dir,
+        feature_stage,
+        &config.provider,
+        &config.model,
+        config.bundled_credential,
+    );
     let mut body = serde_json::json!({
         "model": &config.model,
         "stream": true,
@@ -12668,6 +12806,7 @@ fn complete_meeting_llm_streaming(
     });
     if config.provider == "deepseek" {
         body["thinking"] = serde_json::json!({ "type": "disabled" });
+        body["stream_options"] = serde_json::json!({ "include_usage": true });
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -12736,6 +12875,7 @@ fn complete_meeting_llm_streaming(
     let mut line = String::new();
     let mut content = String::new();
     let mut saw_done = false;
+    let mut usage = crate::meeting_telemetry::DeepSeekUsage::default();
     loop {
         line.clear();
         let read = reader
@@ -12758,6 +12898,9 @@ fn complete_meeting_llm_streaming(
         let Ok(chunk) = serde_json::from_str::<ChatStreamChunk>(data) else {
             continue;
         };
+        if let Some(chunk_usage) = chunk.usage.as_ref() {
+            usage = deepseek_usage(chunk_usage);
+        }
         if let Some(delta) = chunk
             .choices
             .first()
@@ -12784,6 +12927,7 @@ fn complete_meeting_llm_streaming(
             "[meeting_engine] chat stream ended without [DONE]; answer may be truncated"
         );
     }
+    telemetry.success(usage);
 
     Ok(MeetingLlmCompletion {
         content: content.trim().to_string(),
@@ -12878,6 +13022,7 @@ fn meeting_provider_config(
                 auth_header_name: "Authorization".to_string(),
                 auth_header_value: format!("Bearer {api_key}"),
                 model,
+                bundled_credential: false,
             })
         }
         "gateway" => {
@@ -12902,13 +13047,16 @@ fn meeting_provider_config(
                 auth_header_name: "X-API-Key".to_string(),
                 auth_header_value: api_key,
                 model,
+                bundled_credential: false,
             })
         }
         "deepseek" => {
             // DeepSeek key is bundled into the build and fixed — not user-configurable.
             // Release builds bake it in via option_env! (DEEPSEEK_API_KEY set at build
             // time); dev builds fall back to a runtime DEEPSEEK_API_KEY env var.
-            let api_key = bundled_deepseek_api_key()
+            let bundled_key = bundled_deepseek_api_key();
+            let bundled_credential = bundled_key.is_some();
+            let api_key = bundled_key
                 .or(override_key)
                 .or_else(|| env_nonempty("DEEPSEEK_API_KEY"))
                 .ok_or_else(|| {
@@ -12923,6 +13071,7 @@ fn meeting_provider_config(
                 auth_header_name: "Authorization".to_string(),
                 auth_header_value: format!("Bearer {api_key}"),
                 model,
+                bundled_credential,
             })
         }
         other => Err(format!(
@@ -15184,6 +15333,24 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_deepseek_cache_and_reasoning_usage() {
+        let parsed = deepseek_usage(&DeepSeekUsageResponse {
+            prompt_tokens: 100,
+            completion_tokens: 25,
+            prompt_cache_hit_tokens: 60,
+            prompt_cache_miss_tokens: Some(40),
+            completion_tokens_details: Some(DeepSeekCompletionTokenDetails {
+                reasoning_tokens: Some(5),
+            }),
+        });
+        assert_eq!(parsed.prompt_tokens, 100);
+        assert_eq!(parsed.cache_hit_tokens, 60);
+        assert_eq!(parsed.cache_miss_tokens, 40);
+        assert_eq!(parsed.completion_tokens, 25);
+        assert_eq!(parsed.reasoning_tokens, Some(5));
+    }
 
     #[test]
     fn reanalysis_context_is_trimmed_bounded_and_optional() {

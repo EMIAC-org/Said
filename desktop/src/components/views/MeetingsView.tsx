@@ -3152,6 +3152,7 @@ export function MeetingsView({
                 >
                   <MeetingAiChat
                     resetKey={selectedMeeting.id}
+                    chatArgs={{ meetingId: selectedMeeting.id }}
                     summary={meetingAi?.summary ?? null}
                     transcriptOverride={artifacts?.transcript ?? null}
                     notes={chatContext}

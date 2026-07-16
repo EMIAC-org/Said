@@ -1,12 +1,14 @@
 //! Non-blocking observability pipeline for control-plane dictation history.
 
+pub mod meeting_scanner;
 pub mod outbox;
 pub mod uploader;
 
 pub use outbox::{
     AliasBatchPayload, AliasLearnItem, DictationPatchPayload, DictationUpsertPayload,
-    RecordingObservabilityExtras, after_recording_insert, enqueue_alias_batch,
-    enqueue_dictation_patch, enqueue_dictation_upsert, should_enqueue,
+    MeetingProviderUsagePayload, MeetingSessionPayload, RecordingObservabilityExtras,
+    after_recording_insert, enqueue_alias_batch, enqueue_dictation_patch, enqueue_dictation_upsert,
+    should_enqueue,
 };
 
 use crate::AppState;

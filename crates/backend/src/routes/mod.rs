@@ -8,6 +8,7 @@ pub mod health;
 pub mod history;
 pub mod invite;
 pub mod key_guard;
+pub mod meeting_telemetry;
 pub mod message_polish;
 pub mod openai_oauth;
 pub mod pending_edits;

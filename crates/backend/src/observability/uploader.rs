@@ -1,8 +1,9 @@
 //! Best-effort background uploader for observability outbox rows.
 
 use crate::observability::outbox::{
-    AliasBatchPayload, DictationPatchPayload, DictationUpsertPayload, OutboxRow, list_pending,
-    mark_done, mark_failed, pending_count,
+    AliasBatchPayload, DictationPatchPayload, DictationUpsertPayload, MeetingProviderUsagePayload,
+    MeetingSessionPayload, OutboxRow, list_pending, mark_done, mark_failed, meeting_session_done,
+    pending_count,
 };
 use crate::store::DbPool;
 use reqwest::Client;
@@ -24,11 +25,10 @@ async fn post_json(
     token: &str,
     url: &str,
     body: &impl Serialize,
+    active_org_id: Option<&str>,
 ) -> Result<(), String> {
-    let resp = http
-        .post(url)
-        .bearer_auth(token)
-        .json(body)
+    let request = http.post(url).bearer_auth(token).json(body);
+    let resp = crate::cp_client::with_org_id(request, active_org_id)
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
@@ -45,11 +45,10 @@ async fn patch_json(
     token: &str,
     url: &str,
     body: &impl Serialize,
+    active_org_id: Option<&str>,
 ) -> Result<(), String> {
-    let resp = http
-        .patch(url)
-        .bearer_auth(token)
-        .json(body)
+    let request = http.patch(url).bearer_auth(token).json(body);
+    let resp = crate::cp_client::with_org_id(request, active_org_id)
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
@@ -72,6 +71,7 @@ async fn upload_row(http: &Client, token: &str, base: &str, row: &OutboxRow) -> 
                 token,
                 &format!("{base}/v1/runtime/observability/dictation"),
                 &payload,
+                row.active_org_id.as_deref(),
             )
             .await
         }
@@ -84,6 +84,7 @@ async fn upload_row(http: &Client, token: &str, base: &str, row: &OutboxRow) -> 
                 token,
                 &format!("{base}/v1/runtime/observability/dictation/{recording_id}"),
                 &payload,
+                row.active_org_id.as_deref(),
             )
             .await
         }
@@ -95,6 +96,41 @@ async fn upload_row(http: &Client, token: &str, base: &str, row: &OutboxRow) -> 
                 token,
                 &format!("{base}/v1/runtime/observability/aliases"),
                 &payload,
+                row.active_org_id.as_deref(),
+            )
+            .await
+        }
+        "upsert_meeting_session" => {
+            let payload: MeetingSessionPayload =
+                serde_json::from_str(&row.payload_json).map_err(|e| e.to_string())?;
+            let org_id = row
+                .active_org_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "meeting session outbox row has no stored active org".to_string())?;
+            post_json(
+                http,
+                token,
+                &format!("{base}/v1/runtime/observability/meeting"),
+                &payload,
+                Some(org_id),
+            )
+            .await
+        }
+        "upsert_meeting_provider_usage" => {
+            let payload: MeetingProviderUsagePayload =
+                serde_json::from_str(&row.payload_json).map_err(|e| e.to_string())?;
+            let org_id = row
+                .active_org_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "meeting usage outbox row has no stored active org".to_string())?;
+            post_json(
+                http,
+                token,
+                &format!("{base}/v1/runtime/observability/meeting/provider-usage"),
+                &payload,
+                Some(org_id),
             )
             .await
         }
@@ -130,6 +166,23 @@ pub async fn upload_pending(pool: &DbPool, user_id: &str, http: &Client) {
 
     let base = base_url(&user);
     for row in rows {
+        if row.op == "upsert_meeting_provider_usage" {
+            let Ok(payload) =
+                serde_json::from_str::<MeetingProviderUsagePayload>(&row.payload_json)
+            else {
+                if let Err(error) = mark_failed(pool, row.id, "invalid meeting usage payload") {
+                    warn!("[observability] mark_failed failed: {error}");
+                }
+                continue;
+            };
+            if !meeting_session_done(pool, user_id, &payload.client_session_id) {
+                debug!(
+                    client_session_id = %payload.client_session_id,
+                    "[observability] deferring meeting usage until session is delivered"
+                );
+                continue;
+            }
+        }
         match upload_row(http, &token, &base, &row).await {
             Ok(()) => {
                 if let Err(e) = mark_done(pool, row.id) {

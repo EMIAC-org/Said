@@ -1,0 +1,2 @@
+-- Applied conditionally from store/mod.rs because SQLite does not support
+-- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.

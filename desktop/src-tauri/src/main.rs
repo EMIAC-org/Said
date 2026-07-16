@@ -18,6 +18,7 @@ mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" secti
 mod hud_manager;
 mod local_models;
 mod meeting_engine;
+mod meeting_telemetry;
 mod nemotron; // optional experimental GGUF local-ASR provider; never used by Meetings
 mod notch_sidecar;
 mod whisper_dictation_stream; // crash-recovery PCM tap during on-device dictation (batch-only STT)
