@@ -70,8 +70,8 @@ export function PersonDetailPage() {
       host_name: name,
       host_email: m.email,
       participant_count: 1,
-      provider: meeting.model ? 'deepseek' : null,
-      usage_count: meeting.input_tokens + meeting.output_tokens > 0 ? 1 : 0,
+      provider: meeting.provider,
+      usage_count: meeting.usage_count,
       cached_input_tokens: 0,
       cache_miss_tokens: meeting.input_tokens,
       reasoning_tokens: 0,
@@ -163,7 +163,7 @@ export function PersonDetailPage() {
                   <td className="cell-strong">{meeting.title}<div className="em">{meeting.source === 'local' ? 'Local desktop' : 'Historical cloud'}</div></td>
                   <td className="r tnum">{Math.round(meeting.duration_seconds / 60)}m</td>
                   <td className="r tnum">{num(meeting.transcript_word_count)}</td>
-                  <td><span className="chip mono">{meeting.model || 'No AI usage'}</span></td>
+                  <td><span className="chip mono">{meeting.usage_count === 0 ? 'No AI usage' : meeting.model || 'Unknown model'}</span></td>
                   <td className="r"><span className="cost">{usd2(meeting.cost_usd)}</span></td>
                 </tr>
               ))}

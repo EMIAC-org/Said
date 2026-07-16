@@ -33,18 +33,35 @@ export function MeetingDrawerBody({
 }) {
   const [detail, setDetail] = useState<MeetingCostDetail | null>(null)
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState('')
+  const [requestVersion, setRequestVersion] = useState(0)
 
   useEffect(() => {
+    let active = true
     setLoading(true)
+    setDetail(null)
+    setFetchError('')
     apiJson<MeetingCostDetail>(`/v1/orgs/${orgId}/meetings/${row.id}/cost`)
-      .then(setDetail)
-      .catch(() => setDetail(null))
-      .finally(() => setLoading(false))
-  }, [row.id, orgId])
+      .then(result => { if (active) setDetail(result) })
+      .catch(error => {
+        if (active) setFetchError(error instanceof Error ? error.message : 'Unable to load meeting detail.')
+      })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [row.id, orgId, requestVersion])
 
   if (loading) return <Loading />
+  if (fetchError || !detail) {
+    return (
+      <div className="errbox">
+        <h3>Meeting detail unavailable</h3>
+        <p>{fetchError || 'The meeting detail response was empty.'}</p>
+        <button className="btn" type="button" onClick={() => setRequestVersion(version => version + 1)}>Retry</button>
+      </div>
+    )
+  }
 
-  const stages = detail?.by_stage ?? []
+  const stages = detail.by_stage ?? []
 
   return (
     <>
@@ -75,8 +92,9 @@ export function MeetingDrawerBody({
 
       <div className="section-label">AI usage by stage</div>
       {stages.length === 0 ? (
-        <div className="card card-pad" style={{ color: 'var(--muted)', fontSize: 13 }}>
-          This meeting was recorded, but no AI provider usage was captured.
+        <div className="card card-pad" style={{ fontSize: 13 }}>
+          <div className="cell-strong">No AI usage</div>
+          <div style={{ color: 'var(--muted)', marginTop: 4 }}>This meeting was recorded, but no provider usage was captured.</div>
         </div>
       ) : (
         <div className="card">

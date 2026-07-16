@@ -104,7 +104,7 @@ export interface MeetingCostRow {
 
 export type PersonMeetingRow = Pick<
   MeetingCostRow,
-  'id' | 'source' | 'title' | 'status' | 'started_at' | 'duration_seconds' | 'transcript_word_count' | 'model' | 'input_tokens' | 'output_tokens' | 'cost_usd'
+  'id' | 'source' | 'title' | 'status' | 'started_at' | 'duration_seconds' | 'transcript_word_count' | 'provider' | 'model' | 'usage_count' | 'input_tokens' | 'output_tokens' | 'cost_usd'
 >
 
 export interface OrgMeetingCosts {

@@ -2392,6 +2392,21 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
     .await
     .unwrap();
 
+    let no_usage_session_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO local_meeting_sessions
+            (org_id, account_id, client_session_id, title, status, started_at,
+             ended_at, duration_seconds, transcript_word_count)
+         VALUES ($1, $2, $3, 'Recorded without AI', 'completed',
+                 to_timestamp(1699999700), to_timestamp(1699999730), 30, 25)
+         RETURNING id",
+    )
+    .bind(org_a)
+    .bind(account_id)
+    .bind(format!("no-provider-usage-{suffix}"))
+    .fetch_one(&srv.db)
+    .await
+    .unwrap();
+
     let session_id = created_body["session_id"].as_str().unwrap();
     let meetings = srv
         .client
@@ -2403,24 +2418,31 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
         .unwrap();
     assert_eq!(meetings.status(), 200);
     let meetings_body: Value = meetings.json().await.unwrap();
-    assert_eq!(meetings_body["meeting_count"], 2);
-    assert_eq!(meetings_body["total_recording_seconds"], 120.0);
-    assert_eq!(meetings_body["total_transcript_words"], 220);
+    assert_eq!(meetings_body["meeting_count"], 3);
+    assert_eq!(meetings_body["total_recording_seconds"], 150.0);
+    assert_eq!(meetings_body["total_transcript_words"], 245);
     assert_eq!(meetings_body["total_tokens"], 1_750);
     let meeting_rows = meetings_body["meetings"].as_array().unwrap();
     let local_row = meeting_rows
         .iter()
-        .find(|row| row["source"] == "local")
+        .find(|row| row["id"] == session_id)
         .unwrap();
     let legacy_row = meeting_rows
         .iter()
         .find(|row| row["source"] == "legacy")
+        .unwrap();
+    let no_usage_row = meeting_rows
+        .iter()
+        .find(|row| row["id"] == no_usage_session_id.to_string())
         .unwrap();
     assert_eq!(local_row["id"], session_id);
     assert_eq!(local_row["model"], "deepseek-v4-pro");
     assert_eq!(local_row["usage_count"], 1);
     assert_eq!(legacy_row["id"], legacy_meeting_id.to_string());
     assert_eq!(legacy_row["model"], "deepseek-v4-flash");
+    assert_eq!(no_usage_row["usage_count"], 0);
+    assert!(no_usage_row["provider"].is_null());
+    assert!(no_usage_row["model"].is_null());
     assert!((meetings_body["total_cost_usd"].as_f64().unwrap() - cost - legacy_cost).abs() < 1e-12);
 
     let meeting_detail = srv
@@ -2437,6 +2459,26 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
     assert_eq!(detail_body["by_stage"][0]["stage"], "summary");
     assert_eq!(detail_body["by_stage"][0]["cache_hit_tokens"], 400);
     assert_eq!(detail_body["by_stage"][0]["cache_miss_tokens"], 600);
+
+    let no_usage_detail = srv
+        .client
+        .get(srv.url(&format!(
+            "/v1/orgs/{org_a}/meetings/{no_usage_session_id}/cost"
+        )))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_usage_detail.status(), 200);
+    let no_usage_detail_body: Value = no_usage_detail.json().await.unwrap();
+    assert_eq!(no_usage_detail_body["source"], "local");
+    assert!(
+        no_usage_detail_body["by_stage"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 
     let legacy_detail = srv
         .client
@@ -2469,9 +2511,9 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
         .unwrap();
     assert_eq!(person.status(), 200);
     let person_body: Value = person.json().await.unwrap();
-    assert_eq!(person_body["meeting_count"], 2);
-    assert_eq!(person_body["meeting_duration_seconds"], 120.0);
-    assert_eq!(person_body["meeting_transcript_words"], 220);
+    assert_eq!(person_body["meeting_count"], 3);
+    assert_eq!(person_body["meeting_duration_seconds"], 150.0);
+    assert_eq!(person_body["meeting_transcript_words"], 245);
     assert!(
         person_body["recent_meetings"]
             .as_array()
@@ -2479,6 +2521,15 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
             .iter()
             .any(|row| row["id"] == session_id)
     );
+    let no_usage_recent = person_body["recent_meetings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == no_usage_session_id.to_string())
+        .unwrap();
+    assert_eq!(no_usage_recent["usage_count"], 0);
+    assert!(no_usage_recent["provider"].is_null());
+    assert!(no_usage_recent["model"].is_null());
     assert!((person_body["meeting_cost_usd"].as_f64().unwrap() - cost - legacy_cost).abs() < 1e-12);
 
     let people = srv
@@ -2499,7 +2550,7 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
         .iter()
         .find(|row| row["account_id"] == account_id.to_string())
         .unwrap();
-    assert_eq!(owner_row["meeting_count"], 2);
+    assert_eq!(owner_row["meeting_count"], 3);
     assert!((owner_row["meeting_cost_usd"].as_f64().unwrap() - cost - legacy_cost).abs() < 1e-12);
 
     let overview = srv

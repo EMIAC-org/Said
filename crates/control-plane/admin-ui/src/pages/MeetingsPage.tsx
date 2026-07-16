@@ -4,7 +4,6 @@ import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { useWindowRange, winDays } from '../lib/window'
 import { usd2, num, firstName } from '../lib/format'
-import { MEET_MODEL, MEET_PROVIDER, MEET_IN_PER_M, MEET_CACHE_IN_PER_M, MEET_OUT_PER_M } from '../lib/rates'
 import { StatTile, Avatar, Loading, ErrorBox, Empty } from '../components/ui'
 import { useDrawer } from '../components/Drawer'
 import { MeetingDrawerHead, MeetingDrawerBody } from '../components/MeetingDrawer'
@@ -51,7 +50,7 @@ export function MeetingsPage() {
     <>
       <div className="page-head">
         <h1>Meetings</h1>
-        <p>Unified historical cloud meetings and local desktop sessions. New local AI usage runs on <b>{MEET_PROVIDER} {MEET_MODEL}</b>.</p>
+        <p>Unified historical cloud meetings and local desktop sessions. Provider and model labels come from recorded AI usage.</p>
       </div>
 
       {loading ? <Loading /> : error ? <ErrorBox title="Failed to load meetings" message={error} /> : (
@@ -84,7 +83,7 @@ export function MeetingsPage() {
                       <td><div className="person-cell"><Avatar name={mtg.host_name} size={24} /><span className="nm" style={{ fontSize: 12.5 }}>{firstName(mtg.host_name)}</span></div></td>
                       <td className="r tnum">{duration(mtg.duration_seconds)}</td>
                       <td className="r tnum">{num(mtg.transcript_word_count)}</td>
-                      <td><span className="chip mono">{mtg.model || 'No AI usage'}</span></td>
+                      <td><span className="chip mono">{mtg.usage_count === 0 ? 'No AI usage' : mtg.model || 'Unknown model'}</span></td>
                       <td className="r tnum mono" style={{ fontSize: 11.5 }}>{num(mtg.input_tokens + mtg.output_tokens)}</td>
                       <td className="r"><span className="cost">{usd2(mtg.cost_usd)}</span></td>
                       <td>{mtg.status === 'live' ? <span className="tag warn">● Live</span> : <span className="tag neutral">{mtg.status}</span>}</td>
@@ -99,7 +98,7 @@ export function MeetingsPage() {
             <div className="hint" style={{ marginTop: 14 }}>Meetings exist in this window, but no AI usage was recorded for them.</div>
           )}
           <div className="hint" style={{ marginTop: 14 }}>
-            New local usage is server-priced from its stored {MEET_PROVIDER} {MEET_MODEL} rate-card snapshot (${MEET_CACHE_IN_PER_M}/M cache hit · ${MEET_IN_PER_M}/M cache miss · ${MEET_OUT_PER_M}/M output). Historical cloud rows retain their truthful model and recorded rate; meetings without usage remain visible at zero cost.
+            Meeting costs are server-priced from the rate-card snapshot stored with each usage event. Historical cloud rows retain their truthful model and recorded rate; meetings without usage remain visible at zero cost without an inferred provider or model.
           </div>
         </>
       )}
