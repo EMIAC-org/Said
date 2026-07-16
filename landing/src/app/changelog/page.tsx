@@ -28,55 +28,55 @@ export const metadata: Metadata = {
 };
 
 const latest = {
-  version: "2.4.1",
-  date: "Jun 27, 2026",
-  title: "Faster, better, cleaner dictation",
+  version: "2.4.4",
+  date: "Jul 16, 2026",
+  title: "Meetings, captured from start to summary",
   intro:
-    "AirNote 2.4.1 is the current stable desktop release for macOS and Windows, focused on faster polish, cleaner local-model setup, and more reliable updates.",
+    "AirNote 2.4.4 is the current stable macOS release, adding a complete meeting workflow from live capture to summaries, notes, and action items. The current Windows release remains 2.4.1.",
   sections: [
     {
-      id: "faster",
-      eyebrow: "#Faster",
-      title: "Faster dictation handoff",
-      icon: ArrowDownToLine,
+      id: "meetings",
+      eyebrow: "#Meetings",
+      title: "Start a meeting and let AirNote run",
+      icon: Video,
       body: [
-        "Dictation now moves through capture, local transcription, polish, and paste with fewer avoidable waits.",
-        "The app keeps the fast status feedback path while the final text lands through the more reliable completed-output path.",
+        "Start a meeting from the Meetings workspace and AirNote captures the conversation while you stay focused on the call.",
+        "The live meeting view keeps recording status and transcript progress visible, and you can safely leave the meeting when the conversation ends.",
       ],
       bullets: [
-        "Lower post-recording wait",
-        "Cleaner polish handoff",
-        "Better retry state tracking",
+        "One-click meeting start",
+        "Live recording state",
+        "Safe leave and processing",
       ],
     },
     {
-      id: "better",
-      eyebrow: "#Better",
-      title: "Better local model behavior",
-      icon: Bell,
+      id: "summary",
+      eyebrow: "#Summary",
+      title: "Review the meeting without replaying it",
+      icon: Sparkles,
       body: [
-        "The local speech model path is treated as a first-class setup path, with clearer download and readiness checks.",
-        "Windows and macOS ship from separate update manifests so one platform release no longer disturbs the other.",
+        "After the meeting, AirNote turns the captured conversation into a structured summary with the transcript and notes kept together.",
+        "Important decisions and follow-ups are easier to find, so the useful outcome of the meeting is ready when processing finishes.",
       ],
       bullets: [
-        "Current Mac DMG",
-        "Current Windows setup",
-        "Per-platform updater manifests",
+        "Structured meeting summary",
+        "Searchable transcript and notes",
+        "Decisions kept in context",
       ],
     },
     {
-      id: "cleaner",
-      eyebrow: "#Cleaner",
-      title: "Cleaner recovery and update UX",
+      id: "actions",
+      eyebrow: "#Actions",
+      title: "Turn discussion into tasks",
       icon: ShieldCheck,
       body: [
-        "Failure states now keep more useful local context, so users can retry recent audio instead of speaking again.",
-        "The update flow keeps automatic checks and the manual Settings > About check pointed at the current stable release.",
+        "Action items extracted from the meeting appear in a dedicated task section beside the summary and notes.",
+        "A new visual meetings guide walks through waiting, running, leaving, processing, summary, and task states using the same interface patterns as the desktop app.",
       ],
       bullets: [
-        "Saved failed audio",
-        "Status-bar recovery card",
-        "Current 2.4.1 downloads only",
+        "Action-item task section",
+        "Dedicated meetings guide",
+        "Signed macOS auto-update",
       ],
     },
   ],
@@ -84,41 +84,48 @@ const latest = {
 
 const noteGroups = [
   {
-    title: "Faster",
+    title: "Meetings",
     count: 3,
     items: [
-      "Reduced avoidable delay between recording release and final polish.",
-      "Kept live status feedback fast while final insertion uses completed output.",
-      "Improved retry bookkeeping so failed runs can be recovered quickly.",
+      "Added a Meetings workspace for starting, monitoring, and leaving a meeting.",
+      "Added clear waiting, live recording, processing, and completed meeting states.",
+      "Kept meeting transcripts, notes, summaries, and tasks together in one record.",
     ],
   },
   {
-    title: "Better",
+    title: "Intelligence",
     count: 3,
     items: [
-      "Aligned production runtime credentials for the current polish and transcription paths.",
-      "Kept macOS and Windows updater manifests independent per platform.",
-      "Improved local-model setup and readiness checks for desktop installs.",
+      "Added structured post-meeting summaries for faster review.",
+      "Added action-item extraction and a dedicated task section.",
+      "Bundled the speech and meeting-processing resources required by the macOS app.",
     ],
   },
   {
-    title: "Cleaner",
+    title: "Delivery",
     count: 3,
     items: [
-      "Published the signed, notarized, stapled Apple Silicon DMG.",
-      "Updated the landing and changelog download links to the current stable version.",
-      "Removed stale historical download buttons so users only see supported artifacts.",
+      "Published the signed, notarized, and stapled AirNote 2.4.4 Apple Silicon DMG.",
+      "Added a dedicated visual guide for the complete meetings workflow.",
+      "Kept macOS and Windows updater manifests independent so Windows remains on 2.4.1.",
     ],
   },
 ];
 
 const releaseDownloads = [
   {
-    version: "2.4.1",
-    date: "Jun 27, 2026",
-    title: "Latest stable",
+    version: "2.4.4",
+    date: "Jul 16, 2026",
+    title: "Latest stable for macOS",
     downloads: [
       { platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg },
+    ],
+  },
+  {
+    version: "2.4.1",
+    date: "Jun 27, 2026",
+    title: "Current stable for Windows",
+    downloads: [
       { platform: "Windows", label: "Windows setup", href: downloads.windows.latestSetup },
     ],
   },
