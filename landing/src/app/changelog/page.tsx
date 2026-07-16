@@ -30,53 +30,53 @@ export const metadata: Metadata = {
 const latest = {
   version: "2.4.4",
   date: "Jul 16, 2026",
-  title: "Meetings, captured from start to summary",
+  title: "Better UI. More accurate dictation.",
   intro:
-    "AirNote 2.4.4 is the current stable macOS release, adding a complete meeting workflow from live capture to summaries, notes, and action items. The current Windows release remains 2.4.1.",
+    "AirNote 2.4.4 is the current stable macOS release, with a clearer desktop experience, more accurate dictation, and a complete meeting workflow from live capture to summaries and tasks. The current Windows release remains 2.4.1.",
   sections: [
+    {
+      id: "interface",
+      eyebrow: "#Better UI",
+      title: "A clearer AirNote, at a glance",
+      icon: LayoutDashboard,
+      body: [
+        "The redesigned dashboard puts today’s output, time saved, pace, learned edits, activity, and recent recordings into one calm workspace.",
+        "Navigation is cleaner, important states are easier to scan, and the interface now matches the way dictation, learning, and meetings fit together.",
+      ],
+      bullets: [
+        "Redesigned dashboard",
+        "Clearer navigation",
+        "Exact activity overview",
+      ],
+    },
+    {
+      id: "accuracy",
+      eyebrow: "#More Accurate",
+      title: "Dictation that gets your words right",
+      icon: Mic2,
+      body: [
+        "AirNote’s transcription and polish pipeline is more reliable across English, Hindi, Hinglish, names, product terms, and mixed technical speech.",
+        "Vocabulary, learned edits, and safer context handling work together to preserve what you meant while removing filler and fixing genuine recognition mistakes.",
+      ],
+      bullets: [
+        "Stronger mixed-language accuracy",
+        "Better names and terminology",
+        "Safer learned corrections",
+      ],
+    },
     {
       id: "meetings",
       eyebrow: "#Meetings",
-      title: "Start a meeting and let AirNote run",
+      title: "From live conversation to summary and tasks",
       icon: Video,
       body: [
-        "Start a meeting from the Meetings workspace and AirNote captures the conversation while you stay focused on the call.",
-        "The live meeting view keeps recording status and transcript progress visible, and you can safely leave the meeting when the conversation ends.",
+        "Start a meeting from the Meetings workspace, keep recording status and transcript progress visible, then safely leave when the conversation ends.",
+        "After processing, the transcript, notes, structured summary, decisions, and action-item task section stay together in one meeting record.",
       ],
       bullets: [
-        "One-click meeting start",
-        "Live recording state",
-        "Safe leave and processing",
-      ],
-    },
-    {
-      id: "summary",
-      eyebrow: "#Summary",
-      title: "Review the meeting without replaying it",
-      icon: Sparkles,
-      body: [
-        "After the meeting, AirNote turns the captured conversation into a structured summary with the transcript and notes kept together.",
-        "Important decisions and follow-ups are easier to find, so the useful outcome of the meeting is ready when processing finishes.",
-      ],
-      bullets: [
-        "Structured meeting summary",
-        "Searchable transcript and notes",
-        "Decisions kept in context",
-      ],
-    },
-    {
-      id: "actions",
-      eyebrow: "#Actions",
-      title: "Turn discussion into tasks",
-      icon: ShieldCheck,
-      body: [
-        "Action items extracted from the meeting appear in a dedicated task section beside the summary and notes.",
-        "A new visual meetings guide walks through waiting, running, leaving, processing, summary, and task states using the same interface patterns as the desktop app.",
-      ],
-      bullets: [
+        "Live meeting capture",
+        "Structured summaries",
         "Action-item task section",
-        "Dedicated meetings guide",
-        "Signed macOS auto-update",
       ],
     },
   ],
@@ -84,30 +84,30 @@ const latest = {
 
 const noteGroups = [
   {
+    title: "Better UI",
+    count: 3,
+    items: [
+      "Redesigned the dashboard around today’s dictation output and time saved.",
+      "Made pace, learned edits, activity, and recent recordings easier to scan.",
+      "Unified dictation, learning, meetings, settings, and guide navigation.",
+    ],
+  },
+  {
+    title: "Accuracy",
+    count: 3,
+    items: [
+      "Improved dictation quality for English, Hindi, Hinglish, and mixed technical speech.",
+      "Improved preservation of names, vocabulary terms, and user-preferred corrections.",
+      "Strengthened correction safety so ordinary words are less likely to be changed incorrectly.",
+    ],
+  },
+  {
     title: "Meetings",
     count: 3,
     items: [
-      "Added a Meetings workspace for starting, monitoring, and leaving a meeting.",
-      "Added clear waiting, live recording, processing, and completed meeting states.",
-      "Kept meeting transcripts, notes, summaries, and tasks together in one record.",
-    ],
-  },
-  {
-    title: "Intelligence",
-    count: 3,
-    items: [
-      "Added structured post-meeting summaries for faster review.",
-      "Added action-item extraction and a dedicated task section.",
-      "Bundled the speech and meeting-processing resources required by the macOS app.",
-    ],
-  },
-  {
-    title: "Delivery",
-    count: 3,
-    items: [
-      "Published the signed, notarized, and stapled AirNote 2.4.4 Apple Silicon DMG.",
+      "Added live meeting capture with clear waiting, recording, processing, and completed states.",
+      "Added structured summaries, transcripts, notes, decisions, and action-item tasks.",
       "Added a dedicated visual guide for the complete meetings workflow.",
-      "Kept macOS and Windows updater manifests independent so Windows remains on 2.4.1.",
     ],
   },
 ];
@@ -271,6 +271,186 @@ function NavRow({
           {badge}
         </span>
       )}
+    </div>
+  );
+}
+
+function SnapshotNavItem({
+  icon,
+  label,
+  active = false,
+  badge,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  active?: boolean;
+  badge?: string;
+}) {
+  return (
+    <div
+      className="flex items-center gap-2 rounded-lg px-2.5 py-1.5"
+      style={{
+        color: active ? "#ececf0" : "#85858f",
+        background: active ? "#1b1b1e" : "transparent",
+        boxShadow: active ? "inset 0 0 0 1px #303034" : "none",
+        fontSize: 10,
+        fontWeight: active ? 600 : 500,
+      }}
+    >
+      <span className="flex h-4 w-4 items-center justify-center">{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {badge && (
+        <span className="rounded bg-[#24283a] px-1.5 py-0.5 text-[7px] font-semibold text-[#a9b9ff]">
+          {badge}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function CurrentDashboardSnapshot() {
+  const activity = [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 20, 28, 48, 24];
+  const recordings = [
+    ["No issues, just tell me the command, I will run it and then tell you the link.", "17 words"],
+    ["Yeh toh kaafi time taking hai, aap kaise karunga itna?", "10 words"],
+    ["Hello bhai, kaise ho?", "4 words"],
+  ];
+
+  return (
+    <div
+      className="my-8 overflow-hidden rounded-[18px] border border-white/10 bg-[#09090b]"
+      style={{
+        aspectRatio: "16 / 11.6",
+        boxShadow: "0 34px 90px -42px rgba(0,0,0,.9), inset 0 0 0 1px rgba(255,255,255,.025)",
+        fontFamily: APP_FONT,
+      }}
+      aria-label="AirNote 2.4.4 dashboard interface"
+    >
+      <div className="grid h-full" style={{ gridTemplateColumns: "24% 1fr" }}>
+        <aside className="flex min-h-0 flex-col border-r border-[#303034] bg-[#0d0d0f] px-3 py-3">
+          <div className="mb-5 flex items-center justify-between">
+            <div className="flex gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f57]" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[#febc2e]" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[#28c840]" />
+            </div>
+            <div className="flex items-end gap-[2px] text-[#93a8ff]">
+              {[11, 19, 28, 19, 11].map((height, index) => (
+                <span key={index} className="w-[3px] rounded-full bg-current" style={{ height }} />
+              ))}
+            </div>
+            <span className="w-8" />
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-hidden">
+            <div>
+              <div className="mb-1.5 px-2.5 text-[7px] font-bold uppercase tracking-[0.2em] text-[#777780]">General</div>
+              <div className="space-y-0.5">
+                <SnapshotNavItem icon={<LayoutDashboard size={12} />} label="Dashboard" active />
+                <SnapshotNavItem icon={<BarChart2 size={12} />} label="Insights" />
+                <SnapshotNavItem icon={<History size={12} />} label="History" />
+                <SnapshotNavItem icon={<BookOpen size={12} />} label="Vocabulary" />
+                <SnapshotNavItem icon={<Sparkles size={12} />} label="Learnings" badge="New" />
+                <SnapshotNavItem icon={<LayoutDashboard size={12} />} label="Buckets" />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1.5 px-2.5 text-[7px] font-bold uppercase tracking-[0.2em] text-[#777780]">Enterprise</div>
+              <div className="space-y-0.5">
+                <SnapshotNavItem icon={<Video size={12} />} label="Meetings" />
+                <SnapshotNavItem icon={<Sparkles size={12} />} label="Divo" />
+              </div>
+            </div>
+          </div>
+
+          <div className="my-3 rounded-xl border border-[#303034] bg-[#17171a] p-3">
+            <div className="flex items-center gap-2 text-[8px] font-semibold tracking-[0.08em] text-[#ededf0]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#91a8ff] shadow-[0_0_8px_#91a8ff]" />
+              READY
+            </div>
+            <div className="mt-2 text-[8px] text-[#85858f]">2,250 words · 2d streak</div>
+          </div>
+
+          <div className="space-y-0.5">
+            <SnapshotNavItem icon={<UserPlus size={12} />} label="Invite a friend" />
+            <SnapshotNavItem icon={<Settings size={12} />} label="Settings" />
+            <SnapshotNavItem icon={<BookOpen size={12} />} label="Guide" />
+            <SnapshotNavItem icon={<Bug size={12} />} label="Report bug" />
+          </div>
+        </aside>
+
+        <section className="min-w-0 bg-[#070708] p-3">
+          <div className="mb-3 flex h-8 items-center justify-end gap-3 pr-2 text-[#85858f]">
+            <div className="flex items-center gap-1 rounded-full border border-[#29292d] bg-[#151518] p-1">
+              <Sun size={10} />
+              <span className="h-5 w-5 rounded-full bg-[#91a8ff] shadow-[0_0_12px_rgba(145,168,255,.6)]" />
+            </div>
+            <Bell size={12} />
+            <span className="h-6 w-6 rounded-full bg-gradient-to-br from-amber-200 via-amber-500 to-stone-800" />
+          </div>
+
+          <div className="h-[calc(100%-2.75rem)] overflow-hidden rounded-[14px] border border-[#303034] bg-[#17171a] px-6 py-5">
+            <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-[#91a8ff]">Today · Jul 16</div>
+            <h3 className="mt-3 text-[22px] font-semibold leading-none tracking-[-0.035em] text-[#f1f1f3]">
+              You dictated 1,229 words today.
+            </h3>
+            <p className="mt-3 text-[11px] text-[#8d8d96]">
+              That&apos;s roughly <span className="font-semibold text-[#91a8ff]">20 minutes</span> saved vs. typing, at an average of 154 WPM.
+            </p>
+
+            <div className="mt-6 text-[8px] font-bold uppercase tracking-[0.2em] text-[#8d8d96]">At a glance</div>
+            <div className="mt-3 grid grid-cols-3 border-y border-[#303034] py-3">
+              <div className="px-3">
+                <div className="text-[7px] uppercase tracking-[0.18em] text-[#8d8d96]">Top apps</div>
+                <div className="mt-2 flex -space-x-1">
+                  {["AI", "✦", "▤", "⌁"].map((app, index) => (
+                    <span
+                      key={app}
+                      className="flex h-6 w-6 items-center justify-center rounded-lg border-2 border-[#111114] text-[8px] font-semibold text-white"
+                      style={{ background: ["#eee", "#e9653f", "#d7d7d9", "#202024"][index], color: index === 0 || index === 2 ? "#17171a" : "white" }}
+                    >
+                      {app}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="border-l border-[#303034] px-3">
+                <div className="text-[7px] uppercase tracking-[0.18em] text-[#8d8d96]">Avg pace</div>
+                <div className="mt-2 text-[21px] font-semibold text-[#f1f1f3]">154 <span className="text-[9px] font-medium text-[#8d8d96]">wpm</span></div>
+              </div>
+              <div className="border-l border-[#303034] px-3">
+                <div className="text-[7px] uppercase tracking-[0.18em] text-[#8d8d96]">Edits learned</div>
+                <div className="mt-2 text-[21px] font-semibold text-[#f1f1f3]">34</div>
+              </div>
+            </div>
+
+            <div className="mt-5 text-[8px] font-bold uppercase tracking-[0.2em] text-[#8d8d96]">Activity — last 14 days</div>
+            <div className="mt-3 flex h-16 items-end gap-1">
+              {activity.map((height, index) => (
+                <span
+                  key={index}
+                  className="flex-1 rounded-[2px]"
+                  style={{ height, background: index > 9 ? (index === 12 ? "#363c50" : "#586487") : "#1c1c20" }}
+                />
+              ))}
+            </div>
+            <div className="mt-2 flex justify-between text-[7px] text-[#777780]"><span>3</span><span>10</span><span>16</span></div>
+
+            <div className="mt-5 text-[8px] font-bold uppercase tracking-[0.2em] text-[#8d8d96]">Today — 51 recordings</div>
+            <div className="mt-2 divide-y divide-[#303034]">
+              {recordings.map(([text, words]) => (
+                <div key={text} className="flex items-start gap-2 py-2">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-[#303034] bg-[#202024] text-[8px] text-white">⌁</span>
+                  <div className="min-w-0">
+                    <div className="truncate text-[9px] text-[#e6e6e9]">{text}</div>
+                    <div className="mt-1 text-[7px] text-[#73737c]">1h ago&nbsp;&nbsp; {words}&nbsp;&nbsp; Traycer</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
@@ -651,7 +831,7 @@ export default function ChangelogPage() {
                   ))}
                 </div>
 
-                <DemoPanel title={section.title} index={index} />
+                {index === 0 ? <CurrentDashboardSnapshot /> : <DemoPanel title={section.title} index={index} />}
 
                 <ul className="grid gap-3 md:grid-cols-3">
                   {section.bullets.map((bullet) => (
