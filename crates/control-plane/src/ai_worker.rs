@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::codex_client;
+use crate::costs;
 use crate::meeting_hub::MeetingHub;
 
 // ── Public entry point ──────────────────────────────────────────────────────
@@ -212,6 +213,41 @@ async fn run_pipeline(
         .fetch_optional(db)
         .await
         .map_err(PipelineError::Db)?;
+
+    // 7b-ii. Record meeting AI provider usage + estimated cost. Meeting cost is
+    // approximated on the DeepSeek V4 Flash rate card per product direction (the
+    // transport is the Codex backend, but billing tracks DeepSeek V4 Flash). This
+    // is non-fatal bookkeeping — a failure must never break the pipeline.
+    if let Some(oid) = org_id {
+        let input_tokens = response.input_tokens.unwrap_or(0);
+        let cached_input_tokens = response.cached_input_tokens.unwrap_or(0);
+        let output_tokens = response.output_tokens.unwrap_or(0);
+        let estimated_cost_usd =
+            costs::deepseek_v4_flash_cost(input_tokens, cached_input_tokens, output_tokens);
+        if let Err(e) = sqlx::query(
+            "INSERT INTO meeting_provider_usage
+                (meeting_id, org_id, slot_index, provider, model,
+                 input_tokens, cached_input_tokens, output_tokens,
+                 estimated_cost_usd, cost_source)
+             VALUES ($1, $2, $3, 'deepseek', 'deepseek-v4-flash', $4, $5, $6, $7, $8)",
+        )
+        .bind(slot.meeting_id)
+        .bind(oid)
+        .bind(slot.slot_index)
+        .bind(input_tokens)
+        .bind(cached_input_tokens)
+        .bind(output_tokens)
+        .bind(estimated_cost_usd)
+        .bind(costs::DEEPSEEK_V4_FLASH_RATE_SOURCE)
+        .execute(db)
+        .await
+        {
+            warn!(
+                "[ai-worker] failed to record meeting_provider_usage for meeting {} slot {}: {e}",
+                slot.meeting_id, slot.slot_index
+            );
+        }
+    }
 
     // 7c. Insert tasks.
     let mut task_count = 0i32;

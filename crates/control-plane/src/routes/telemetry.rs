@@ -362,12 +362,13 @@ pub async fn batch_ingest(
 
 #[derive(Deserialize)]
 pub struct AnalyticsQuery {
-    pub days: Option<i32>,
+    /// Window in days, or `"all"`/`"0"` for all-time (see [`window_bounds`]).
+    pub days: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct UsersListQuery {
-    pub days: Option<i32>,
+    pub days: Option<String>,
     pub q: Option<String>,
     pub limit: Option<i32>,
     pub offset: Option<i32>,
@@ -375,8 +376,18 @@ pub struct UsersListQuery {
 
 #[derive(Deserialize)]
 pub struct UserRunsQuery {
-    pub days: Option<i32>,
+    pub days: Option<String>,
     pub mode: Option<String>,
+    pub limit: Option<i32>,
+    pub offset: Option<i32>,
+}
+
+#[derive(Deserialize)]
+pub struct OrgRunsQuery {
+    pub days: Option<String>,
+    pub mode: Option<String>,
+    pub app: Option<String>,
+    pub edited: Option<bool>,
     pub limit: Option<i32>,
     pub offset: Option<i32>,
 }
@@ -459,7 +470,7 @@ async fn fetch_cost_summaries(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Option<Uuid>,
-    since: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
 ) -> Result<HashMap<Uuid, CostSummary>, sqlx::Error> {
     let rows: Vec<CostSummaryRow> = sqlx::query_as(
         "WITH polish_by_run AS (
@@ -483,7 +494,7 @@ async fn fetch_cost_summaries(
            FROM runtime_telemetry_runs r
            LEFT JOIN polish_by_run p
              ON p.account_id = r.account_id AND p.client_run_id = r.run_id
-          WHERE r.org_id = $1 AND r.event_at >= $2
+          WHERE r.org_id = $1 AND ($2::timestamptz IS NULL OR r.event_at >= $2)
             AND ($3::uuid IS NULL OR r.account_id = $3)
           GROUP BY r.account_id",
     )
@@ -509,7 +520,7 @@ async fn fetch_daily_costs(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Uuid,
-    since: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
 ) -> Result<Vec<Value>, sqlx::Error> {
     let rows: Vec<DailyCostRow> = sqlx::query_as(
         "WITH polish_by_run AS (
@@ -530,7 +541,8 @@ async fn fetch_daily_costs(
            FROM runtime_telemetry_runs r
            LEFT JOIN polish_by_run p
              ON p.account_id = r.account_id AND p.client_run_id = r.run_id
-          WHERE r.org_id = $1 AND r.account_id = $2 AND r.event_at >= $3
+          WHERE r.org_id = $1 AND r.account_id = $2
+            AND ($3::timestamptz IS NULL OR r.event_at >= $3)
           GROUP BY r.event_at::date
           ORDER BY event_date DESC",
     )
@@ -562,14 +574,15 @@ async fn fetch_cost_model_breakdown(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Uuid,
-    since: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
 ) -> Result<Value, sqlx::Error> {
     let stt: Vec<(String, String, i64, f64, f64)> = sqlx::query_as(
         "SELECT COALESCE(speech_provider, 'unknown'), COALESCE(speech_model, 'unknown'),
                 COUNT(*)::bigint, COALESCE(SUM(audio_seconds), 0)::float8,
                 COALESCE(SUM(speech_cost_usd), 0)::float8
            FROM runtime_telemetry_runs
-          WHERE org_id = $1 AND account_id = $2 AND event_at >= $3
+          WHERE org_id = $1 AND account_id = $2
+            AND ($3::timestamptz IS NULL OR event_at >= $3)
           GROUP BY speech_provider, speech_model
           ORDER BY COALESCE(SUM(speech_cost_usd), 0) DESC, COUNT(*) DESC",
     )
@@ -587,7 +600,8 @@ async fn fetch_cost_model_breakdown(
            JOIN runtime_sessions rs
              ON rs.account_id = r.account_id AND rs.client_run_id = r.run_id
            JOIN runtime_provider_usage pu ON pu.run_id = rs.id
-          WHERE r.org_id = $1 AND r.account_id = $2 AND r.event_at >= $3
+          WHERE r.org_id = $1 AND r.account_id = $2
+            AND ($3::timestamptz IS NULL OR r.event_at >= $3)
           GROUP BY pu.provider, pu.model
           ORDER BY COALESCE(SUM(pu.estimated_cost_usd), 0) DESC, COUNT(*) DESC",
     )
@@ -623,13 +637,30 @@ fn telemetry_rate(n: i64, total: i64) -> f64 {
     }
 }
 
-fn window_days(days: Option<i32>) -> (i32, DateTime<Utc>) {
-    let days = days.unwrap_or(30).clamp(1, 90);
-    let since = Utc::now() - chrono::Duration::days(days as i64);
-    (days, since)
+/// Parse an optional `days` query param supporting an all-time option.
+///
+/// `"all"` (case-insensitive) or `"0"` means all-time: no lower time bound, so
+/// the returned `since` is `None` and callers must skip the `event_at >= since`
+/// predicate (the query helpers do this with a `$N::timestamptz IS NULL OR ...`
+/// guard). Otherwise the window is clamped to `1..=365` days. The first tuple
+/// element is echoed back as `window_days` in responses — an integer, or JSON
+/// `null` for all-time.
+pub(crate) fn window_bounds(days: Option<&str>) -> (Value, Option<DateTime<Utc>>) {
+    let raw = days.map(str::trim).filter(|s| !s.is_empty());
+    if raw.is_some_and(|s| s.eq_ignore_ascii_case("all") || s == "0") {
+        return (Value::Null, None);
+    }
+    let days = raw
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(30)
+        .clamp(1, 365);
+    (
+        json!(days),
+        Some(Utc::now() - chrono::Duration::days(days as i64)),
+    )
 }
 
-fn require_org_viewer(role: &str) -> Result<(), StatusCode> {
+pub(crate) fn require_org_viewer(role: &str) -> Result<(), StatusCode> {
     if role.eq_ignore_ascii_case("admin")
         || role.eq_ignore_ascii_case("owner")
         || role.eq_ignore_ascii_case("viewer")
@@ -669,7 +700,7 @@ pub async fn org_analytics(
         }
     }
 
-    let (days, since) = window_days(q.days);
+    let (days, since) = window_bounds(q.days.as_deref());
     let totals = fetch_run_totals(&state.db, org_id, None, since)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -703,7 +734,7 @@ pub async fn org_analytics(
     let by_mode: Vec<(String, i64)> = sqlx::query_as(
         "SELECT mode, COUNT(*)::bigint
            FROM runtime_telemetry_runs
-          WHERE org_id = $1 AND event_at >= $2
+          WHERE org_id = $1 AND ($2::timestamptz IS NULL OR event_at >= $2)
           GROUP BY mode
           ORDER BY COUNT(*) DESC",
     )
@@ -716,7 +747,7 @@ pub async fn org_analytics(
     let by_app: Vec<(Option<String>, i64)> = sqlx::query_as(
         "SELECT target_app, COUNT(*)::bigint
            FROM runtime_telemetry_runs
-          WHERE org_id = $1 AND event_at >= $2
+          WHERE org_id = $1 AND ($2::timestamptz IS NULL OR event_at >= $2)
           GROUP BY target_app
           ORDER BY COUNT(*) DESC
           LIMIT 10",
@@ -737,6 +768,7 @@ pub async fn org_analytics(
             "dau": dau,
             "wau": wau,
             "completed_runs": run_count,
+            "word_count": totals.word_count,
             "audio_minutes": (audio_seconds / 60.0 * 10.0).round() / 10.0,
             "by_mode": by_mode.iter().map(|(m, c)| json!({"mode": m, "count": c})).collect::<Vec<_>>(),
             "by_target_app": by_app.iter().map(|(a, c)| json!({"target_app": a, "count": c})).collect::<Vec<_>>(),
@@ -772,7 +804,7 @@ async fn fetch_run_totals(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Option<Uuid>,
-    since: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
 ) -> Result<RunTotals, sqlx::Error> {
     let row: RunTotalsRow = sqlx::query_as(
         "SELECT
@@ -799,7 +831,7 @@ async fn fetch_run_totals(
             COALESCE(SUM(CASE WHEN re_recorded_quickly THEN 1 ELSE 0 END), 0)::bigint AS re_recorded_quickly,
             COALESCE(SUM(CASE WHEN success = false THEN 1 ELSE 0 END), 0)::bigint AS failures
          FROM runtime_telemetry_runs
-         WHERE org_id = $1 AND event_at >= $2
+         WHERE org_id = $1 AND ($2::timestamptz IS NULL OR event_at >= $2)
            AND ($3::uuid IS NULL OR account_id = $3)",
     )
     .bind(org_id)
@@ -833,7 +865,7 @@ async fn fetch_latency_percentiles(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Option<Uuid>,
-    since: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
 ) -> Result<LatencyPercentiles, sqlx::Error> {
     let row: (
         Option<f64>,
@@ -859,7 +891,7 @@ async fn fetch_latency_percentiles(
             percentile_cont(0.5) WITHIN GROUP (ORDER BY paste_ms),
             percentile_cont(0.95) WITHIN GROUP (ORDER BY paste_ms)
          FROM runtime_telemetry_runs
-         WHERE org_id = $1 AND event_at >= $2 AND success = true
+         WHERE org_id = $1 AND ($2::timestamptz IS NULL OR event_at >= $2) AND success = true
            AND ($3::uuid IS NULL OR account_id = $3)",
     )
     .bind(org_id)
@@ -920,14 +952,14 @@ async fn fetch_speech_breakdown(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Option<Uuid>,
-    since: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
 ) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
     sqlx::query_as(
         "SELECT COALESCE(speech_model, 'unknown') AS speech_model,
                 COALESCE(speech_path, 'unknown') AS speech_path,
                 COUNT(*)::bigint
            FROM runtime_telemetry_runs
-          WHERE org_id = $1 AND event_at >= $2
+          WHERE org_id = $1 AND ($2::timestamptz IS NULL OR event_at >= $2)
             AND ($3::uuid IS NULL OR account_id = $3)
             AND speech_model IS NOT NULL
           GROUP BY speech_model, speech_path
@@ -982,7 +1014,7 @@ async fn fetch_speech_latency_by_model(
     db: &sqlx::PgPool,
     org_id: Uuid,
     account_id: Uuid,
-    since: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
 ) -> Result<Vec<Value>, sqlx::Error> {
     let rows: Vec<(String, Option<f64>, Option<f64>, i64)> = sqlx::query_as(
         "SELECT COALESCE(speech_model, 'unknown') AS speech_model,
@@ -990,7 +1022,8 @@ async fn fetch_speech_latency_by_model(
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY transcribe_ms),
                 COUNT(*)::bigint
            FROM runtime_telemetry_runs
-          WHERE org_id = $1 AND account_id = $2 AND event_at >= $3
+          WHERE org_id = $1 AND account_id = $2
+            AND ($3::timestamptz IS NULL OR event_at >= $3)
             AND success = true AND speech_model IS NOT NULL
           GROUP BY speech_model
           ORDER BY COUNT(*) DESC",
@@ -1047,7 +1080,7 @@ pub async fn list_users(
         .map_err(|_| StatusCode::FORBIDDEN)?;
     require_org_viewer(&role)?;
 
-    let (days, since) = window_days(q.days);
+    let (days, since) = window_bounds(q.days.as_deref());
     let limit = q.limit.unwrap_or(50).clamp(1, 200) as i64;
     let offset = q.offset.unwrap_or(0).max(0) as i64;
     let search =
@@ -1092,10 +1125,15 @@ pub async fn list_users(
         fallbacks: i64,
         learning_candidates: i64,
         learning_saved: i64,
+        word_count: i64,
         last_active_at: Option<DateTime<Utc>>,
         desktop_active: bool,
         primary_speech_model: Option<String>,
         primary_speech_count: Option<i64>,
+        meeting_cost_usd: f64,
+        meetings_hosted: i64,
+        platform: Option<String>,
+        app_version: Option<String>,
     }
 
     let rows: Vec<TelemetryUserListRow> = if let Some(ref pattern) = search {
@@ -1121,7 +1159,12 @@ pub async fn list_users(
                 agg.last_active_at,
                 COALESCE(dc.desktop_active, false) AS desktop_active,
                 speech_top.speech_model AS primary_speech_model,
-                speech_top.cnt AS primary_speech_count
+                speech_top.cnt AS primary_speech_count,
+                COALESCE(agg.word_count, 0)::bigint AS word_count,
+                COALESCE(mtgu.meeting_cost_usd, 0)::float8 AS meeting_cost_usd,
+                COALESCE(mtgu.meetings_hosted, 0)::bigint AS meetings_hosted,
+                dcp.platform AS platform,
+                dcp.app_version AS app_version
              FROM org_members om
              JOIN accounts a ON a.id = om.account_id
              LEFT JOIN (
@@ -1139,9 +1182,10 @@ pub async fn list_users(
                        COALESCE(SUM(CASE WHEN used_clipboard_fallback THEN 1 ELSE 0 END), 0)::bigint AS fallbacks,
                        COALESCE(SUM(CASE WHEN learning_candidate THEN 1 ELSE 0 END), 0)::bigint AS learning_candidates,
                        COALESCE(SUM(CASE WHEN server_learning_saved THEN 1 ELSE 0 END), 0)::bigint AS learning_saved,
+                       COALESCE(SUM(word_count), 0)::bigint AS word_count,
                        MAX(event_at) AS last_active_at
                   FROM runtime_telemetry_runs
-                 WHERE org_id = $1 AND event_at >= $2
+                 WHERE org_id = $1 AND ($2::timestamptz IS NULL OR event_at >= $2)
                  GROUP BY account_id
              ) agg ON agg.account_id = om.account_id
              LEFT JOIN LATERAL (
@@ -1153,11 +1197,26 @@ pub async fn list_users(
                 SELECT r.speech_model, COUNT(*)::bigint AS cnt
                   FROM runtime_telemetry_runs r
                  WHERE r.org_id = $1 AND r.account_id = om.account_id
-                   AND r.event_at >= $2 AND r.speech_model IS NOT NULL
+                   AND ($2::timestamptz IS NULL OR r.event_at >= $2) AND r.speech_model IS NOT NULL
                  GROUP BY r.speech_model
                  ORDER BY cnt DESC
                  LIMIT 1
              ) speech_top ON true
+             LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(mpu.estimated_cost_usd), 0)::float8 AS meeting_cost_usd,
+                       COUNT(DISTINCT mpu.meeting_id)::bigint AS meetings_hosted
+                  FROM meeting_provider_usage mpu
+                  JOIN meetings mtg ON mtg.id = mpu.meeting_id
+                 WHERE mtg.created_by = om.account_id AND mpu.org_id = $1
+                   AND ($2::timestamptz IS NULL OR mpu.created_at >= $2)
+             ) mtgu ON true
+             LEFT JOIN LATERAL (
+                SELECT dcp.platform, dcp.app_version
+                  FROM desktop_clients dcp
+                 WHERE dcp.org_id = $1 AND dcp.account_id = om.account_id
+                 ORDER BY dcp.last_seen_at DESC
+                 LIMIT 1
+             ) dcp ON true
              WHERE om.org_id = $1
                AND (a.email ILIKE $3 OR om.lark_name ILIKE $3)
              ORDER BY COALESCE(agg.runs, 0) DESC, om.joined_at ASC
@@ -1194,7 +1253,12 @@ pub async fn list_users(
                 agg.last_active_at,
                 COALESCE(dc.desktop_active, false) AS desktop_active,
                 speech_top.speech_model AS primary_speech_model,
-                speech_top.cnt AS primary_speech_count
+                speech_top.cnt AS primary_speech_count,
+                COALESCE(agg.word_count, 0)::bigint AS word_count,
+                COALESCE(mtgu.meeting_cost_usd, 0)::float8 AS meeting_cost_usd,
+                COALESCE(mtgu.meetings_hosted, 0)::bigint AS meetings_hosted,
+                dcp.platform AS platform,
+                dcp.app_version AS app_version
              FROM org_members om
              JOIN accounts a ON a.id = om.account_id
              LEFT JOIN (
@@ -1212,9 +1276,10 @@ pub async fn list_users(
                        COALESCE(SUM(CASE WHEN used_clipboard_fallback THEN 1 ELSE 0 END), 0)::bigint AS fallbacks,
                        COALESCE(SUM(CASE WHEN learning_candidate THEN 1 ELSE 0 END), 0)::bigint AS learning_candidates,
                        COALESCE(SUM(CASE WHEN server_learning_saved THEN 1 ELSE 0 END), 0)::bigint AS learning_saved,
+                       COALESCE(SUM(word_count), 0)::bigint AS word_count,
                        MAX(event_at) AS last_active_at
                   FROM runtime_telemetry_runs
-                 WHERE org_id = $1 AND event_at >= $2
+                 WHERE org_id = $1 AND ($2::timestamptz IS NULL OR event_at >= $2)
                  GROUP BY account_id
              ) agg ON agg.account_id = om.account_id
              LEFT JOIN LATERAL (
@@ -1226,11 +1291,26 @@ pub async fn list_users(
                 SELECT r.speech_model, COUNT(*)::bigint AS cnt
                   FROM runtime_telemetry_runs r
                  WHERE r.org_id = $1 AND r.account_id = om.account_id
-                   AND r.event_at >= $2 AND r.speech_model IS NOT NULL
+                   AND ($2::timestamptz IS NULL OR r.event_at >= $2) AND r.speech_model IS NOT NULL
                  GROUP BY r.speech_model
                  ORDER BY cnt DESC
                  LIMIT 1
              ) speech_top ON true
+             LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(mpu.estimated_cost_usd), 0)::float8 AS meeting_cost_usd,
+                       COUNT(DISTINCT mpu.meeting_id)::bigint AS meetings_hosted
+                  FROM meeting_provider_usage mpu
+                  JOIN meetings mtg ON mtg.id = mpu.meeting_id
+                 WHERE mtg.created_by = om.account_id AND mpu.org_id = $1
+                   AND ($2::timestamptz IS NULL OR mpu.created_at >= $2)
+             ) mtgu ON true
+             LEFT JOIN LATERAL (
+                SELECT dcp.platform, dcp.app_version
+                  FROM desktop_clients dcp
+                 WHERE dcp.org_id = $1 AND dcp.account_id = om.account_id
+                 ORDER BY dcp.last_seen_at DESC
+                 LIMIT 1
+             ) dcp ON true
              WHERE om.org_id = $1
              ORDER BY COALESCE(agg.runs, 0) DESC, om.joined_at ASC
              LIMIT $3 OFFSET $4",
@@ -1262,6 +1342,7 @@ pub async fn list_users(
                 "role": row.role,
                 "auth_source": row.auth_source,
                 "runs": row.runs,
+                "word_count": row.word_count,
                 "audio_minutes": (row.audio_seconds / 60.0 * 10.0).round() / 10.0,
                 "acceptance_rate": telemetry_rate(row.accepted, row.runs),
                 "edit_rate": telemetry_rate(row.edits, row.runs),
@@ -1271,6 +1352,10 @@ pub async fn list_users(
                 "last_active_at": row.last_active_at,
                 "desktop_active": row.desktop_active,
                 "costs": costs,
+                "meeting_cost_usd": row.meeting_cost_usd,
+                "meetings_hosted": row.meetings_hosted,
+                "platform": row.platform,
+                "app_version": row.app_version,
                 "primary_speech": match (
                     row.primary_speech_model.as_deref(),
                     row.primary_speech_count,
@@ -1307,7 +1392,7 @@ pub async fn user_detail(
     require_org_viewer(&role)?;
     ensure_org_account_member(&state.db, org_id, account_id).await?;
 
-    let (days, since) = window_days(q.days);
+    let (days, since) = window_bounds(q.days.as_deref());
 
     let member: Option<(String, Option<String>, Option<String>, String, String, bool)> =
         sqlx::query_as(
@@ -1344,6 +1429,22 @@ pub async fn user_detail(
     .await
     .unwrap_or(false);
 
+    // Most-recent desktop client for platform / app_version.
+    let client_info: Option<(String, String)> = sqlx::query_as(
+        "SELECT platform, app_version FROM desktop_clients
+          WHERE org_id = $1 AND account_id = $2
+          ORDER BY last_seen_at DESC LIMIT 1",
+    )
+    .bind(org_id)
+    .bind(account_id)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+    let (client_platform, client_app_version) = match client_info {
+        Some((p, v)) => (Some(p), Some(v)),
+        None => (None, None),
+    };
+
     let totals = fetch_run_totals(&state.db, org_id, Some(account_id), since)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1354,7 +1455,8 @@ pub async fn user_detail(
     let by_mode: Vec<(String, i64)> = sqlx::query_as(
         "SELECT mode, COUNT(*)::bigint
            FROM runtime_telemetry_runs
-          WHERE org_id = $1 AND account_id = $2 AND event_at >= $3
+          WHERE org_id = $1 AND account_id = $2
+            AND ($3::timestamptz IS NULL OR event_at >= $3)
           GROUP BY mode ORDER BY COUNT(*) DESC",
     )
     .bind(org_id)
@@ -1367,7 +1469,8 @@ pub async fn user_detail(
     let by_app: Vec<(Option<String>, i64)> = sqlx::query_as(
         "SELECT target_app, COUNT(*)::bigint
            FROM runtime_telemetry_runs
-          WHERE org_id = $1 AND account_id = $2 AND event_at >= $3
+          WHERE org_id = $1 AND account_id = $2
+            AND ($3::timestamptz IS NULL OR event_at >= $3)
           GROUP BY target_app ORDER BY COUNT(*) DESC LIMIT 10",
     )
     .bind(org_id)
@@ -1406,7 +1509,8 @@ pub async fn user_detail(
             COALESCE(SUM(CASE WHEN mixed_language THEN 1 ELSE 0 END), 0)::bigint,
             COALESCE(SUM(CASE WHEN protected_term_hit THEN 1 ELSE 0 END), 0)::bigint
          FROM runtime_telemetry_runs
-         WHERE org_id = $1 AND account_id = $2 AND event_at >= $3",
+         WHERE org_id = $1 AND account_id = $2
+           AND ($3::timestamptz IS NULL OR event_at >= $3)",
     )
     .bind(org_id)
     .bind(account_id)
@@ -1414,6 +1518,22 @@ pub async fn user_detail(
     .fetch_one(&state.db)
     .await
     .unwrap_or((0, 0, 0, 0, 0, 0, 0, 0));
+
+    // Per-user meeting AI rollup (host = meetings.created_by) within the window.
+    let (meeting_cost_usd, meetings_hosted): (f64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(mpu.estimated_cost_usd), 0)::float8,
+                COUNT(DISTINCT mpu.meeting_id)::bigint
+           FROM meeting_provider_usage mpu
+           JOIN meetings mtg ON mtg.id = mpu.meeting_id
+          WHERE mtg.created_by = $1 AND mpu.org_id = $2
+            AND ($3::timestamptz IS NULL OR mpu.created_at >= $3)",
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .bind(since)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or((0.0, 0));
 
     let daily_rollups: Vec<(
         NaiveDate,
@@ -1480,6 +1600,8 @@ pub async fn user_detail(
             "auth_source": auth_source,
             "lark_connected": lark_connected,
             "desktop_active": desktop_active,
+            "platform": client_platform,
+            "app_version": client_app_version,
         },
         "summary": {
             "runs": totals.run_count,
@@ -1487,6 +1609,8 @@ pub async fn user_detail(
             "word_count": totals.word_count,
             "char_count": totals.char_count,
         },
+        "meeting_cost_usd": meeting_cost_usd,
+        "meetings_hosted": meetings_hosted,
         "quality": quality_json(&totals),
         "quality_counts": {
             "accepted_as_is": totals.accepted,
@@ -1573,7 +1697,7 @@ pub async fn user_runs(
     require_org_viewer(&role)?;
     ensure_org_account_member(&state.db, org_id, account_id).await?;
 
-    let (days, since) = window_days(q.days);
+    let (days, since) = window_bounds(q.days.as_deref());
     let limit = q.limit.unwrap_or(25).clamp(1, 100) as i64;
     let offset = q.offset.unwrap_or(0).max(0) as i64;
     let mode_filter = q
@@ -1585,7 +1709,8 @@ pub async fn user_runs(
     let total: i64 = if let Some(mode) = mode_filter {
         sqlx::query_scalar(
             "SELECT COUNT(*)::bigint FROM runtime_telemetry_runs
-              WHERE org_id = $1 AND account_id = $2 AND event_at >= $3 AND mode = $4",
+              WHERE org_id = $1 AND account_id = $2
+                AND ($3::timestamptz IS NULL OR event_at >= $3) AND mode = $4",
         )
         .bind(org_id)
         .bind(account_id)
@@ -1597,7 +1722,8 @@ pub async fn user_runs(
     } else {
         sqlx::query_scalar(
             "SELECT COUNT(*)::bigint FROM runtime_telemetry_runs
-              WHERE org_id = $1 AND account_id = $2 AND event_at >= $3",
+              WHERE org_id = $1 AND account_id = $2
+                AND ($3::timestamptz IS NULL OR event_at >= $3)",
         )
         .bind(org_id)
         .bind(account_id)
@@ -1620,7 +1746,8 @@ pub async fn user_runs(
                     has_code_like_terms, mixed_language, protected_term_hit, client_version, event_at,
                     received_at
                FROM runtime_telemetry_runs
-              WHERE org_id = $1 AND account_id = $2 AND event_at >= $3 AND mode = $4
+              WHERE org_id = $1 AND account_id = $2
+                AND ($3::timestamptz IS NULL OR event_at >= $3) AND mode = $4
               ORDER BY event_at DESC
               LIMIT $5 OFFSET $6",
         )
@@ -1646,7 +1773,8 @@ pub async fn user_runs(
                     has_code_like_terms, mixed_language, protected_term_hit, client_version, event_at,
                     received_at
                FROM runtime_telemetry_runs
-              WHERE org_id = $1 AND account_id = $2 AND event_at >= $3
+              WHERE org_id = $1 AND account_id = $2
+                AND ($3::timestamptz IS NULL OR event_at >= $3)
               ORDER BY event_at DESC
               LIMIT $4 OFFSET $5",
         )
@@ -1813,6 +1941,7 @@ struct PolishUsageOut {
 
 #[derive(sqlx::FromRow)]
 struct PolishUsageRow {
+    account_id: Uuid,
     client_run_id: String,
     provider: String,
     model: Option<String>,
@@ -1835,9 +1964,9 @@ async fn fetch_polish_usage_for_runs(
         return Ok(HashMap::new());
     }
     let rows: Vec<PolishUsageRow> = sqlx::query_as(
-        "SELECT rs.client_run_id, pu.provider, pu.model, pu.input_tokens, pu.output_tokens,
-                pu.estimated_cost_usd, pu.cost_source, pu.generation_id, pu.status,
-                pu.error_kind, pu.created_at
+        "SELECT rs.account_id, rs.client_run_id, pu.provider, pu.model, pu.input_tokens,
+                pu.output_tokens, pu.estimated_cost_usd, pu.cost_source, pu.generation_id,
+                pu.status, pu.error_kind, pu.created_at
            FROM runtime_sessions rs
            JOIN runtime_provider_usage pu ON pu.run_id = rs.id
           WHERE rs.account_id = $1 AND rs.client_run_id = ANY($2)
@@ -1868,30 +1997,42 @@ async fn fetch_polish_usage_for_runs(
     Ok(by_run)
 }
 
-fn run_row_to_json(r: TelemetryRunRow, polish_attempts: Vec<PolishUsageOut>) -> Value {
+/// Combine a run's STT cost with its polish attempts into a polish subtotal, a
+/// grand total, and a coverage label. Shared by the per-run feeds and the admin
+/// overview so cost math stays identical everywhere.
+fn compute_run_cost(
+    speech_cost_usd: Option<f64>,
+    polish_attempts: &[PolishUsageOut],
+) -> (Option<f64>, Option<f64>, &'static str) {
     let polish_costs = polish_attempts
         .iter()
         .filter_map(|attempt| attempt.cost_usd)
         .collect::<Vec<_>>();
     let polish_cost_usd = (!polish_costs.is_empty()).then(|| polish_costs.iter().sum::<f64>());
-    let total_cost_usd = match (r.speech_cost_usd, polish_cost_usd) {
+    let total_cost_usd = match (speech_cost_usd, polish_cost_usd) {
         (Some(stt), Some(polish)) => Some(stt + polish),
         (Some(stt), None) if polish_attempts.is_empty() => Some(stt),
         (None, Some(polish)) => Some(polish),
         _ => None,
     };
-    let cost_coverage = if r.speech_cost_usd.is_some()
+    let cost_coverage = if speech_cost_usd.is_some()
         && (!polish_attempts.is_empty()
             && polish_attempts
                 .iter()
                 .all(|attempt| attempt.cost_usd.is_some()))
     {
         "complete"
-    } else if r.speech_cost_usd.is_some() || polish_cost_usd.is_some() {
+    } else if speech_cost_usd.is_some() || polish_cost_usd.is_some() {
         "partial"
     } else {
         "unknown"
     };
+    (polish_cost_usd, total_cost_usd, cost_coverage)
+}
+
+fn run_row_to_json(r: TelemetryRunRow, polish_attempts: Vec<PolishUsageOut>) -> Value {
+    let (polish_cost_usd, total_cost_usd, cost_coverage) =
+        compute_run_cost(r.speech_cost_usd, &polish_attempts);
     serde_json::to_value(TelemetryRunOut {
         run_id: r.run_id,
         recording_id: r.recording_id,
@@ -1949,6 +2090,415 @@ fn run_row_to_json(r: TelemetryRunRow, polish_attempts: Vec<PolishUsageOut>) -> 
         received_at: r.received_at,
     })
     .unwrap_or(Value::Null)
+}
+
+/// Run row for the org-wide feed: the same shape as [`TelemetryRunRow`] plus the
+/// owning person's identity, flattened from a single joined query.
+#[derive(sqlx::FromRow)]
+struct OrgRunRow {
+    #[sqlx(flatten)]
+    run: TelemetryRunRow,
+    account_id: Uuid,
+    email: String,
+    lark_name: Option<String>,
+}
+
+/// Like [`fetch_polish_usage_for_runs`] but org-wide: keyed by
+/// `(account_id, run_id)` so runs from different people never collide.
+async fn fetch_polish_usage_for_org_runs(
+    db: &sqlx::PgPool,
+    run_ids: &[String],
+) -> Result<HashMap<(Uuid, String), Vec<PolishUsageOut>>, sqlx::Error> {
+    if run_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<PolishUsageRow> = sqlx::query_as(
+        "SELECT rs.account_id, rs.client_run_id, pu.provider, pu.model, pu.input_tokens,
+                pu.output_tokens, pu.estimated_cost_usd, pu.cost_source, pu.generation_id,
+                pu.status, pu.error_kind, pu.created_at
+           FROM runtime_sessions rs
+           JOIN runtime_provider_usage pu ON pu.run_id = rs.id
+          WHERE rs.client_run_id = ANY($1)
+          ORDER BY pu.created_at ASC",
+    )
+    .bind(run_ids)
+    .fetch_all(db)
+    .await?;
+    let mut by_run: HashMap<(Uuid, String), Vec<PolishUsageOut>> = HashMap::new();
+    for row in rows {
+        by_run
+            .entry((row.account_id, row.client_run_id))
+            .or_default()
+            .push(PolishUsageOut {
+                provider: row.provider,
+                model: row.model,
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cost_usd: row.estimated_cost_usd,
+                cost_source: row.cost_source,
+                generation_id: row.generation_id,
+                status: row.status,
+                error_kind: row.error_kind,
+                created_at: row.created_at,
+            });
+    }
+    Ok(by_run)
+}
+
+pub async fn org_runs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(org_id): Path<Uuid>,
+    Query(q): Query<OrgRunsQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    require_org_viewer(&role)?;
+
+    let (days, since) = window_bounds(q.days.as_deref());
+    let limit = q.limit.unwrap_or(50).clamp(1, 200) as i64;
+    let offset = q.offset.unwrap_or(0).max(0) as i64;
+    let mode_filter = q
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all")
+        .map(str::to_string);
+    let app_filter = q
+        .app
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let edited_filter = q.edited;
+
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM runtime_telemetry_runs r
+          WHERE r.org_id = $1
+            AND ($2::timestamptz IS NULL OR r.event_at >= $2)
+            AND ($3::text IS NULL OR r.mode = $3)
+            AND ($4::text IS NULL OR r.target_app = $4)
+            AND ($5::bool IS NULL OR r.edit_detected = $5)",
+    )
+    .bind(org_id)
+    .bind(since)
+    .bind(mode_filter.as_deref())
+    .bind(app_filter.as_deref())
+    .bind(edited_filter)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let rows: Vec<OrgRunRow> = sqlx::query_as(
+        "SELECT r.run_id, r.recording_id, r.device_id, r.mode, r.target_app, r.platform,
+                r.app_version, r.machine_class, r.audio_seconds, r.word_count, r.char_count,
+                r.transcribe_ms, r.embed_ms, r.polish_ms, r.total_ms, r.paste_ms, r.success,
+                r.error_code, r.used_clipboard_fallback, r.speech_provider, r.speech_model,
+                r.speech_path, r.speech_cost_usd, r.speech_cost_source, r.edit_detected,
+                r.edit_bucket, r.edit_distance_chars, r.edit_distance_words, r.accepted_as_is,
+                r.deleted_entire_output, r.re_recorded_quickly, r.learning_candidate,
+                r.learning_modal_shown, r.learning_confirmed, r.learning_dismissed,
+                r.server_learning_saved, r.server_learning_blocked, r.has_numbers, r.has_currency,
+                r.has_percent, r.has_email, r.has_url, r.has_code_like_terms, r.mixed_language,
+                r.protected_term_hit, r.client_version, r.event_at, r.received_at,
+                r.account_id, a.email, om.lark_name AS lark_name
+           FROM runtime_telemetry_runs r
+           JOIN accounts a ON a.id = r.account_id
+           LEFT JOIN org_members om ON om.account_id = r.account_id AND om.org_id = $1
+          WHERE r.org_id = $1
+            AND ($2::timestamptz IS NULL OR r.event_at >= $2)
+            AND ($3::text IS NULL OR r.mode = $3)
+            AND ($4::text IS NULL OR r.target_app = $4)
+            AND ($5::bool IS NULL OR r.edit_detected = $5)
+          ORDER BY r.event_at DESC
+          LIMIT $6 OFFSET $7",
+    )
+    .bind(org_id)
+    .bind(since)
+    .bind(mode_filter.as_deref())
+    .bind(app_filter.as_deref())
+    .bind(edited_filter)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let run_ids = rows
+        .iter()
+        .map(|r| r.run.run_id.clone())
+        .collect::<Vec<_>>();
+    let mut usage_by_run = fetch_polish_usage_for_org_runs(&state.db, &run_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let run_json: Vec<Value> = rows
+        .into_iter()
+        .map(|row| {
+            let account_id = row.account_id;
+            let email = row.email;
+            let lark_name = row.lark_name;
+            let usage = usage_by_run
+                .remove(&(account_id, row.run.run_id.clone()))
+                .unwrap_or_default();
+            let mut v = run_row_to_json(row.run, usage);
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("account_id".into(), json!(account_id));
+                obj.insert("email".into(), json!(email));
+                obj.insert("lark_name".into(), json!(lark_name));
+            }
+            v
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "window_days": days,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "runs": run_json,
+    })))
+}
+
+#[derive(sqlx::FromRow)]
+struct OverviewPersonRow {
+    account_id: Uuid,
+    name: String,
+    email: String,
+    platform: Option<String>,
+    app_version: Option<String>,
+}
+
+pub async fn admin_overview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(org_id): Path<Uuid>,
+    Query(q): Query<AnalyticsQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    require_org_viewer(&role)?;
+
+    let (days, since) = window_bounds(q.days.as_deref());
+
+    // Spend — reuse the per-account cost summary logic aggregated org-wide.
+    let costs_by_user = fetch_cost_summaries(&state.db, org_id, None, since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut stt_usd = 0.0f64;
+    let mut polish_usd = 0.0f64;
+    for c in costs_by_user.values() {
+        stt_usd += c.stt_usd;
+        polish_usd += c.polish_usd;
+    }
+
+    let meeting_usd: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(estimated_cost_usd), 0)::float8
+           FROM meeting_provider_usage
+          WHERE org_id = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)",
+    )
+    .bind(org_id)
+    .bind(since)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0.0);
+
+    let totals = fetch_run_totals(&state.db, org_id, None, since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let active_people: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT account_id)::bigint FROM desktop_clients
+          WHERE org_id = $1 AND last_seen_at > now() - INTERVAL '15 minutes'",
+    )
+    .bind(org_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    let total_people: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM org_members WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
+
+    // Per-day run volume — most recent ~30 buckets, returned ascending.
+    let mut volume_rows: Vec<(NaiveDate, i64)> = sqlx::query_as(
+        "SELECT event_at::date AS event_date, COUNT(*)::bigint
+           FROM runtime_telemetry_runs
+          WHERE org_id = $1 AND ($2::timestamptz IS NULL OR event_at >= $2)
+          GROUP BY event_at::date
+          ORDER BY event_date DESC
+          LIMIT 30",
+    )
+    .bind(org_id)
+    .bind(since)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    volume_rows.reverse();
+    let volume: Vec<Value> = volume_rows
+        .into_iter()
+        .map(|(d, runs)| json!({ "event_date": d.to_string(), "runs": runs }))
+        .collect();
+
+    // Meeting spend per host account within the window.
+    let meeting_by_user: HashMap<Uuid, f64> = sqlx::query_as::<_, (Uuid, f64)>(
+        "SELECT mtg.created_by,
+                COALESCE(SUM(mpu.estimated_cost_usd), 0)::float8
+           FROM meeting_provider_usage mpu
+           JOIN meetings mtg ON mtg.id = mpu.meeting_id
+          WHERE mpu.org_id = $1 AND ($2::timestamptz IS NULL OR mpu.created_at >= $2)
+          GROUP BY mtg.created_by",
+    )
+    .bind(org_id)
+    .bind(since)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .collect();
+
+    // Combine per-person spend, take the top 5 by total_usd.
+    let mut people: Vec<(Uuid, f64, f64, i64)> = Vec::new();
+    let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    for (aid, c) in &costs_by_user {
+        let dictation = c.stt_usd + c.polish_usd;
+        let meeting = meeting_by_user.get(aid).copied().unwrap_or(0.0);
+        people.push((*aid, dictation, meeting, c.runs));
+        seen.insert(*aid);
+    }
+    for (aid, meeting) in &meeting_by_user {
+        if !seen.contains(aid) {
+            people.push((*aid, 0.0, *meeting, 0));
+        }
+    }
+    people.sort_by(|a, b| {
+        let ta = a.1 + a.2;
+        let tb = b.1 + b.2;
+        tb.partial_cmp(&ta).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    people.truncate(5);
+
+    let top_ids: Vec<Uuid> = people.iter().map(|p| p.0).collect();
+    let identities: Vec<OverviewPersonRow> = if top_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "SELECT om.account_id,
+                    COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1)) AS name,
+                    a.email,
+                    dcp.platform, dcp.app_version
+               FROM org_members om
+               JOIN accounts a ON a.id = om.account_id
+               LEFT JOIN LATERAL (
+                  SELECT platform, app_version FROM desktop_clients dc
+                   WHERE dc.org_id = om.org_id AND dc.account_id = om.account_id
+                   ORDER BY dc.last_seen_at DESC LIMIT 1
+               ) dcp ON true
+              WHERE om.org_id = $1 AND om.account_id = ANY($2)",
+        )
+        .bind(org_id)
+        .bind(&top_ids)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default()
+    };
+    let identity_map: HashMap<Uuid, OverviewPersonRow> =
+        identities.into_iter().map(|r| (r.account_id, r)).collect();
+
+    let top_people: Vec<Value> = people
+        .into_iter()
+        .map(|(aid, dictation_usd, meeting_usd, runs)| {
+            let id = identity_map.get(&aid);
+            json!({
+                "account_id": aid,
+                "name": id.map(|r| r.name.clone()),
+                "email": id.map(|r| r.email.clone()),
+                "platform": id.and_then(|r| r.platform.clone()),
+                "app_version": id.and_then(|r| r.app_version.clone()),
+                "runs": runs,
+                "dictation_usd": dictation_usd,
+                "meeting_usd": meeting_usd,
+                "total_usd": dictation_usd + meeting_usd,
+            })
+        })
+        .collect();
+
+    // Recent org-wide runs (last 6 by event_at).
+    #[derive(sqlx::FromRow)]
+    struct RecentRunRow {
+        run_id: String,
+        account_id: Uuid,
+        name: String,
+        target_app: Option<String>,
+        word_count: Option<i32>,
+        speech_cost_usd: Option<f64>,
+        event_at: DateTime<Utc>,
+    }
+    let recent: Vec<RecentRunRow> = sqlx::query_as(
+        "SELECT r.run_id, r.account_id,
+                COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1)) AS name,
+                r.target_app, r.word_count, r.speech_cost_usd, r.event_at
+           FROM runtime_telemetry_runs r
+           JOIN accounts a ON a.id = r.account_id
+           LEFT JOIN org_members om ON om.account_id = r.account_id AND om.org_id = $1
+          WHERE r.org_id = $1 AND ($2::timestamptz IS NULL OR r.event_at >= $2)
+          ORDER BY r.event_at DESC
+          LIMIT 6",
+    )
+    .bind(org_id)
+    .bind(since)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let recent_ids: Vec<String> = recent.iter().map(|r| r.run_id.clone()).collect();
+    let mut recent_usage = fetch_polish_usage_for_org_runs(&state.db, &recent_ids)
+        .await
+        .unwrap_or_default();
+    let recent_runs: Vec<Value> = recent
+        .into_iter()
+        .map(|r| {
+            let attempts = recent_usage
+                .remove(&(r.account_id, r.run_id.clone()))
+                .unwrap_or_default();
+            let (_polish, total_cost_usd, coverage) =
+                compute_run_cost(r.speech_cost_usd, &attempts);
+            json!({
+                "run_id": r.run_id,
+                "account_id": r.account_id,
+                "name": r.name,
+                "target_app": r.target_app,
+                "word_count": r.word_count,
+                "total_cost_usd": total_cost_usd,
+                "cost_coverage": coverage,
+                "event_at": r.event_at,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "window_days": days,
+        "spend": {
+            "stt_usd": stt_usd,
+            "polish_usd": polish_usd,
+            "meeting_usd": meeting_usd,
+            "total_usd": stt_usd + polish_usd + meeting_usd,
+        },
+        "totals": {
+            "runs": totals.run_count,
+            "words": totals.word_count,
+            "audio_minutes": (totals.audio_seconds / 60.0 * 10.0).round() / 10.0,
+            "active_people": active_people,
+            "total_people": total_people,
+        },
+        "volume": volume,
+        "top_people": top_people,
+        "recent_runs": recent_runs,
+    })))
 }
 
 pub async fn user_memory(

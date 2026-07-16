@@ -344,6 +344,19 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/orgs/:org_id/telemetry/users/:account_id/memory",
             get(routes::telemetry::user_memory),
         )
+        .route("/v1/orgs/:org_id/runs", get(routes::telemetry::org_runs))
+        .route(
+            "/v1/orgs/:org_id/admin/overview",
+            get(routes::telemetry::admin_overview),
+        )
+        .route(
+            "/v1/orgs/:org_id/meetings/costs",
+            get(routes::meetings::org_meeting_costs),
+        )
+        .route(
+            "/v1/orgs/:org_id/meetings/:meeting_id/cost",
+            get(routes::meetings::meeting_cost_detail),
+        )
         .route(
             "/v1/orgs/:org_id/observability/summary",
             get(routes::observability::org_observability_summary),

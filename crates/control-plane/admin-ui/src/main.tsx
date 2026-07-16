@@ -1,28 +1,30 @@
-import { StrictMode } from 'react'
+import { StrictMode, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router'
 import { AuthProvider } from './hooks/useAuth'
+import { WindowProvider } from './lib/window'
+import { DrawerProvider } from './components/Drawer'
+import { SearchProvider } from './components/Search'
 import { Layout } from './components/Layout'
 import { LoginPage } from './pages/LoginPage'
-import { DashboardPage } from './pages/DashboardPage'
-import { MeetingsPage } from './pages/MeetingsPage'
-import { MeetingDetailPage } from './pages/MeetingDetailPage'
-import { NewMeetingPage } from './pages/NewMeetingPage'
-import { TeamPage } from './pages/TeamPage'
-import { DesktopPage } from './pages/DesktopPage'
-import { VocabularyPage } from './pages/VocabularyPage'
-import { RuntimePage } from './pages/RuntimePage'
-import { TelemetryPage } from './pages/TelemetryPage'
-import { TelemetryUsersPage } from './pages/TelemetryUsersPage'
-import { TelemetryUserPage } from './pages/TelemetryUserPage'
-import { DictationsPage } from './pages/DictationsPage'
-import { BugsPage } from './pages/BugsPage'
-import { DiagnosticsPage } from './pages/DiagnosticsPage'
-import { SettingsPage } from './pages/SettingsPage'
-import { LiveMeetingPage } from './pages/LiveMeetingPage'
 import { OnboardingPage } from './pages/OnboardingPage'
+import { OverviewPage } from './pages/OverviewPage'
+import { RunsPage } from './pages/RunsPage'
+import { PeoplePage } from './pages/PeoplePage'
+import { PersonDetailPage } from './pages/PersonDetailPage'
+import { MeetingsPage } from './pages/MeetingsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import './globals.css'
+
+function Shell({ children }: { children: ReactNode }) {
+  return (
+    <WindowProvider>
+      <SearchProvider>
+        <DrawerProvider>{children}</DrawerProvider>
+      </SearchProvider>
+    </WindowProvider>
+  )
+}
 
 const isAdminMount = window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/')
 
@@ -34,26 +36,14 @@ createRoot(document.getElementById('app')!).render(
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/onboarding" element={<OnboardingPage />} />
-            <Route element={<Layout />}>
-              <Route index element={<DashboardPage />} />
+            <Route element={<Shell><Layout /></Shell>}>
+              <Route index element={<OverviewPage />} />
+              <Route path="runs" element={<RunsPage />} />
+              <Route path="people" element={<PeoplePage />} />
+              <Route path="people/:id" element={<PersonDetailPage />} />
               <Route path="meetings" element={<MeetingsPage />} />
-              <Route path="meetings/new" element={<NewMeetingPage />} />
-              <Route path="meetings/:id" element={<MeetingDetailPage />} />
-              <Route path="meetings/:id/live" element={<LiveMeetingPage />} />
-              <Route path="team" element={<TeamPage />} />
-              <Route path="desktop" element={<DesktopPage />} />
-              <Route path="runtime" element={<RuntimePage />} />
-              <Route path="dictations" element={<DictationsPage />} />
-              <Route path="telemetry" element={<TelemetryPage />} />
-              <Route path="telemetry/users" element={<TelemetryUsersPage />} />
-              <Route path="telemetry/users/:accountId" element={<TelemetryUserPage />} />
-              <Route path="vocabulary" element={<VocabularyPage />} />
-              <Route path="bugs" element={<BugsPage />} />
-              <Route path="diagnostics" element={<DiagnosticsPage />} />
-              <Route path="settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Route>
-            <Route path="*" element={<NotFoundPage />} />
           </Routes>
         ) : (
           <Routes>

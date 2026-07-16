@@ -1,130 +1,80 @@
 import { NavLink } from 'react-router'
-import { Activity, AudioLines, BarChart3, BookOpenText, Bug, LayoutDashboard, Video, Users, Monitor, Settings, LogOut, LogIn, Gauge } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
-import { Avatar } from './Avatar'
+import { initials } from '../lib/format'
 
-const sections = [
-  {
-    label: null,
-    items: [{ to: '/', icon: LayoutDashboard, label: 'Dashboard' }],
-  },
-  {
-    label: 'Monitoring',
-    items: [
-      { to: '/dictations', icon: AudioLines, label: 'Dictations' },
-      { to: '/telemetry', icon: BarChart3, label: 'Analytics' },
-    ],
-  },
-  {
-    label: 'People',
-    items: [
-      { to: '/team', icon: Users, label: 'Team' },
-      { to: '/meetings', icon: Video, label: 'Meetings' },
-    ],
-  },
-  {
-    label: 'Fleet',
-    items: [
-      { to: '/desktop', icon: Monitor, label: 'Desktop' },
-      { to: '/runtime', icon: Gauge, label: 'Runtime' },
-      { to: '/diagnostics', icon: Activity, label: 'Diagnostics' },
-    ],
-  },
-  {
-    label: 'Learning',
-    items: [{ to: '/vocabulary', icon: BookOpenText, label: 'Vocabulary' }],
-  },
-  {
-    label: null,
-    items: [
-      { to: '/bugs', icon: Bug, label: 'Bugs' },
-      { to: '/settings', icon: Settings, label: 'Settings' },
-    ],
-  },
-]
+const ICON = {
+  overview: (
+    <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" />
+      <rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" />
+    </svg>
+  ),
+  runs: (
+    <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path d="M4 6h16M4 12h16M4 18h10" />
+    </svg>
+  ),
+  meetings: (
+    <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <rect x="2" y="6" width="14" height="12" rx="2" /><path d="M16 10l6-3v10l-6-3" />
+    </svg>
+  ),
+  people: (
+    <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <circle cx="9" cy="8" r="3.2" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0" />
+      <path d="M16 5.2a3.2 3.2 0 0 1 0 6" /><path d="M17.5 20a5.5 5.5 0 0 0-3-4.9" />
+    </svg>
+  ),
+}
+
+function Item({ to, icon, label, end }: { to: string; icon: React.ReactNode; label: string; end?: boolean }) {
+  return (
+    <NavLink to={to} end={end} className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+      {icon}
+      {label}
+    </NavLink>
+  )
+}
 
 export function Sidebar() {
-  const { user, logout, token } = useAuth()
+  const { user } = useAuth()
   const email = user?.account?.email || ''
   const name = email.split('@')[0] || 'Admin'
   const display = name.charAt(0).toUpperCase() + name.slice(1)
-  const today = new Date()
-  const dateStr = today.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }).toUpperCase()
 
   return (
-    <aside className="w-[210px] min-w-[210px] bg-sidebar flex flex-col h-screen overflow-y-auto">
-      {/* Brand mark */}
-      <div className="px-5 pt-5 pb-1 flex items-center gap-2.5">
-        <svg viewBox="0 0 24 24" width={22} height={22} className="text-accent shrink-0">
-          <rect x="3" y="8.5" width="3" height="7" rx="1.5" fill="currentColor" />
-          <rect x="8" y="4.5" width="3" height="15" rx="1.5" fill="currentColor" />
-          <rect x="13" y="2.5" width="3" height="19" rx="1.5" fill="currentColor" />
-          <rect x="18" y="6.5" width="3" height="11" rx="1.5" fill="currentColor" />
-        </svg>
-        <span className="text-[13px] font-semibold tracking-tight text-fg">AirNote Enterprise</span>
-      </div>
-
-      {/* User greeting */}
-      <div className="px-5 pt-4 pb-5">
-        <div className="text-[9px] font-medium text-fg-4 tracking-[0.06em] mb-2.5">{dateStr}</div>
-        <div className="flex items-center gap-2.5">
-          <Avatar name={display} size="lg" />
-          <div>
-            <div className="text-[10px] text-fg-4">Welcome back,</div>
-            <div className="text-[13px] font-semibold leading-tight text-fg">{display}!</div>
-          </div>
+    <aside className="sidebar">
+      <div className="brand">
+        <div className="brand-mark">A</div>
+        <div>
+          <div className="brand-name">AirNote</div>
+          <div className="brand-sub">Enterprise Admin</div>
         </div>
       </div>
 
-      {/* Nav */}
-      <nav className="flex flex-col px-3 flex-1">
-        {sections.map((section, si) => (
-          <div key={section.label ?? `group-${si}`} className={si === 0 ? '' : 'mt-3'}>
-            {section.label && (
-              <div className="px-2.5 mb-1 text-[9px] font-semibold text-fg-5 uppercase tracking-[0.08em]">
-                {section.label}
-              </div>
-            )}
-            <div className="flex flex-col gap-px">
-              {section.items.map(n => (
-                <NavLink
-                  key={n.to}
-                  to={n.to}
-                  end={n.to === '/'}
-                  className={({ isActive }) =>
-                    `flex items-center gap-2.5 px-2.5 h-[30px] rounded-md text-[12.5px] transition-colors ${
-                      isActive
-                        ? 'text-fg font-medium bg-surface-4/60 shadow-[inset_0_0_0_1px_hsla(0,0%,100%,0.06)]'
-                        : 'text-fg-3 font-normal hover:text-fg hover:bg-[rgba(255,255,255,0.03)]'
-                    }`
-                  }
-                >
-                  <n.icon size={15} strokeWidth={1.6} />
-                  {n.label}
-                </NavLink>
-              ))}
-            </div>
-          </div>
-        ))}
-      </nav>
+      <div className="nav-group">
+        <Item to="/" end icon={ICON.overview} label="Overview" />
+      </div>
 
-      {/* Bottom */}
-      <div className="px-3 pb-4 mt-auto">
-        {token ? (
-          <button
-            onClick={logout}
-            className="flex items-center gap-2 w-full px-2.5 py-[6px] text-[11px] text-fg-4 hover:text-fg-3 rounded-md hover:bg-[rgba(255,255,255,0.03)] transition-colors"
-          >
-            <LogOut size={13} strokeWidth={1.6} /> Sign out
-          </button>
-        ) : (
-          <NavLink
-            to="/login"
-            className="flex items-center gap-2 w-full px-2.5 py-[6px] text-[11px] text-accent hover:text-accent-hover rounded-md hover:bg-[rgba(255,255,255,0.03)] transition-colors"
-          >
-            <LogIn size={13} strokeWidth={1.6} /> Sign in
-          </NavLink>
-        )}
+      <div className="nav-group">
+        <div className="nav-group-label">Observability</div>
+        <Item to="/runs" icon={ICON.runs} label="Runs" />
+        <Item to="/meetings" icon={ICON.meetings} label="Meetings" />
+      </div>
+
+      <div className="nav-group">
+        <div className="nav-group-label">People</div>
+        <Item to="/people" icon={ICON.people} label="People" />
+      </div>
+
+      <div className="sidebar-foot">
+        <div className="user-chip">
+          <div className="avatar">{initials(display)}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--ink)' }}>{display}</div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{email}</div>
+          </div>
+        </div>
       </div>
     </aside>
   )

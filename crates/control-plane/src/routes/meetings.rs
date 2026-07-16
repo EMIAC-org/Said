@@ -1207,6 +1207,193 @@ fn lark_error_response(context: &str, e: &str) -> (StatusCode, Json<Value>) {
     }
 }
 
+// ── GET /v1/orgs/:org_id/meetings/costs ────────────────────────────────────────
+// Org-wide meeting AI cost rollup. Aggregates meeting_provider_usage per meeting
+// (DeepSeek V4 Flash rate card), joined to the meeting + host + participant count.
+// Meetings with no usage rows still appear with zeros. Role: org viewer.
+
+#[derive(Deserialize)]
+pub struct MeetingCostsQuery {
+    /// Window in days, or "all"/"0" for all-time (shared telemetry semantics).
+    pub days: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct MeetingCostRow {
+    id: Uuid,
+    title: String,
+    status: String,
+    created_at: DateTime<Utc>,
+    host_account_id: Uuid,
+    host_name: Option<String>,
+    host_email: Option<String>,
+    participant_count: i64,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    cost_usd: f64,
+}
+
+pub async fn org_meeting_costs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(org_id): Path<Uuid>,
+    Query(q): Query<MeetingCostsQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    crate::routes::telemetry::require_org_viewer(&role)?;
+
+    let (days, since) = crate::routes::telemetry::window_bounds(q.days.as_deref());
+
+    let rows: Vec<MeetingCostRow> = sqlx::query_as(
+        "SELECT m.id, m.title, m.status, m.created_at,
+                m.created_by AS host_account_id,
+                COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1)) AS host_name,
+                a.email AS host_email,
+                COALESCE(pc.participant_count, 0)::bigint AS participant_count,
+                COALESCE(u.input_tokens, 0)::bigint AS input_tokens,
+                COALESCE(u.cached_input_tokens, 0)::bigint AS cached_input_tokens,
+                COALESCE(u.output_tokens, 0)::bigint AS output_tokens,
+                COALESCE(u.cost_usd, 0)::float8 AS cost_usd
+           FROM meetings m
+           LEFT JOIN accounts a ON a.id = m.created_by
+           LEFT JOIN org_members om ON om.account_id = m.created_by AND om.org_id = m.org_id
+           LEFT JOIN LATERAL (
+              SELECT SUM(mpu.input_tokens) AS input_tokens,
+                     SUM(mpu.cached_input_tokens) AS cached_input_tokens,
+                     SUM(mpu.output_tokens) AS output_tokens,
+                     SUM(mpu.estimated_cost_usd) AS cost_usd
+                FROM meeting_provider_usage mpu
+               WHERE mpu.meeting_id = m.id
+           ) u ON true
+           LEFT JOIN LATERAL (
+              SELECT COUNT(*)::bigint AS participant_count
+                FROM meeting_participants mp
+               WHERE mp.meeting_id = m.id
+           ) pc ON true
+          WHERE m.org_id = $1 AND ($2::timestamptz IS NULL OR m.created_at >= $2)
+          ORDER BY COALESCE(u.cost_usd, 0) DESC, m.created_at DESC",
+    )
+    .bind(org_id)
+    .bind(since)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut total_cost_usd = 0.0f64;
+    let mut total_tokens: i64 = 0;
+    let meetings: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            total_cost_usd += r.cost_usd;
+            total_tokens += r.input_tokens + r.output_tokens;
+            json!({
+                "id": r.id,
+                "title": r.title,
+                "status": r.status,
+                "created_at": r.created_at,
+                "host_account_id": r.host_account_id,
+                "host_name": r.host_name,
+                "host_email": r.host_email,
+                "participant_count": r.participant_count,
+                "input_tokens": r.input_tokens,
+                "cached_input_tokens": r.cached_input_tokens,
+                "output_tokens": r.output_tokens,
+                "cost_usd": r.cost_usd,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "window_days": days,
+        "total_cost_usd": total_cost_usd,
+        "total_tokens": total_tokens,
+        "meetings": meetings,
+    })))
+}
+
+// ── GET /v1/orgs/:org_id/meetings/:meeting_id/cost ─────────────────────────────
+// Per-meeting AI cost detail with a per-slot breakdown. Role: org viewer.
+
+pub async fn meeting_cost_detail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path((org_id, meeting_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>, StatusCode> {
+    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    crate::routes::telemetry::require_org_viewer(&role)?;
+
+    // Scope check: the meeting must belong to this org.
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM meetings WHERE id = $1 AND org_id = $2)")
+            .bind(meeting_id)
+            .bind(org_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !exists {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let totals: (i64, i64, i64, f64, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT COALESCE(SUM(input_tokens), 0)::bigint,
+                COALESCE(SUM(cached_input_tokens), 0)::bigint,
+                COALESCE(SUM(output_tokens), 0)::bigint,
+                COALESCE(SUM(estimated_cost_usd), 0)::float8,
+                MAX(provider), MAX(model)
+           FROM meeting_provider_usage
+          WHERE meeting_id = $1",
+    )
+    .bind(meeting_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let slots: Vec<(Option<i32>, i64, i64, f64)> = sqlx::query_as(
+        "SELECT slot_index,
+                COALESCE(SUM(input_tokens), 0)::bigint,
+                COALESCE(SUM(output_tokens), 0)::bigint,
+                COALESCE(SUM(estimated_cost_usd), 0)::float8
+           FROM meeting_provider_usage
+          WHERE meeting_id = $1
+          GROUP BY slot_index
+          ORDER BY slot_index ASC NULLS LAST",
+    )
+    .bind(meeting_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let by_slot: Vec<Value> = slots
+        .into_iter()
+        .map(|(slot_index, input_tokens, output_tokens, cost_usd)| {
+            json!({
+                "slot_index": slot_index,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost_usd,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "meeting_id": meeting_id,
+        "model": totals.5,
+        "provider": totals.4,
+        "input_tokens": totals.0,
+        "cached_input_tokens": totals.1,
+        "output_tokens": totals.2,
+        "cost_usd": totals.3,
+        "by_slot": by_slot,
+    })))
+}
+
 fn db_err(_e: sqlx::Error) -> (StatusCode, Json<Value>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,

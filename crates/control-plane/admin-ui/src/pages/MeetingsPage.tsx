@@ -1,86 +1,96 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { apiJson } from '../api'
-import { StatusPill } from '../components/StatusPill'
-import { Avatar } from '../components/Avatar'
-import { ErrorBox, Loading, Empty } from '../components/States'
-import { formatDate, duration, timeAgo, formatIstDateTime, formatMinutes } from '../utils'
-import type { Meeting } from '../types'
-
-const filters = [
-  { label: 'All', value: '' },
-  { label: 'Scheduled', value: 'scheduled' },
-  { label: 'Live', value: 'live' },
-  { label: 'Ended', value: 'ended' },
-]
+import { useAuth } from '../hooks/useAuth'
+import { useWindowRange, winDays } from '../lib/window'
+import { usd2, num, firstName } from '../lib/format'
+import { MEET_MODEL, MEET_PROVIDER, MEET_IN_PER_M, MEET_OUT_PER_M } from '../lib/rates'
+import { StatTile, Avatar, Loading, ErrorBox, Empty } from '../components/ui'
+import { useDrawer } from '../components/Drawer'
+import { MeetingDrawerHead, MeetingDrawerBody } from '../components/MeetingDrawer'
+import type { OrgMeetingCosts, MeetingCostRow } from '../lib/adminTypes'
 
 export function MeetingsPage() {
+  const { org } = useAuth()
+  const { win } = useWindowRange()
   const navigate = useNavigate()
-  const [meetings, setMeetings] = useState<Meeting[]>([])
-  const [filter, setFilter] = useState('')
+  const drawer = useDrawer()
+  const [data, setData] = useState<OrgMeetingCosts | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
+  const orgId = org?.org?.id
+
   useEffect(() => {
+    if (!orgId) { setLoading(false); return }
     setLoading(true)
-    apiJson<{ meetings: Meeting[] }>(`/v1/meetings${filter ? `?status=${filter}` : ''}`)
-      .then(d => setMeetings(d.meetings || []))
+    apiJson<OrgMeetingCosts>(`/v1/orgs/${orgId}/meetings/costs?days=${winDays(win)}`)
+      .then(setData)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [filter])
+  }, [orgId, win])
 
-  if (loading) return <Loading />
-  if (error) return <ErrorBox title="Failed to load" message={error} />
+  function openMeeting(row: MeetingCostRow) {
+    if (!orgId) return
+    drawer.open({
+      head: <MeetingDrawerHead row={row} onClose={drawer.close} />,
+      body: <MeetingDrawerBody row={row} orgId={orgId} onOpenPerson={(a) => { drawer.close(); navigate(`/people/${a}`) }} />,
+    })
+  }
+
+  const meetings = data?.meetings ?? []
 
   return (
     <>
-      <div className="flex justify-between items-center mb-5">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Meetings</h1>
-          <p className="text-[12px] text-fg-4 mt-0.5">{meetings.length} total</p>
-        </div>
-        <div className="flex gap-1.5">
-          {filters.map(f => (
-            <button key={f.value} onClick={() => setFilter(f.value)}
-              className={`text-[10px] font-semibold px-3.5 py-1.5 rounded-full transition-all uppercase tracking-wide ${
-                filter === f.value
-                  ? 'bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)]'
-                  : 'bg-surface-4 text-fg-3 hover:text-fg-2'
-              }`}>
-              {f.label}
-            </button>
-          ))}
-        </div>
+      <div className="page-head">
+        <h1>Meetings</h1>
+        <p>Meeting summaries run on paid <b>{MEET_PROVIDER} {MEET_MODEL}</b>. Track who meets and what it costs.</p>
       </div>
 
-      {meetings.length === 0 ? <Empty title="No meetings found" /> : (
-        <div className="card !p-0 overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr>
-                {['Title', 'Date', 'Duration', 'Status', 'Created'].map(h => (
-                  <th key={h} className="text-[10px] font-medium text-fg-4 text-left px-5 py-3 border-b border-border uppercase tracking-wider">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {meetings.map(m => (
-                <tr key={m.id} className="cursor-pointer hover:bg-surface-4/30 transition-colors" onClick={() => navigate(`/meetings/${m.id}`)}>
-                  <td className="px-5 py-3.5 border-b border-border-light">
-                    <div className="flex items-center gap-2.5">
-                      <Avatar name={m.title} size="sm" />
-                      <span className="text-[13px] font-medium">{m.title}</span>
-                    </div>
-                  </td>
-                  <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{m.scheduled_at ? formatIstDateTime(m.scheduled_at) : formatDate(m.created_at)}</td>
-                  <td className="text-[12px] text-fg-3 px-5 py-3.5 border-b border-border-light">{m.scheduled_at ? formatMinutes(m.duration_minutes) : duration(m.started_at, m.ended_at)}</td>
-                  <td className="px-5 py-3.5 border-b border-border-light"><StatusPill status={m.status} /></td>
-                  <td className="text-[12px] text-fg-4 px-5 py-3.5 border-b border-border-light">{timeAgo(m.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {loading ? <Loading /> : error ? <ErrorBox title="Failed to load meetings" message={error} /> : (
+        <>
+          <div className="grid g-3">
+            <StatTile label="Meetings" value={num(meetings.length)} sub="in view" />
+            <StatTile label="AI spend" value={usd2(data?.total_cost_usd ?? 0)} sub={MEET_MODEL} />
+            <StatTile label="Tokens" value={num(data?.total_tokens ?? 0)} sub={`in + out to ${MEET_PROVIDER}`} />
+          </div>
+
+          <div className="card mt">
+            <div className="card-head"><div className="card-title">Meetings</div></div>
+            {meetings.length === 0 ? (
+              <Empty title="No meetings in this window" message="Try a wider time range." />
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Meeting</th><th>Host</th><th className="r">People</th>
+                    <th>Model</th><th className="r">Tokens</th><th className="r">Cost</th><th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {meetings.map(mtg => (
+                    <tr key={mtg.id} className="clickable" onClick={() => openMeeting(mtg)}>
+                      <td className="cell-strong">
+                        {mtg.title}
+                        <div style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>{new Date(mtg.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
+                      </td>
+                      <td><div className="person-cell"><Avatar name={mtg.host_name} size={24} /><span className="nm" style={{ fontSize: 12.5 }}>{firstName(mtg.host_name)}</span></div></td>
+                      <td className="r tnum">{mtg.participant_count}</td>
+                      <td><span className="chip mono">{MEET_MODEL}</span></td>
+                      <td className="r tnum mono" style={{ fontSize: 11.5 }}>{num(mtg.input_tokens + mtg.output_tokens)}</td>
+                      <td className="r"><span className="cost">{usd2(mtg.cost_usd)}</span></td>
+                      <td>{mtg.status === 'live' ? <span className="tag warn">● Live</span> : <span className="tag neutral">Ended</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="hint" style={{ marginTop: 14 }}>
+            Meeting AI cost is <b>estimated</b> on the {MEET_PROVIDER} {MEET_MODEL} rate card (${MEET_IN_PER_M}/M in · ${MEET_OUT_PER_M}/M out). Token capture was newly wired into the summarizer — historical meetings before that show zero.
+          </div>
+        </>
       )}
     </>
   )

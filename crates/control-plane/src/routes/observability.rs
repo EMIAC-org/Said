@@ -23,10 +23,12 @@ fn require_org_admin(role: &str) -> Result<(), StatusCode> {
     }
 }
 
-fn window_days(days: Option<i32>) -> (i32, DateTime<Utc>) {
-    let days = days.unwrap_or(30).clamp(1, 90);
-    let since = Utc::now() - chrono::Duration::days(days as i64);
-    (days, since)
+/// Time window for observability queries. Delegates to the shared telemetry
+/// helper so the `"all"`/`0` all-time sentinel behaves identically everywhere.
+/// Returns the JSON `window_days` value (`null` for all-time) and an optional
+/// lower bound (`None` = no `created_at >= since` predicate).
+fn window_bounds(days: Option<&str>) -> (Value, Option<DateTime<Utc>>) {
+    crate::routes::telemetry::window_bounds(days)
 }
 
 fn herr(msg: &str) -> (StatusCode, Json<Value>) {
@@ -67,7 +69,7 @@ async fn ensure_org_account_member(
 #[derive(Debug, Deserialize)]
 pub struct DictationListQuery {
     pub account_id: Option<Uuid>,
-    pub days: Option<i32>,
+    pub days: Option<String>,
     #[serde(default = "default_dictation_limit")]
     pub limit: i64,
     #[serde(default)]
@@ -159,7 +161,7 @@ pub async fn list_org_dictation(
             .map_err(|s| json_err(s, "account not in org"))?;
     }
 
-    let (days, since) = window_days(q.days);
+    let (days, since) = window_bounds(q.days.as_deref());
     let limit = q.limit.clamp(1, 200);
     let offset = q.offset.max(0);
 
@@ -168,7 +170,7 @@ pub async fn list_org_dictation(
            FROM runtime_history_items h
           WHERE (h.org_id = $1 OR h.org_id IS NULL)
             AND h.deleted_at IS NULL
-            AND h.created_at >= $2
+            AND ($2::timestamptz IS NULL OR h.created_at >= $2)
             AND ($3::uuid IS NULL OR h.account_id = $3)",
     )
     .bind(org_id)
@@ -204,7 +206,7 @@ pub async fn list_org_dictation(
           )
          WHERE (h.org_id = $1 OR h.org_id IS NULL)
            AND h.deleted_at IS NULL
-           AND h.created_at >= $2
+           AND ($2::timestamptz IS NULL OR h.created_at >= $2)
            AND ($3::uuid IS NULL OR h.account_id = $3)
          ORDER BY h.created_at DESC
          LIMIT $4 OFFSET $5",
@@ -359,13 +361,14 @@ pub async fn list_user_alias_events(
         .await
         .map_err(|s| json_err(s, "account not in org"))?;
 
-    let (days, since) = window_days(q.days);
+    let (days, since) = window_bounds(q.days.as_deref());
     let limit = q.limit.clamp(1, 500);
 
     let items: Vec<AliasLearnEvent> = sqlx::query_as(
         "SELECT id, account_id, recording_id, heard, correct, source, safety, created_at
            FROM runtime_alias_learn_events
-          WHERE org_id = $1 AND account_id = $2 AND created_at >= $3
+          WHERE org_id = $1 AND account_id = $2
+            AND ($3::timestamptz IS NULL OR created_at >= $3)
           ORDER BY created_at DESC
           LIMIT $4",
     )
@@ -392,11 +395,12 @@ pub async fn org_observability_summary(
         .map_err(|_| StatusCode::FORBIDDEN)?;
     require_org_admin(&role)?;
 
-    let (days, since) = window_days(q.days);
+    let (days, since) = window_bounds(q.days.as_deref());
 
     let dictation_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::bigint FROM runtime_history_items
-          WHERE org_id = $1 AND deleted_at IS NULL AND created_at >= $2",
+          WHERE org_id = $1 AND deleted_at IS NULL
+            AND ($2::timestamptz IS NULL OR created_at >= $2)",
     )
     .bind(org_id)
     .bind(since)
@@ -406,7 +410,7 @@ pub async fn org_observability_summary(
 
     let aliases_learned: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::bigint FROM runtime_alias_learn_events
-          WHERE org_id = $1 AND created_at >= $2",
+          WHERE org_id = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)",
     )
     .bind(org_id)
     .bind(since)
@@ -416,7 +420,8 @@ pub async fn org_observability_summary(
 
     let edits_with_feedback: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::bigint FROM runtime_history_items
-          WHERE org_id = $1 AND deleted_at IS NULL AND created_at >= $2
+          WHERE org_id = $1 AND deleted_at IS NULL
+            AND ($2::timestamptz IS NULL OR created_at >= $2)
             AND edit_feedback_json IS NOT NULL AND edit_feedback_json != '{}'::jsonb",
     )
     .bind(org_id)
@@ -427,7 +432,8 @@ pub async fn org_observability_summary(
 
     let stt_error_edits: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::bigint FROM runtime_history_items
-          WHERE org_id = $1 AND deleted_at IS NULL AND created_at >= $2
+          WHERE org_id = $1 AND deleted_at IS NULL
+            AND ($2::timestamptz IS NULL OR created_at >= $2)
             AND LOWER(COALESCE(edit_feedback_json->>'class', '')) = 'stt_error'",
     )
     .bind(org_id)
