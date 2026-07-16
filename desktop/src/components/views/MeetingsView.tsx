@@ -6,6 +6,7 @@ import {
   Ban,
   Check,
   ChevronDown,
+  CircleHelp,
   Copy,
   Download,
   Eraser,
@@ -48,6 +49,8 @@ import {
   stripInlineMarkdown,
   summaryLead,
 } from "@/lib/meetingMarkdown";
+
+const MEETINGS_GUIDE_URL = "https://airnote.emiactech.com/guide/meetings";
 
 interface Meeting {
   id: string;
@@ -2438,6 +2441,16 @@ export function MeetingsView({
               </p>
             </div>
             <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void openExternal(MEETINGS_GUIDE_URL)}
+                className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold text-muted-foreground transition-colors hover:text-foreground"
+                style={{ background: "hsl(var(--surface-3))", border: "1px solid hsl(var(--border))" }}
+                title="Open the AirNote Meetings guide"
+              >
+                <CircleHelp size={13} />
+                <span>How to use</span>
+              </button>
               <IconButton
                 label="Clear empty meetings"
                 disabled={clearing || loading}

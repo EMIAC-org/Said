@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Learn how to record, transcribe, summarize, and follow up on meetings with AirNote.">
+  <title>AirNote Meetings — Complete Guide</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root {
+      color-scheme: dark;
+      --bg: #090a0d;
+      --surface: #0e1015;
+      --panel: #13161d;
+      --panel-2: #191c24;
+      --panel-3: #20232c;
+      --line: rgba(255,255,255,.09);
+      --line-strong: rgba(255,255,255,.15);
+      --text: #eef2f7;
+      --muted: #9aa5b4;
+      --soft: #687487;
+      --blue: #91aefe;
+      --violet: #a38bff;
+      --green: #62e6b8;
+      --amber: #f5c86a;
+      --red: #ff7b88;
+      --pink: #ff78c8;
+      --radius: 16px;
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 14% 0%, rgba(145,174,254,.13), transparent 28%),
+        radial-gradient(circle at 88% 8%, rgba(98,230,184,.09), transparent 26%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; }
+    button { font: inherit; }
+    .wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 72px; }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 38px;
+    }
+    .brand { display: inline-flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 800; text-decoration: none; }
+    .brand svg { width: 23px; height: 23px; color: var(--green); }
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: color .18s ease;
+    }
+    .back-link:hover { color: var(--text); }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, .9fr) minmax(440px, 1.1fr);
+      gap: 42px;
+      align-items: center;
+      padding: 24px 0 54px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      color: var(--green);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 14px currentColor; }
+    h1 { margin: 0; max-width: 660px; font-size: clamp(38px, 6vw, 66px); line-height: .98; letter-spacing: -.055em; }
+    .lead { max-width: 610px; margin: 20px 0 0; color: var(--muted); font-size: 16px; line-height: 1.72; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 25px; }
+    .button {
+      min-height: 42px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+      text-decoration: none;
+      transition: transform .18s ease, border-color .18s ease, background .18s ease;
+    }
+    .button:hover { transform: translateY(-1px); border-color: var(--line-strong); background: var(--panel-3); }
+    .button.primary { border-color: rgba(145,174,254,.38); background: var(--blue); color: #0a0c11; }
+    .quick-nav {
+      position: sticky;
+      top: 12px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: fit-content;
+      max-width: 100%;
+      margin: 0 auto 58px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgba(14,16,21,.82);
+      box-shadow: 0 18px 50px rgba(0,0,0,.28);
+      backdrop-filter: blur(18px) saturate(150%);
+      overflow-x: auto;
+    }
+    .quick-nav a {
+      flex: 0 0 auto;
+      padding: 7px 12px;
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-decoration: none;
+    }
+    .quick-nav a:hover { background: var(--panel-3); color: var(--text); }
+    .section { scroll-margin-top: 84px; margin-top: 70px; }
+    .section-head { display: grid; grid-template-columns: 50px minmax(0, 1fr); gap: 16px; align-items: start; margin-bottom: 24px; }
+    .section-number {
+      width: 43px;
+      height: 43px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(145,174,254,.25);
+      border-radius: 13px;
+      background: rgba(145,174,254,.09);
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 900;
+    }
+    h2 { margin: 0; font-size: clamp(25px, 4vw, 38px); letter-spacing: -.04em; line-height: 1.08; }
+    .section-head p { max-width: 740px; margin: 9px 0 0; color: var(--muted); font-size: 14px; }
+    .guide-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(270px, .75fr); gap: 18px; align-items: stretch; }
+    .guide-grid.reverse { grid-template-columns: minmax(270px, .75fr) minmax(0, 1.25fr); }
+    .steps, .callout {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(155deg, rgba(25,28,36,.94), rgba(14,16,21,.98));
+      padding: 22px;
+    }
+    .steps-label { margin-bottom: 10px; color: var(--green); font-size: 10px; font-weight: 900; letter-spacing: .15em; text-transform: uppercase; }
+    .step { display: grid; grid-template-columns: 26px minmax(0,1fr); gap: 10px; padding: 13px 0; border-bottom: 1px solid rgba(255,255,255,.055); }
+    .step:last-child { border-bottom: 0; padding-bottom: 0; }
+    .step-num { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: rgba(145,174,254,.13); color: var(--blue); font-size: 10px; font-weight: 900; }
+    .step p { margin: 1px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .step strong { color: var(--text); }
+    .tip { margin-top: 16px; padding: 12px 13px; border: 1px solid rgba(98,230,184,.16); border-radius: 10px; background: rgba(98,230,184,.06); color: #c8f7e6; font-size: 12px; }
+    .app-frame {
+      position: relative;
+      min-height: 345px;
+      overflow: hidden;
+      border: 1px solid var(--line-strong);
+      border-radius: 18px;
+      background: #07080b;
+      box-shadow: 0 28px 70px rgba(0,0,0,.42);
+    }
+    .app-top { height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 11px; border-bottom: 1px solid var(--line); background: #0d0f14; }
+    .app-top i { width: 7px; height: 7px; border-radius: 50%; background: #333844; }
+    .app-body { padding: 16px; }
+    .segmented { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--line-strong); border-radius: 10px; background: #08090d; }
+    .segmented span { padding: 6px 10px; border-radius: 7px; color: var(--muted); font-size: 9px; font-weight: 800; }
+    .segmented .active { background: #24272f; color: var(--text); box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); }
+    .mini-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 12px; }
+    .mini-title { font-size: 21px; font-weight: 800; letter-spacing: -.035em; }
+    .mini-sub { margin-top: 2px; color: var(--muted); font-size: 9px; }
+    .dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 9px rgba(145,174,254,.6); }
+    .actions { display: flex; align-items: center; gap: 6px; }
+    .icon-btn, .primary-btn, .text-btn {
+      border: 1px solid var(--line);
+      background: #191c22;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 800;
+    }
+    .icon-btn { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 9px; }
+    .primary-btn { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 9px; border-color: transparent; background: var(--blue); color: #08090c; font-size: 17px; }
+    .text-btn { min-height: 29px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border-radius: 9px; color: var(--text); }
+    .search { height: 35px; display: flex; align-items: center; gap: 8px; padding: 0 11px; border: 1px solid var(--line); border-radius: 10px; background: #1c1f25; color: var(--muted); font-size: 9px; }
+    .filters { display: flex; gap: 8px; margin: 10px 0 13px; color: var(--muted); font-size: 8px; font-weight: 800; }
+    .filters span { padding: 5px 8px; border-radius: 7px; }
+    .filters .active { background: #24272f; color: var(--text); }
+    .meeting-row { margin-top: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: #17191f; }
+    .meeting-row strong { display: block; font-size: 10px; }
+    .meeting-row small { color: var(--muted); font-size: 8px; }
+    .model-banner { display: flex; align-items: center; gap: 10px; padding: 11px 13px; border-bottom: 1px solid rgba(245,200,106,.22); background: rgba(245,200,106,.11); }
+    .model-banner .warn { color: var(--amber); font-size: 15px; }
+    .model-copy { min-width: 0; flex: 1; color: var(--muted); font-size: 8px; }
+    .model-copy strong { color: var(--text); }
+    .download { padding: 6px 9px; border-radius: 7px; background: var(--amber); color: #12100a; font-size: 8px; font-weight: 900; }
+    .permission-card { margin: 13px 16px 0; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: #16191f; }
+    .permission-card strong { font-size: 10px; }
+    .permission-card p { margin: 5px 0 0; color: var(--muted); font-size: 8px; }
+    .live-frame .app-body { padding: 0; }
+    .live-head { height: 46px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--line); }
+    .live-name { display: flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 900; }
+    .radio { color: var(--blue); }
+    .timer { position: absolute; top: 37px; left: 50%; transform: translateX(-50%); padding: 7px 13px; border: 1px solid var(--line); border-radius: 999px; background: #14171d; font-size: 9px; font-weight: 900; z-index: 2; }
+    .live-grid { display: grid; grid-template-columns: 3fr 2fr; min-height: 252px; }
+    .transcript-panel { padding: 20px 15px 62px; border-right: 1px solid var(--line); }
+    .panel-label { margin-bottom: 13px; color: var(--muted); font-size: 8px; font-weight: 900; letter-spacing: .14em; text-transform: uppercase; }
+    .utterance { margin-bottom: 12px; }
+    .speaker { display: flex; justify-content: space-between; color: var(--green); font-size: 8px; font-weight: 900; }
+    .speaker time { color: var(--soft); font-weight: 600; }
+    .utterance p { margin: 4px 0 0; color: #cfd5df; font-size: 8px; line-height: 1.5; }
+    .chat-panel { display: flex; flex-direction: column; padding: 20px 13px 14px; }
+    .chat-bubble { padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #15181e; color: var(--muted); font-size: 8px; }
+    .chat-input { margin-top: auto; padding: 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--soft); font-size: 8px; }
+    .control-dock { position: absolute; left: 14px; bottom: 14px; display: flex; align-items: center; gap: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 999px; background: rgba(19,22,29,.96); box-shadow: 0 14px 35px rgba(0,0,0,.4); }
+    .hangup, .capture, .status-pill { height: 29px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; font-size: 8px; font-weight: 900; }
+    .hangup { width: 29px; background: rgba(255,123,136,.16); color: var(--red); }
+    .capture { gap: 5px; padding: 0 11px; background: rgba(98,230,184,.12); color: var(--green); }
+    .capture::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px currentColor; }
+    .status-pill { gap: 5px; padding: 0 9px; background: rgba(98,230,184,.09); color: var(--green); }
+    .notes-modal, .end-modal { position: absolute; inset: 0; display: grid; place-items: center; padding: 30px; background: rgba(0,0,0,.62); }
+    .modal-card { width: min(420px, 100%); border: 1px solid var(--line-strong); border-radius: 15px; background: #14171d; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+    .notes-card { height: 245px; display: flex; flex-direction: column; padding: 15px; }
+    .modal-title { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 900; }
+    .saved { color: var(--muted); font-size: 8px; font-weight: 700; }
+    .notes-area { flex: 1; margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #0c0e12; color: var(--muted); font-size: 9px; line-height: 1.6; }
+    .end-card { padding: 18px; }
+    .end-card h3 { margin: 0; font-size: 13px; }
+    .end-card p { margin: 7px 0 17px; color: var(--muted); font-size: 9px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .modal-button { padding: 8px 10px; border-radius: 8px; background: #262a32; font-size: 8px; font-weight: 900; }
+    .modal-button.danger { background: #db4050; color: #fff; }
+    .wrap-state { display: grid; place-items: center; min-height: 315px; color: var(--muted); font-size: 11px; }
+    .spinner { width: 16px; height: 16px; margin-right: 8px; display: inline-block; vertical-align: middle; border: 2px solid rgba(255,255,255,.16); border-top-color: var(--blue); border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .detail-head { padding: 16px; }
+    .back-row { color: var(--muted); font-size: 8px; font-weight: 800; }
+    .detail-title { display: flex; align-items: center; justify-content: space-between; margin-top: 13px; }
+    .detail-title strong { font-size: 15px; }
+    .tag-row { display: flex; gap: 5px; margin-top: 8px; }
+    .tag-row span { padding: 4px 7px; border-radius: 999px; background: rgba(163,139,255,.12); color: var(--violet); font-size: 7px; font-weight: 900; }
+    .audio-bar { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 9px; margin: 12px 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: #15181e; color: var(--muted); font-size: 8px; }
+    .play { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 50%; background: var(--blue); color: #08090c; }
+    .timeline { height: 3px; border-radius: 999px; background: #333844; overflow: hidden; }
+    .timeline i { display: block; width: 38%; height: 100%; background: var(--blue); }
+    .processing { padding: 12px; border: 1px solid rgba(145,174,254,.26); border-radius: 10px; background: rgba(145,174,254,.09); }
+    .processing strong { display: flex; align-items: center; gap: 7px; font-size: 9px; }
+    .stage-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; color: var(--soft); font-size: 7px; font-weight: 800; }
+    .stage-row .done { color: var(--text); }
+    .stage-row .active { color: var(--blue); }
+    .tabs { display: grid; grid-template-columns: repeat(5,1fr); margin-top: 13px; border-bottom: 1px solid var(--line); }
+    .tabs span { padding: 9px 3px; border-bottom: 2px solid transparent; color: var(--muted); font-size: 7px; font-weight: 900; text-align: center; }
+    .tabs .active { border-bottom-color: var(--violet); color: var(--text); }
+    .summary-card { margin-top: 12px; padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: #171a20; }
+    .summary-card small { color: var(--violet); font-size: 7px; font-weight: 900; letter-spacing: .11em; text-transform: uppercase; }
+    .summary-card p { margin: 7px 0 0; color: #d8dde6; font-size: 8px; line-height: 1.55; }
+    .task-input { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; margin: 12px 0; }
+    .task-input span { padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--soft); font-size: 8px; }
+    .task-input .add { border-color: transparent; background: var(--blue); color: #08090c; font-weight: 900; }
+    .task { display: grid; grid-template-columns: 15px minmax(0,1fr); gap: 8px; margin-top: 10px; }
+    .check { width: 14px; height: 14px; border: 1px solid var(--line-strong); border-radius: 4px; }
+    .task.done .check { display: grid; place-items: center; border-color: var(--violet); background: var(--violet); color: #08090c; font-size: 8px; }
+    .task strong { display: block; font-size: 8px; }
+    .task p { margin: 3px 0 0; color: var(--muted); font-size: 7px; }
+    .task.done strong { color: var(--muted); text-decoration: line-through; }
+    .decision { display: grid; grid-template-columns: 16px minmax(0,1fr); gap: 8px; margin-top: 12px; }
+    .decision i { width: 15px; height: 15px; display: grid; place-items: center; border-radius: 50%; background: rgba(163,139,255,.14); color: var(--violet); font-size: 7px; font-style: normal; font-weight: 900; }
+    .decision p { margin: 0; color: var(--muted); font-size: 8px; }
+    .mini-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+    .feature-card { min-height: 245px; overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: linear-gradient(160deg,#171a21,#0e1015); }
+    .feature-head { display: flex; align-items: center; justify-content: space-between; padding: 13px; border-bottom: 1px solid var(--line); font-size: 10px; font-weight: 900; }
+    .feature-body { padding: 13px; }
+    .transcript-line { margin-bottom: 11px; }
+    .transcript-line strong { display: flex; justify-content: space-between; color: var(--green); font-size: 7px; }
+    .transcript-line time { color: var(--soft); }
+    .transcript-line p { margin: 3px 0 0; color: var(--muted); font-size: 7px; line-height: 1.5; }
+    .note-preview { padding: 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 8px; line-height: 1.6; }
+    .chat-question { margin-left: 28px; padding: 8px; border-radius: 9px; background: rgba(145,174,254,.15); color: #dfe7ff; font-size: 8px; }
+    .chat-answer { margin-top: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 8px; line-height: 1.55; }
+    .library-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0; }
+    .library-tags span { padding: 4px 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 7px; }
+    .journey-end { margin-top: 72px; padding: 28px; border: 1px solid rgba(98,230,184,.18); border-radius: 18px; background: linear-gradient(135deg,rgba(98,230,184,.08),rgba(145,174,254,.06)); text-align: center; }
+    .journey-end h2 { font-size: 28px; }
+    .journey-end p { max-width: 610px; margin: 10px auto 18px; color: var(--muted); font-size: 13px; }
+    .footer { margin-top: 34px; color: #495164; font-size: 11px; text-align: center; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+    @media (max-width: 900px) {
+      .hero, .guide-grid, .guide-grid.reverse { grid-template-columns: 1fr; }
+      .hero { gap: 28px; }
+      .hero .app-frame { min-height: 330px; }
+      .guide-grid.reverse .steps { order: 2; }
+      .guide-grid.reverse .app-frame { order: 1; }
+      .mini-grid { grid-template-columns: 1fr; }
+      .feature-card { min-height: 210px; }
+    }
+    @media (max-width: 620px) {
+      .wrap { width: min(100% - 22px, 1120px); padding-top: 16px; }
+      .topbar { margin-bottom: 18px; }
+      .hero { padding-top: 12px; }
+      .lead { font-size: 14px; }
+      .quick-nav { justify-content: flex-start; width: 100%; margin-bottom: 42px; }
+      .section { margin-top: 52px; }
+      .section-head { grid-template-columns: 39px minmax(0,1fr); gap: 11px; }
+      .section-number { width: 37px; height: 37px; }
+      .steps { padding: 17px; }
+      .app-frame { min-height: 310px; border-radius: 14px; }
+      .app-body { padding: 12px; }
+      .live-grid { grid-template-columns: 1fr; }
+      .chat-panel { display: none; }
+      .transcript-panel { border-right: 0; }
+      .timer { top: 35px; }
+      .tabs span { font-size: 6px; }
+      .notes-modal, .end-modal { padding: 18px; }
+      .model-banner { align-items: flex-start; }
+      .download { white-space: nowrap; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="topbar">
+      <a class="brand" href="/guide">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="3" y="8.5" width="3" height="7" rx="1.5"/><rect x="8" y="4.5" width="3" height="15" rx="1.5"/><rect x="13" y="2.5" width="3" height="19" rx="1.5"/><rect x="18" y="6.5" width="3" height="11" rx="1.5"/></svg>
+        <span>AirNote</span>
+      </a>
+      <a class="back-link" href="/guide">← Back to AirNote guide</a>
+    </header>
+
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Meetings guide</div>
+        <h1>From live conversation to clear next steps.</h1>
+        <p class="lead">Start a local recording, return to your meeting app, and let AirNote capture the conversation. When it ends, review the transcript, summary, decisions, and action items in one place.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#start">Start with a meeting ↓</a>
+          <a class="button" href="#after">See what happens after</a>
+        </div>
+      </div>
+      <div class="app-frame" aria-label="Miniature AirNote Meetings page">
+        <div class="app-top"><i></i><i></i><i></i></div>
+        <div class="app-body">
+          <div class="segmented"><span class="active">▣ &nbsp;Meetings</span><span>▱ &nbsp;Digest</span></div>
+          <div class="mini-title-row">
+            <div><div class="mini-title">Meetings</div><div class="mini-sub"><span class="dot"></span>0 live · 6 ended</div></div>
+            <div class="actions"><span class="text-btn">? &nbsp;How to use</span><span class="icon-btn">↻</span><span class="primary-btn">+</span></div>
+          </div>
+          <div class="search">⌕ &nbsp; Search title, tags, summary, notes, transcript…</div>
+          <div class="filters"><span class="active">All</span><span>Favorites</span><span>Today</span><span>Week</span><span>Archived</span></div>
+          <div class="meeting-row"><strong>AI Chatbot Workflow Training</strong><small>15 Jul 2026 &nbsp;·&nbsp; 2,421 words &nbsp;·&nbsp; 3 actions &nbsp;·&nbsp; <span style="color:var(--green)">#AI Chatbot +3</span></small></div>
+          <div class="meeting-row"><strong>Local Comparison Review</strong><small>12 Jul 2026 &nbsp;·&nbsp; 47 words &nbsp;·&nbsp; <span style="color:var(--pink)">#Review +1</span></small></div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="quick-nav" aria-label="Meetings guide sections">
+      <a href="#ready">Before</a><a href="#start">Start</a><a href="#live">During</a><a href="#end">End</a><a href="#after">After</a><a href="#review">Review</a>
+    </nav>
+
+    <section class="section" id="ready">
+      <div class="section-head"><div class="section-number">01</div><div><h2>Get ready once</h2><p>Meetings are transcribed locally. AirNote checks the speech model and system-audio permission before it starts recording.</p></div></div>
+      <div class="guide-grid">
+        <div class="app-frame" aria-label="Model download and permission states">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="model-banner"><span class="warn">△</span><div class="model-copy"><strong>Meetings use your recommended model locally.</strong><br>Download it to start a meeting. Meetings never use cloud transcription.</div><span class="download">Download model</span></div>
+          <div class="permission-card"><strong>Allow Screen Recording</strong><p>On macOS, AirNote needs Screen Recording permission to capture the other people in your meeting. Enable it in System Settings, then reopen AirNote.</p></div>
+          <div class="app-body">
+            <div class="mini-title-row"><div><div class="mini-title">Meetings</div><div class="mini-sub"><span class="dot"></span>Ready after setup</div></div><div class="actions"><span class="primary-btn" style="opacity:.45">+</span></div></div>
+            <div class="search">⌕ &nbsp; Search meetings…</div>
+          </div>
+        </div>
+        <div class="steps">
+          <div class="steps-label">Before your first meeting</div>
+          <div class="step"><span class="step-num">1</span><p>Open <strong>Meetings</strong>. If the local model banner appears, download the recommended model once.</p></div>
+          <div class="step"><span class="step-num">2</span><p>On macOS, allow <strong>Screen Recording</strong> so AirNote can hear system audio from Zoom, Meet, Teams, and other meeting apps.</p></div>
+          <div class="step"><span class="step-num">3</span><p>Reopen AirNote after granting the permission. The <strong>+</strong> button becomes available when setup is ready.</p></div>
+          <div class="tip">Your recording, transcript, and meeting files stay on this device.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="start">
+      <div class="section-head"><div class="section-number">02</div><div><h2>Start—there is no waiting room</h2><p>AirNote does not need a meeting link. Start your Zoom, Meet, Teams, or in-person call normally, then click the plus button in AirNote.</p></div></div>
+      <div class="guide-grid reverse">
+        <div class="steps">
+          <div class="steps-label">Start recording</div>
+          <div class="step"><span class="step-num">1</span><p>Click <strong>+</strong> on the Meetings page.</p></div>
+          <div class="step"><span class="step-num">2</span><p>The <strong>Live Meeting</strong> screen opens immediately. Wait a moment while the capture status changes from starting to recording.</p></div>
+          <div class="step"><span class="step-num">3</span><p>Return to your meeting app. AirNote keeps capturing until you explicitly end the meeting.</p></div>
+          <div class="tip">You can leave the AirNote window in the background. Do not quit AirNote while the meeting is running.</div>
+        </div>
+        <div class="app-frame live-frame" aria-label="Starting a live meeting">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="timer">00:00</div>
+          <div class="live-head"><div class="live-name"><span class="radio">◉</span> Live Meeting</div><span class="saved">Starting capture…</span></div>
+          <div class="wrap-state"><span><span class="spinner"></span>Preparing live transcript…</span></div>
+          <div class="control-dock"><span class="hangup">⌁</span><span class="capture">Starting</span><span class="status-pill">● Preparing</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="live">
+      <div class="section-head"><div class="section-number">03</div><div><h2>Let the meeting run</h2><p>The live screen shows elapsed time, transcript updates, Meeting AI Chat, and capture controls. It is safe to switch back to the app where your call is happening.</p></div></div>
+      <div class="guide-grid">
+        <div class="app-frame live-frame" aria-label="Live Meeting interface">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="timer">18:42</div>
+          <div class="live-head"><div class="live-name"><span class="radio">◉</span> Live Meeting</div><span class="saved">Recording</span></div>
+          <div class="live-grid">
+            <div class="transcript-panel">
+              <div class="panel-label">Transcript</div>
+              <div class="utterance"><div class="speaker"><span>Speaker 1</span><time>18:06</time></div><p>We should finish the workflow review this week and share the final scope with the team.</p></div>
+              <div class="utterance"><div class="speaker" style="color:var(--blue)"><span>Speaker 2</span><time>18:18</time></div><p>I will prepare the action list and send it by Friday.</p></div>
+            </div>
+            <div class="chat-panel"><div class="panel-label">Meeting AI Chat</div><div class="chat-bubble">Ask AirNote what was decided, who owns a follow-up, or where a topic appeared.</div><div class="chat-input">Ask about this meeting…</div></div>
+          </div>
+          <div class="control-dock"><span class="hangup">⌁</span><span class="capture">Recording</span><span class="status-pill">● Ready</span></div>
+        </div>
+        <div class="steps">
+          <div class="steps-label">While it records</div>
+          <div class="step"><span class="step-num">1</span><p>Watch the green <strong>Recording</strong> control and timer to confirm capture is active.</p></div>
+          <div class="step"><span class="step-num">2</span><p>Use the microphone control to <strong>mute or resume AirNote’s meeting capture</strong> without muting your actual call.</p></div>
+          <div class="step"><span class="step-num">3</span><p>The transcript appears as speech is recognized. You may also ask Meeting AI questions while the meeting runs.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="notes">
+      <div class="section-head"><div class="section-number">04</div><div><h2>Add your own notes</h2><p>Open Notes from the live screen whenever you want to preserve a personal observation or important context.</p></div></div>
+      <div class="guide-grid reverse">
+        <div class="steps">
+          <div class="steps-label">Private context</div>
+          <div class="step"><span class="step-num">1</span><p>Click <strong>Notes</strong> in the live meeting header.</p></div>
+          <div class="step"><span class="step-num">2</span><p>Type decisions, follow-ups, or context the transcript may not capture on its own.</p></div>
+          <div class="step"><span class="step-num">3</span><p>Notes save automatically and are later included as context when you use this meeting’s AI Chat.</p></div>
+        </div>
+        <div class="app-frame" aria-label="Live meeting notes dialog">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="notes-modal"><div class="modal-card notes-card"><div class="modal-title"><span>▤ &nbsp;Notes</span><span class="saved">Saved &nbsp; ×</span></div><div class="notes-area"><strong style="color:var(--text)">Follow up</strong><br>Confirm the Friday handoff with the product team.<br><br><strong style="color:var(--text)">Context</strong><br>The client prefers a phased rollout before the wider launch.</div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="end">
+      <div class="section-head"><div class="section-number">05</div><div><h2>End when the conversation is over</h2><p>The red phone control stops the local recording. AirNote asks for confirmation so an accidental click does not end the capture.</p></div></div>
+      <div class="guide-grid">
+        <div class="app-frame" aria-label="End meeting confirmation">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="end-modal"><div class="modal-card end-card"><h3>End this meeting?</h3><p>Recording will stop and the meeting will be processed into a summary.</p><div class="modal-actions"><span class="modal-button">Keep recording</span><span class="modal-button danger">End meeting</span></div></div></div>
+        </div>
+        <div class="steps">
+          <div class="steps-label">Finish safely</div>
+          <div class="step"><span class="step-num">1</span><p>Click the red <strong>Leave meeting</strong> control.</p></div>
+          <div class="step"><span class="step-num">2</span><p>Choose <strong>Keep recording</strong> if the meeting is still running.</p></div>
+          <div class="step"><span class="step-num">3</span><p>Choose <strong>End meeting</strong> to stop capture and begin transcription, cleanup, and summary generation.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="after">
+      <div class="section-head"><div class="section-number">06</div><div><h2>AirNote wraps up in the background</h2><p>After the brief handoff screen, AirNote opens the recorded meeting and shows each processing stage above the detail tabs.</p></div></div>
+      <div class="guide-grid reverse">
+        <div class="steps">
+          <div class="steps-label">After recording</div>
+          <div class="step"><span class="step-num">1</span><p>You may briefly see <strong>Wrapping up your meeting…</strong> while AirNote closes the recording.</p></div>
+          <div class="step"><span class="step-num">2</span><p>The processing banner advances through <strong>Recording → Transcribing → Cleaning → Summarizing</strong>.</p></div>
+          <div class="step"><span class="step-num">3</span><p>You may navigate to another AirNote screen while this runs. Keep AirNote open until processing completes.</p></div>
+          <div class="tip">If summary generation fails, the transcript is still saved and the banner offers a retry.</div>
+        </div>
+        <div class="app-frame" aria-label="Post-meeting processing state">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="detail-head"><div class="back-row">← Meetings</div><div class="detail-title"><strong>Workflow Review</strong><span class="saved">15 Jul 2026 · Local</span></div><div class="tag-row"><span>#Workflow</span><span>#Review</span></div><div class="audio-bar"><span class="play">▶</span><span class="timeline"><i></i></span><span>18:42 &nbsp; 1×</span></div><div class="processing"><strong><span class="spinner" style="width:12px;height:12px"></span>Processing your meeting…</strong><div class="stage-row"><span class="done">Recording</span><span>›</span><span class="done">Transcribing</span><span>›</span><span class="active">Cleaning</span><span>›</span><span>Summarizing</span></div></div><div class="tabs"><span class="active">Summary</span><span>My Notes</span><span>Transcript</span><span>Actions</span><span>AI Chat</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="review">
+      <div class="section-head"><div class="section-number">07</div><div><h2>Review the result</h2><p>The meeting detail page keeps the recording and every generated artifact together. Start with the Summary, then move between the five tabs.</p></div></div>
+      <div class="guide-grid">
+        <div class="app-frame" aria-label="Completed meeting summary">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="detail-head"><div class="back-row">← Meetings</div><div class="detail-title"><strong>Workflow Review</strong><span class="actions"><span class="icon-btn">☆</span><span class="icon-btn">✎</span></span></div><div class="tag-row"><span>#Workflow</span><span>#Launch</span><span>+ Add tag</span></div><div class="audio-bar"><span class="play">▶</span><span class="timeline"><i style="width:62%"></i></span><span>18:42 &nbsp; 1×</span></div><div class="tabs"><span class="active">Summary</span><span>My Notes</span><span>Transcript</span><span>Actions 3</span><span>AI Chat</span></div><div class="summary-card"><small>✦ AI summary</small><p>The team agreed to complete the workflow review this week, prepare the final action list by Friday, and use a phased rollout for the client launch.</p></div><div class="decision"><i>1</i><p><strong style="color:var(--text)">Use a phased rollout.</strong><br>The wider launch follows after the first implementation is validated.</p></div></div>
+        </div>
+        <div class="steps">
+          <div class="steps-label">Summary and recording</div>
+          <div class="step"><span class="step-num">1</span><p>Use the audio bar to play, seek, change playback speed, or download the recording.</p></div>
+          <div class="step"><span class="step-num">2</span><p>The <strong>Summary</strong> tab shows the generated overview and decisions. Copy it or reanalyze with extra context when needed.</p></div>
+          <div class="step"><span class="step-num">3</span><p>Edit the title, add tags, favorite the meeting, or remove it from the main list using the controls above the tabs.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="actions">
+      <div class="section-head"><div class="section-number">08</div><div><h2>Turn discussion into action</h2><p>Actions &amp; Decisions combines AirNote’s extracted follow-ups with tasks you add yourself.</p></div></div>
+      <div class="guide-grid reverse">
+        <div class="steps">
+          <div class="steps-label">Actions &amp; Decisions</div>
+          <div class="step"><span class="step-num">1</span><p>Open <strong>Actions &amp; Decisions</strong> to review follow-ups extracted from the meeting.</p></div>
+          <div class="step"><span class="step-num">2</span><p>Tick an action when it is complete. Extracted actions include evidence, ownership, or due-date context when available.</p></div>
+          <div class="step"><span class="step-num">3</span><p>Type into <strong>Add an action item…</strong> to add a personal follow-up that was not spoken in the meeting.</p></div>
+          <div class="tip">Decisions are listed separately so settled outcomes do not get mixed with tasks.</div>
+        </div>
+        <div class="app-frame" aria-label="Actions and Decisions tab">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="detail-head"><div class="detail-title"><strong>Actions &amp; Decisions 4</strong></div><div class="task-input"><span>Add an action item…</span><span class="add">+ Add</span></div><div class="task done"><span class="check">✓</span><div><strong>Share the revised workflow</strong><p>Owner: Abhishek · Friday</p></div></div><div class="task"><span class="check"></span><div><strong>Prepare the client rollout plan</strong><p>The first phase should cover the product team before wider release.</p></div></div><div class="panel-label" style="margin-top:18px">Decisions 2</div><div class="decision"><i>1</i><p><strong style="color:var(--text)">Launch in phases.</strong><br>Validate the first rollout before expanding.</p></div><div class="decision"><i>2</i><p><strong style="color:var(--text)">Friday is the handoff date.</strong></p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="more">
+      <div class="section-head"><div class="section-number">09</div><div><h2>Go deeper when you need to</h2><p>The remaining meeting tools help you verify wording, add personal context, ask questions, and find the conversation later.</p></div></div>
+      <div class="mini-grid">
+        <article class="feature-card"><div class="feature-head"><span>Transcript</span><span class="saved">Copy all · Retranscribe</span></div><div class="feature-body"><div class="transcript-line"><strong><span>Speaker 1</span><time>06:24</time></strong><p>We should finish the workflow review this week.</p></div><div class="transcript-line"><strong style="color:var(--blue)"><span>Speaker 2</span><time>06:31</time></strong><p>I will share the revised document by Friday.</p></div><div class="tip">Click a timestamp to jump to that point in the recording.</div></div></article>
+        <article class="feature-card"><div class="feature-head"><span>My Notes</span><span class="saved">Preview · Write</span></div><div class="feature-body"><div class="note-preview"><strong style="color:var(--text)">Client context</strong><br>The rollout should start with the product team.<br><br><strong style="color:var(--text)">Follow-up</strong><br>Confirm access before Friday.</div><div class="tip">Notes autosave and become extra context for AI Chat.</div></div></article>
+        <article class="feature-card"><div class="feature-head"><span>AI Chat</span><span class="saved">Meeting-grounded</span></div><div class="feature-body"><div class="chat-question">What did we agree to deliver?</div><div class="chat-answer">The team agreed to share the revised workflow and action list by Friday, followed by a phased client rollout.</div><div class="chat-input" style="margin-top:10px">Ask about this recording…</div></div></article>
+      </div>
+      <div class="guide-grid" style="margin-top:18px">
+        <div class="app-frame" style="min-height:300px" aria-label="Meetings library and Digest">
+          <div class="app-top"><i></i><i></i><i></i></div>
+          <div class="app-body"><div class="segmented"><span class="active">▣ &nbsp;Meetings</span><span>▱ &nbsp;Digest</span></div><div class="mini-title-row"><div><div class="mini-title">Find it later</div><div class="mini-sub">Search every title, summary, note, and transcript</div></div></div><div class="search">⌕ &nbsp; Search title, tags, summary, notes, transcript…</div><div class="library-tags"><span>#Workflow</span><span>#Launch</span><span>#Client Review</span><span>#Actions</span></div><div class="meeting-row"><strong>Workflow Review</strong><small>Today &nbsp;·&nbsp; 1,284 words &nbsp;·&nbsp; 3 actions &nbsp;·&nbsp; #Workflow +2</small></div></div>
+        </div>
+        <div class="steps"><div class="steps-label">Your meetings library</div><div class="step"><span class="step-num">1</span><p>Search across titles, tags, summaries, notes, and transcripts.</p></div><div class="step"><span class="step-num">2</span><p>Use <strong>Favorites, Today, Week,</strong> and <strong>Archived</strong> to narrow the list.</p></div><div class="step"><span class="step-num">3</span><p>Open <strong>Digest</strong> when you want themes and follow-ups across several meetings instead of one recording.</p></div></div>
+      </div>
+    </section>
+
+    <section class="journey-end">
+      <h2>Ready for your next meeting?</h2>
+      <p>Open Meetings in AirNote, click the plus button, and return to your call. AirNote will keep the recording, transcript, summary, and next steps together.</p>
+      <a class="button" href="/guide">← Back to the main AirNote guide</a>
+    </section>
+
+    <p class="footer">AirNote Meetings Guide · EMIAC · July 2026</p>
+  </main>
+</body>
+</html>
