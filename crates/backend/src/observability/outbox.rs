@@ -1,9 +1,10 @@
 //! SQLite outbox for control-plane dictation observability (fire-and-forget).
 
 use crate::store::{DbPool, history::InsertRecording};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use tracing::warn;
 
 const MAX_ATTEMPTS: i64 = 10;
@@ -205,11 +206,29 @@ fn insert_row(
     recording_id: Option<&str>,
     payload: &impl Serialize,
 ) -> Result<(), String> {
-    let payload_json =
-        serde_json::to_string(payload).map_err(|e| format!("serialize outbox payload: {e}"))?;
     let active_org_id = crate::store::users::get_user(pool, user_id)
         .and_then(|user| user.active_org_id)
         .filter(|org_id| !org_id.trim().is_empty());
+    insert_row_with_org(
+        pool,
+        user_id,
+        op,
+        recording_id,
+        payload,
+        active_org_id.as_deref(),
+    )
+}
+
+fn insert_row_with_org(
+    pool: &DbPool,
+    user_id: &str,
+    op: &str,
+    recording_id: Option<&str>,
+    payload: &impl Serialize,
+    active_org_id: Option<&str>,
+) -> Result<(), String> {
+    let payload_json =
+        serde_json::to_string(payload).map_err(|e| format!("serialize outbox payload: {e}"))?;
     let conn = pool.get().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR IGNORE INTO observability_outbox
@@ -283,13 +302,32 @@ pub fn enqueue_meeting_provider_usage(
     payload: MeetingProviderUsagePayload,
 ) -> Result<(), String> {
     let event_key = payload.idempotency_key.clone();
-    insert_row(
+    let parent_org =
+        meeting_session_org(pool, user_id, &payload.client_session_id)?.ok_or_else(|| {
+            "meeting usage has no parent session outbox row with an active org".to_string()
+        })?;
+    insert_row_with_org(
         pool,
         user_id,
         "upsert_meeting_provider_usage",
         Some(&event_key),
         &payload,
+        Some(&parent_org),
+    )?;
+
+    // Repair a pending row created by an older scanner after an org switch.
+    // INSERT OR IGNORE preserves event idempotency, while this update restores
+    // the immutable org ownership inherited from the parent meeting session.
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE observability_outbox
+            SET active_org_id = ?3
+          WHERE user_id = ?1 AND op = 'upsert_meeting_provider_usage'
+            AND recording_id = ?2 AND status != 'done' AND active_org_id IS NOT ?3",
+        params![user_id, event_key, parent_org],
     )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn list_pending(pool: &DbPool, user_id: &str, limit: i64) -> Result<Vec<OutboxRow>, String> {
@@ -303,6 +341,24 @@ fn list_pending_at(
     eligible_at_ms: i64,
 ) -> Result<Vec<OutboxRow>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    let delivered_sessions = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT recording_id, active_org_id
+                   FROM observability_outbox
+                  WHERE user_id = ?1 AND op = 'upsert_meeting_session'
+                    AND status = 'done' AND recording_id IS NOT NULL
+                    AND active_org_id IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|e| e.to_string())?
+    };
     let mut stmt = conn
         .prepare(
             "SELECT id, op, recording_id, payload_json, attempts, active_org_id
@@ -334,30 +390,73 @@ fn list_pending_at(
                         )
                     )
                 )
-              ORDER BY created_at_ms ASC, id ASC
-              LIMIT ?4",
+              ORDER BY created_at_ms ASC, id ASC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(
-            params![user_id, MAX_ATTEMPTS, eligible_at_ms, limit],
-            |row| {
-                Ok(OutboxRow {
-                    id: row.get(0)?,
-                    op: row.get(1)?,
-                    recording_id: row.get(2)?,
-                    payload_json: row.get(3)?,
-                    attempts: row.get(4)?,
-                    active_org_id: row.get(5)?,
-                })
-            },
-        )
+        .query_map(params![user_id, MAX_ATTEMPTS, eligible_at_ms], |row| {
+            Ok(OutboxRow {
+                id: row.get(0)?,
+                op: row.get(1)?,
+                recording_id: row.get(2)?,
+                payload_json: row.get(3)?,
+                attempts: row.get(4)?,
+                active_org_id: row.get(5)?,
+            })
+        })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    let candidates = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(candidates
+        .into_iter()
+        .filter(|row| {
+            if row.op != "upsert_meeting_provider_usage" {
+                return true;
+            }
+            let Ok(payload) =
+                serde_json::from_str::<MeetingProviderUsagePayload>(&row.payload_json)
+            else {
+                // Keep malformed rows visible so the uploader can account for
+                // the failed attempt rather than silently hiding them forever.
+                return true;
+            };
+            delivered_sessions
+                .get(&payload.client_session_id)
+                .map(String::as_str)
+                == row.active_org_id.as_deref()
+        })
+        .take(limit.max(0) as usize)
+        .collect())
 }
 
-pub fn meeting_session_done(pool: &DbPool, user_id: &str, client_session_id: &str) -> bool {
+fn meeting_session_org(
+    pool: &DbPool,
+    user_id: &str,
+    client_session_id: &str,
+) -> Result<Option<String>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT active_org_id FROM observability_outbox
+          WHERE user_id = ?1 AND op = 'upsert_meeting_session'
+            AND recording_id = ?2",
+        params![user_id, client_session_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(|org| org.flatten().filter(|value| !value.trim().is_empty()))
+    .map_err(|error| error.to_string())
+}
+
+pub fn meeting_session_done_for_org(
+    pool: &DbPool,
+    user_id: &str,
+    client_session_id: &str,
+    active_org_id: Option<&str>,
+) -> bool {
+    let Some(active_org_id) = active_org_id.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
     let Ok(conn) = pool.get() else {
         return false;
     };
@@ -365,9 +464,9 @@ pub fn meeting_session_done(pool: &DbPool, user_id: &str, client_session_id: &st
         "SELECT EXISTS(
             SELECT 1 FROM observability_outbox
              WHERE user_id = ?1 AND op = 'upsert_meeting_session'
-               AND recording_id = ?2 AND status = 'done'
+               AND recording_id = ?2 AND status = 'done' AND active_org_id = ?3
         )",
-        params![user_id, client_session_id],
+        params![user_id, client_session_id, active_org_id],
         |row| row.get(0),
     )
     .unwrap_or(false)
@@ -483,9 +582,58 @@ mod tests {
         let rows = list_pending(&pool, &user_id, 20).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].active_org_id.as_deref(), Some("org-a"));
-        assert!(!meeting_session_done(&pool, &user_id, "local-1"));
+        assert!(!meeting_session_done_for_org(
+            &pool,
+            &user_id,
+            "local-1",
+            Some("org-a")
+        ));
         mark_done(&pool, rows[0].id).unwrap();
-        assert!(meeting_session_done(&pool, &user_id, "local-1"));
+        assert!(meeting_session_done_for_org(
+            &pool,
+            &user_id,
+            "local-1",
+            Some("org-a")
+        ));
+        enqueue_meeting_provider_usage(
+            &pool,
+            &user_id,
+            MeetingProviderUsagePayload {
+                client_session_id: "local-1".into(),
+                idempotency_key: "meeting:local-1:summary:1".into(),
+                credential_scope: "airnote_bundled".into(),
+                provider: "deepseek".into(),
+                model: "deepseek-chat".into(),
+                feature_stage: "summary".into(),
+                prompt_tokens: 10,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 10,
+                completion_tokens: 5,
+                reasoning_tokens: None,
+                latency_ms: 25,
+                result_status: "success".into(),
+                occurred_at_ms: 2_000,
+            },
+        )
+        .unwrap();
+        let rows = list_pending(&pool, &user_id, 20).unwrap();
+        let usage = rows
+            .iter()
+            .find(|row| row.op == "upsert_meeting_provider_usage")
+            .unwrap();
+        assert_eq!(usage.active_org_id.as_deref(), Some("org-a"));
+        assert!(meeting_session_done_for_org(
+            &pool,
+            &user_id,
+            "local-1",
+            usage.active_org_id.as_deref()
+        ));
+        assert!(!meeting_session_done_for_org(
+            &pool,
+            &user_id,
+            "local-1",
+            Some("org-b")
+        ));
 
         drop(pool);
         let _ = std::fs::remove_file(path);
@@ -566,7 +714,12 @@ mod tests {
         assert_eq!(status, "pending");
         assert_eq!(attempts, 12);
         assert_eq!(stored_org.as_deref(), Some("org-retry"));
-        assert!(!meeting_session_done(&pool, &user_id, "local-retry"));
+        assert!(!meeting_session_done_for_org(
+            &pool,
+            &user_id,
+            "local-retry",
+            Some("org-retry")
+        ));
 
         // Simulate a row already dropped by the pre-amendment build. Durable
         // meeting eligibility must revive it without relying on INSERT OR IGNORE.
@@ -592,14 +745,110 @@ mod tests {
 
         // The uploader uses this exact gate: usage waits while the parent is
         // pending, then becomes deliverable immediately after acknowledgement.
-        assert!(!meeting_session_done(&pool, &user_id, "local-retry"));
+        assert!(!meeting_session_done_for_org(
+            &pool,
+            &user_id,
+            "local-retry",
+            Some("org-retry")
+        ));
         mark_done(&pool, session_id).unwrap();
-        assert!(meeting_session_done(&pool, &user_id, "local-retry"));
+        assert!(meeting_session_done_for_org(
+            &pool,
+            &user_id,
+            "local-retry",
+            Some("org-retry")
+        ));
         assert!(
-            after_backoff
+            !after_backoff
                 .iter()
                 .any(|row| row.op == "upsert_meeting_provider_usage")
         );
+        let after_parent = list_pending_at(&pool, &user_id, 20, i64::MAX).unwrap();
+        assert!(
+            after_parent
+                .iter()
+                .any(|row| row.op == "upsert_meeting_provider_usage")
+        );
+
+        drop(pool);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn blocked_meeting_usage_does_not_consume_the_pending_batch() {
+        let path = std::env::temp_dir().join(format!(
+            "airnote-observability-hol-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = crate::store::open(&path);
+        let user_id = crate::store::ensure_default_user(&pool);
+        crate::store::users::update_cloud_auth(&pool, &user_id, "token", "pro", None);
+        crate::store::users::update_active_org(&pool, &user_id, Some("org-a"));
+        enqueue_meeting_session(
+            &pool,
+            &user_id,
+            MeetingSessionPayload {
+                client_session_id: "blocked-parent".into(),
+                title: "Offline meeting".into(),
+                status: "completed".into(),
+                started_at_ms: 1_000,
+                ended_at_ms: 2_000,
+                duration_seconds: 1.0,
+                transcript_word_count: 0,
+                transcription_provider: None,
+                transcription_model: None,
+                transcription_latency_ms: None,
+                device_id: None,
+                platform: None,
+                app_version: None,
+            },
+        )
+        .unwrap();
+        let parent_id: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM observability_outbox WHERE recording_id = 'blocked-parent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        mark_failed(&pool, parent_id, "offline").unwrap();
+        for index in 0..25 {
+            enqueue_meeting_provider_usage(
+                &pool,
+                &user_id,
+                MeetingProviderUsagePayload {
+                    client_session_id: "blocked-parent".into(),
+                    idempotency_key: format!("meeting:blocked-parent:chat:{index}"),
+                    credential_scope: "airnote_bundled".into(),
+                    provider: "deepseek".into(),
+                    model: "deepseek-chat".into(),
+                    feature_stage: "chat".into(),
+                    prompt_tokens: 1,
+                    cache_hit_tokens: 0,
+                    cache_miss_tokens: 1,
+                    completion_tokens: 1,
+                    reasoning_tokens: None,
+                    latency_ms: 1,
+                    result_status: "success".into(),
+                    occurred_at_ms: 2_000 + index,
+                },
+            )
+            .unwrap();
+        }
+        insert_row(
+            &pool,
+            &user_id,
+            "generic_test",
+            Some("new-unrelated-work"),
+            &serde_json::json!({ "safe": true }),
+        )
+        .unwrap();
+
+        let rows = list_pending_at(&pool, &user_id, 20, now_ms()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].op, "generic_test");
 
         drop(pool);
         let _ = std::fs::remove_file(path);

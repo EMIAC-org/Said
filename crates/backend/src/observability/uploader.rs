@@ -2,8 +2,8 @@
 
 use crate::observability::outbox::{
     AliasBatchPayload, DictationPatchPayload, DictationUpsertPayload, MeetingProviderUsagePayload,
-    MeetingSessionPayload, OutboxRow, list_pending, mark_done, mark_failed, meeting_session_done,
-    pending_count,
+    MeetingSessionPayload, OutboxRow, list_pending, mark_done, mark_failed,
+    meeting_session_done_for_org, pending_count,
 };
 use crate::store::DbPool;
 use reqwest::Client;
@@ -175,7 +175,12 @@ pub async fn upload_pending(pool: &DbPool, user_id: &str, http: &Client) {
                 }
                 continue;
             };
-            if !meeting_session_done(pool, user_id, &payload.client_session_id) {
+            if !meeting_session_done_for_org(
+                pool,
+                user_id,
+                &payload.client_session_id,
+                row.active_org_id.as_deref(),
+            ) {
                 debug!(
                     client_session_id = %payload.client_session_id,
                     "[observability] deferring meeting usage until session is delivered"

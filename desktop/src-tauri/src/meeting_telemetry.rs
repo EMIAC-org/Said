@@ -235,8 +235,13 @@ pub fn finalize_session(artifact_dir: &Path, status: &str) {
         .take(200)
         .collect::<String>();
     let provider = json_string(&transcript, "provider");
-    let model = json_string(&transcript, "model");
+    let model = json_string(&transcript, "model").map(|value| stable_model_identifier(&value));
     let latency_ms = json_i64(&transcript, "latency_ms");
+    if artifact.draft.ended_at_ms <= artifact.draft.started_at_ms {
+        if let Some(duration_ms) = json_i64(&transcript, "audio_duration_ms") {
+            artifact.draft.ended_at_ms = artifact.draft.started_at_ms.saturating_add(duration_ms);
+        }
+    }
     let duration_seconds = artifact
         .draft
         .ended_at_ms
@@ -263,6 +268,45 @@ pub fn finalize_session(artifact_dir: &Path, status: &str) {
     if let Err(error) = write_artifact(artifact_dir, &artifact) {
         tracing::warn!(error = %error, dir = %artifact_dir.display(), "[meeting_telemetry] failed to finalize artifact");
     }
+}
+
+/// Refresh a crash-recovered draft from the durable WAV-derived duration before
+/// processing resumes. This is metadata only; no audio or transcript content is
+/// copied into the telemetry artifact.
+pub fn refresh_recovered_duration(artifact_dir: &Path, duration_ms: u64) {
+    let _guard = file_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let Some(mut artifact) = read_artifact(artifact_dir) else {
+        return;
+    };
+    if artifact.session.is_some() {
+        return;
+    }
+    let recovered_end = artifact
+        .draft
+        .started_at_ms
+        .saturating_add(clamp_ms(duration_ms));
+    if recovered_end <= artifact.draft.ended_at_ms {
+        return;
+    }
+    artifact.draft.ended_at_ms = recovered_end;
+    if let Err(error) = write_artifact(artifact_dir, &artifact) {
+        tracing::warn!(error = %error, dir = %artifact_dir.display(), "[meeting_telemetry] failed to refresh recovered duration");
+    }
+}
+
+pub(crate) fn stable_model_identifier(value: &str) -> String {
+    let trimmed = value.trim();
+    let basename = trimmed
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or("unknown-local-model");
+    let mut end = basename.len().min(128);
+    while !basename.is_char_boundary(end) {
+        end -= 1;
+    }
+    basename[..end].to_string()
 }
 
 fn append_usage(artifact_dir: &Path, payload: ProviderUsagePayload) {
@@ -354,6 +398,42 @@ mod tests {
                 "unexpected content field: {forbidden}"
             );
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finalized_model_is_basename_and_recovery_uses_audio_duration() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-meeting-telemetry-recovery-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        begin_session(&dir, "local-recovered", 10_000, 10_000);
+        fs::write(
+            dir.join("meeting.transcript.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "provider": "whisper.cpp",
+                "model": "/Users/private/Library/Application Support/AirNote/models/ggml-small.bin",
+                "audio_duration_ms": 3_250,
+                "transcript": "private meeting words"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        refresh_recovered_duration(&dir, 3_250);
+        finalize_session(&dir, "completed");
+
+        let artifact = read_artifact(&dir).unwrap();
+        let session = artifact.session.unwrap();
+        assert_eq!(session.ended_at_ms, 13_250);
+        assert_eq!(session.duration_seconds, 3.25);
+        assert_eq!(
+            session.transcription_model.as_deref(),
+            Some("ggml-small.bin")
+        );
+        let serialized = fs::read_to_string(dir.join(FILE_NAME)).unwrap();
+        assert!(!serialized.contains("/Users/private"));
+        assert!(!serialized.contains("private meeting words"));
         let _ = fs::remove_dir_all(dir);
     }
 

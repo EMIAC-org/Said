@@ -888,7 +888,9 @@ impl MeetingAsrProvider {
 
     fn model_name(&self) -> String {
         match self {
-            Self::Whisper(config) => config.model.to_string_lossy().to_string(),
+            Self::Whisper(config) => {
+                crate::meeting_telemetry::stable_model_identifier(&config.model.to_string_lossy())
+            }
             Self::NemotronQ4 => crate::nemotron::Variant::Q4.display_name().to_string(),
         }
     }
@@ -2106,6 +2108,10 @@ impl MeetingEngineState {
             // Crash recovery prefers reusing the durable live transcript.
             match build_retranscribe_plan(&dir, true) {
                 Ok(plan) => {
+                    crate::meeting_telemetry::refresh_recovered_duration(
+                        &dir,
+                        plan.summary.duration_ms,
+                    );
                     self.start_transcription_job(plan);
                     requeued += 1;
                 }
@@ -12303,6 +12309,22 @@ fn deepseek_usage(value: &DeepSeekUsageResponse) -> crate::meeting_telemetry::De
     }
 }
 
+fn validate_meeting_stream_completion(
+    provider: &str,
+    saw_done: bool,
+    saw_usage: bool,
+) -> Result<(), String> {
+    if !saw_done {
+        return Err(format!(
+            "meeting AI stream from '{provider}' ended before [DONE]"
+        ));
+    }
+    if provider == "deepseek" && !saw_usage {
+        return Err("meeting AI stream from 'deepseek' ended without usage metadata".to_string());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct CleanupChatChoice {
     #[serde(default)]
@@ -12875,6 +12897,7 @@ fn complete_meeting_llm_streaming(
     let mut line = String::new();
     let mut content = String::new();
     let mut saw_done = false;
+    let mut saw_usage = false;
     let mut usage = crate::meeting_telemetry::DeepSeekUsage::default();
     loop {
         line.clear();
@@ -12899,6 +12922,7 @@ fn complete_meeting_llm_streaming(
             continue;
         };
         if let Some(chunk_usage) = chunk.usage.as_ref() {
+            saw_usage = true;
             usage = deepseek_usage(chunk_usage);
         }
         if let Some(delta) = chunk
@@ -12918,15 +12942,7 @@ fn complete_meeting_llm_streaming(
             config.provider
         ));
     }
-    // Stream ended without the [DONE] sentinel — the connection dropped
-    // mid-answer. Keep the partial text (better than nothing for chat) but flag
-    // it so it's not silently treated as complete.
-    if !saw_done {
-        tracing::warn!(
-            provider = %config.provider,
-            "[meeting_engine] chat stream ended without [DONE]; answer may be truncated"
-        );
-    }
+    validate_meeting_stream_completion(&config.provider, saw_done, saw_usage)?;
     telemetry.success(usage);
 
     Ok(MeetingLlmCompletion {
@@ -15350,6 +15366,13 @@ mod tests {
         assert_eq!(parsed.cache_miss_tokens, 40);
         assert_eq!(parsed.completion_tokens, 25);
         assert_eq!(parsed.reasoning_tokens, Some(5));
+    }
+
+    #[test]
+    fn truncated_deepseek_stream_is_not_a_zero_usage_success() {
+        assert!(validate_meeting_stream_completion("deepseek", false, false).is_err());
+        assert!(validate_meeting_stream_completion("deepseek", true, false).is_err());
+        assert!(validate_meeting_stream_completion("deepseek", true, true).is_ok());
     }
 
     #[test]
