@@ -2353,4 +2353,202 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
         usage_stored.2,
         "https://api-docs.deepseek.com/quick_start/pricing"
     );
+
+    // Seed a cloud-era meeting so the Admin contract proves that historical
+    // rows remain visible alongside modern local telemetry.
+    let legacy_meeting_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO meetings
+            (org_id, title, status, created_by, started_at, ended_at, created_at)
+         VALUES ($1, 'Historical planning', 'ended', $2,
+                 to_timestamp(1699999800), to_timestamp(1699999860), to_timestamp(1699999800))
+         RETURNING id",
+    )
+    .bind(org_a)
+    .bind(account_id)
+    .fetch_one(&srv.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO meeting_slots
+            (meeting_id, slot_index, start_ms, end_ms, chunk_count, word_count, ai_status)
+         VALUES ($1, 0, 0, 60000, 1, 80, 'done')",
+    )
+    .bind(legacy_meeting_id)
+    .execute(&srv.db)
+    .await
+    .unwrap();
+    let legacy_cost = 0.000_084_f64;
+    sqlx::query(
+        "INSERT INTO meeting_provider_usage
+            (meeting_id, org_id, slot_index, provider, model, input_tokens,
+             cached_input_tokens, output_tokens, estimated_cost_usd, cost_source)
+         VALUES ($1, $2, 0, 'deepseek', 'deepseek-v4-flash', 500, 100, 50, $3,
+                 'rate:legacy-test')",
+    )
+    .bind(legacy_meeting_id)
+    .bind(org_a)
+    .bind(legacy_cost)
+    .execute(&srv.db)
+    .await
+    .unwrap();
+
+    let session_id = created_body["session_id"].as_str().unwrap();
+    let meetings = srv
+        .client
+        .get(srv.url(&format!("/v1/orgs/{org_a}/meetings/costs?days=all")))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(meetings.status(), 200);
+    let meetings_body: Value = meetings.json().await.unwrap();
+    assert_eq!(meetings_body["meeting_count"], 2);
+    assert_eq!(meetings_body["total_recording_seconds"], 120.0);
+    assert_eq!(meetings_body["total_transcript_words"], 220);
+    assert_eq!(meetings_body["total_tokens"], 1_750);
+    let meeting_rows = meetings_body["meetings"].as_array().unwrap();
+    let local_row = meeting_rows
+        .iter()
+        .find(|row| row["source"] == "local")
+        .unwrap();
+    let legacy_row = meeting_rows
+        .iter()
+        .find(|row| row["source"] == "legacy")
+        .unwrap();
+    assert_eq!(local_row["id"], session_id);
+    assert_eq!(local_row["model"], "deepseek-v4-pro");
+    assert_eq!(local_row["usage_count"], 1);
+    assert_eq!(legacy_row["id"], legacy_meeting_id.to_string());
+    assert_eq!(legacy_row["model"], "deepseek-v4-flash");
+    assert!((meetings_body["total_cost_usd"].as_f64().unwrap() - cost - legacy_cost).abs() < 1e-12);
+
+    let meeting_detail = srv
+        .client
+        .get(srv.url(&format!("/v1/orgs/{org_a}/meetings/{session_id}/cost")))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(meeting_detail.status(), 200);
+    let detail_body: Value = meeting_detail.json().await.unwrap();
+    assert_eq!(detail_body["source"], "local");
+    assert_eq!(detail_body["by_stage"][0]["stage"], "summary");
+    assert_eq!(detail_body["by_stage"][0]["cache_hit_tokens"], 400);
+    assert_eq!(detail_body["by_stage"][0]["cache_miss_tokens"], 600);
+
+    let legacy_detail = srv
+        .client
+        .get(srv.url(&format!(
+            "/v1/orgs/{org_a}/meetings/{legacy_meeting_id}/cost"
+        )))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(legacy_detail.status(), 200);
+    let legacy_detail_body: Value = legacy_detail.json().await.unwrap();
+    assert_eq!(legacy_detail_body["source"], "legacy");
+    assert_eq!(legacy_detail_body["by_stage"][0]["stage"], "summary slot 0");
+    assert_eq!(
+        legacy_detail_body["by_stage"][0]["model"],
+        "deepseek-v4-flash"
+    );
+
+    let person = srv
+        .client
+        .get(srv.url(&format!(
+            "/v1/orgs/{org_a}/telemetry/users/{account_id}?days=all"
+        )))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(person.status(), 200);
+    let person_body: Value = person.json().await.unwrap();
+    assert_eq!(person_body["meeting_count"], 2);
+    assert_eq!(person_body["meeting_duration_seconds"], 120.0);
+    assert_eq!(person_body["meeting_transcript_words"], 220);
+    assert!(
+        person_body["recent_meetings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == session_id)
+    );
+    assert!((person_body["meeting_cost_usd"].as_f64().unwrap() - cost - legacy_cost).abs() < 1e-12);
+
+    let people = srv
+        .client
+        .get(srv.url(&format!(
+            "/v1/orgs/{org_a}/telemetry/users?days=all&limit=200"
+        )))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(people.status(), 200);
+    let people_body: Value = people.json().await.unwrap();
+    let owner_row = people_body["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["account_id"] == account_id.to_string())
+        .unwrap();
+    assert_eq!(owner_row["meeting_count"], 2);
+    assert!((owner_row["meeting_cost_usd"].as_f64().unwrap() - cost - legacy_cost).abs() < 1e-12);
+
+    let overview = srv
+        .client
+        .get(srv.url(&format!("/v1/orgs/{org_a}/admin/overview?days=all")))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(overview.status(), 200);
+    let overview_body: Value = overview.json().await.unwrap();
+    assert!(
+        (overview_body["spend"]["meeting_usd"].as_f64().unwrap() - cost - legacy_cost).abs()
+            < 1e-12
+    );
+
+    let outside_window = srv
+        .client
+        .get(srv.url(&format!("/v1/orgs/{org_a}/meetings/costs?days=30")))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(outside_window.status(), 200);
+    assert_eq!(
+        outside_window.json::<Value>().await.unwrap()["meeting_count"],
+        0
+    );
+
+    let other_org = srv
+        .client
+        .get(srv.url(&format!("/v1/orgs/{org_b}/meetings/costs?days=all")))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_b.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other_org.status(), 200);
+    assert_eq!(other_org.json::<Value>().await.unwrap()["meeting_count"], 0);
+
+    let cross_org_detail = srv
+        .client
+        .get(srv.url(&format!("/v1/orgs/{org_b}/meetings/{session_id}/cost")))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_b.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_org_detail.status(), 404);
 }
