@@ -40,13 +40,14 @@ const latest = {
       title: "A clearer AirNote, at a glance",
       icon: LayoutDashboard,
       body: [
-        "The redesigned dashboard puts today’s output, time saved, pace, learned edits, activity, and recent recordings into one calm workspace.",
+        "The redesigned dashboard puts today’s output, time saved, top apps, pace, learned edits, activity, and recent recordings into one calm workspace.",
         "Navigation is cleaner, important states are easier to scan, and the interface now matches the way dictation, learning, and meetings fit together.",
       ],
       bullets: [
         "Redesigned dashboard",
+        "Top apps at a glance",
         "Clearer navigation",
-        "Exact activity overview",
+        "Clear activity overview",
       ],
     },
     {
@@ -88,7 +89,7 @@ const noteGroups = [
     count: 3,
     items: [
       "Redesigned the dashboard around today’s dictation output and time saved.",
-      "Made pace, learned edits, activity, and recent recordings easier to scan.",
+      "Added Top Apps alongside pace, learned edits, activity, and recent recordings.",
       "Unified dictation, learning, meetings, settings, and guide navigation.",
     ],
   },
@@ -309,11 +310,16 @@ function SnapshotNavItem({
 }
 
 function CurrentDashboardSnapshot() {
-  const activity = [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 20, 28, 48, 24];
+  const activity = [5, 5, 5, 5, 5, 5, 5, 5, 5, 20, 28, 48, 20, 8];
   const recordings = [
-    ["No issues, just tell me the command, I will run it and then tell you the link.", "17 words"],
-    ["Yeh toh kaafi time taking hai, aap kaise karunga itna?", "10 words"],
-    ["Hello bhai, kaise ho?", "4 words"],
+    ["Continue.", "1 word"],
+    ["I want you to trace why the meetings section is not working. Are we collecting …", "38 words"],
+  ];
+  const apps = [
+    { label: "ChatGPT", bg: "#f1f1f2", fg: "#161619", mark: "✺" },
+    { label: "Raycast", bg: "#e9693f", fg: "#ffffff", mark: "✦" },
+    { label: "Traycer", bg: "#1c1d22", fg: "#ffffff", mark: "▰" },
+    { label: "Notes", bg: "#eff0f3", fg: "#55565d", mark: "▤" },
   ];
 
   return (
@@ -358,7 +364,6 @@ function CurrentDashboardSnapshot() {
               <div className="mb-1.5 px-2.5 text-[7px] font-bold uppercase tracking-[0.2em] text-[#777780]">Enterprise</div>
               <div className="space-y-0.5">
                 <SnapshotNavItem icon={<Video size={12} />} label="Meetings" />
-                <SnapshotNavItem icon={<Sparkles size={12} />} label="Divo" />
               </div>
             </div>
           </div>
@@ -390,12 +395,12 @@ function CurrentDashboardSnapshot() {
           </div>
 
           <div className="h-[calc(100%-2.75rem)] overflow-hidden rounded-[14px] border border-[#303034] bg-[#17171a] px-6 py-5">
-            <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-[#91a8ff]">Today · Jul 16</div>
+            <div className="text-[8px] font-bold uppercase tracking-[0.2em] text-[#91a8ff]">Today · Jul 17</div>
             <h3 className="mt-3 text-[22px] font-semibold leading-none tracking-[-0.035em] text-[#f1f1f3]">
-              You dictated 1,229 words today.
+              You dictated 39 words today.
             </h3>
             <p className="mt-3 text-[11px] text-[#8d8d96]">
-              That&apos;s roughly <span className="font-semibold text-[#91a8ff]">20 minutes</span> saved vs. typing, at an average of 154 WPM.
+              That&apos;s roughly <span className="font-semibold text-[#91a8ff]">1 minute</span> saved vs. typing, at an average of 155 WPM.
             </p>
 
             <div className="mt-6 text-[8px] font-bold uppercase tracking-[0.2em] text-[#8d8d96]">At a glance</div>
@@ -403,24 +408,26 @@ function CurrentDashboardSnapshot() {
               <div className="px-3">
                 <div className="text-[7px] uppercase tracking-[0.18em] text-[#8d8d96]">Top apps</div>
                 <div className="mt-2 flex -space-x-1">
-                  {["AI", "✦", "▤", "⌁"].map((app, index) => (
+                  {apps.map((app) => (
                     <span
-                      key={app}
-                      className="flex h-6 w-6 items-center justify-center rounded-lg border-2 border-[#111114] text-[8px] font-semibold text-white"
-                      style={{ background: ["#eee", "#e9653f", "#d7d7d9", "#202024"][index], color: index === 0 || index === 2 ? "#17171a" : "white" }}
+                      key={app.label}
+                      title={app.label}
+                      aria-label={app.label}
+                      className="flex h-6 w-6 items-center justify-center rounded-lg border-2 border-[#111114] text-[9px] font-semibold"
+                      style={{ background: app.bg, color: app.fg }}
                     >
-                      {app}
+                      {app.mark}
                     </span>
                   ))}
                 </div>
               </div>
               <div className="border-l border-[#303034] px-3">
                 <div className="text-[7px] uppercase tracking-[0.18em] text-[#8d8d96]">Avg pace</div>
-                <div className="mt-2 text-[21px] font-semibold text-[#f1f1f3]">154 <span className="text-[9px] font-medium text-[#8d8d96]">wpm</span></div>
+                <div className="mt-2 text-[21px] font-semibold text-[#f1f1f3]">155 <span className="text-[9px] font-medium text-[#8d8d96]">wpm</span></div>
               </div>
               <div className="border-l border-[#303034] px-3">
                 <div className="text-[7px] uppercase tracking-[0.18em] text-[#8d8d96]">Edits learned</div>
-                <div className="mt-2 text-[21px] font-semibold text-[#f1f1f3]">34</div>
+                <div className="mt-2 text-[21px] font-semibold text-[#f1f1f3]">16</div>
               </div>
             </div>
 
@@ -434,9 +441,9 @@ function CurrentDashboardSnapshot() {
                 />
               ))}
             </div>
-            <div className="mt-2 flex justify-between text-[7px] text-[#777780]"><span>3</span><span>10</span><span>16</span></div>
+            <div className="mt-2 flex justify-between text-[7px] text-[#777780]"><span>4</span><span>11</span><span>17</span></div>
 
-            <div className="mt-5 text-[8px] font-bold uppercase tracking-[0.2em] text-[#8d8d96]">Today — 51 recordings</div>
+            <div className="mt-5 text-[8px] font-bold uppercase tracking-[0.2em] text-[#8d8d96]">Today — 2 recordings</div>
             <div className="mt-2 divide-y divide-[#303034]">
               {recordings.map(([text, words]) => (
                 <div key={text} className="flex items-start gap-2 py-2">
@@ -525,7 +532,6 @@ function DemoPanel({ title: _title, index }: { title: string; index: number }) {
               <p className="mb-1.5 px-3" style={SECTION_LABEL}>Enterprise</p>
               <div className="space-y-0.5">
                 <NavRow icon={<Video size={15} />} label="Meetings" />
-                <NavRow icon={<Sparkles size={15} />} label="Divo" />
               </div>
             </div>
 
