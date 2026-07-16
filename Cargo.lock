@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "asr-cloud"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "asr-core"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "ash",
  "bincode",
@@ -5464,7 +5464,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "said-backend"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5501,7 +5501,7 @@ dependencies = [
 
 [[package]]
 name = "said-core"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "dirs 5.0.1",
  "dotenvy",
@@ -5518,7 +5518,7 @@ dependencies = [
 
 [[package]]
 name = "said-desktop"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "asr-cloud",
  "asr-core",
@@ -5571,7 +5571,7 @@ dependencies = [
 
 [[package]]
 name = "said-hotkey"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "cocoa",
  "core-foundation",
@@ -5583,7 +5583,7 @@ dependencies = [
 
 [[package]]
 name = "said-paster"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "cocoa",
  "core-foundation",
@@ -5598,7 +5598,7 @@ dependencies = [
 
 [[package]]
 name = "said-recorder"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "cpal",
  "hound",
