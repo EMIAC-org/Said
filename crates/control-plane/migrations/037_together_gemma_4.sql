@@ -22,5 +22,5 @@ ALTER TABLE runtime_provider_credentials
 ALTER TABLE runtime_provider_credentials
     ADD CONSTRAINT runtime_provider_credentials_provider_check
     CHECK (provider IN (
-        'groq', 'openai', 'gemini', 'gateway', 'together', 'deepinfra'
+        'groq', 'openai', 'gemini', 'gateway', 'deepgram', 'together', 'deepinfra'
     ));
