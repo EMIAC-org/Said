@@ -21,6 +21,7 @@ pub mod config;
 pub mod error;
 pub mod ipc;
 pub mod output;
+pub mod vad;
 pub mod whisper;
 
 #[cfg(feature = "vulkan")]

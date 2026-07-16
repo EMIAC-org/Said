@@ -65,22 +65,11 @@ const DEFAULT_LIVE_TRANSCRIPT_STEP_SECS: u64 = 30;
 const DEFAULT_LIVE_TRANSCRIPT_MIN_SECS: u64 = 2;
 const DEFAULT_LIVE_TRANSCRIPT_POLL_MS: u64 = 1_000;
 const DEFAULT_LIVE_TRANSCRIPT_TIMEOUT_SECS: u64 = 90;
-// Peak ceiling after ASR gain — never push a normalized track past this, so we
-// don't clip. Loudness targeting is RMS-based (ASR_TARGET_RMS); this is only the
-// anti-clip limiter.
-const ASR_TARGET_PEAK: f32 = 0.95;
-// Bounded gain. Was 64x: peak-normalizing a near-silent mic (peak 0.019) by ~39x
-// amplifies room bleed / noise floor up to speech-like loudness, which sails past
-// VAD and the decode thresholds and makes whisper hallucinate (esp. with a forced
-// language). A bounded gain recovers genuinely quiet speech without manufacturing
-// loudness out of noise; the RMS silence gate (below) drops noise-only tracks
-// before they ever reach gain.
-const ASR_MAX_GAIN: f32 = 16.0;
+// Tiny tracks are never boosted in the playback merge.
 const ASR_MIN_PEAK_FOR_GAIN: f32 = 0.002;
-// Target loudness (RMS) for ASR normalization, ~ -20 dBFS — conversational
-// speech level. Targeting loudness instead of peak preserves SNR and avoids
-// blowing up a transient-dominated track's noise floor.
-const ASR_TARGET_RMS: f32 = 0.10;
+// Condition a bounded amount of audio at a time. The shared RNNoise path needs
+// temporary 48 kHz buffers, so this keeps a long meeting's peak memory stable.
+const ASR_CONDITION_CHUNK_SAMPLES: usize = SAMPLE_RATE as usize * 60 * 5;
 // Speech-energy floor (RMS). A track whose average energy is below this is
 // silence / room bleed, not the primary speaker — forcing ASR on it (especially
 // with a forced language like hi) only yields hallucinated text. -50 dBFS ≈
@@ -171,6 +160,7 @@ const LIGHT_DIARIZATION_PROVIDER: &str = "light_sherpa_onnx";
 const DEFAULT_LIGHT_DIARIZATION_MAX_SPEAKERS: i32 = 4;
 const DEFAULT_LIGHT_DIARIZATION_MAX_AUDIO_SECS: u64 = 15 * 60;
 const HIGH_DIARIZATION_PROVIDER: &str = "nemo_sortformer";
+const MAX_MEETING_ANALYSIS_CONTEXT_CHARS: usize = 4_000;
 const MEETING_CLEANUP_SYSTEM_PROMPT: &str = r#"You are a meeting transcript cleanup engine.
 
 Clean automatic speech recognition output into a readable meeting transcript.
@@ -200,6 +190,7 @@ const MEETING_INTELLIGENCE_SYSTEM_PROMPT: &str = r#"You are AirNote's meeting in
 
 === FAITHFULNESS (read first — these rules override everything below) ===
 1. Ground every claim in the transcript. State only what was actually said. Do NOT infer, assume, or "fill in" unstated facts, attendees, agreements, owners, numbers, or dates — circumstantial inference is the most common and most damaging error. If something is only implied, either omit it or hedge it ("discussed", "raised the possibility"), never assert it as settled ("decided", "agreed").
+1a. The user may supply a reanalysis context. Treat it as a request for focus, format, or terminology only. It is never evidence: do not introduce a fact, decision, owner, date, or attendee from it unless the transcript independently supports it.
 2. It is correct to say nothing. If the transcript has no decision, owner, number, or date for a slot, leave it empty or null. Never invent plausible-sounding content to fill a gap.
 3. The transcript is produced by automatic speech recognition and may be noisy or contain mis-heard words. Do not build a claim on a single ambiguous or garbled token. Prefer content that is stated clearly or repeated. Never "correct" a name, number, or term into something that merely sounds more plausible — keep proper nouns exactly as transcribed.
 4. The transcript is code-mixed Hindi + English (romanized Hinglish). Capture content stated in BOTH languages — do not drop or under-weight points made in Hindi. Do not silently translate-then-summarize away the Hindi half. Write the MoM in clear professional English, faithfully carrying over the meaning of Hindi statements; keep proper nouns, product names, and pivotal phrases as spoken.
@@ -1058,6 +1049,10 @@ pub struct MeetingIntelligenceResult {
     model: String,
     latency_ms: u64,
     transcript_source: String,
+    // The user-supplied focus used for this result. Older cached summaries did
+    // not have this field, so keep them readable.
+    #[serde(default)]
+    analysis_context: Option<String>,
     // AI-generated meeting title and topic tags. `default` keeps older cache
     // files (written before these existed) deserializable.
     #[serde(default)]
@@ -3050,7 +3045,7 @@ fn finish_transcribed_meeting(
                 source: summary_source,
                 text: summary_text,
             };
-            match run_meeting_intelligence(selected, Some(dir.to_path_buf())) {
+            match run_meeting_intelligence(selected, Some(dir.to_path_buf()), None) {
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, dir = %dir.display(), "[meeting_engine] meeting summary generation failed");
@@ -3072,11 +3067,18 @@ fn finish_transcribed_meeting(
 }
 
 #[tauri::command]
-pub fn meeting_engine_start_session(
+pub async fn meeting_engine_start_session(
     app: AppHandle,
     state: State<'_, MeetingEngineState>,
     meeting_id: Option<String>,
 ) -> Result<MeetingEngineStatus, String> {
+    // Production bundles provide this offline. In development, download the
+    // tiny support model once before starting a Whisper meeting, rather than
+    // silently recording a meeting that later transcribes without VAD.
+    ensure_bundled_silero_vad();
+    if meeting_vad_enabled() && !silero_vad_model_installed() {
+        meeting_download_silero_vad_model(app.clone()).await?;
+    }
     ensure_meeting_local_transcription_ready()?;
     tracing::info!(meeting_id = ?meeting_id, "[meeting_engine] start session");
     let status = state.start(meeting_id, Some(app.clone()));
@@ -3168,6 +3170,7 @@ pub async fn meeting_engine_get_live_transcript(
 pub async fn meeting_engine_generate_intelligence(
     state: State<'_, MeetingEngineState>,
     meeting_id: Option<String>,
+    analysis_context: Option<String>,
 ) -> Result<MeetingIntelligenceResult, String> {
     // Regenerate guard: if this meeting is still being transcribed/cleaned, the
     // transcript isn't final yet — don't kick off a summary against partial text.
@@ -3180,9 +3183,12 @@ pub async fn meeting_engine_generate_intelligence(
     // LLM off the main thread so the UI never freezes during analysis.
     let selected = resolve_intelligence_transcript(&state, meeting_id.as_deref())?;
     let target_dir = intelligence_target_dir(&state, meeting_id.as_deref());
-    tauri::async_runtime::spawn_blocking(move || run_meeting_intelligence(selected, target_dir))
-        .await
-        .map_err(|e| format!("meeting intelligence task failed: {e}"))?
+    let analysis_context = normalize_meeting_analysis_context(analysis_context)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_meeting_intelligence(selected, target_dir, analysis_context)
+    })
+    .await
+    .map_err(|e| format!("meeting intelligence task failed: {e}"))?
 }
 
 // Async (off the main thread) for the same reason as get_processing_status —
@@ -5317,7 +5323,8 @@ fn transcribe_with_nemotron_q4_for(
 ) -> Result<WhisperTranscriptionDone, String> {
     fail_if_cancelled(cancel_check, "Nemotron")?;
     repair_wav_header_sizes(&summary.path)?;
-    let wav = fs::read(&summary.path)
+    let asr_audio_path = prepare_asr_audio_input(summary, true)?;
+    let wav = fs::read(&asr_audio_path)
         .map_err(|e| format!("failed to read meeting WAV for Nemotron: {e}"))?;
     let output =
         crate::nemotron::transcribe_wav_bytes_for(crate::nemotron::Variant::Q4, &wav, "hi")?;
@@ -6598,24 +6605,16 @@ fn analyze_wav_levels(path: &Path) -> Result<(f32, f32), String> {
     Ok((peak, rms))
 }
 
-fn prepare_whisper_audio_input(summary: &MicCaptureSummary) -> Result<PathBuf, String> {
-    // Measure true loudness (RMS), not just the capture peak. Peak-only
-    // normalization amplifies a noise-dominated track's floor to full scale and
-    // induces hallucination; RMS targeting preserves SNR.
-    let gain = match analyze_wav_levels(&summary.path) {
-        Ok((peak, rms)) if rms > 0.0 => asr_gain_for_levels(peak, rms),
-        Ok(_) => 1.0,
-        Err(e) => {
-            // Couldn't read levels — fall back to the legacy peak-based gain
-            // (bounded by the lowered ASR_MAX_GAIN) so recovery still works.
-            tracing::warn!(error = %e, "[meeting_engine] WAV level analysis failed; using capture-peak gain");
-            asr_gain_for_peak(summary.peak)
-        }
-    };
-    if gain <= 1.01 {
-        return Ok(summary.path.clone());
-    }
-
+/// Create the disposable, clean ASR input for either meeting track.
+///
+/// `mic.wav` and `system.wav` are the immutable recovery/playback sources. This
+/// sibling is deliberately the only audio sent to the recognizer. It uses the
+/// exact `said_core::preprocess` chain used by local dictation: high-pass,
+/// RNNoise, and bounded loudness conditioning. Both Whisper and Nemotron use it.
+fn prepare_asr_audio_input(
+    summary: &MicCaptureSummary,
+    mask_non_speech: bool,
+) -> Result<PathBuf, String> {
     let parent = summary.path.parent().unwrap_or_else(|| Path::new("."));
     let stem = summary
         .path
@@ -6624,31 +6623,84 @@ fn prepare_whisper_audio_input(summary: &MicCaptureSummary) -> Result<PathBuf, S
         .filter(|stem| !stem.trim().is_empty())
         .unwrap_or("audio");
     let asr_path = parent.join(format!("{stem}.asr.wav"));
-    normalize_wav_for_asr(&summary.path, &asr_path, gain)?;
+    let mut reader = hound::WavReader::open(&summary.path)
+        .map_err(|e| format!("failed to open meeting WAV for ASR conditioning: {e}"))?;
+    validate_merge_wav_spec("ASR input", reader.spec())?;
+    let mut writer = create_audio_wav_writer(&asr_path, "conditioned ASR")?;
+    let mut samples = Vec::with_capacity(ASR_CONDITION_CHUNK_SAMPLES);
+    let mut chunks = 0_u64;
+    let mut speech_samples = 0_u64;
+    let vad_model = if mask_non_speech {
+        Some(resolve_silero_vad_model_path().ok_or_else(|| {
+            "Silero VAD is required to prepare this meeting track, but its model is unavailable"
+                .to_string()
+        })?)
+    } else {
+        None
+    };
+
+    loop {
+        samples.clear();
+        for sample in reader.samples::<i16>().take(ASR_CONDITION_CHUNK_SAMPLES) {
+            let sample = sample
+                .map_err(|e| format!("failed to read meeting WAV for ASR conditioning: {e}"))?;
+            samples.push(sample as f32 / i16::MAX as f32);
+        }
+        if samples.is_empty() {
+            break;
+        }
+
+        said_core::preprocess::condition_16k(&mut samples);
+        if mask_non_speech {
+            let stats = asr_core::vad::mask_non_speech_16k(
+                &mut samples,
+                vad_model
+                    .as_deref()
+                    .ok_or_else(|| "Silero VAD model unexpectedly disappeared".to_string())?,
+                env_f32("AIRNOTE_MEETING_VAD_THRESHOLD", DEFAULT_VAD_THRESHOLD),
+                env_i32_at_least(
+                    "AIRNOTE_MEETING_VAD_SPEECH_PAD_MS",
+                    DEFAULT_VAD_SPEECH_PAD_MS,
+                    0,
+                ),
+                env_i32_at_least(
+                    "AIRNOTE_MEETING_VAD_MIN_SILENCE_MS",
+                    DEFAULT_VAD_MIN_SILENCE_MS,
+                    0,
+                ),
+            )
+            .map_err(|error| format!("Silero VAD could not prepare meeting audio: {error}"))?;
+            speech_samples = speech_samples.saturating_add(stats.speech_samples as u64);
+        }
+        for sample in &samples {
+            writer
+                .write_sample(
+                    (sample * i16::MAX as f32)
+                        .round()
+                        .clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+                )
+                .map_err(|e| format!("failed to write conditioned ASR WAV: {e}"))?;
+        }
+        chunks += 1;
+    }
+
+    writer
+        .finalize()
+        .map_err(|e| format!("failed to finalize conditioned ASR WAV: {e}"))?;
+    repair_wav_header_sizes(&asr_path)?;
+    tracing::info!(
+        source = %summary.path.display(),
+        output = %asr_path.display(),
+        chunks,
+        speech_samples,
+        mask_non_speech,
+        "[meeting_engine] conditioned meeting track for ASR (high-pass + RNNoise + loudness + VAD)"
+    );
+    if mask_non_speech && speech_samples == 0 {
+        let _ = fs::remove_file(&asr_path);
+        return Err("No speech detected by Silero VAD".to_string());
+    }
     Ok(asr_path)
-}
-
-/// RMS-targeted, peak-limited, bounded ASR gain. Targets conversational loudness
-/// (ASR_TARGET_RMS) but never pushes the peak past the clip ceiling, and is hard
-/// capped so we don't amplify a quiet track's noise floor into hallucination.
-fn asr_gain_for_levels(peak: f32, rms: f32) -> f32 {
-    let max_gain = env_f32("AIRNOTE_MEETING_ASR_MAX_GAIN", ASR_MAX_GAIN).max(1.0);
-    let target_rms = env_f32("AIRNOTE_MEETING_ASR_TARGET_RMS", ASR_TARGET_RMS);
-    if !peak.is_finite() || !rms.is_finite() || peak <= ASR_MIN_PEAK_FOR_GAIN || rms <= 0.0 {
-        return 1.0;
-    }
-    let rms_gain = target_rms / rms; // reach conversational loudness…
-    let peak_gain = ASR_TARGET_PEAK / peak; // …without clipping.
-    rms_gain.min(peak_gain).clamp(1.0, max_gain)
-}
-
-/// Legacy peak-only gain — used only as a fallback when RMS can't be measured.
-fn asr_gain_for_peak(peak: f32) -> f32 {
-    let max_gain = env_f32("AIRNOTE_MEETING_ASR_MAX_GAIN", ASR_MAX_GAIN).max(1.0);
-    if !peak.is_finite() || !(ASR_MIN_PEAK_FOR_GAIN..ASR_TARGET_PEAK).contains(&peak) {
-        return 1.0;
-    }
-    (ASR_TARGET_PEAK / peak).clamp(1.0, max_gain)
 }
 
 fn has_transcribable_audio(summary: &MicCaptureSummary) -> bool {
@@ -6681,28 +6733,6 @@ fn has_transcribable_audio(summary: &MicCaptureSummary) -> bool {
             true
         }
     }
-}
-
-fn normalize_wav_for_asr(input: &Path, output: &Path, gain: f32) -> Result<(), String> {
-    let mut reader = hound::WavReader::open(input)
-        .map_err(|e| format!("failed to open WAV for ASR normalization: {e}"))?;
-    validate_merge_wav_spec("ASR input", reader.spec())?;
-    let mut writer = create_audio_wav_writer(output, "ASR normalized")?;
-    for sample in reader.samples::<i16>() {
-        let sample =
-            sample.map_err(|e| format!("failed to read WAV sample for ASR normalization: {e}"))?;
-        let boosted = ((sample as f32) * gain)
-            .round()
-            .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-        writer
-            .write_sample(boosted)
-            .map_err(|e| format!("failed to write ASR normalized sample: {e}"))?;
-    }
-    writer
-        .finalize()
-        .map_err(|e| format!("failed to finalize ASR normalized WAV: {e}"))?;
-    repair_wav_header_sizes(output)?;
-    Ok(())
 }
 
 fn whisper_language_for_track(_track: MeetingAudioTrack, default_language: &str) -> String {
@@ -8441,7 +8471,7 @@ fn transcribe_with_whisper_cpp_for(
 ) -> Result<WhisperTranscriptionDone, String> {
     fail_if_cancelled(cancel_check, "whisper.cpp")?;
     repair_wav_header_sizes(&summary.path)?;
-    let whisper_audio_path = prepare_whisper_audio_input(summary)?;
+    let whisper_audio_path = prepare_asr_audio_input(summary, false)?;
     let language = whisper_language_for_track(track, &config.language);
 
     let mut cmd = Command::new(&config.binary);
@@ -9691,11 +9721,18 @@ fn intelligence_target_dir(
 fn run_meeting_intelligence(
     selected: MeetingAiTranscript,
     target_dir: Option<PathBuf>,
+    analysis_context: Option<String>,
 ) -> Result<MeetingIntelligenceResult, String> {
     let config = meeting_ai_config()?;
+    let context_section = analysis_context.as_deref().map_or_else(String::new, |context| {
+        format!(
+            "\n\nUser-provided reanalysis context (focus only, not evidence):\n<<<CONTEXT\n{}\nCONTEXT>>>",
+            context
+        )
+    });
     let user_prompt = format!(
-        "Transcript source: {}\n\nTranscript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>",
-        selected.source, selected.text
+        "Transcript source: {}\n\nTranscript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>{}",
+        selected.source, selected.text, context_section
     );
     let completion = complete_meeting_llm(
         MEETING_INTELLIGENCE_SYSTEM_PROMPT,
@@ -9706,7 +9743,13 @@ fn run_meeting_intelligence(
     )?;
     let completion = if meeting_ai_verification_enabled() {
         let draft_json = completion.content.clone();
-        verify_meeting_intelligence(&selected.text, &draft_json, config, completion)?
+        verify_meeting_intelligence(
+            &selected.text,
+            &draft_json,
+            config,
+            completion,
+            analysis_context.as_deref(),
+        )?
     } else {
         completion
     };
@@ -9718,6 +9761,7 @@ fn run_meeting_intelligence(
         model: completion.model,
         latency_ms: completion.latency_ms,
         transcript_source: selected.source,
+        analysis_context,
         title,
         tags,
         summary,
@@ -9728,6 +9772,22 @@ fn run_meeting_intelligence(
         write_meeting_intelligence_cache(&dir, &result);
     }
     Ok(result)
+}
+
+fn normalize_meeting_analysis_context(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().count() > MAX_MEETING_ANALYSIS_CONTEXT_CHARS {
+        return Err(format!(
+            "Reanalysis context must be at most {MAX_MEETING_ANALYSIS_CONTEXT_CHARS} characters."
+        ));
+    }
+    Ok(Some(value.to_string()))
 }
 
 fn load_cached_meeting_intelligence(
@@ -10331,6 +10391,7 @@ fn parse_bench_meeting_intelligence_record(
         model,
         latency_ms,
         transcript_source: "cached-final".to_string(),
+        analysis_context: None,
         title,
         tags,
         summary,
@@ -10371,10 +10432,17 @@ fn verify_meeting_intelligence(
     draft_json: &str,
     config: MeetingCleanupConfig,
     draft_completion: MeetingLlmCompletion,
+    analysis_context: Option<&str>,
 ) -> Result<MeetingLlmCompletion, String> {
+    let context_section = analysis_context.map_or_else(String::new, |context| {
+        format!(
+            "\n\nUser-provided reanalysis context (focus only, not evidence):\n<<<CONTEXT\n{}\nCONTEXT>>>",
+            context
+        )
+    });
     let user_prompt = format!(
-        "Transcript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>\n\nDraft JSON:\n<<<JSON\n{}\nJSON>>>",
-        transcript, draft_json
+        "Transcript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>\n\nDraft JSON:\n<<<JSON\n{}\nJSON>>>{}",
+        transcript, draft_json, context_section
     );
     let verified = complete_meeting_llm(
         MEETING_INTELLIGENCE_VERIFIER_SYSTEM_PROMPT,
@@ -11250,6 +11318,7 @@ fn run_meeting_digest(refs: Vec<DigestMeetingRef>, missing: &str) -> Result<Dige
                             text,
                         },
                         Some(dir.clone()),
+                        None,
                     ) {
                         Ok(generated) => intel = Some(generated),
                         Err(e) => skipped.push(DigestSkipped {
@@ -13834,7 +13903,14 @@ fn resolve_meeting_asr_provider() -> Result<MeetingAsrProvider, String> {
                 .to_string(),
         );
     }
-    resolve_whisper_cpp_config().map(MeetingAsrProvider::Whisper)
+    let config = resolve_whisper_cpp_config()?;
+    if meeting_vad_enabled() && config.vad_model.is_none() {
+        return Err(
+            "Silero VAD is required for local meeting transcription but is unavailable. Check your connection, then start the meeting again."
+                .to_string(),
+        );
+    }
+    Ok(MeetingAsrProvider::Whisper(config))
 }
 
 /// The current machine's meeting model is Q4 only on capable Apple Silicon.
@@ -13856,7 +13932,14 @@ pub fn require_meeting_local_model() -> Result<(), String> {
 
 /// Validate the complete local stack before recording any audio.
 pub fn ensure_meeting_local_transcription_ready() -> Result<(), String> {
-    resolve_meeting_asr_provider().map(|_| ())
+    resolve_meeting_asr_provider()?;
+    if meeting_vad_enabled() && !silero_vad_model_installed() {
+        return Err(
+            "Silero VAD is required for local meeting transcription but is unavailable. Check your connection, then start the meeting again."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 pub fn dictation_whisper_runtime_ready() -> bool {
@@ -13865,6 +13948,10 @@ pub fn dictation_whisper_runtime_ready() -> bool {
 
 pub fn silero_vad_model_installed() -> bool {
     resolve_silero_vad_model_path().is_some()
+}
+
+fn meeting_vad_enabled() -> bool {
+    env_bool("AIRNOTE_MEETING_VAD", true)
 }
 
 #[derive(Debug, Serialize)]
@@ -15099,6 +15186,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reanalysis_context_is_trimmed_bounded_and_optional() {
+        assert_eq!(normalize_meeting_analysis_context(None).unwrap(), None);
+        assert_eq!(
+            normalize_meeting_analysis_context(Some("  focus on decisions  ".to_string())).unwrap(),
+            Some("focus on decisions".to_string())
+        );
+        assert!(
+            normalize_meeting_analysis_context(Some(
+                "x".repeat(MAX_MEETING_ANALYSIS_CONTEXT_CHARS + 1)
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn meetings_follow_the_onboarding_local_model_recommendation() {
         let high_memory_apple_silicon =
             crate::stt_policy::policy_for("macos", "arm64", false, 9 * 1024 * 1024 * 1024);
@@ -15883,39 +15985,6 @@ mod tests {
     }
 
     #[test]
-    fn asr_gain_boosts_quiet_tracks_but_leaves_loud_tracks() {
-        // Already at/above the clip ceiling — no gain.
-        assert_eq!(asr_gain_for_peak(0.95), 1.0);
-        assert_eq!(asr_gain_for_peak(0.0), 1.0);
-        // Below the floor — no gain (can't tell signal from noise).
-        assert_eq!(asr_gain_for_peak(0.0005), 1.0);
-        assert_eq!(asr_gain_for_peak(0.001), 1.0);
-        // Very quiet → clamped to the bounded max (no more 64x).
-        assert_eq!(asr_gain_for_peak(0.005), ASR_MAX_GAIN);
-        assert!(asr_gain_for_peak(0.005) <= ASR_MAX_GAIN);
-    }
-
-    #[test]
-    fn asr_gain_for_levels_targets_loudness_without_clipping() {
-        // Loud, healthy track — barely any gain.
-        let g = asr_gain_for_levels(0.90, 0.040);
-        assert!((1.0..=1.2).contains(&g), "loud track gain {g}");
-        // Genuinely quiet but real voice (decent RMS) — gained toward target,
-        // but limited so the peak never clips.
-        let g = asr_gain_for_levels(0.08, 0.020);
-        assert!(
-            g > 1.0 && g <= ASR_TARGET_PEAK / 0.08 + 0.01,
-            "quiet voice gain {g}"
-        );
-        // Near-silent / noise-dominated — gain is hard-capped, never the old 64x.
-        let g = asr_gain_for_levels(0.019, 0.0007);
-        assert!(g <= ASR_MAX_GAIN, "noise gain {g} must stay capped");
-        // Degenerate inputs.
-        assert_eq!(asr_gain_for_levels(0.0, 0.0), 1.0);
-        assert_eq!(asr_gain_for_levels(f32::NAN, 0.01), 1.0);
-    }
-
-    #[test]
     fn rms_silence_gate_drops_noise_but_keeps_speech() {
         // The real Hindi meeting's mic: high-ish transient peak, silence RMS.
         // Must be gated (RMS below floor) so it isn't hallucinated.
@@ -15987,13 +16056,8 @@ mod tests {
                 peak,
             };
             let decision = has_transcribable_audio(&summary);
-            let gain = if rms > 0.0 {
-                asr_gain_for_levels(peak, rms)
-            } else {
-                1.0
-            };
             eprintln!(
-                "[{track:7}] peak={peak:.4} rms={rms:.5} -> {} (gain {gain:.1}x)",
+                "[{track:7}] peak={peak:.4} rms={rms:.5} -> {} (conditioned before ASR)",
                 if decision {
                     "TRANSCRIBE"
                 } else {
@@ -16004,24 +16068,29 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_quiet_wav_for_asr_without_changing_source() {
+    fn conditions_meeting_wav_for_asr_without_changing_source() {
         let dir = std::env::temp_dir().join(format!(
-            "airnote-asr-normalize-test-{}-{}",
+            "airnote-asr-condition-test-{}-{}",
             std::process::id(),
             now_ms()
         ));
         fs::create_dir_all(&dir).unwrap();
         let input = dir.join("mic.wav");
         let output = dir.join("mic.asr.wav");
-        write_test_wav(&input, &[100, -200, 0]).unwrap();
+        let source = [100, -200, 0, 400, -800, 1_600];
+        write_test_wav(&input, &source).unwrap();
+        let summary = MicCaptureSummary {
+            path: input.clone(),
+            samples_written: source.len() as u64,
+            dropped_chunks: 0,
+            native_rate: SAMPLE_RATE,
+            duration_ms: 0,
+            peak: 1_600.0 / i16::MAX as f32,
+        };
 
-        normalize_wav_for_asr(&input, &output, 64.0).unwrap();
-
-        assert_eq!(read_test_wav_samples(&input).unwrap(), vec![100, -200, 0]);
-        assert_eq!(
-            read_test_wav_samples(&output).unwrap(),
-            vec![6_400, -12_800, 0]
-        );
+        assert_eq!(prepare_asr_audio_input(&summary, false).unwrap(), output);
+        assert_eq!(read_test_wav_samples(&input).unwrap(), source);
+        assert_eq!(read_test_wav_samples(&output).unwrap().len(), source.len());
 
         let _ = fs::remove_dir_all(dir);
     }

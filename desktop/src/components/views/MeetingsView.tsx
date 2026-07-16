@@ -163,11 +163,33 @@ interface MeetingIntelligenceResult {
   model: string;
   latency_ms: number;
   transcript_source: string;
+  analysis_context?: string | null;
   title?: string;
   tags?: string[];
   summary: string;
   action_items: MeetingAiActionItem[];
   decisions: MeetingAiDecision[];
+}
+
+// Reanalysis is a native async job. Keep its promise outside the detail view so
+// a parent navigation/unmount cannot create a second job for the same meeting.
+const inFlightMeetingReanalyses = new Map<string, Promise<MeetingIntelligenceResult>>();
+const reanalysisContextDrafts = new Map<string, string>();
+
+function reanalyzeMeeting(
+  meetingId: string,
+  analysisContext: string,
+): Promise<MeetingIntelligenceResult> {
+  const existing = inFlightMeetingReanalyses.get(meetingId);
+  if (existing) return existing;
+
+  const job = invoke<MeetingIntelligenceResult>("meeting_engine_generate_intelligence", {
+    meetingId,
+    analysisContext: analysisContext.trim() || null,
+  });
+  inFlightMeetingReanalyses.set(meetingId, job);
+  void job.finally(() => inFlightMeetingReanalyses.delete(meetingId)).catch(() => undefined);
+  return job;
 }
 
 interface MeetingCachedTranscriptSegment {
@@ -1105,12 +1127,20 @@ export function MeetingsView({
   const [searchHits, setSearchHits] = useState<Record<string, MeetingSearchHit> | null>(null);
   const [searchBusy, setSearchBusy] = useState(false);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>("summary");
   const [procStatus, setProcStatus] = useState<MeetingProcessingStatus | null>(null);
   const dismissedProcessingIdsRef = useRef<Set<string>>(new Set());
   const [meetingAi, setMeetingAi] = useState<MeetingIntelligenceResult | null>(null);
   const [meetingAiLoading, setMeetingAiLoading] = useState(false);
+  const [reanalyzingMeetingIds, setReanalyzingMeetingIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [reanalysisContextOpenIds, setReanalysisContextOpenIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [meetingAiError, setMeetingAiError] = useState<string | null>(null);
+  const [reanalysisContext, setReanalysisContext] = useState("");
   const [artifacts, setArtifacts] = useState<MeetingCachedArtifacts | null>(null);
   const [artifactsLoading, setArtifactsLoading] = useState(false);
   const [completedActions, setCompletedActions] = useState<Set<string>>(new Set());
@@ -1429,6 +1459,13 @@ export function MeetingsView({
   const selectedMeeting = selectedMeetingId
     ? sortedMeetings.find((meeting) => meeting.id === selectedMeetingId) ?? null
     : null;
+  selectedIdRef.current = selectedMeeting?.id ?? null;
+  const isReanalyzingSelected = Boolean(
+    selectedMeeting && reanalyzingMeetingIds.has(selectedMeeting.id),
+  );
+  const isReanalysisContextOpen = Boolean(
+    selectedMeeting && reanalysisContextOpenIds.has(selectedMeeting.id),
+  );
 
   // The detail is a modal now: it opens only on an explicit click, never
   // auto-selects the first meeting. But if the open meeting gets filtered out,
@@ -1591,7 +1628,12 @@ export function MeetingsView({
 
     invoke<MeetingIntelligenceResult | null>("meeting_engine_get_cached_intelligence", { meetingId: selectedMeeting.id })
       .then((result) => {
-        if (!cancelled) setMeetingAi(result);
+        if (!cancelled && !inFlightMeetingReanalyses.has(selectedMeeting.id)) {
+          setMeetingAi(result);
+          setReanalysisContext(
+            reanalysisContextDrafts.get(selectedMeeting.id) ?? result?.analysis_context ?? "",
+          );
+        }
       })
       .catch((err) => {
         if (!cancelled) {
@@ -1602,6 +1644,33 @@ export function MeetingsView({
       .finally(() => {
         if (!cancelled) setMeetingAiLoading(false);
       });
+
+    const reanalysis = inFlightMeetingReanalyses.get(selectedMeeting.id);
+    if (reanalysis) {
+      const meetingId = selectedMeeting.id;
+      setReanalyzingMeetingIds((current) => new Set(current).add(meetingId));
+      void reanalysis
+        .then((result) => {
+          if (!cancelled) {
+            setMeetingAi(result);
+            const context = result.analysis_context ?? "";
+            reanalysisContextDrafts.set(meetingId, context);
+            setReanalysisContext(context);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setMeetingAiError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setReanalyzingMeetingIds((current) => {
+              const next = new Set(current);
+              next.delete(meetingId);
+              return next;
+            });
+          }
+        });
+    }
 
     invoke<MeetingCachedArtifacts | null>("meeting_engine_get_cached_artifacts", { meetingId: selectedMeeting.id })
       .then((result) => {
@@ -1752,25 +1821,60 @@ export function MeetingsView({
     await navigator.clipboard.writeText(text);
   }, [artifacts?.transcript]);
 
+  const openReanalysisContext = useCallback(() => {
+    if (!selectedMeeting || meetingAiLoading || isReanalyzingSelected || procStatus?.running) return;
+    setReanalysisContextOpenIds((current) => new Set(current).add(selectedMeeting.id));
+  }, [selectedMeeting, meetingAiLoading, isReanalyzingSelected, procStatus?.running]);
+
+  const closeReanalysisContext = useCallback(() => {
+    if (!selectedMeeting) return;
+    setReanalysisContextOpenIds((current) => {
+      const next = new Set(current);
+      next.delete(selectedMeeting.id);
+      return next;
+    });
+  }, [selectedMeeting]);
+
   const handleReanalyze = useCallback(async () => {
-    if (!selectedMeeting || meetingAiLoading) return;
-    setMeetingAiLoading(true);
+    if (
+      !selectedMeeting ||
+      meetingAiLoading ||
+      reanalyzingMeetingIds.has(selectedMeeting.id) ||
+      inFlightMeetingReanalyses.has(selectedMeeting.id)
+    ) {
+      return;
+    }
+    const meetingId = selectedMeeting.id;
+    setReanalysisContextOpenIds((current) => {
+      const next = new Set(current);
+      next.delete(meetingId);
+      return next;
+    });
+    setReanalyzingMeetingIds((current) => new Set(current).add(meetingId));
     setMeetingAiError(null);
     try {
-      const result = await invoke<MeetingIntelligenceResult>("meeting_engine_generate_intelligence", {
-        meetingId: selectedMeeting.id,
-      });
-      setMeetingAi(result);
+      const result = await reanalyzeMeeting(meetingId, reanalysisContext);
+      // The request can finish after the user has switched tabs or opened a
+      // different meeting. Only replace the currently-visible meeting's data.
+      if (selectedIdRef.current === meetingId) {
+        setMeetingAi(result);
+        const context = result.analysis_context ?? "";
+        reanalysisContextDrafts.set(meetingId, context);
+        setReanalysisContext(context);
+      }
       await refreshOverviews();
     } catch (err) {
-      setMeetingAiError(err instanceof Error ? err.message : String(err));
+      if (selectedIdRef.current === meetingId) {
+        setMeetingAiError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setMeetingAiLoading(false);
+      setReanalyzingMeetingIds((current) => {
+        const next = new Set(current);
+        next.delete(meetingId);
+        return next;
+      });
     }
-  }, [selectedMeeting, meetingAiLoading, refreshOverviews]);
-
-  const selectedIdRef = useRef<string | null>(null);
-  selectedIdRef.current = selectedMeeting?.id ?? null;
+  }, [selectedMeeting, meetingAiLoading, reanalyzingMeetingIds, reanalysisContext, refreshOverviews]);
 
   const handleRetranscribe = useCallback(async () => {
     if (!selectedMeeting || retranscribing || procStatus?.running) return;
@@ -2774,10 +2878,10 @@ export function MeetingsView({
               <ProcessingBanner
                 status={procStatus}
                 onRetryTranscribe={handleRetranscribe}
-                onRetrySummary={handleReanalyze}
+                onRetrySummary={openReanalysisContext}
                 onCancel={handleCancelProcessing}
                 onDismiss={handleDismissProcessingBanner}
-                retrying={retranscribing || meetingAiLoading}
+                retrying={retranscribing || meetingAiLoading || isReanalyzingSelected}
               />
             ) : null}
 
@@ -2800,24 +2904,31 @@ export function MeetingsView({
               ))}
             </div>
 
+            {isReanalyzingSelected ? (
+              <div className="mt-3 flex items-center gap-2 text-[12.5px] font-medium text-muted-foreground">
+                <Loader2 size={14} className="animate-spin text-primary" />
+                Reanalyzing with your context…
+              </div>
+            ) : null}
+
             {detailTab === "summary" ? (
               <div className="pt-6">
                 <div className="mb-5 flex items-center justify-between gap-3">
                   <h3 className="text-[14px] font-semibold text-foreground">Summary</h3>
                   <div className="flex items-center gap-2">
                     <ToolbarButton
-                      icon={<RefreshCw size={14} className={meetingAiLoading ? "animate-spin" : ""} />}
+                      icon={<RefreshCw size={14} className={isReanalyzingSelected ? "animate-spin" : ""} />}
                       label={
                         procStatus?.running
                           ? "Processing…"
-                          : meetingAiLoading
-                            ? "Analyzing…"
+                          : isReanalyzingSelected
+                            ? "Reanalyzing…"
                             : meetingAi?.summary
-                              ? "Reanalyse"
-                              : "Generate"
+                              ? "Reanalyze"
+                              : "Analyze"
                       }
-                      disabled={meetingAiLoading || Boolean(procStatus?.running)}
-                      onClick={handleReanalyze}
+                      disabled={meetingAiLoading || isReanalyzingSelected || Boolean(procStatus?.running)}
+                      onClick={openReanalysisContext}
                     />
                     <CopyButton label="Copy" disabled={!meetingAi?.summary} onCopy={copySummary} />
                     {(() => {
@@ -2859,6 +2970,34 @@ export function MeetingsView({
                     })()}
                   </div>
                 </div>
+                {isReanalysisContextOpen ? (
+                  <div className="mb-5 border-b pb-4" style={{ borderColor: "hsl(var(--border))" }}>
+                    <textarea
+                      autoFocus
+                      value={reanalysisContext}
+                      onChange={(event) => {
+                        const context = event.currentTarget.value;
+                        setReanalysisContext(context);
+                        if (selectedMeeting) reanalysisContextDrafts.set(selectedMeeting.id, context);
+                      }}
+                      maxLength={4000}
+                      placeholder="Add context or a focus for this reanalysis…"
+                      className="min-h-20 w-full resize-y rounded-lg border bg-transparent px-3 py-2.5 text-[13px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground focus:border-primary"
+                      style={{ borderColor: "hsl(var(--border))" }}
+                    />
+                    <div className="mt-3 flex items-center justify-end gap-2">
+                      <IconButton label="Cancel reanalysis" onClick={closeReanalysisContext}>
+                        <X size={15} />
+                      </IconButton>
+                      <ToolbarButton
+                        icon={<RefreshCw size={14} />}
+                        label="Reanalyze"
+                        active
+                        onClick={handleReanalyze}
+                      />
+                    </div>
+                  </div>
+                ) : null}
                 {larkError ? (
                   <div className="mb-3 flex flex-wrap items-center gap-2">
                     <p className="text-[12px]" style={{ color: "hsl(0 70% 70%)" }}>
