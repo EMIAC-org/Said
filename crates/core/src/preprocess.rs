@@ -344,7 +344,11 @@ impl StreamConditioner {
             self.vad_sum += state.process_frame(&mut out_frame, &in_frame);
             self.frames += 1;
 
-            let source = if self.first_frame { &in_frame } else { &out_frame };
+            let source = if self.first_frame {
+                &in_frame
+            } else {
+                &out_frame
+            };
             self.first_frame = false;
             for (dst, src) in up.iter_mut().zip(source.iter()) {
                 *dst = (*src / RNNOISE_I16_SCALE).clamp(-1.0, 1.0);
@@ -595,23 +599,28 @@ mod tests {
         let mut out = Vec::new();
         // Deliberately ragged chunk sizes — the recorder does not promise
         // block-aligned chunks.
-        for chunk in [300_usize, 1_600, 77, 4_096, 1, 900]
-            .iter()
-            .cycle()
-            .scan(0usize, |pos, &len| {
-                if *pos >= input.len() {
-                    return None;
-                }
-                let end = (*pos + len).min(input.len());
-                let slice = &input[*pos..end];
-                *pos = end;
-                Some(slice)
-            })
+        for chunk in
+            [300_usize, 1_600, 77, 4_096, 1, 900]
+                .iter()
+                .cycle()
+                .scan(0usize, |pos, &len| {
+                    if *pos >= input.len() {
+                        return None;
+                    }
+                    let end = (*pos + len).min(input.len());
+                    let slice = &input[*pos..end];
+                    *pos = end;
+                    Some(slice)
+                })
         {
             out.extend(sc.push(chunk));
         }
         out.extend(sc.flush());
-        assert_eq!(out.len(), input.len(), "streaming must not drop or invent samples");
+        assert_eq!(
+            out.len(),
+            input.len(),
+            "streaming must not drop or invent samples"
+        );
         assert!(out.iter().all(|s| s.is_finite()));
     }
 
@@ -633,7 +642,10 @@ mod tests {
 
         assert_eq!(a.len(), b.len());
         for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-            assert!((x - y).abs() < 1.0e-6, "chunking changed sample {i}: {x} vs {y}");
+            assert!(
+                (x - y).abs() < 1.0e-6,
+                "chunking changed sample {i}: {x} vs {y}"
+            );
         }
     }
 
@@ -677,7 +689,10 @@ mod tests {
         out.extend(sc.flush());
         let rms_in = (rumble.iter().map(|s| s * s).sum::<f32>() / rumble.len() as f32).sqrt();
         let rms_out = (out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32).sqrt();
-        assert!(rms_out < rms_in * 0.5, "rumble not attenuated: {rms_in} → {rms_out}");
+        assert!(
+            rms_out < rms_in * 0.5,
+            "rumble not attenuated: {rms_in} → {rms_out}"
+        );
     }
 
     #[test]
@@ -694,7 +709,10 @@ mod tests {
         }
         out.extend(sc.flush());
         let peak = out.iter().fold(0.0_f32, |m, &s| m.max(s.abs()));
-        assert!(peak < 0.05, "streaming must not apply makeup gain, peak={peak}");
+        assert!(
+            peak < 0.05,
+            "streaming must not apply makeup gain, peak={peak}"
+        );
     }
 
     #[test]
