@@ -7,6 +7,28 @@ use serde_json::Value;
 use tracing::warn;
 
 const MAX_ATTEMPTS: i64 = 10;
+// Meeting delivery is durable across launches. Retry from 30 seconds with
+// exponential spacing, capped at six hours so long outages do not create a
+// network request every uploader tick. Keep list_pending_at's SQL CASE aligned.
+const MEETING_RETRY_BASE_MS: i64 = 30_000;
+const MEETING_RETRY_MAX_MS: i64 = 6 * 60 * 60 * 1_000;
+
+fn is_meeting_op(op: &str) -> bool {
+    matches!(
+        op,
+        "upsert_meeting_session" | "upsert_meeting_provider_usage"
+    )
+}
+
+fn meeting_retry_delay_ms(attempts: i64) -> i64 {
+    if attempts <= 0 {
+        return 0;
+    }
+    let shift = (attempts - 1).clamp(0, 20) as u32;
+    MEETING_RETRY_BASE_MS
+        .saturating_mul(1_i64 << shift)
+        .min(MEETING_RETRY_MAX_MS)
+}
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -271,27 +293,65 @@ pub fn enqueue_meeting_provider_usage(
 }
 
 pub fn list_pending(pool: &DbPool, user_id: &str, limit: i64) -> Result<Vec<OutboxRow>, String> {
+    list_pending_at(pool, user_id, limit, now_ms())
+}
+
+fn list_pending_at(
+    pool: &DbPool,
+    user_id: &str,
+    limit: i64,
+    eligible_at_ms: i64,
+) -> Result<Vec<OutboxRow>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT id, op, recording_id, payload_json, attempts, active_org_id
                FROM observability_outbox
-              WHERE user_id = ?1 AND status = 'pending' AND attempts < ?2
+              WHERE user_id = ?1
+                AND (
+                    (status = 'pending'
+                        AND op NOT IN ('upsert_meeting_session', 'upsert_meeting_provider_usage')
+                        AND attempts < ?2)
+                    OR
+                    (status IN ('pending', 'dropped')
+                        AND op IN ('upsert_meeting_session', 'upsert_meeting_provider_usage')
+                        AND (
+                            last_attempt_ms IS NULL
+                            OR last_attempt_ms + CASE
+                                WHEN attempts <= 0 THEN 0
+                                WHEN attempts = 1 THEN 30000
+                                WHEN attempts = 2 THEN 60000
+                                WHEN attempts = 3 THEN 120000
+                                WHEN attempts = 4 THEN 240000
+                                WHEN attempts = 5 THEN 480000
+                                WHEN attempts = 6 THEN 960000
+                                WHEN attempts = 7 THEN 1920000
+                                WHEN attempts = 8 THEN 3840000
+                                WHEN attempts = 9 THEN 7680000
+                                WHEN attempts = 10 THEN 15360000
+                                ELSE 21600000
+                            END <= ?3
+                        )
+                    )
+                )
               ORDER BY created_at_ms ASC, id ASC
-              LIMIT ?3",
+              LIMIT ?4",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![user_id, MAX_ATTEMPTS, limit], |row| {
-            Ok(OutboxRow {
-                id: row.get(0)?,
-                op: row.get(1)?,
-                recording_id: row.get(2)?,
-                payload_json: row.get(3)?,
-                attempts: row.get(4)?,
-                active_org_id: row.get(5)?,
-            })
-        })
+        .query_map(
+            params![user_id, MAX_ATTEMPTS, eligible_at_ms, limit],
+            |row| {
+                Ok(OutboxRow {
+                    id: row.get(0)?,
+                    op: row.get(1)?,
+                    recording_id: row.get(2)?,
+                    payload_json: row.get(3)?,
+                    attempts: row.get(4)?,
+                    active_org_id: row.get(5)?,
+                })
+            },
+        )
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())
@@ -325,21 +385,27 @@ pub fn mark_done(pool: &DbPool, id: i64) -> Result<(), String> {
 
 pub fn mark_failed(pool: &DbPool, id: i64, error: &str) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let attempts: i64 = conn
+    let (op, attempts): (String, i64) = conn
         .query_row(
-            "SELECT attempts FROM observability_outbox WHERE id = ?1",
+            "SELECT op, attempts FROM observability_outbox WHERE id = ?1",
             params![id],
-            |r| r.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .unwrap_or(0);
+        .unwrap_or_else(|_| (String::new(), 0));
     let next = attempts + 1;
-    let status = if next >= MAX_ATTEMPTS {
+    let meeting = is_meeting_op(&op);
+    let status = if !meeting && next >= MAX_ATTEMPTS {
         "dropped"
     } else {
         "pending"
     };
     if status == "dropped" {
         warn!("[observability] dropping outbox row {id} after {next} attempts: {error}");
+    } else if meeting {
+        let retry_delay_ms = meeting_retry_delay_ms(next);
+        warn!(
+            "[observability] meeting outbox row {id} attempt {next} failed; retrying in {retry_delay_ms}ms: {error}"
+        );
     }
     conn.execute(
         "UPDATE observability_outbox
@@ -357,7 +423,14 @@ pub fn pending_count(pool: &DbPool, user_id: &str) -> i64 {
         Err(_) => return 0,
     };
     conn.query_row(
-        "SELECT COUNT(*) FROM observability_outbox WHERE user_id = ?1 AND status = 'pending'",
+        "SELECT COUNT(*) FROM observability_outbox
+          WHERE user_id = ?1
+            AND (
+                status = 'pending'
+                OR (status = 'dropped' AND op IN (
+                    'upsert_meeting_session', 'upsert_meeting_provider_usage'
+                ))
+            )",
         params![user_id],
         |r| r.get(0),
     )
@@ -372,6 +445,10 @@ mod tests {
     #[test]
     fn outbox_max_attempts_configured() {
         assert_eq!(MAX_ATTEMPTS, 10);
+        assert_eq!(meeting_retry_delay_ms(0), 0);
+        assert_eq!(meeting_retry_delay_ms(1), 30_000);
+        assert_eq!(meeting_retry_delay_ms(2), 60_000);
+        assert_eq!(meeting_retry_delay_ms(100), MEETING_RETRY_MAX_MS);
     }
 
     #[test]
@@ -410,6 +487,164 @@ mod tests {
         mark_done(&pool, rows[0].id).unwrap();
         assert!(meeting_session_done(&pool, &user_id, "local-1"));
 
+        drop(pool);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn meeting_session_survives_ten_failures_and_usage_resumes_after_parent() {
+        let path = std::env::temp_dir().join(format!(
+            "airnote-observability-retry-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = crate::store::open(&path);
+        let user_id = crate::store::ensure_default_user(&pool);
+        crate::store::users::update_cloud_auth(&pool, &user_id, "token", "pro", None);
+        crate::store::users::update_active_org(&pool, &user_id, Some("org-retry"));
+
+        enqueue_meeting_session(
+            &pool,
+            &user_id,
+            MeetingSessionPayload {
+                client_session_id: "local-retry".into(),
+                title: "Retry Planning".into(),
+                status: "completed".into(),
+                started_at_ms: 1_000,
+                ended_at_ms: 2_000,
+                duration_seconds: 1.0,
+                transcript_word_count: 4,
+                transcription_provider: Some("whisper".into()),
+                transcription_model: Some("small".into()),
+                transcription_latency_ms: Some(9),
+                device_id: None,
+                platform: Some("macos".into()),
+                app_version: Some("1.0.0".into()),
+            },
+        )
+        .unwrap();
+        enqueue_meeting_provider_usage(
+            &pool,
+            &user_id,
+            MeetingProviderUsagePayload {
+                client_session_id: "local-retry".into(),
+                idempotency_key: "meeting:local-retry:cleanup:1".into(),
+                credential_scope: "airnote_bundled".into(),
+                provider: "deepseek".into(),
+                model: "deepseek-v4-pro".into(),
+                feature_stage: "transcript_cleanup".into(),
+                prompt_tokens: 10,
+                cache_hit_tokens: 4,
+                cache_miss_tokens: 6,
+                completion_tokens: 2,
+                reasoning_tokens: None,
+                latency_ms: 50,
+                result_status: "success".into(),
+                occurred_at_ms: 1_500,
+            },
+        )
+        .unwrap();
+
+        let rows = list_pending_at(&pool, &user_id, 20, now_ms()).unwrap();
+        let session_id = rows
+            .iter()
+            .find(|row| row.op == "upsert_meeting_session")
+            .unwrap()
+            .id;
+        for attempt in 1..=12 {
+            mark_failed(&pool, session_id, &format!("offline {attempt}")).unwrap();
+        }
+
+        let (status, attempts, stored_org): (String, i64, Option<String>) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status, attempts, active_org_id FROM observability_outbox WHERE id = ?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "pending");
+        assert_eq!(attempts, 12);
+        assert_eq!(stored_org.as_deref(), Some("org-retry"));
+        assert!(!meeting_session_done(&pool, &user_id, "local-retry"));
+
+        // Simulate a row already dropped by the pre-amendment build. Durable
+        // meeting eligibility must revive it without relying on INSERT OR IGNORE.
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE observability_outbox SET status = 'dropped' WHERE id = ?1",
+                params![session_id],
+            )
+            .unwrap();
+        assert!(pending_count(&pool, &user_id) >= 2);
+
+        let before_backoff = list_pending_at(&pool, &user_id, 20, now_ms()).unwrap();
+        assert!(!before_backoff.iter().any(|row| row.id == session_id));
+        let after_backoff = list_pending_at(
+            &pool,
+            &user_id,
+            20,
+            now_ms().saturating_add(MEETING_RETRY_MAX_MS + 1),
+        )
+        .unwrap();
+        assert!(after_backoff.iter().any(|row| row.id == session_id));
+
+        // The uploader uses this exact gate: usage waits while the parent is
+        // pending, then becomes deliverable immediately after acknowledgement.
+        assert!(!meeting_session_done(&pool, &user_id, "local-retry"));
+        mark_done(&pool, session_id).unwrap();
+        assert!(meeting_session_done(&pool, &user_id, "local-retry"));
+        assert!(
+            after_backoff
+                .iter()
+                .any(|row| row.op == "upsert_meeting_provider_usage")
+        );
+
+        drop(pool);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn generic_rows_still_drop_after_ten_failures() {
+        let path = std::env::temp_dir().join(format!(
+            "airnote-observability-generic-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let pool = crate::store::open(&path);
+        let user_id = crate::store::ensure_default_user(&pool);
+        insert_row(
+            &pool,
+            &user_id,
+            "generic_test",
+            Some("generic-1"),
+            &serde_json::json!({ "safe": true }),
+        )
+        .unwrap();
+        let row = list_pending_at(&pool, &user_id, 20, now_ms())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        for attempt in 1..=MAX_ATTEMPTS {
+            mark_failed(&pool, row.id, &format!("offline {attempt}")).unwrap();
+        }
+        let status: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM observability_outbox WHERE id = ?1",
+                params![row.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "dropped");
+        assert_eq!(pending_count(&pool, &user_id), 0);
+        assert!(
+            list_pending_at(&pool, &user_id, 20, i64::MAX)
+                .unwrap()
+                .is_empty()
+        );
         drop(pool);
         let _ = std::fs::remove_file(path);
     }
