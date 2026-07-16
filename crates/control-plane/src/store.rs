@@ -195,6 +195,10 @@ const MIGRATIONS: &[Migration] = &[
         id: "043_local_meeting_telemetry",
         sql: include_str!("../migrations/043_local_meeting_telemetry.sql"),
     },
+    Migration {
+        id: "044_local_meeting_session_title",
+        sql: include_str!("../migrations/044_local_meeting_session_title.sql"),
+    },
 ];
 
 /// Connect to Postgres and apply the schema.

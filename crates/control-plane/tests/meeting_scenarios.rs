@@ -2138,6 +2138,7 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
     let client_session_id = format!("meeting-{suffix}");
     let session_payload = json!({
         "client_session_id": client_session_id,
+        "title": "Weekly product review",
         "status": "completed",
         "started_at_ms": 1_700_000_000_000_i64,
         "ended_at_ms": 1_700_000_060_000_i64,
@@ -2160,6 +2161,7 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
             "account_id": Uuid::new_v4(),
             "org_id": org_b,
             "client_session_id": format!("spoof-{suffix}"),
+            "title": "Spoofed meeting",
             "status": "completed",
             "started_at_ms": 1_700_000_000_000_i64,
             "ended_at_ms": 1_700_000_001_000_i64,
@@ -2212,6 +2214,34 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
         .await
         .unwrap();
     assert_eq!(cross_workspace_replay.status(), 409);
+
+    let mut mutated_title = session_payload.clone();
+    mutated_title["title"] = json!("Mutated title");
+    let title_mutation = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .json(&mutated_title)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(title_mutation.status(), 409);
+
+    let mismatched_session_id = format!("mismatched-duration-{suffix}");
+    let mut mismatched_duration = session_payload.clone();
+    mismatched_duration["client_session_id"] = json!(mismatched_session_id);
+    mismatched_duration["duration_seconds"] = json!(59.0);
+    let duration_mismatch = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .json(&mismatched_duration)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(duration_mismatch.status(), 422);
 
     let idempotency_key = format!("provider-call-{suffix}");
     let usage_payload = json!({
@@ -2279,8 +2309,8 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
         .unwrap();
     assert_eq!(mutation.status(), 409);
 
-    let session_scope: (Uuid, Uuid, i64) = sqlx::query_as(
-        "SELECT org_id, account_id, COUNT(*) OVER ()::bigint
+    let session_scope: (Uuid, Uuid, String, f64, i64) = sqlx::query_as(
+        "SELECT org_id, account_id, title, duration_seconds, COUNT(*) OVER ()::bigint
            FROM local_meeting_sessions
           WHERE account_id = $1 AND client_session_id = $2",
     )
@@ -2289,7 +2319,22 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
     .fetch_one(&srv.db)
     .await
     .unwrap();
-    assert_eq!(session_scope, (org_a, account_id, 1));
+    assert_eq!(session_scope.0, org_a);
+    assert_eq!(session_scope.1, account_id);
+    assert_eq!(session_scope.2, "Weekly product review");
+    assert_eq!(session_scope.3, 60.0);
+    assert_eq!(session_scope.4, 1);
+
+    let mismatched_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM local_meeting_sessions
+          WHERE account_id = $1 AND client_session_id = $2",
+    )
+    .bind(account_id)
+    .bind(&mismatched_session_id)
+    .fetch_one(&srv.db)
+    .await
+    .unwrap();
+    assert_eq!(mismatched_count, 0);
 
     let usage_stored: (i64, String, String) = sqlx::query_as(
         "SELECT COUNT(*) OVER ()::bigint, rate_card_version,

@@ -27,6 +27,7 @@ type ApiError = (StatusCode, Json<Value>);
 #[serde(deny_unknown_fields)]
 pub struct MeetingSessionRequest {
     pub client_session_id: String,
+    pub title: String,
     pub status: String,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
@@ -50,6 +51,7 @@ pub struct MeetingSessionResponse {
 #[derive(Debug)]
 struct ValidatedSession {
     client_session_id: String,
+    title: String,
     status: String,
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
@@ -67,6 +69,7 @@ struct ValidatedSession {
 struct ExistingSession {
     id: Uuid,
     org_id: Uuid,
+    title: String,
     status: String,
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
@@ -162,16 +165,17 @@ pub async fn ingest_session(
 
     let inserted: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO local_meeting_sessions
-            (org_id, account_id, client_session_id, status, started_at, ended_at,
+            (org_id, account_id, client_session_id, title, status, started_at, ended_at,
              duration_seconds, transcript_word_count, transcription_provider,
              transcription_model, transcription_latency_ms, device_id, platform, app_version)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (account_id, client_session_id) DO NOTHING
          RETURNING id",
     )
     .bind(org_id)
     .bind(user.account_id)
     .bind(&session.client_session_id)
+    .bind(&session.title)
     .bind(&session.status)
     .bind(session.started_at)
     .bind(session.ended_at)
@@ -318,7 +322,7 @@ async fn fetch_session(
     client_session_id: &str,
 ) -> Result<ExistingSession, ApiError> {
     sqlx::query_as(
-        "SELECT id, org_id, status, started_at, ended_at, duration_seconds,
+        "SELECT id, org_id, title, status, started_at, ended_at, duration_seconds,
                 transcript_word_count, transcription_provider, transcription_model,
                 transcription_latency_ms, device_id, platform, app_version
            FROM local_meeting_sessions
@@ -356,6 +360,7 @@ async fn fetch_usage(
 fn validate_session(body: MeetingSessionRequest) -> Result<ValidatedSession, &'static str> {
     let client_session_id = clean_key(&body.client_session_id, 128)
         .ok_or("client_session_id must be 1-128 safe identifier characters")?;
+    let title = clean_title(&body.title)?;
     let status = body.status.trim().to_ascii_lowercase();
     if !matches!(status.as_str(), "completed" | "failed" | "cancelled") {
         return Err("status must be completed, failed, or cancelled");
@@ -370,6 +375,14 @@ fn validate_session(body: MeetingSessionRequest) -> Result<ValidatedSession, &'s
     if !body.duration_seconds.is_finite() || body.duration_seconds < 0.0 {
         return Err("duration_seconds must be finite and non-negative");
     }
+    let span_ms = body
+        .ended_at_ms
+        .checked_sub(body.started_at_ms)
+        .ok_or("meeting timestamp span overflowed")?;
+    let duration_seconds = span_ms as f64 / 1_000.0;
+    if (body.duration_seconds - duration_seconds).abs() > 0.000_001 {
+        return Err("duration_seconds must match ended_at_ms - started_at_ms");
+    }
     if body.transcript_word_count < 0 {
         return Err("transcript_word_count must be non-negative");
     }
@@ -378,10 +391,11 @@ fn validate_session(body: MeetingSessionRequest) -> Result<ValidatedSession, &'s
     }
     Ok(ValidatedSession {
         client_session_id,
+        title,
         status,
         started_at,
         ended_at,
-        duration_seconds: body.duration_seconds,
+        duration_seconds,
         transcript_word_count: body.transcript_word_count,
         transcription_provider: clean_optional(body.transcription_provider, 64)?,
         transcription_model: clean_optional(body.transcription_model, 128)?,
@@ -472,6 +486,14 @@ fn clean_key(value: &str, max_len: usize) -> Option<String> {
     .then(|| value.to_string())
 }
 
+fn clean_title(value: &str) -> Result<String, &'static str> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 200 || value.chars().any(char::is_control) {
+        return Err("title must be 1-200 characters on one line");
+    }
+    Ok(value.to_string())
+}
+
 fn clean_optional(value: Option<String>, max_len: usize) -> Result<Option<String>, &'static str> {
     let Some(value) = value else {
         return Ok(None);
@@ -487,7 +509,8 @@ fn clean_optional(value: Option<String>, max_len: usize) -> Result<Option<String
 }
 
 fn same_session(existing: &ExistingSession, incoming: &ValidatedSession) -> bool {
-    existing.status == incoming.status
+    existing.title == incoming.title
+        && existing.status == incoming.status
         && existing.started_at == incoming.started_at
         && existing.ended_at == incoming.ended_at
         && existing.duration_seconds.to_bits() == incoming.duration_seconds.to_bits()
@@ -578,6 +601,7 @@ mod tests {
     fn valid_session() -> MeetingSessionRequest {
         MeetingSessionRequest {
             client_session_id: "meeting-123".into(),
+            title: "Weekly product review".into(),
             status: "completed".into(),
             started_at_ms: 1_700_000_000_000,
             ended_at_ms: 1_700_000_060_000,
@@ -615,6 +639,8 @@ mod tests {
     fn validates_metadata_only_completed_session() {
         let session = validate_session(valid_session()).expect("valid session");
         assert_eq!(session.client_session_id, "meeting-123");
+        assert_eq!(session.title, "Weekly product review");
+        assert_eq!(session.duration_seconds, 60.0);
         assert_eq!(session.transcript_word_count, 140);
     }
 
@@ -627,6 +653,26 @@ mod tests {
         let mut request = valid_session();
         request.transcript_word_count = -1;
         assert!(validate_session(request).is_err());
+
+        let mut request = valid_session();
+        request.duration_seconds = 59.0;
+        assert!(validate_session(request).is_err());
+
+        let mut request = valid_session();
+        request.title = "\n".into();
+        assert!(validate_session(request).is_err());
+
+        let mut request = valid_session();
+        request.title = "x".repeat(201);
+        assert!(validate_session(request).is_err());
+    }
+
+    #[test]
+    fn stores_timestamp_derived_duration_within_float_tolerance() {
+        let mut request = valid_session();
+        request.duration_seconds = 60.000_000_5;
+        let session = validate_session(request).expect("sub-microsecond float tolerance");
+        assert_eq!(session.duration_seconds, 60.0);
     }
 
     #[test]
