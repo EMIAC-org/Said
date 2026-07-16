@@ -64,6 +64,32 @@ pub struct DesktopPrefs {
     /// Read synchronously by the recording pipeline before each capture.
     #[serde(default)]
     pub browser_context_enabled: bool,
+
+    /// Dictation STT route. The desktop device policy owns valid values:
+    /// Apple Silicon can use `"local"` or `"cloud-nemotron-3.5"`; Windows
+    /// and Intel Macs are locked to the live Nemotron route.
+    #[serde(default = "default_dictation_stt")]
+    pub dictation_stt: String,
+
+    /// Selected implementation when dictation runs locally.  This deliberately
+    /// does not affect Meetings, which are permanently pinned to the small
+    /// Oriserve Whisper model.
+    #[serde(default = "default_local_stt_model")]
+    pub local_stt_model: String,
+
+    /// Explicit compatibility choice made during a model migration. `None`
+    /// means follow the device recommendation. A value is written only after
+    /// the native layer verifies that the older model is installed and usable.
+    #[serde(default)]
+    pub local_stt_compat_override: Option<String>,
+}
+
+fn default_dictation_stt() -> String {
+    "local".into()
+}
+
+fn default_local_stt_model() -> String {
+    "oriserve".into()
 }
 
 fn default_channel() -> String {
@@ -79,6 +105,9 @@ impl Default for DesktopPrefs {
             launch_at_login: false,
             beta_mode: false,
             browser_context_enabled: false,
+            dictation_stt: default_dictation_stt(),
+            local_stt_model: default_local_stt_model(),
+            local_stt_compat_override: None,
         }
     }
 }
@@ -95,7 +124,13 @@ pub fn load() -> DesktopPrefs {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return DesktopPrefs::default();
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    let mut prefs: DesktopPrefs = serde_json::from_str(&text).unwrap_or_default();
+    // The desktop policy resolves all legacy values on startup. Keep the
+    // JSON reader tolerant so an old preferences file can always be opened.
+    if prefs.dictation_stt == "hosted" || prefs.dictation_stt == "cloud-whisper-large-v3" {
+        prefs.dictation_stt = "local".into();
+    }
+    prefs
 }
 
 /// Atomically persist the prefs file. Creates the parent dir if needed.
@@ -139,6 +174,9 @@ mod tests {
         assert!(!p.message_polish_mode);
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
+        assert_eq!(p.dictation_stt, "local");
+        assert_eq!(p.local_stt_model, "oriserve");
+        assert_eq!(p.local_stt_compat_override, None);
 
         let partial = r#"{ "sentry_disabled": true }"#;
         let p: DesktopPrefs = serde_json::from_str(partial).unwrap();
@@ -147,6 +185,8 @@ mod tests {
         assert!(!p.message_polish_mode);
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
+        assert_eq!(p.local_stt_model, "oriserve");
+        assert_eq!(p.local_stt_compat_override, None);
     }
 
     #[test]
@@ -158,6 +198,9 @@ mod tests {
             launch_at_login: true,
             beta_mode: true,
             browser_context_enabled: true,
+            dictation_stt: "cloud-nemotron-3.5".into(),
+            local_stt_model: "nemotron".into(),
+            local_stt_compat_override: Some("nemotron-q8".into()),
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let back: DesktopPrefs = serde_json::from_str(&json).unwrap();
@@ -167,5 +210,11 @@ mod tests {
         assert!(back.launch_at_login);
         assert!(back.beta_mode);
         assert!(back.browser_context_enabled);
+        assert_eq!(back.dictation_stt, "cloud-nemotron-3.5");
+        assert_eq!(back.local_stt_model, "nemotron");
+        assert_eq!(
+            back.local_stt_compat_override.as_deref(),
+            Some("nemotron-q8")
+        );
     }
 }

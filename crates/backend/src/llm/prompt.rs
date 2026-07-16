@@ -175,6 +175,8 @@ pub fn vocab_terms_to_entries(terms: Vec<VocabTerm>) -> Vec<VocabEntry> {
             term_type: v.term_type,
             meaning: v.meaning,
             stt_aliases: vec![],
+            evidence: vec![],
+            do_not_use_when: None,
         })
         .collect()
 }
@@ -189,6 +191,8 @@ pub fn resolved_vocab_terms_to_entries(terms: Vec<VocabTerm>) -> Vec<VocabEntry>
             term_type: v.term_type,
             meaning: v.meaning,
             stt_aliases: vec![],
+            evidence: vec![],
+            do_not_use_when: None,
         })
         .collect()
 }
@@ -209,6 +213,8 @@ pub fn resolved_vocab_terms_to_entries_with_aliases(
                 term_type: v.term_type,
                 meaning: v.meaning,
                 stt_aliases: aliases,
+                evidence: vec![],
+                do_not_use_when: None,
             }
         })
         .collect()

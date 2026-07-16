@@ -550,6 +550,33 @@
     .in { color: #778398; }
     .arrow { color: #495164; font-family: ui-monospace, monospace; font-size: 11px; margin: 5px 0; }
     .out { color: var(--green); }
+    .meetings-cta {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: center;
+      margin-top: 34px;
+      padding: 22px;
+      border: 1px solid rgba(98,230,184,.18);
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(98,230,184,.08), rgba(120,168,255,.06));
+    }
+    .meetings-cta h2 { margin: 0; font-size: 22px; }
+    .meetings-cta p { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+    .meetings-cta a {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 15px;
+      border: 1px solid rgba(98,230,184,.24);
+      border-radius: 9px;
+      background: var(--green);
+      color: #08100d;
+      font-size: 12px;
+      font-weight: 900;
+      text-decoration: none;
+    }
     .footer { margin-top: 34px; color: #414957; font-size: 11px; text-align: center; }
     @media (max-width: 760px) {
       .w {
@@ -652,6 +679,8 @@
       .platform-summary {
         grid-template-columns: 1fr;
       }
+      .meetings-cta { grid-template-columns: 1fr; }
+      .meetings-cta a { width: 100%; }
     }
     @media (max-width: 390px) {
       .w { padding-left: 10px; padding-right: 10px; }
@@ -878,6 +907,14 @@
     <tr><td><strong>macOS</strong></td><td><strong>Accessibility</strong> to type or replace text, <strong>Input Monitoring</strong> to detect global shortcuts like Fn / Option + 1 / Shift + Command + Space, and <strong>Microphone</strong> to record your voice.</td></tr>
     <tr><td><strong>Windows</strong></td><td><strong>Microphone</strong> for dictation. AirNote uses the Windows keyboard hook for global shortcuts and SendInput for typing, so there is no macOS-style Accessibility or Input Monitoring grant.</td></tr>
   </table>
+
+  <section class="meetings-cta" aria-labelledby="meetings-guide-title">
+    <div>
+      <h2 id="meetings-guide-title">Using AirNote for meetings?</h2>
+      <p>Learn how to record, transcribe, summarize, and turn every conversation into clear next steps.</p>
+    </div>
+    <a href="/guide/meetings">Open Meetings Guide →</a>
+  </section>
 
   <p class="footer">AirNote v2.4 · EMIAC · June 2026</p>
 </div>

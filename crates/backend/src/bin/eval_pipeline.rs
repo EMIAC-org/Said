@@ -16,12 +16,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use said_backend::llm::vocab_resolver;
+use said_backend::llm::vocab_retrieval::{VocabRetrievalRequest, retrieve_after_transcription};
 use said_backend::store::corrections::{self, Correction};
 use said_backend::store::pending_promotions;
 use said_backend::store::stt_replacements::ApplyResult;
 use said_backend::store::tier2_edit_policy;
-use said_backend::store::vocab_embeddings;
 use said_backend::store::vocab_fts;
 use said_backend::store::vocabulary::{self, VocabTerm};
 use said_backend::store::{self, DbPool};
@@ -432,22 +431,8 @@ fn main() {
             source: "auto".into(),
         }];
         let adv_pool = setup_db(&adv_seeds);
-        let adv_terms = vocabulary::top_terms(&adv_pool, user_id, 100);
-        let alias_result = ApplyResult {
-            text: transcript.to_string(),
-            matches: vec![],
-            traces: vec![],
-        };
-        let selected = vocab_embeddings::select_for_prompt(
-            &adv_pool,
-            user_id,
-            "hinglish",
-            None,
-            Some(transcript),
-        );
-        let resolved =
-            vocab_resolver::resolve_for_prompt(transcript, &selected, &adv_terms, &alias_result);
-        let injected = !resolved.resolved_terms.is_empty();
+        let selected = retrieve_terms(&adv_pool, user_id, transcript);
+        let injected = !selected.is_empty();
         check(
             &mut total_pass,
             &mut total_fail,
@@ -457,14 +442,7 @@ fn main() {
                 truncate(transcript, 40)
             ),
             !injected,
-            &format!(
-                "injected={injected} resolved={:?}",
-                resolved
-                    .resolved_terms
-                    .iter()
-                    .map(|t| &t.term)
-                    .collect::<Vec<_>>()
-            ),
+            &format!("injected={injected} selected={selected:?}"),
         );
     }
 
@@ -484,22 +462,8 @@ fn main() {
             source: "auto".into(),
         }];
         let pos_pool = setup_db(&pos_seeds);
-        let pos_terms = vocabulary::top_terms(&pos_pool, user_id, 100);
-        let alias_result = ApplyResult {
-            text: transcript.to_string(),
-            matches: vec![],
-            traces: vec![],
-        };
-        let selected = vocab_embeddings::select_for_prompt(
-            &pos_pool,
-            user_id,
-            "hinglish",
-            None,
-            Some(transcript),
-        );
-        let resolved =
-            vocab_resolver::resolve_for_prompt(transcript, &selected, &pos_terms, &alias_result);
-        let injected = resolved.resolved_terms.iter().any(|t| t.term == *term);
+        let selected = retrieve_terms(&pos_pool, user_id, transcript);
+        let injected = selected.iter().any(|t| t == *term);
         check(
             &mut total_pass,
             &mut total_fail,
@@ -509,14 +473,7 @@ fn main() {
                 truncate(transcript, 40)
             ),
             injected,
-            &format!(
-                "injected={injected} resolved={:?}",
-                resolved
-                    .resolved_terms
-                    .iter()
-                    .map(|t| &t.term)
-                    .collect::<Vec<_>>()
-            ),
+            &format!("injected={injected} selected={selected:?}"),
         );
     }
 
@@ -550,6 +507,25 @@ fn main() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+fn retrieve_terms(pool: &DbPool, user_id: &str, transcript: &str) -> Vec<String> {
+    retrieve_after_transcription(
+        pool,
+        VocabRetrievalRequest {
+            user_id: user_id.to_string(),
+            transcript: transcript.to_string(),
+            output_language: "hinglish".to_string(),
+            target_app: None,
+            bucket: None,
+            screen_context: None,
+            transcript_embedding: None,
+            limit: 8,
+        },
+    )
+    .into_iter()
+    .map(|card| card.term)
+    .collect()
+}
+
 fn check(
     pass: &mut usize,
     fail: &mut usize,
@@ -577,7 +553,7 @@ struct SweepResult {
 fn sweep_retrieval(
     pool: &DbPool,
     user_id: &str,
-    all_terms: &[VocabTerm],
+    _all_terms: &[VocabTerm],
     transcripts: &[TranscriptRow],
 ) -> SweepResult {
     let mut false_count = 0;
@@ -591,20 +567,12 @@ fn sweep_retrieval(
             continue;
         }
 
-        let selected =
-            vocab_embeddings::select_for_prompt(pool, user_id, "hinglish", None, Some(transcript));
-        let alias_result = ApplyResult {
-            text: transcript.to_string(),
-            matches: vec![],
-            traces: vec![],
-        };
-        let resolved =
-            vocab_resolver::resolve_for_prompt(transcript, &selected, all_terms, &alias_result);
-        for rt in &resolved.resolved_terms {
-            if is_false_injection(transcript, &rt.term) {
+        let selected = retrieve_terms(pool, user_id, transcript);
+        for term in &selected {
+            if is_false_injection(transcript, term) {
                 false_count += 1;
                 if first_detail.is_empty() {
-                    first_detail = format!("'{}' in '{}'", rt.term, truncate(transcript, 60));
+                    first_detail = format!("'{}' in '{}'", term, truncate(transcript, 60));
                 }
             }
         }

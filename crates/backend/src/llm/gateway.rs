@@ -1,7 +1,7 @@
 //! Streaming LLM client for the gateway's `/v1/chat/completions` endpoint.
 //!
 //! Uses SSE (`stream: true`) and yields tokens via an async channel.
-//! Tauri (Phase E) will consume these tokens and paste them word-by-word.
+//! Tauri consumes these tokens for live preview and inserts the final result once.
 
 use futures::StreamExt;
 use reqwest::Client;

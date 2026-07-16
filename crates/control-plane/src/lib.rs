@@ -5,8 +5,8 @@
 
 pub mod ai_worker;
 pub mod auth;
-pub mod cerebras;
 pub mod codex_client;
+pub mod costs;
 pub mod deepinfra;
 pub mod format_recover;
 pub mod lark_client;
@@ -78,9 +78,7 @@ pub struct AppState {
     /// OpenAI API key used as a platform fallback for text-model provider calls.
     pub openai_api_key: String,
     pub groq_api_key: String,
-    /// Cerebras API key for server-runtime beta polish (CEREBRAS_API_KEY).
-    pub cerebras_api_key: String,
-    /// DeepInfra API key for server-runtime beta polish (DEEPINFRA_API_KEY).
+    /// DeepInfra API key for production server-runtime polish (DEEPINFRA_API_KEY).
     pub deepinfra_api_key: String,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
@@ -345,6 +343,19 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/orgs/:org_id/telemetry/users/:account_id/memory",
             get(routes::telemetry::user_memory),
+        )
+        .route("/v1/orgs/:org_id/runs", get(routes::telemetry::org_runs))
+        .route(
+            "/v1/orgs/:org_id/admin/overview",
+            get(routes::telemetry::admin_overview),
+        )
+        .route(
+            "/v1/orgs/:org_id/meetings/costs",
+            get(routes::meetings::org_meeting_costs),
+        )
+        .route(
+            "/v1/orgs/:org_id/meetings/:meeting_id/cost",
+            get(routes::meetings::meeting_cost_detail),
         )
         .route(
             "/v1/orgs/:org_id/observability/summary",

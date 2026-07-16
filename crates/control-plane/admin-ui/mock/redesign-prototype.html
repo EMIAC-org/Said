@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="cream">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AirNote Admin — Redesign Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   Cursor Design System — tokens (cream default, dark override)
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  --primary: #f54e00;
+  --primary-active: #d04200;
+  --on-primary: #ffffff;
+
+  --canvas: #f7f7f4;
+  --canvas-soft: #fafaf7;
+  --surface-card: #ffffff;
+  --surface-strong: #ececE6;
+
+  --hairline: #e6e5e0;
+  --hairline-soft: #efeee8;
+  --hairline-strong: #cfcdc4;
+
+  --ink: #26251e;
+  --body: #5a5852;
+  --body-strong: #26251e;
+  --muted: #807d72;
+  --muted-soft: #a09c92;
+
+  --success: #1f8a65;
+  --success-soft: #e7f1ec;
+  --error: #cf2d56;
+  --error-soft: #f7e6ea;
+  --warn: #b06d00;
+  --warn-soft: #f5ecdb;
+
+  /* AI timeline pastels — scoped to the dictation trace only */
+  --tl-thinking: #dfa88f;   /* peach  — STT / transcribe */
+  --tl-grep:     #9fc9a2;    /* mint   — resolve / correct */
+  --tl-read:     #9fbbe0;    /* blue   — polish */
+  --tl-edit:     #c0a8dd;    /* lavender — script guard */
+  --tl-done:     #c08532;    /* gold   — paste / done */
+
+  --shadow-none: none;
+}
+
+[data-theme="dark"] {
+  --primary: #ff5b12;
+  --primary-active: #ff7738;
+  --on-primary: #1a1714;
+
+  --canvas: #17150f;
+  --canvas-soft: #1e1b15;
+  --surface-card: #201d16;
+  --surface-strong: #2b271f;
+
+  --hairline: #302c23;
+  --hairline-soft: #262218;
+  --hairline-strong: #433d31;
+
+  --ink: #f2efe6;
+  --body: #b8b2a3;
+  --body-strong: #f2efe6;
+  --muted: #8a8474;
+  --muted-soft: #6a6455;
+
+  --success: #4cc79b;
+  --success-soft: #16281f;
+  --error: #ef6a8c;
+  --error-soft: #2c1820;
+  --warn: #e0a24a;
+  --warn-soft: #2a2114;
+
+  --tl-thinking: #b57a5f;
+  --tl-grep:     #6fa274;
+  --tl-read:     #6f92c0;
+  --tl-edit:     #9a7fbf;
+  --tl-done:     #b98a3f;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: geometricPrecision; }
+
+body {
+  font-family: "Inter", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  letter-spacing: -0.011em;
+  background: var(--canvas);
+  color: var(--ink);
+  height: 100vh;
+  overflow: hidden;
+  transition: background .25s ease, color .25s ease;
+}
+
+.mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* Display type stays weight 400 — editorial voice */
+h1, h2, h3 { font-weight: 400; letter-spacing: -0.02em; color: var(--ink); }
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ── Layout shell ──────────────────────────────────────────────── */
+.app { display: grid; grid-template-columns: 232px 1fr; height: 100vh; }
+
+.sidebar {
+  background: var(--canvas);
+  border-right: 1px solid var(--hairline);
+  display: flex; flex-direction: column;
+  padding: 20px 14px;
+  overflow-y: auto;
+}
+
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 20px; }
+.brand-mark {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: var(--ink); color: var(--canvas);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 600; font-size: 14px; letter-spacing: -0.03em;
+}
+[data-theme="dark"] .brand-mark { background: var(--primary); color: var(--on-primary); }
+.brand-name { font-size: 14.5px; font-weight: 500; letter-spacing: -0.02em; }
+.brand-sub { font-size: 10.5px; color: var(--muted); letter-spacing: 0.02em; }
+
+.nav-group { margin-top: 14px; }
+.nav-group-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.09em; color: var(--muted-soft);
+  padding: 0 8px 6px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 8px; border-radius: 8px;
+  font-size: 13.5px; color: var(--body);
+  cursor: pointer; user-select: none;
+  border: 1px solid transparent;
+  transition: background .12s, color .12s;
+}
+.nav-item:hover { background: var(--surface-strong); color: var(--ink); }
+.nav-item.active { background: var(--surface-card); color: var(--ink); border-color: var(--hairline); font-weight: 500; }
+.nav-item .ico { width: 16px; height: 16px; opacity: .8; }
+.nav-item .badge {
+  margin-left: auto; font-size: 10.5px; color: var(--muted);
+  background: var(--surface-strong); padding: 1px 7px; border-radius: 999px;
+}
+
+.sidebar-foot { margin-top: auto; padding-top: 16px; }
+.user-chip {
+  display: flex; align-items: center; gap: 10px; padding: 8px;
+  border-radius: 8px; border: 1px solid var(--hairline); background: var(--surface-card);
+}
+.avatar {
+  width: 28px; height: 28px; border-radius: 999px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; color: var(--on-primary);
+  background: var(--ink);
+}
+[data-theme="dark"] .avatar { background: var(--primary); }
+
+/* ── Main column ───────────────────────────────────────────────── */
+.main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+
+.topbar {
+  height: 60px; flex: none;
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 28px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--canvas);
+}
+.crumb { font-size: 13px; color: var(--muted); }
+.crumb b { color: var(--ink); font-weight: 500; }
+
+.search {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface-card); border: 1px solid var(--hairline);
+  border-radius: 8px; padding: 7px 12px; width: 260px;
+  font-size: 12.5px; color: var(--muted-soft);
+}
+.spacer { flex: 1; }
+
+/* Segmented window control */
+.seg {
+  display: inline-flex; background: var(--surface-card);
+  border: 1px solid var(--hairline); border-radius: 8px; padding: 3px;
+}
+.seg button {
+  font: inherit; font-size: 12px; color: var(--body);
+  background: transparent; border: 0; cursor: pointer;
+  padding: 5px 12px; border-radius: 6px; letter-spacing: -0.01em;
+}
+.seg button.active { background: var(--ink); color: var(--canvas); font-weight: 500; }
+[data-theme="dark"] .seg button.active { background: var(--primary); color: var(--on-primary); }
+
+.icon-btn {
+  width: 34px; height: 34px; border-radius: 8px;
+  border: 1px solid var(--hairline); background: var(--surface-card);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--body);
+}
+.icon-btn:hover { color: var(--ink); border-color: var(--hairline-strong); }
+
+.content { flex: 1; overflow-y: auto; padding: 28px; }
+.content-inner { max-width: 1180px; margin: 0 auto; }
+
+.page-head { margin-bottom: 22px; }
+.page-head h1 { font-size: 27px; letter-spacing: -0.03em; }
+.page-head p { font-size: 13.5px; color: var(--muted); margin-top: 5px; }
+
+/* ── Cards ─────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface-card);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+.card-pad { padding: 20px; }
+.card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 15px 18px; border-bottom: 1px solid var(--hairline);
+}
+.card-title { font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em; }
+.card-title-mut { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); }
+
+.grid { display: grid; gap: 14px; }
+.g-4 { grid-template-columns: repeat(4, 1fr); }
+.g-3 { grid-template-columns: repeat(3, 1fr); }
+.g-2 { grid-template-columns: repeat(2, 1fr); }
+.g-main { grid-template-columns: 1.7fr 1fr; }
+.mt { margin-top: 14px; }
+
+/* Stat tile */
+.stat { padding: 16px 18px; }
+.stat .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+.stat .val { font-size: 30px; letter-spacing: -0.035em; margin-top: 10px; color: var(--ink); }
+.stat .val small { font-size: 15px; color: var(--muted); letter-spacing: -0.01em; }
+.stat .sub { font-size: 12px; color: var(--muted); margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+.delta { font-size: 11px; font-weight: 500; padding: 1px 6px; border-radius: 5px; }
+.delta.up { color: var(--success); background: var(--success-soft); }
+.delta.down { color: var(--error); background: var(--error-soft); }
+
+/* ── Table ─────────────────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  text-align: left; font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted);
+  padding: 11px 18px; border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+tbody td { padding: 12px 18px; font-size: 13px; border-bottom: 1px solid var(--hairline-soft); color: var(--body); vertical-align: middle; }
+tbody tr { cursor: pointer; transition: background .1s; }
+tbody tr:hover { background: var(--canvas-soft); }
+tbody tr:last-child td { border-bottom: 0; }
+td.r, th.r { text-align: right; }
+.cell-strong { color: var(--ink); font-weight: 500; }
+
+.person-cell { display: flex; align-items: center; gap: 10px; }
+.person-cell .nm { color: var(--ink); font-weight: 500; font-size: 13px; }
+.person-cell .em { color: var(--muted); font-size: 11.5px; }
+
+/* Chips / pills */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; padding: 2px 8px; border-radius: 6px;
+  background: var(--surface-strong); color: var(--body);
+  border: 1px solid var(--hairline);
+}
+.chip.mono { font-size: 11px; }
+.tag {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 2px 8px; border-radius: 999px;
+}
+.tag.ok { color: var(--success); background: var(--success-soft); }
+.tag.err { color: var(--error); background: var(--error-soft); }
+.tag.warn { color: var(--warn); background: var(--warn-soft); }
+.tag.neutral { color: var(--muted); background: var(--surface-strong); }
+
+.dot { width: 7px; height: 7px; border-radius: 999px; display: inline-block; }
+.dot.live { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.dot.idle { background: var(--muted-soft); }
+
+.os { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--body); }
+.os .glyph { font-size: 13px; }
+
+.cost { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: var(--ink); }
+.cost-mut { color: var(--muted); }
+
+/* Bars */
+.bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.bar-row:last-child { margin-bottom: 0; }
+.bar-label { font-size: 12.5px; color: var(--body); width: 92px; flex: none; }
+.bar-track { flex: 1; height: 8px; background: var(--hairline); border-radius: 999px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; }
+.bar-val { font-size: 12px; color: var(--ink); width: 64px; text-align: right; flex: none; }
+
+/* Split bar (stacked) */
+.splitbar { height: 12px; border-radius: 999px; overflow: hidden; display: flex; background: var(--hairline); }
+.splitbar > span { height: 100%; }
+.legend { display: flex; gap: 18px; margin-top: 12px; flex-wrap: wrap; }
+.legend .li { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--body); }
+.legend .sw { width: 10px; height: 10px; border-radius: 3px; }
+
+/* ── Slide-over drawer ─────────────────────────────────────────── */
+.scrim {
+  position: fixed; inset: 0; background: rgba(20,18,12,.32);
+  opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 40;
+}
+.scrim.open { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; right: 0; height: 100vh; width: 620px; max-width: 92vw;
+  background: var(--canvas); border-left: 1px solid var(--hairline);
+  transform: translateX(100%); transition: transform .24s cubic-bezier(.4,0,.2,1);
+  z-index: 50; display: flex; flex-direction: column;
+}
+.drawer.open { transform: translateX(0); }
+.drawer-head {
+  display: flex; align-items: flex-start; gap: 14px; justify-content: space-between;
+  padding: 20px 24px; border-bottom: 1px solid var(--hairline);
+}
+.drawer-body { flex: 1; overflow-y: auto; padding: 22px 24px; }
+.drawer-title { font-size: 18px; letter-spacing: -0.02em; }
+.drawer-meta { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+
+.section-label {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--muted); margin: 22px 0 11px;
+}
+.section-label:first-child { margin-top: 0; }
+
+/* Trace timeline */
+.trace { position: relative; padding-left: 20px; }
+.trace::before {
+  content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px;
+  width: 1.5px; background: var(--hairline);
+}
+.trace-step { position: relative; padding: 0 0 18px; }
+.trace-step:last-child { padding-bottom: 0; }
+.trace-node {
+  position: absolute; left: -19px; top: 3px; width: 12px; height: 12px;
+  border-radius: 999px; border: 2px solid var(--canvas);
+}
+.trace-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 3px 9px; border-radius: 999px; color: #1a1712;
+}
+.trace-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.trace-fn { font-size: 11.5px; color: var(--muted); margin-top: 5px; }
+.trace-fn b { color: var(--body); font-weight: 500; }
+.trace-dur { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--muted); }
+.trace-note {
+  font-size: 12px; color: var(--body); margin-top: 6px; padding: 8px 11px;
+  background: var(--canvas-soft); border: 1px solid var(--hairline); border-radius: 8px;
+}
+
+/* Text diff stack */
+.textstage { border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; margin-bottom: 10px; background: var(--surface-card); }
+.textstage-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--canvas-soft); border-bottom: 1px solid var(--hairline); }
+.textstage-name { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.textstage-body { padding: 11px 13px; font-size: 13px; line-height: 1.55; color: var(--ink); }
+.textstage-body .add { background: var(--success-soft); color: var(--success); border-radius: 3px; padding: 0 2px; }
+.textstage-body .del { background: var(--error-soft); color: var(--error); border-radius: 3px; padding: 0 2px; text-decoration: line-through; }
+
+/* Cost breakdown table (mono) */
+.costtable { width: 100%; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.costtable td { padding: 7px 0; border-bottom: 1px solid var(--hairline-soft); color: var(--body); vertical-align: top; }
+.costtable tr:last-child td { border-bottom: 0; }
+.costtable .k { color: var(--muted); }
+.costtable .v { text-align: right; color: var(--ink); white-space: nowrap; }
+.costtable .total td { border-top: 1.5px solid var(--hairline-strong); border-bottom: 0; padding-top: 10px; font-weight: 600; }
+.costtable .total .v { color: var(--primary); }
+
+/* KV grid */
+.kv { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--hairline); border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; }
+.kv .cell { background: var(--surface-card); padding: 12px 14px; }
+.kv .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.kv .v { font-size: 16px; color: var(--ink); margin-top: 5px; letter-spacing: -0.01em; }
+.kv .v small { color: var(--muted); font-size: 12px; }
+
+/* Person detail header */
+.pd-head { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+.pd-head .avatar { width: 52px; height: 52px; font-size: 19px; border-radius: 14px; }
+.pd-head h1 { font-size: 24px; }
+.pd-head .em { color: var(--muted); font-size: 13.5px; margin-top: 2px; }
+
+.back {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted);
+  cursor: pointer; margin-bottom: 16px; background: none; border: 0; font-family: inherit;
+}
+.back:hover { color: var(--ink); }
+
+.btn {
+  font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+  padding: 8px 15px; border-radius: 8px; border: 1px solid var(--hairline-strong);
+  background: var(--surface-card); color: var(--ink);
+}
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+.btn.primary:hover { background: var(--primary-active); }
+
+.hint {
+  font-size: 11.5px; color: var(--muted); background: var(--canvas-soft);
+  border: 1px dashed var(--hairline-strong); border-radius: 8px; padding: 9px 12px;
+}
+
+.hidden { display: none !important; }
+
+svg .grid-line { stroke: var(--hairline); stroke-width: 1; }
+svg .area { fill: var(--primary); opacity: .08; }
+svg .line { fill: none; stroke: var(--primary); stroke-width: 2; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div>
+        <div class="brand-name">AirNote</div>
+        <div class="brand-sub">Enterprise Admin</div>
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-item active" data-view="overview">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Overview
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label">Observability</div>
+      <div class="nav-item" data-view="runs">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        Runs
+        <span class="badge" id="runsBadge">—</span>
+      </div>
+      <div class="nav-item" data-view="meetings">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3"/></svg>
+        Meetings
+        <span class="badge" id="meetBadge">—</span>
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label">People</div>
+      <div class="nav-item" data-view="people">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 6"/><path d="M17.5 20a5.5 5.5 0 0 0-3-4.9"/></svg>
+        People
+        <span class="badge" id="peopleBadge">—</span>
+      </div>
+    </div>
+
+    <div class="sidebar-foot">
+      <div class="user-chip">
+        <div class="avatar">R</div>
+        <div style="min-width:0">
+          <div style="font-size:12.5px;font-weight:500;color:var(--ink)">Rahul</div>
+          <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis">rahul@emiactech.com</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main ────────────────────────────────────────────────── -->
+  <div class="main">
+    <div class="topbar">
+      <div class="crumb" id="crumb"><b>Overview</b></div>
+      <div class="spacer"></div>
+      <div class="search mono">⌘K &nbsp;Search runs, people…</div>
+      <div class="seg" id="windowSeg">
+        <button data-w="today">Today</button>
+        <button data-w="7d" class="active">7 days</button>
+        <button data-w="30d">30 days</button>
+        <button data-w="all">All</button>
+      </div>
+      <div class="icon-btn" id="themeBtn" title="Toggle theme">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" id="themeIcon"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="content-inner" id="view"><!-- rendered by JS --></div>
+    </div>
+  </div>
+</div>
+
+<!-- Drawer -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head" id="drawerHead"></div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   MOCK DATA  (fake / approximated — for design taste only)
+   Rate cards mirror the real control-plane costs.rs where known:
+     STT  Together Nemotron  = $0.09 / audio-hour
+     Polish Gemma            = $0.105 /M input · $0.51 /M output tokens
+     Meetings DeepSeek (paid)= see MEET_RATE below
+   ═══════════════════════════════════════════════════════════════════════ */
+
+// Meeting AI cost is approximated on the DeepSeek V4 Flash rate card (per product direction).
+// $0.14/M input · $0.0028/M cache-hit input · $0.28/M output.
+const MEET_RATE = { model: "deepseek-v4-flash", inPerM: 0.14, cacheInPerM: 0.0028, outPerM: 0.28, provider: "DeepSeek" };
+const STT_RATE  = { model: "nemotron-stt", perHour: 0.09, provider: "Together" };
+const POLISH_RATE = { model: "gemma-3-27b", inPerM: 0.105, outPerM: 0.51, provider: "Cerebras" };
+
+const usd = n => "$" + n.toLocaleString("en-US", { minimumFractionDigits: n < 1 ? 4 : 2, maximumFractionDigits: n < 1 ? 4 : 2 });
+const usd2 = n => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const num = n => n.toLocaleString("en-US");
+
+// Per-window multipliers to make the segmented control feel alive
+const WINDOWS = { today: 0.06, "7d": 0.34, "30d": 1, all: 3.8 };
+const WLABEL  = { today: "today", "7d": "last 7 days", "30d": "last 30 days", all: "all time" };
+let W = "7d";
+
+const PEOPLE = [
+  { id: "u1", name: "Aarav Mehta",   email: "aarav@emiactech.com",   plat: "mac", ver: "3.0.4", os: "macOS 14.5", live: true,  runs30: 1420, words30: 96400, aud30: 214, stt30: 0.32, pol30: 1.94, acc: 0.86, speech: "nemotron-stt", meetings30: 9,  meetCost30: 3.10 },
+  { id: "u2", name: "Priya Sharma",  email: "priya@emiactech.com",   plat: "win", ver: "3.0.4", os: "Windows 11", live: true,  runs30: 1180, words30: 81200, aud30: 176, stt30: 0.26, pol30: 1.61, acc: 0.91, speech: "nemotron-stt", meetings30: 14, meetCost30: 5.42 },
+  { id: "u3", name: "Vikram Rao",    email: "vikram@emiactech.com",  plat: "mac", ver: "3.0.3", os: "macOS 13.6", live: false, runs30: 890,  words30: 60300, aud30: 141, stt30: 0.21, pol30: 1.22, acc: 0.79, speech: "whisper-local", meetings30: 4,  meetCost30: 1.28 },
+  { id: "u4", name: "Sara Khan",     email: "sara@emiactech.com",    plat: "win", ver: "3.0.4", os: "Windows 11", live: true,  runs30: 760,  words30: 52100, aud30: 118, stt30: 0.18, pol30: 1.04, acc: 0.88, speech: "nemotron-stt", meetings30: 22, meetCost30: 9.11 },
+  { id: "u5", name: "Rahul Verma",   email: "rahul@emiactech.com",   plat: "mac", ver: "3.0.4", os: "macOS 14.5", live: true,  runs30: 640,  words30: 44800, aud30: 99,  stt30: 0.15, pol30: 0.90, acc: 0.83, speech: "nemotron-stt", meetings30: 31, meetCost30: 14.02 },
+  { id: "u6", name: "Neha Gupta",    email: "neha@emiactech.com",    plat: "win", ver: "3.0.2", os: "Windows 10", live: false, runs30: 410,  words30: 27600, aud30: 63,  stt30: 0.09, pol30: 0.55, acc: 0.75, speech: "whisper-local", meetings30: 2,  meetCost30: 0.71 },
+  { id: "u7", name: "Arjun Nair",    email: "arjun@emiactech.com",   plat: "mac", ver: "3.0.4", os: "macOS 14.4", live: true,  runs30: 305,  words30: 20900, aud30: 47,  stt30: 0.07, pol30: 0.41, acc: 0.90, speech: "nemotron-stt", meetings30: 6,  meetCost30: 2.05 },
+];
+
+const APPS = ["Slack", "Gmail", "Notion", "VS Code", "Linear", "WhatsApp", "Chrome"];
+const MODES = ["normal_voice", "command", "reply"];
+
+// Build a synthetic run feed
+function seededRuns(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const p = PEOPLE[i % PEOPLE.length];
+    const words = 20 + ((i * 37) % 180);
+    const aud = +(words / 150 * 60 / 60 + 3 + (i % 9)).toFixed(0); // seconds-ish
+    const audSec = 4 + (i * 7) % 55;
+    const inTok = 180 + (i * 53) % 900;
+    const outTok = 60 + (i * 31) % 400;
+    const stt = +(audSec / 3600 * STT_RATE.perHour).toFixed(5);
+    const pol = +(inTok / 1e6 * POLISH_RATE.inPerM + outTok / 1e6 * POLISH_RATE.outPerM).toFixed(5);
+    const editBuckets = ["none", "none", "none", "light", "heavy"];
+    const eb = editBuckets[i % editBuckets.length];
+    const local = p.speech === "whisper-local";
+    out.push({
+      id: "run_" + (10480 - i),
+      person: p, app: APPS[i % APPS.length], mode: MODES[i % MODES.length],
+      words, audSec,
+      sttModel: local ? "whisper-local" : STT_RATE.model,
+      sttProvider: local ? "local" : STT_RATE.provider,
+      sttCost: local ? 0 : stt,
+      polModel: POLISH_RATE.model, polProvider: POLISH_RATE.provider,
+      inTok, outTok, polCost: pol,
+      total: (local ? 0 : stt) + pol,
+      totalMs: 640 + (i * 53) % 1800,
+      transcribeMs: 210 + (i * 17) % 500,
+      polishMs: 300 + (i * 29) % 900,
+      pasteMs: 40 + (i * 7) % 120,
+      edit: eb, success: i % 23 !== 0,
+      coverage: local ? "partial" : "complete",
+      ago: i,
+    });
+  }
+  return out;
+}
+const RUNS = seededRuns(48);
+
+const MEETINGS = [
+  { id: "m1", title: "Q3 Roadmap Sync",        host: PEOPLE[4], parts: 6, dur: 52, inTok: 41200, outTok: 6800, status: "ended", date: "Today, 10:30" },
+  { id: "m2", title: "Enterprise Onboarding",  host: PEOPLE[3], parts: 4, dur: 38, inTok: 29800, outTok: 5100, status: "ended", date: "Today, 09:00" },
+  { id: "m3", title: "Design Review — Admin",  host: PEOPLE[0], parts: 5, dur: 61, inTok: 52400, outTok: 8900, status: "live",  date: "Now" },
+  { id: "m4", title: "Sales Standup",          host: PEOPLE[1], parts: 8, dur: 21, inTok: 15600, outTok: 2400, status: "ended", date: "Yesterday" },
+  { id: "m5", title: "Hiring Panel — Backend", host: PEOPLE[4], parts: 3, dur: 45, inTok: 33100, outTok: 6200, status: "ended", date: "Yesterday" },
+  { id: "m6", title: "Customer QBR — Acme",    host: PEOPLE[3], parts: 7, dur: 58, inTok: 48700, outTok: 7600, status: "ended", date: "2 days ago" },
+];
+MEETINGS.forEach(m => {
+  m.cost = +(m.inTok / 1e6 * MEET_RATE.inPerM + m.outTok / 1e6 * MEET_RATE.outPerM).toFixed(3);
+});
+
+/* ── Aggregates ─────────────────────────────────────────────────── */
+function scale(v) { return v * WINDOWS[W]; }
+function dictCostAll() { return PEOPLE.reduce((s, p) => s + scale(p.stt30 + p.pol30), 0); }
+function meetCostAll() { return PEOPLE.reduce((s, p) => s + scale(p.meetCost30), 0); }
+function sttAll()  { return PEOPLE.reduce((s, p) => s + scale(p.stt30), 0); }
+function polAll()  { return PEOPLE.reduce((s, p) => s + scale(p.pol30), 0); }
+function runsAll() { return Math.round(PEOPLE.reduce((s, p) => s + scale(p.runs30), 0)); }
+function wordsAll(){ return Math.round(PEOPLE.reduce((s, p) => s + scale(p.words30), 0)); }
+function activeCount() { return PEOPLE.filter(p => p.live).length; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   RENDER
+   ═══════════════════════════════════════════════════════════════════════ */
+const view = document.getElementById("view");
+const crumb = document.getElementById("crumb");
+let CURRENT = "overview";
+
+function sparkline(vals, w = 560, h = 120) {
+  const max = Math.max(...vals), min = Math.min(...vals);
+  const dx = w / (vals.length - 1);
+  const pts = vals.map((v, i) => `${(i * dx).toFixed(1)},${(h - (v - min) / (max - min || 1) * (h - 16) - 8).toFixed(1)}`);
+  const line = pts.join(" ");
+  const area = `0,${h} ${line} ${w},${h}`;
+  const grid = [0, .25, .5, .75, 1].map(f => `<line class="grid-line" x1="0" y1="${(f * h).toFixed(0)}" x2="${w}" y2="${(f * h).toFixed(0)}"/>`).join("");
+  const lastX = (w).toFixed(1), lastY = pts[pts.length - 1].split(",")[1];
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block">
+    ${grid}<polygon class="area" points="${area}"/><polyline class="line" points="${line}"/>
+    <circle cx="${lastX}" cy="${lastY}" r="3.5" fill="var(--surface-card)" stroke="var(--primary)" stroke-width="2"/></svg>`;
+}
+
+const osGlyph = plat => plat === "mac" ? "" : "⊞";
+
+/* ── OVERVIEW ─────────────────────────────────────────────────── */
+function renderOverview() {
+  const dict = dictCostAll(), meet = meetCostAll(), tot = dict + meet;
+  const stt = sttAll(), pol = polAll();
+  const series = [42, 58, 47, 66, 71, 63, 88, 79, 96, 84, 110, 102, 128, 140].map(v => v * (WINDOWS[W] / WINDOWS["30d"]));
+  const topPeople = [...PEOPLE].sort((a, b) => (b.stt30 + b.pol30 + b.meetCost30) - (a.stt30 + a.pol30 + a.meetCost30)).slice(0, 5);
+
+  view.innerHTML = `
+    <div class="page-head">
+      <h1>Overview</h1>
+      <p>Fleet-wide dictation &amp; meeting activity · <b class="tnum">${WLABEL[W]}</b></p>
+    </div>
+
+    <div class="grid g-4">
+      ${statTile("Total spend", usd2(tot), `${usd2(dict)} dictation · ${usd2(meet)} meetings`, "up", "+12%")}
+      ${statTile("Dictation runs", num(runsAll()), `${num(wordsAll())} words polished`, "up", "+8%")}
+      ${statTile("Words dictated", num(wordsAll()), `across ${PEOPLE.length} people`, null, "")}
+      ${statTile("Active now", activeCount() + " / " + PEOPLE.length, "seen in last 15 min", null, "")}
+    </div>
+
+    <div class="grid g-main mt">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Dictation volume</div>
+          <div class="chip mono">${WLABEL[W]}</div>
+        </div>
+        <div class="card-pad">${sparkline(series)}</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">Cost breakdown</div></div>
+        <div class="card-pad">
+          <div style="font-size:28px;letter-spacing:-.03em;margin-bottom:4px">${usd2(tot)}</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:16px">total spend · ${WLABEL[W]}</div>
+          <div class="splitbar">
+            <span style="width:${stt / tot * 100}%;background:var(--tl-thinking)"></span>
+            <span style="width:${pol / tot * 100}%;background:var(--tl-read)"></span>
+            <span style="width:${meet / tot * 100}%;background:var(--tl-done)"></span>
+          </div>
+          <div class="legend">
+            <div class="li"><span class="sw" style="background:var(--tl-thinking)"></span> STT ${usd2(stt)}</div>
+            <div class="li"><span class="sw" style="background:var(--tl-read)"></span> Polish ${usd2(pol)}</div>
+            <div class="li"><span class="sw" style="background:var(--tl-done)"></span> Meetings ${usd2(meet)}</div>
+          </div>
+          <div class="hint" style="margin-top:16px">Meetings run on paid <b>${MEET_RATE.provider} ${MEET_RATE.model}</b> — est. $${MEET_RATE.inPerM}/M in · $${MEET_RATE.cacheInPerM}/M cache-hit · $${MEET_RATE.outPerM}/M out. Dictation STT + polish are near-zero per run.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid g-main mt">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Top people by spend</div>
+          <div class="chip" style="cursor:pointer" onclick="go('people')">View all →</div>
+        </div>
+        <table>
+          <thead><tr><th>Person</th><th>Device</th><th class="r">Runs</th><th class="r">Dictation</th><th class="r">Meetings</th><th class="r">Total</th></tr></thead>
+          <tbody>
+            ${topPeople.map(p => {
+              const d = scale(p.stt30 + p.pol30), m = scale(p.meetCost30);
+              return `<tr onclick="openPerson('${p.id}')">
+                <td><div class="person-cell"><div class="avatar" style="width:26px;height:26px;font-size:11px">${p.name[0]}</div><div><div class="nm">${p.name}</div></div></div></td>
+                <td><span class="os"><span class="glyph">${osGlyph(p.plat)}</span>${p.plat === "mac" ? "macOS" : "Windows"} · <span class="mono" style="font-size:11px">${p.ver}</span></span></td>
+                <td class="r tnum">${num(Math.round(scale(p.runs30)))}</td>
+                <td class="r"><span class="cost">${usd2(d)}</span></td>
+                <td class="r"><span class="cost">${usd2(m)}</span></td>
+                <td class="r"><span class="cost">${usd2(d + m)}</span></td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Recent runs</div>
+          <div class="chip" style="cursor:pointer" onclick="go('runs')">View all →</div>
+        </div>
+        <table>
+          <thead><tr><th>Run</th><th>App</th><th class="r">Cost</th></tr></thead>
+          <tbody>
+            ${RUNS.slice(0, 6).map(r => `<tr onclick="openRun('${r.id}')">
+              <td><div class="cell-strong mono" style="font-size:11.5px">${r.id}</div><div style="font-size:11px;color:var(--muted)">${r.person.name.split(" ")[0]} · ${r.words}w</div></td>
+              <td><span class="chip">${r.app}</span></td>
+              <td class="r"><span class="cost">${r.total === 0 ? "$0.0000" : usd(r.total)}</span></td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function statTile(label, val, sub, deltaDir, deltaVal) {
+  return `<div class="card stat">
+    <div class="label">${label}</div>
+    <div class="val tnum">${val}</div>
+    <div class="sub">${deltaDir ? `<span class="delta ${deltaDir}">${deltaVal}</span>` : ""}${sub}</div>
+  </div>`;
+}
+
+/* ── RUNS ─────────────────────────────────────────────────────── */
+function renderRuns() {
+  view.innerHTML = `
+    <div class="page-head">
+      <h1>Runs</h1>
+      <p>Every dictation run — model, latency and cost. Click a run for its full trace.</p>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">Dictation runs <span style="color:var(--muted);font-weight:400">· ${RUNS.length} shown</span></div>
+        <div style="display:flex;gap:8px">
+          <span class="chip">All apps ▾</span><span class="chip">All modes ▾</span><span class="chip">Edited only</span>
+        </div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Run</th><th>Person</th><th>App</th><th>STT model</th><th>Polish model</th>
+          <th class="r">Latency</th><th class="r">Words</th><th class="r">Cost</th><th></th>
+        </tr></thead>
+        <tbody>
+          ${RUNS.map(r => `<tr onclick="openRun('${r.id}')">
+            <td>
+              <div class="cell-strong mono" style="font-size:11.5px">${r.id}</div>
+              <div style="font-size:11px;color:var(--muted)">${r.ago === 0 ? "just now" : r.ago + "m ago"}</div>
+            </td>
+            <td><div class="person-cell"><div class="avatar" style="width:24px;height:24px;font-size:10px">${r.person.name[0]}</div><span class="nm" style="font-size:12.5px">${r.person.name.split(" ")[0]}</span></div></td>
+            <td><span class="chip">${r.app}</span></td>
+            <td><span class="chip mono">${r.sttModel}</span></td>
+            <td><span class="chip mono">${r.polModel}</span></td>
+            <td class="r mono" style="font-size:11.5px;color:var(--body)">${r.totalMs}ms</td>
+            <td class="r tnum">${r.words}</td>
+            <td class="r"><span class="cost">${r.total === 0 ? "$0.0000" : usd(r.total)}</span> ${r.coverage === "partial" ? '<span class="tag neutral" style="margin-left:4px">est</span>' : ""}</td>
+            <td class="r" style="color:var(--muted-soft)">›</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+/* ── PEOPLE ───────────────────────────────────────────────────── */
+function renderPeople() {
+  const rows = [...PEOPLE].sort((a, b) => b.runs30 - a.runs30);
+  view.innerHTML = `
+    <div class="page-head">
+      <h1>People</h1>
+      <p>Who’s using AirNote, on what device, and how much they cost · <b>${WLABEL[W]}</b></p>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">${PEOPLE.length} people</div>
+        <div class="search mono" style="width:220px">⌘K Search people…</div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Person</th><th>Device</th><th>Status</th>
+          <th class="r">Runs</th><th class="r">Words</th><th class="r">Audio</th>
+          <th class="r">Dictation</th><th class="r">Meetings</th><th class="r">Total cost</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map(p => {
+            const d = scale(p.stt30 + p.pol30), m = scale(p.meetCost30);
+            return `<tr onclick="openPerson('${p.id}')">
+              <td><div class="person-cell"><div class="avatar" style="width:30px;height:30px;font-size:12px">${p.name[0]}</div><div><div class="nm">${p.name}</div><div class="em">${p.email}</div></div></div></td>
+              <td><span class="os"><span class="glyph">${osGlyph(p.plat)}</span>${p.plat === "mac" ? "macOS" : "Windows"} · <span class="mono" style="font-size:11px">v${p.ver}</span></span></td>
+              <td>${p.live ? '<span class="os"><span class="dot live"></span> Active</span>' : '<span class="os"><span class="dot idle"></span> Idle</span>'}</td>
+              <td class="r tnum">${num(Math.round(scale(p.runs30)))}</td>
+              <td class="r tnum">${num(Math.round(scale(p.words30)))}</td>
+              <td class="r tnum">${Math.round(scale(p.aud30))}m</td>
+              <td class="r"><span class="cost">${usd2(d)}</span></td>
+              <td class="r"><span class="cost">${usd2(m)}</span></td>
+              <td class="r"><span class="cost" style="color:var(--primary)">${usd2(d + m)}</span></td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+    <div class="hint" style="margin-top:14px">Device shows the desktop platform &amp; app version (real fields: <span class="mono">platform</span>, <span class="mono">app_version</span>). OS version isn’t stored today — “macOS/Windows” is derived from platform.</div>
+  `;
+}
+
+/* ── MEETINGS ─────────────────────────────────────────────────── */
+function renderMeetings() {
+  const totalCost = MEETINGS.reduce((s, m) => s + m.cost, 0);
+  const totalTok = MEETINGS.reduce((s, m) => s + m.inTok + m.outTok, 0);
+  view.innerHTML = `
+    <div class="page-head">
+      <h1>Meetings</h1>
+      <p>Meeting summaries run on paid <b>${MEET_RATE.provider} ${MEET_RATE.model}</b>. Track who meets and what it costs.</p>
+    </div>
+
+    <div class="grid g-3">
+      ${statTile("Meetings", num(MEETINGS.length), "in view", null, "")}
+      ${statTile("AI spend", usd2(totalCost), MEET_RATE.model, "up", "+18%")}
+      ${statTile("Tokens", num(totalTok), "in + out to DeepSeek", null, "")}
+    </div>
+
+    <div class="card mt">
+      <div class="card-head"><div class="card-title">Recent meetings</div></div>
+      <table>
+        <thead><tr>
+          <th>Meeting</th><th>Host</th><th class="r">People</th><th class="r">Duration</th>
+          <th>Model</th><th class="r">Tokens</th><th class="r">Cost</th><th>Status</th>
+        </tr></thead>
+        <tbody>
+          ${MEETINGS.map(m => `<tr onclick="openMeeting('${m.id}')">
+            <td class="cell-strong">${m.title}<div style="font-size:11px;color:var(--muted);font-weight:400">${m.date}</div></td>
+            <td><div class="person-cell"><div class="avatar" style="width:24px;height:24px;font-size:10px">${m.host.name[0]}</div><span class="nm" style="font-size:12.5px">${m.host.name.split(" ")[0]}</span></div></td>
+            <td class="r tnum">${m.parts}</td>
+            <td class="r tnum">${m.dur}m</td>
+            <td><span class="chip mono">${MEET_RATE.model}</span></td>
+            <td class="r tnum mono" style="font-size:11.5px">${num(m.inTok + m.outTok)}</td>
+            <td class="r"><span class="cost">${usd2(m.cost)}</span></td>
+            <td>${m.status === "live" ? '<span class="tag warn">● Live</span>' : '<span class="tag neutral">Ended</span>'}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+    <div class="hint" style="margin-top:14px">⚠️ Meeting AI cost is <b>estimated</b> on the <span class="mono">${MEET_RATE.model}</span> rate card ($${MEET_RATE.inPerM}/M in · $${MEET_RATE.outPerM}/M out). Token capture + a <span class="mono">meeting_provider_usage</span> table are wired in the real build; meetings summarized before that show zero.</div>
+  `;
+}
+
+/* ═══ DETAIL VIEWS ═══════════════════════════════════════════════ */
+function openPerson(id) {
+  const p = PEOPLE.find(x => x.id === id);
+  const d = scale(p.stt30 + p.pol30), m = scale(p.meetCost30);
+  const stt = scale(p.stt30), pol = scale(p.pol30);
+  const myRuns = RUNS.filter(r => r.person.id === id).slice(0, 5);
+  const daily = [4, 7, 5, 9, 12, 8, 11, 14, 10, 13, 9, 16].map(v => v * WINDOWS[W]);
+  crumb.innerHTML = `<span style="cursor:pointer" onclick="go('people')">People</span> / <b>${p.name}</b>`;
+  view.innerHTML = `
+    <button class="back" onclick="go('people')">‹ Back to people</button>
+    <div class="pd-head">
+      <div class="avatar">${p.name[0]}</div>
+      <div style="flex:1">
+        <h1>${p.name}</h1>
+        <div class="em">${p.email} · ${p.live ? '<span style="color:var(--success)">● active</span>' : 'idle'}</div>
+      </div>
+      <div style="text-align:right">
+        <div class="os" style="justify-content:flex-end"><span class="glyph">${osGlyph(p.plat)}</span> ${p.plat === "mac" ? "macOS" : "Windows"} · <span class="mono" style="font-size:12px">v${p.ver}</span></div>
+        <div style="font-size:11.5px;color:var(--muted);margin-top:3px">primary STT: <span class="mono">${p.speech}</span></div>
+      </div>
+    </div>
+
+    <div class="kv">
+      <div class="cell"><div class="k">Runs</div><div class="v tnum">${num(Math.round(scale(p.runs30)))}</div></div>
+      <div class="cell"><div class="k">Words dictated</div><div class="v tnum">${num(Math.round(scale(p.words30)))}</div></div>
+      <div class="cell"><div class="k">Audio dictated</div><div class="v tnum">${Math.round(scale(p.aud30))} <small>min</small></div></div>
+      <div class="cell"><div class="k">Acceptance</div><div class="v tnum">${Math.round(p.acc * 100)}<small>%</small></div></div>
+    </div>
+
+    <div class="section-label">Cost · ${WLABEL[W]}</div>
+    <div class="grid g-3">
+      ${statTile("Dictation", usd2(d), `${usd(stt)} STT · ${usd(pol)} polish`, null, "")}
+      ${statTile("Meetings", usd2(m), `${p.meetings30 ? Math.round(scale(p.meetings30)) : 0} meetings hosted`, null, "")}
+      ${statTile("Total", usd2(d + m), "all AI spend", null, "")}
+    </div>
+
+    <div class="grid g-main mt">
+      <div class="card">
+        <div class="card-head"><div class="card-title">Daily spend</div><div class="chip mono">${WLABEL[W]}</div></div>
+        <div class="card-pad">${sparkline(daily, 520, 110)}</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title">Cost split</div></div>
+        <div class="card-pad">
+          <div class="splitbar" style="margin-bottom:14px">
+            <span style="width:${stt / (d + m) * 100}%;background:var(--tl-thinking)"></span>
+            <span style="width:${pol / (d + m) * 100}%;background:var(--tl-read)"></span>
+            <span style="width:${m / (d + m) * 100}%;background:var(--tl-done)"></span>
+          </div>
+          <div class="legend" style="flex-direction:column;gap:9px">
+            <div class="li"><span class="sw" style="background:var(--tl-thinking)"></span> STT — <span class="cost cost-mut">${usd(stt)}</span></div>
+            <div class="li"><span class="sw" style="background:var(--tl-read)"></span> Polish — <span class="cost cost-mut">${usd(pol)}</span></div>
+            <div class="li"><span class="sw" style="background:var(--tl-done)"></span> Meetings — <span class="cost cost-mut">${usd2(m)}</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label">Recent runs</div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Run</th><th>App</th><th>Model</th><th class="r">Words</th><th class="r">Cost</th></tr></thead>
+        <tbody>
+          ${myRuns.map(r => `<tr onclick="openRun('${r.id}')">
+            <td class="mono cell-strong" style="font-size:11.5px">${r.id}</td>
+            <td><span class="chip">${r.app}</span></td>
+            <td><span class="chip mono">${r.sttModel}</span></td>
+            <td class="r tnum">${r.words}</td>
+            <td class="r"><span class="cost">${r.total === 0 ? "$0.0000" : usd(r.total)}</span></td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+/* ── Run detail drawer (trace + cost) ─────────────────────────── */
+const drawer = document.getElementById("drawer");
+const scrim = document.getElementById("scrim");
+const drawerHead = document.getElementById("drawerHead");
+const drawerBody = document.getElementById("drawerBody");
+
+function closeDrawer() { drawer.classList.remove("open"); scrim.classList.remove("open"); }
+scrim.onclick = closeDrawer;
+
+function openRun(id) {
+  const r = RUNS.find(x => x.id === id);
+  const local = r.sttCost === 0;
+  drawerHead.innerHTML = `
+    <div>
+      <div class="drawer-title mono">${r.id}</div>
+      <div class="drawer-meta">${r.person.name} · ${r.app} · ${r.mode} · ${r.ago === 0 ? "just now" : r.ago + "m ago"}</div>
+    </div>
+    <div class="icon-btn" onclick="closeDrawer()">✕</div>`;
+
+  const stages = [
+    { c: "var(--tl-thinking)", stage: "TRANSCRIBE", comp: "dictation_stt", fn: r.sttModel, dur: r.transcribeMs, note: `${r.audSec}s audio → ${r.words} words`, risk: null },
+    { c: "var(--tl-grep)", stage: "RESOLVE", comp: "lexicon", fn: "apply_aliases()", dur: 12, note: "2 personal aliases applied", risk: null },
+    { c: "var(--tl-read)", stage: "POLISH", comp: "gateway", fn: r.polModel, dur: r.polishMs, note: `${num(r.inTok)} in · ${num(r.outTok)} out tokens`, risk: null },
+    { c: "var(--tl-edit)", stage: "SCRIPT GUARD", comp: "script.rs", fn: "romanize()", dur: 8, note: "Devanagari→Roman · 0 glyphs rewritten", risk: null },
+    { c: "var(--tl-done)", stage: "PASTE", comp: "paster", fn: "type_text()", dur: r.pasteMs, note: r.success ? "Inserted via HID" : "Clipboard fallback", risk: r.success ? null : "fallback" },
+  ];
+
+  drawerBody.innerHTML = `
+    <div class="section-label">Text pipeline</div>
+    <div class="textstage">
+      <div class="textstage-head"><span class="textstage-name">Raw transcript</span><span class="mono" style="font-size:11px;color:var(--muted)">${r.words}w</span></div>
+      <div class="textstage-body mono" style="font-size:12.5px">so basically we need to <span class="del">shipp</span> the airnote admin by <span class="del">friday</span> i think</div>
+    </div>
+    <div class="textstage">
+      <div class="textstage-head"><span class="textstage-name">Polished output</span><span class="tag ok">final</span></div>
+      <div class="textstage-body">So basically, we need to <span class="add">ship</span> the AirNote admin by <span class="add">Friday</span>, I think.</div>
+    </div>
+
+    <div class="section-label">Trace</div>
+    <div class="trace">
+      ${stages.map(s => `<div class="trace-step">
+        <span class="trace-node" style="background:${s.c}"></span>
+        <div class="trace-row">
+          <span class="trace-pill" style="background:${s.c}">${s.stage}</span>
+          <span class="trace-dur">${s.dur}ms</span>
+        </div>
+        <div class="trace-fn"><b>${s.comp}</b> · <span class="mono">${s.fn}</span></div>
+        <div class="trace-note">${s.note}${s.risk ? ` · <span style="color:var(--warn)">⚠ ${s.risk}</span>` : ""}</div>
+      </div>`).join("")}
+    </div>
+
+    <div class="section-label">Cost breakdown</div>
+    <div class="card card-pad">
+      <table class="costtable">
+        <tr><td class="k">STT — ${r.sttProvider} · ${r.sttModel}</td><td class="v">${local ? "$0.0000 (local)" : usd(r.sttCost)}</td></tr>
+        <tr><td class="k">&nbsp;&nbsp;${r.audSec}s @ $${STT_RATE.perHour}/hr</td><td class="v cost-mut">${local ? "—" : usd(r.sttCost)}</td></tr>
+        <tr><td class="k">Polish — ${r.polProvider} · ${r.polModel}</td><td class="v">${usd(r.polCost)}</td></tr>
+        <tr><td class="k">&nbsp;&nbsp;${num(r.inTok)} in @ $${POLISH_RATE.inPerM}/M</td><td class="v cost-mut">${usd(r.inTok / 1e6 * POLISH_RATE.inPerM)}</td></tr>
+        <tr><td class="k">&nbsp;&nbsp;${num(r.outTok)} out @ $${POLISH_RATE.outPerM}/M</td><td class="v cost-mut">${usd(r.outTok / 1e6 * POLISH_RATE.outPerM)}</td></tr>
+        <tr class="total"><td>Total · coverage ${r.coverage}</td><td class="v">${r.total === 0 ? "$0.0000" : usd(r.total)}</td></tr>
+      </table>
+    </div>
+
+    <div class="section-label">Latency &amp; outcome</div>
+    <div class="kv">
+      <div class="cell"><div class="k">Total</div><div class="v mono">${r.totalMs}ms</div></div>
+      <div class="cell"><div class="k">Transcribe</div><div class="v mono">${r.transcribeMs}ms</div></div>
+      <div class="cell"><div class="k">Polish</div><div class="v mono">${r.polishMs}ms</div></div>
+      <div class="cell"><div class="k">Edit after paste</div><div class="v">${r.edit === "none" ? '<span class="tag ok">clean</span>' : r.edit === "light" ? '<span class="tag warn">light</span>' : '<span class="tag err">heavy</span>'}</div></div>
+    </div>
+  `;
+  drawer.classList.add("open"); scrim.classList.add("open");
+}
+
+function openMeeting(id) {
+  const m = MEETINGS.find(x => x.id === id);
+  const inCost = m.inTok / 1e6 * MEET_RATE.inPerM, outCost = m.outTok / 1e6 * MEET_RATE.outPerM;
+  drawerHead.innerHTML = `
+    <div>
+      <div class="drawer-title">${m.title}</div>
+      <div class="drawer-meta">${m.date} · hosted by ${m.host.name} · ${m.parts} people · ${m.dur} min</div>
+    </div>
+    <div class="icon-btn" onclick="closeDrawer()">✕</div>`;
+  drawerBody.innerHTML = `
+    <div class="section-label">AI summary cost — ${MEET_RATE.provider} ${MEET_RATE.model}</div>
+    <div class="card card-pad">
+      <table class="costtable">
+        <tr><td class="k">Input — ${num(m.inTok)} tokens @ $${MEET_RATE.inPerM}/M</td><td class="v">${usd(inCost)}</td></tr>
+        <tr><td class="k">Output — ${num(m.outTok)} tokens @ $${MEET_RATE.outPerM}/M</td><td class="v">${usd(outCost)}</td></tr>
+        <tr class="total"><td>Meeting total</td><td class="v">${usd2(m.cost)}</td></tr>
+      </table>
+    </div>
+
+    <div class="section-label">Participants</div>
+    <div class="card">
+      <table>
+        <tbody>
+          ${PEOPLE.slice(0, m.parts).map((p, i) => `<tr onclick="closeDrawer(); openPerson('${p.id}')">
+            <td><div class="person-cell"><div class="avatar" style="width:26px;height:26px;font-size:11px">${p.name[0]}</div><div><div class="nm">${p.name}</div><div class="em">${i === 0 ? "host" : "participant"}</div></div></div></td>
+            <td class="r" style="color:var(--muted-soft)">›</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-label">Summary preview</div>
+    <div class="textstage">
+      <div class="textstage-head"><span class="textstage-name">Generated summary</span><span class="chip mono">${MEET_RATE.model}</span></div>
+      <div class="textstage-body">The team aligned on shipping the redesigned admin panel by end of week. ${m.host.name.split(" ")[0]} to own the Runs + People rebuild; meeting-cost tracking flagged as a backend follow-up…</div>
+    </div>
+  `;
+  drawer.classList.add("open"); scrim.classList.add("open");
+}
+
+/* ═══ Router / chrome ════════════════════════════════════════════ */
+function go(v) {
+  CURRENT = v;
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.view === v));
+  const titles = { overview: "Overview", runs: "Runs", people: "People", meetings: "Meetings" };
+  crumb.innerHTML = `<b>${titles[v]}</b>`;
+  document.querySelector(".content").scrollTop = 0;
+  ({ overview: renderOverview, runs: renderRuns, people: renderPeople, meetings: renderMeetings }[v])();
+}
+
+document.querySelectorAll(".nav-item").forEach(n => n.onclick = () => go(n.dataset.view));
+
+document.getElementById("windowSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  W = b.dataset.w;
+  document.querySelectorAll("#windowSeg button").forEach(x => x.classList.toggle("active", x === b));
+  go(CURRENT);
+});
+
+document.getElementById("themeBtn").onclick = () => {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  document.documentElement.setAttribute("data-theme", dark ? "cream" : "dark");
+  document.getElementById("themeIcon").innerHTML = dark
+    ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/>'
+    : '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
+};
+
+// Badges
+document.getElementById("runsBadge").textContent = RUNS.length;
+document.getElementById("meetBadge").textContent = MEETINGS.length;
+document.getElementById("peopleBadge").textContent = PEOPLE.length;
+
+go("overview");
+</script>
+</body>
+</html>

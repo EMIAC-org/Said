@@ -65,22 +65,11 @@ const DEFAULT_LIVE_TRANSCRIPT_STEP_SECS: u64 = 30;
 const DEFAULT_LIVE_TRANSCRIPT_MIN_SECS: u64 = 2;
 const DEFAULT_LIVE_TRANSCRIPT_POLL_MS: u64 = 1_000;
 const DEFAULT_LIVE_TRANSCRIPT_TIMEOUT_SECS: u64 = 90;
-// Peak ceiling after ASR gain — never push a normalized track past this, so we
-// don't clip. Loudness targeting is RMS-based (ASR_TARGET_RMS); this is only the
-// anti-clip limiter.
-const ASR_TARGET_PEAK: f32 = 0.95;
-// Bounded gain. Was 64x: peak-normalizing a near-silent mic (peak 0.019) by ~39x
-// amplifies room bleed / noise floor up to speech-like loudness, which sails past
-// VAD and the decode thresholds and makes whisper hallucinate (esp. with a forced
-// language). A bounded gain recovers genuinely quiet speech without manufacturing
-// loudness out of noise; the RMS silence gate (below) drops noise-only tracks
-// before they ever reach gain.
-const ASR_MAX_GAIN: f32 = 16.0;
+// Tiny tracks are never boosted in the playback merge.
 const ASR_MIN_PEAK_FOR_GAIN: f32 = 0.002;
-// Target loudness (RMS) for ASR normalization, ~ -20 dBFS — conversational
-// speech level. Targeting loudness instead of peak preserves SNR and avoids
-// blowing up a transient-dominated track's noise floor.
-const ASR_TARGET_RMS: f32 = 0.10;
+// Condition a bounded amount of audio at a time. The shared RNNoise path needs
+// temporary 48 kHz buffers, so this keeps a long meeting's peak memory stable.
+const ASR_CONDITION_CHUNK_SAMPLES: usize = SAMPLE_RATE as usize * 60 * 5;
 // Speech-energy floor (RMS). A track whose average energy is below this is
 // silence / room bleed, not the primary speaker — forcing ASR on it (especially
 // with a forced language like hi) only yields hallucinated text. -50 dBFS ≈
@@ -171,6 +160,7 @@ const LIGHT_DIARIZATION_PROVIDER: &str = "light_sherpa_onnx";
 const DEFAULT_LIGHT_DIARIZATION_MAX_SPEAKERS: i32 = 4;
 const DEFAULT_LIGHT_DIARIZATION_MAX_AUDIO_SECS: u64 = 15 * 60;
 const HIGH_DIARIZATION_PROVIDER: &str = "nemo_sortformer";
+const MAX_MEETING_ANALYSIS_CONTEXT_CHARS: usize = 4_000;
 const MEETING_CLEANUP_SYSTEM_PROMPT: &str = r#"You are a meeting transcript cleanup engine.
 
 Clean automatic speech recognition output into a readable meeting transcript.
@@ -200,6 +190,7 @@ const MEETING_INTELLIGENCE_SYSTEM_PROMPT: &str = r#"You are AirNote's meeting in
 
 === FAITHFULNESS (read first — these rules override everything below) ===
 1. Ground every claim in the transcript. State only what was actually said. Do NOT infer, assume, or "fill in" unstated facts, attendees, agreements, owners, numbers, or dates — circumstantial inference is the most common and most damaging error. If something is only implied, either omit it or hedge it ("discussed", "raised the possibility"), never assert it as settled ("decided", "agreed").
+1a. The user may supply a reanalysis context. Treat it as a request for focus, format, or terminology only. It is never evidence: do not introduce a fact, decision, owner, date, or attendee from it unless the transcript independently supports it.
 2. It is correct to say nothing. If the transcript has no decision, owner, number, or date for a slot, leave it empty or null. Never invent plausible-sounding content to fill a gap.
 3. The transcript is produced by automatic speech recognition and may be noisy or contain mis-heard words. Do not build a claim on a single ambiguous or garbled token. Prefer content that is stated clearly or repeated. Never "correct" a name, number, or term into something that merely sounds more plausible — keep proper nouns exactly as transcribed.
 4. The transcript is code-mixed Hindi + English (romanized Hinglish). Capture content stated in BOTH languages — do not drop or under-weight points made in Hindi. Do not silently translate-then-summarize away the Hindi half. Write the MoM in clear professional English, faithfully carrying over the meaning of Hindi statements; keep proper nouns, product names, and pivotal phrases as spoken.
@@ -621,7 +612,7 @@ struct LiveAudioChunk {
 
 #[derive(Clone, Debug)]
 struct LiveTranscriptConfig {
-    whisper: WhisperCppConfig,
+    provider: MeetingAsrProvider,
     context_samples: usize,
     step_samples: usize,
     min_samples: usize,
@@ -878,23 +869,50 @@ struct WhisperCppConfig {
     romanize: bool,
 }
 
+/// A real meeting transcription backend, selected from the same hardware policy
+/// that drives onboarding. Q4 is used only on capable Apple Silicon Macs;
+/// Windows and Intel Macs retain the compact Whisper/Oriserve meeting engine.
 #[derive(Clone, Debug)]
-pub struct DictationLocalAsrConfig {
-    pub model: PathBuf,
-    pub language: String,
-    pub max_context_tokens: i32,
-    pub prompt: Option<String>,
-    pub suppress_non_speech: bool,
-    pub no_fallback: bool,
-    pub no_speech_threshold: Option<f32>,
-    pub logprob_threshold: Option<f32>,
-    pub entropy_threshold: Option<f32>,
-    pub vad_model: Option<PathBuf>,
-    pub vad_threshold: f32,
-    pub vad_speech_pad_ms: i32,
-    pub vad_min_silence_ms: i32,
-    pub romanize: bool,
+enum MeetingAsrProvider {
+    Whisper(WhisperCppConfig),
+    NemotronQ4,
 }
+
+impl MeetingAsrProvider {
+    fn provider_name(&self) -> &'static str {
+        match self {
+            Self::Whisper(_) => "whisper.cpp",
+            Self::NemotronQ4 => "transcribe-cpp",
+        }
+    }
+
+    fn model_name(&self) -> String {
+        match self {
+            Self::Whisper(config) => config.model.to_string_lossy().to_string(),
+            Self::NemotronQ4 => crate::nemotron::Variant::Q4.display_name().to_string(),
+        }
+    }
+
+    fn language(&self) -> String {
+        match self {
+            Self::Whisper(config) => config.language.clone(),
+            Self::NemotronQ4 => "hi".to_string(),
+        }
+    }
+
+    fn romanize(&self) -> bool {
+        match self {
+            Self::Whisper(config) => config.romanize,
+            Self::NemotronQ4 => true,
+        }
+    }
+}
+
+// Resolved per-request dictation settings live in the shared `asr-core` crate so
+// the desktop app and the isolated GPU worker share one definition. Re-exported
+// here so existing `meeting_engine::DictationLocalAsrConfig` references (and the
+// `resolve_dictation_local_asr_config` builder below) keep working unchanged.
+pub use asr_core::DictationLocalAsrConfig;
 
 #[derive(Clone, Debug)]
 struct TranscriptPaths {
@@ -1031,6 +1049,10 @@ pub struct MeetingIntelligenceResult {
     model: String,
     latency_ms: u64,
     transcript_source: String,
+    // The user-supplied focus used for this result. Older cached summaries did
+    // not have this field, so keep them readable.
+    #[serde(default)]
+    analysis_context: Option<String>,
     // AI-generated meeting title and topic tags. `default` keeps older cache
     // files (written before these existed) deserializable.
     #[serde(default)]
@@ -2497,8 +2519,8 @@ fn run_transcription_job(
         let mut transcription = transcription_state.lock_recover();
         transcription.text_path = Some(transcript_paths.text.clone());
         transcription.json_path = Some(transcript_paths.json.clone());
-        transcription.language = Some(DEFAULT_WHISPER_LANGUAGE.to_string());
-        transcription.provider = Some("whisper.cpp".to_string());
+        transcription.language = None;
+        transcription.provider = None;
         transcription.model = None;
         transcription.latency_ms = None;
         transcription.text = None;
@@ -2555,6 +2577,7 @@ fn run_transcription_job(
             &plan.summary,
             "skipped_empty_audio",
             None,
+            None,
             DEFAULT_WHISPER_LANGUAGE,
             "",
             None,
@@ -2570,14 +2593,14 @@ fn run_transcription_job(
         return JobOutcome::Terminal(message);
     }
 
-    let config = match resolve_whisper_cpp_config() {
-        Ok(config) => config,
+    let provider = match resolve_meeting_asr_provider() {
+        Ok(provider) => provider,
         Err(e) => {
-            let cleanup = MeetingCleanupSnapshot::skipped("skipped_missing_whisper", e.clone());
+            let cleanup = MeetingCleanupSnapshot::skipped("skipped_missing_local_model", e.clone());
             {
                 let mut transcription = transcription_state.lock_recover();
                 transcription.running = false;
-                transcription.status = "skipped_missing_whisper".to_string();
+                transcription.status = "skipped_missing_local_model".to_string();
                 transcription.progress = None;
                 transcription.cleanup = cleanup.clone();
                 transcription.final_diarization = MeetingFinalDiarizationSnapshot::skipped(
@@ -2590,7 +2613,8 @@ fn run_transcription_job(
             write_transcript_artifact(
                 &transcript_paths,
                 &plan.summary,
-                "skipped_missing_whisper",
+                "skipped_missing_local_model",
+                None,
                 None,
                 DEFAULT_WHISPER_LANGUAGE,
                 "",
@@ -2607,8 +2631,9 @@ fn run_transcription_job(
 
     {
         let mut transcription = transcription_state.lock_recover();
-        transcription.language = Some(config.language.clone());
-        transcription.model = Some(config.model.to_string_lossy().to_string());
+        transcription.language = Some(provider.language());
+        transcription.provider = Some(provider.provider_name().to_string());
+        transcription.model = Some(provider.model_name());
     }
 
     if let Some(outcome) =
@@ -2629,40 +2654,30 @@ fn run_transcription_job(
         }
     };
 
-    // Fast path: reuse the durable live transcript when eligible (auto/recovery
-    // only). Falls back to a full re-transcription otherwise — always correct.
-    let transcribe_result = if plan.prefer_live_reuse && live_reuse_enabled() {
-        match finalize_done_from_live(plan, &config, Some(&cancel_requested)) {
-            Some(done) => {
-                tracing::info!(meeting_id, "[meeting_engine] finalize_source=live");
-                Ok(done)
-            }
-            None => {
-                tracing::info!(
-                    meeting_id,
-                    "[meeting_engine] finalize_source=batch (full pass)"
-                );
-                transcribe_meeting_plan(
+    // Live reuse needs Whisper's per-word confidence and re-decode contract.
+    // Nemotron still streams caption windows, but always takes the authoritative
+    // final batch pass so the stored meeting remains complete.
+    let transcribe_result = match &provider {
+        MeetingAsrProvider::Whisper(config) if plan.prefer_live_reuse && live_reuse_enabled() => {
+            match finalize_done_from_live(plan, config, Some(&cancel_requested)) {
+                Some(done) => {
+                    tracing::info!(meeting_id, "[meeting_engine] finalize_source=live");
+                    Ok(done)
+                }
+                None => transcribe_meeting_plan(
                     plan,
-                    &config,
+                    &provider,
                     Some(&cancel_requested),
                     Some(&report_progress),
-                )
+                ),
             }
         }
-    } else {
-        if plan.prefer_live_reuse {
-            tracing::info!(
-                meeting_id,
-                "[meeting_engine] finalize_source=batch (live-reuse disabled via AIRNOTE_MEETING_LIVE_REUSE)"
-            );
-        }
-        transcribe_meeting_plan(
+        _ => transcribe_meeting_plan(
             plan,
-            &config,
+            &provider,
             Some(&cancel_requested),
             Some(&report_progress),
-        )
+        ),
     };
 
     match transcribe_result {
@@ -2675,12 +2690,14 @@ fn run_transcription_job(
             // Confidence-gated second pass: re-decode only the low-confidence
             // segments before cleanup/romanize/speaker-naming run on the text.
             // Env-gated (AIRNOTE_MEETING_REDECODE) and fail-safe.
-            refine_low_confidence_segments(
-                &mut done,
-                &config,
-                &transcript_paths,
-                Some(&cancel_requested),
-            );
+            if let MeetingAsrProvider::Whisper(config) = &provider {
+                refine_low_confidence_segments(
+                    &mut done,
+                    config,
+                    &transcript_paths,
+                    Some(&cancel_requested),
+                );
+            }
             let cleanup_config = meeting_cleanup_config();
             let cleanup_provider = cleanup_config
                 .as_ref()
@@ -2732,7 +2749,7 @@ fn run_transcription_job(
             // using the Groq cleanup pipeline (per-segment, alignment preserved),
             // falling back to the deterministic romanizer if the LLM doesn't line
             // up. Live captions stayed in native script; deepseek does the summary.
-            if config.romanize && said_core::script::contains_devanagari(&done.transcript) {
+            if provider.romanize() && said_core::script::contains_devanagari(&done.transcript) {
                 let groq = meeting_cleanup_config()
                     .and_then(|cfg| transliterate_segments_with_llm(&mut done.segments, cfg));
                 if let Err(e) = groq {
@@ -2762,8 +2779,12 @@ fn run_transcription_job(
                 &transcript_paths,
                 &done.summary,
                 "completed",
-                Some(&config),
-                &config.language,
+                match &provider {
+                    MeetingAsrProvider::Whisper(config) => Some(config),
+                    MeetingAsrProvider::NemotronQ4 => None,
+                },
+                Some(&provider),
+                &provider.language(),
                 &done.transcript,
                 Some(done.latency_ms),
                 cleaned_transcript.as_deref(),
@@ -2793,7 +2814,7 @@ fn run_transcription_job(
                 }
                 return JobOutcome::Cancelled(e);
             }
-            tracing::warn!(error = %e, "[meeting_engine] whisper.cpp transcription failed");
+            tracing::warn!(error = %e, "[meeting_engine] local meeting transcription failed");
             let terminal = matches!(classify_meeting_job_error(&e), JobOutcome::Terminal(_))
                 || is_last_attempt;
             if !terminal {
@@ -2807,8 +2828,12 @@ fn run_transcription_job(
                 &transcript_paths,
                 &plan.summary,
                 "failed",
-                Some(&config),
-                &config.language,
+                match &provider {
+                    MeetingAsrProvider::Whisper(config) => Some(config),
+                    MeetingAsrProvider::NemotronQ4 => None,
+                },
+                Some(&provider),
+                &provider.language(),
                 "",
                 None,
                 None,
@@ -3020,7 +3045,7 @@ fn finish_transcribed_meeting(
                 source: summary_source,
                 text: summary_text,
             };
-            match run_meeting_intelligence(selected, Some(dir.to_path_buf())) {
+            match run_meeting_intelligence(selected, Some(dir.to_path_buf()), None) {
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, dir = %dir.display(), "[meeting_engine] meeting summary generation failed");
@@ -3042,15 +3067,23 @@ fn finish_transcribed_meeting(
 }
 
 #[tauri::command]
-pub fn meeting_engine_start_session(
+pub async fn meeting_engine_start_session(
     app: AppHandle,
     state: State<'_, MeetingEngineState>,
     meeting_id: Option<String>,
-) -> MeetingEngineStatus {
+) -> Result<MeetingEngineStatus, String> {
+    // Production bundles provide this offline. In development, download the
+    // tiny support model once before starting a Whisper meeting, rather than
+    // silently recording a meeting that later transcribes without VAD.
+    ensure_bundled_silero_vad();
+    if meeting_vad_enabled() && !silero_vad_model_installed() {
+        meeting_download_silero_vad_model(app.clone()).await?;
+    }
+    ensure_meeting_local_transcription_ready()?;
     tracing::info!(meeting_id = ?meeting_id, "[meeting_engine] start session");
     let status = state.start(meeting_id, Some(app.clone()));
     emit_main(&app, STATUS_EVENT, status.clone());
-    status
+    Ok(status)
 }
 
 /// The session id doubles as the on-disk artifact directory name, so a
@@ -3137,6 +3170,7 @@ pub async fn meeting_engine_get_live_transcript(
 pub async fn meeting_engine_generate_intelligence(
     state: State<'_, MeetingEngineState>,
     meeting_id: Option<String>,
+    analysis_context: Option<String>,
 ) -> Result<MeetingIntelligenceResult, String> {
     // Regenerate guard: if this meeting is still being transcribed/cleaned, the
     // transcript isn't final yet — don't kick off a summary against partial text.
@@ -3149,9 +3183,12 @@ pub async fn meeting_engine_generate_intelligence(
     // LLM off the main thread so the UI never freezes during analysis.
     let selected = resolve_intelligence_transcript(&state, meeting_id.as_deref())?;
     let target_dir = intelligence_target_dir(&state, meeting_id.as_deref());
-    tauri::async_runtime::spawn_blocking(move || run_meeting_intelligence(selected, target_dir))
-        .await
-        .map_err(|e| format!("meeting intelligence task failed: {e}"))?
+    let analysis_context = normalize_meeting_analysis_context(analysis_context)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_meeting_intelligence(selected, target_dir, analysis_context)
+    })
+    .await
+    .map_err(|e| format!("meeting intelligence task failed: {e}"))?
 }
 
 // Async (off the main thread) for the same reason as get_processing_status —
@@ -4388,6 +4425,12 @@ fn run_mic_capture(
 
     let _ = ready_tx.send(Ok(()));
     let _ = stop_rx.recv();
+    // CoreAudio can keep a CPAL input stream alive through its internal
+    // disconnect listener, so dropping the final external handle is not a
+    // reliable stop signal on macOS. Pause explicitly before releasing it.
+    if let Err(e) = stream.pause() {
+        tracing::warn!(error = %e, "[meeting_engine] failed to pause mic stream during teardown");
+    }
     writer_stop.store(true, Ordering::SeqCst);
     drop(stream);
     drop(audio_tx);
@@ -4983,9 +5026,9 @@ fn start_live_transcript_worker(
         live.session_id = Some(session.session_id.clone());
         live.running = true;
         live.status = "running".to_string();
-        live.provider = Some("whisper.cpp".to_string());
-        live.model = Some(config.whisper.model.to_string_lossy().to_string());
-        live.language = Some(config.whisper.language.clone());
+        live.provider = Some(config.provider.provider_name().to_string());
+        live.model = Some(config.provider.model_name());
+        live.language = Some(config.provider.language());
         live.error = None;
         live.dropped_audio_chunks = 0;
     }
@@ -5207,14 +5250,17 @@ fn transcribe_live_window(
     }
 
     let paths = transcript_paths_for_stem(live_dir, &stem);
-    let done = transcribe_with_whisper_cpp_for(
-        &summary,
-        &paths,
-        &config.whisper,
-        source.track(),
-        config.timeout,
-        None,
-    )?;
+    let done = match &config.provider {
+        MeetingAsrProvider::Whisper(whisper) => transcribe_with_whisper_cpp_for(
+            &summary,
+            &paths,
+            whisper,
+            source.track(),
+            config.timeout,
+            None,
+        )?,
+        MeetingAsrProvider::NemotronQ4 => transcribe_with_nemotron_q4_for(&summary, None)?,
+    };
     let segments = label_transcript_segments(
         &done,
         source.source_label(),
@@ -5249,7 +5295,7 @@ fn transcribe_live_window(
     if let Err(e) = persist_live_window(
         live_dir,
         &chunks,
-        &paths.whisper_json,
+        (matches!(&config.provider, MeetingAsrProvider::Whisper(_))).then_some(&paths.whisper_json),
         start_ms,
         config,
         &summary,
@@ -5266,6 +5312,35 @@ fn transcribe_live_window(
     );
 
     Ok(chunks)
+}
+
+/// Nemotron exposes final text rather than Whisper JSON segments. For a live
+/// window the window itself is the truthful timestamp boundary; the final pass
+/// uses the same chunk contract, so captions and saved artifacts stay aligned.
+fn transcribe_with_nemotron_q4_for(
+    summary: &MicCaptureSummary,
+    cancel_check: Option<&dyn Fn() -> bool>,
+) -> Result<WhisperTranscriptionDone, String> {
+    fail_if_cancelled(cancel_check, "Nemotron")?;
+    repair_wav_header_sizes(&summary.path)?;
+    let asr_audio_path = prepare_asr_audio_input(summary, true)?;
+    let wav = fs::read(&asr_audio_path)
+        .map_err(|e| format!("failed to read meeting WAV for Nemotron: {e}"))?;
+    let output =
+        crate::nemotron::transcribe_wav_bytes_for(crate::nemotron::Variant::Q4, &wav, "hi")?;
+    let transcript = output.transcript.trim().to_string();
+    if transcript.is_empty() {
+        return Err("Nemotron returned no speech transcript".to_string());
+    }
+    Ok(WhisperTranscriptionDone {
+        transcript: transcript.clone(),
+        latency_ms: output.duration_ms,
+        segments: vec![RawTranscriptSegment {
+            start_ms: 0,
+            end_ms: summary.duration_ms,
+            text: transcript,
+        }],
+    })
 }
 
 fn write_pcm_window_wav(path: &Path, samples: Vec<i16>) -> Result<MicCaptureSummary, String> {
@@ -5332,12 +5407,13 @@ struct LiveManifest {
     last_covered_ms: u64,
 }
 
-/// Persist one window's deduped segments (with per-word confidence pulled from
-/// the window's `*.whisper.json`) and advance the coverage manifest. Best-effort.
+/// Persist one window's deduped segments and advance the coverage manifest.
+/// Whisper contributes per-word confidence; Nemotron's current local API only
+/// returns final text, so its records intentionally have no word confidences.
 fn persist_live_window(
     live_dir: &Path,
     chunks: &[MeetingLiveTranscriptChunk],
-    whisper_json: &Path,
+    whisper_json: Option<&Path>,
     window_start_ms: u64,
     config: &LiveTranscriptConfig,
     summary: &MicCaptureSummary,
@@ -5347,8 +5423,8 @@ fn persist_live_window(
     write_live_manifest(
         live_dir,
         &LiveManifest {
-            model: config.whisper.model.to_string_lossy().to_string(),
-            language: config.whisper.language.clone(),
+            model: config.provider.model_name(),
+            language: config.provider.language(),
             last_covered_ms: covered_end_ms,
         },
     )?;
@@ -5356,8 +5432,8 @@ fn persist_live_window(
         return Ok(());
     }
     // Per-word confidences for this window (times relative to the window start).
-    let conf_segs = fs::read(whisper_json)
-        .ok()
+    let conf_segs = whisper_json
+        .and_then(|path| fs::read(path).ok())
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .map(|json| said_core::redecode_flagging::conf_segments_from_whisper_json_full(&json))
         .unwrap_or_default();
@@ -6529,24 +6605,16 @@ fn analyze_wav_levels(path: &Path) -> Result<(f32, f32), String> {
     Ok((peak, rms))
 }
 
-fn prepare_whisper_audio_input(summary: &MicCaptureSummary) -> Result<PathBuf, String> {
-    // Measure true loudness (RMS), not just the capture peak. Peak-only
-    // normalization amplifies a noise-dominated track's floor to full scale and
-    // induces hallucination; RMS targeting preserves SNR.
-    let gain = match analyze_wav_levels(&summary.path) {
-        Ok((peak, rms)) if rms > 0.0 => asr_gain_for_levels(peak, rms),
-        Ok(_) => 1.0,
-        Err(e) => {
-            // Couldn't read levels — fall back to the legacy peak-based gain
-            // (bounded by the lowered ASR_MAX_GAIN) so recovery still works.
-            tracing::warn!(error = %e, "[meeting_engine] WAV level analysis failed; using capture-peak gain");
-            asr_gain_for_peak(summary.peak)
-        }
-    };
-    if gain <= 1.01 {
-        return Ok(summary.path.clone());
-    }
-
+/// Create the disposable, clean ASR input for either meeting track.
+///
+/// `mic.wav` and `system.wav` are the immutable recovery/playback sources. This
+/// sibling is deliberately the only audio sent to the recognizer. It uses the
+/// exact `said_core::preprocess` chain used by local dictation: high-pass,
+/// RNNoise, and bounded loudness conditioning. Both Whisper and Nemotron use it.
+fn prepare_asr_audio_input(
+    summary: &MicCaptureSummary,
+    mask_non_speech: bool,
+) -> Result<PathBuf, String> {
     let parent = summary.path.parent().unwrap_or_else(|| Path::new("."));
     let stem = summary
         .path
@@ -6555,31 +6623,84 @@ fn prepare_whisper_audio_input(summary: &MicCaptureSummary) -> Result<PathBuf, S
         .filter(|stem| !stem.trim().is_empty())
         .unwrap_or("audio");
     let asr_path = parent.join(format!("{stem}.asr.wav"));
-    normalize_wav_for_asr(&summary.path, &asr_path, gain)?;
+    let mut reader = hound::WavReader::open(&summary.path)
+        .map_err(|e| format!("failed to open meeting WAV for ASR conditioning: {e}"))?;
+    validate_merge_wav_spec("ASR input", reader.spec())?;
+    let mut writer = create_audio_wav_writer(&asr_path, "conditioned ASR")?;
+    let mut samples = Vec::with_capacity(ASR_CONDITION_CHUNK_SAMPLES);
+    let mut chunks = 0_u64;
+    let mut speech_samples = 0_u64;
+    let vad_model = if mask_non_speech {
+        Some(resolve_silero_vad_model_path().ok_or_else(|| {
+            "Silero VAD is required to prepare this meeting track, but its model is unavailable"
+                .to_string()
+        })?)
+    } else {
+        None
+    };
+
+    loop {
+        samples.clear();
+        for sample in reader.samples::<i16>().take(ASR_CONDITION_CHUNK_SAMPLES) {
+            let sample = sample
+                .map_err(|e| format!("failed to read meeting WAV for ASR conditioning: {e}"))?;
+            samples.push(sample as f32 / i16::MAX as f32);
+        }
+        if samples.is_empty() {
+            break;
+        }
+
+        said_core::preprocess::condition_16k(&mut samples);
+        if mask_non_speech {
+            let stats = asr_core::vad::mask_non_speech_16k(
+                &mut samples,
+                vad_model
+                    .as_deref()
+                    .ok_or_else(|| "Silero VAD model unexpectedly disappeared".to_string())?,
+                env_f32("AIRNOTE_MEETING_VAD_THRESHOLD", DEFAULT_VAD_THRESHOLD),
+                env_i32_at_least(
+                    "AIRNOTE_MEETING_VAD_SPEECH_PAD_MS",
+                    DEFAULT_VAD_SPEECH_PAD_MS,
+                    0,
+                ),
+                env_i32_at_least(
+                    "AIRNOTE_MEETING_VAD_MIN_SILENCE_MS",
+                    DEFAULT_VAD_MIN_SILENCE_MS,
+                    0,
+                ),
+            )
+            .map_err(|error| format!("Silero VAD could not prepare meeting audio: {error}"))?;
+            speech_samples = speech_samples.saturating_add(stats.speech_samples as u64);
+        }
+        for sample in &samples {
+            writer
+                .write_sample(
+                    (sample * i16::MAX as f32)
+                        .round()
+                        .clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+                )
+                .map_err(|e| format!("failed to write conditioned ASR WAV: {e}"))?;
+        }
+        chunks += 1;
+    }
+
+    writer
+        .finalize()
+        .map_err(|e| format!("failed to finalize conditioned ASR WAV: {e}"))?;
+    repair_wav_header_sizes(&asr_path)?;
+    tracing::info!(
+        source = %summary.path.display(),
+        output = %asr_path.display(),
+        chunks,
+        speech_samples,
+        mask_non_speech,
+        "[meeting_engine] conditioned meeting track for ASR (high-pass + RNNoise + loudness + VAD)"
+    );
+    if mask_non_speech && speech_samples == 0 {
+        let _ = fs::remove_file(&asr_path);
+        return Err("No speech detected by Silero VAD".to_string());
+    }
     Ok(asr_path)
-}
-
-/// RMS-targeted, peak-limited, bounded ASR gain. Targets conversational loudness
-/// (ASR_TARGET_RMS) but never pushes the peak past the clip ceiling, and is hard
-/// capped so we don't amplify a quiet track's noise floor into hallucination.
-fn asr_gain_for_levels(peak: f32, rms: f32) -> f32 {
-    let max_gain = env_f32("AIRNOTE_MEETING_ASR_MAX_GAIN", ASR_MAX_GAIN).max(1.0);
-    let target_rms = env_f32("AIRNOTE_MEETING_ASR_TARGET_RMS", ASR_TARGET_RMS);
-    if !peak.is_finite() || !rms.is_finite() || peak <= ASR_MIN_PEAK_FOR_GAIN || rms <= 0.0 {
-        return 1.0;
-    }
-    let rms_gain = target_rms / rms; // reach conversational loudness…
-    let peak_gain = ASR_TARGET_PEAK / peak; // …without clipping.
-    rms_gain.min(peak_gain).clamp(1.0, max_gain)
-}
-
-/// Legacy peak-only gain — used only as a fallback when RMS can't be measured.
-fn asr_gain_for_peak(peak: f32) -> f32 {
-    let max_gain = env_f32("AIRNOTE_MEETING_ASR_MAX_GAIN", ASR_MAX_GAIN).max(1.0);
-    if !peak.is_finite() || !(ASR_MIN_PEAK_FOR_GAIN..ASR_TARGET_PEAK).contains(&peak) {
-        return 1.0;
-    }
-    (ASR_TARGET_PEAK / peak).clamp(1.0, max_gain)
 }
 
 fn has_transcribable_audio(summary: &MicCaptureSummary) -> bool {
@@ -6612,28 +6733,6 @@ fn has_transcribable_audio(summary: &MicCaptureSummary) -> bool {
             true
         }
     }
-}
-
-fn normalize_wav_for_asr(input: &Path, output: &Path, gain: f32) -> Result<(), String> {
-    let mut reader = hound::WavReader::open(input)
-        .map_err(|e| format!("failed to open WAV for ASR normalization: {e}"))?;
-    validate_merge_wav_spec("ASR input", reader.spec())?;
-    let mut writer = create_audio_wav_writer(output, "ASR normalized")?;
-    for sample in reader.samples::<i16>() {
-        let sample =
-            sample.map_err(|e| format!("failed to read WAV sample for ASR normalization: {e}"))?;
-        let boosted = ((sample as f32) * gain)
-            .round()
-            .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-        writer
-            .write_sample(boosted)
-            .map_err(|e| format!("failed to write ASR normalized sample: {e}"))?;
-    }
-    writer
-        .finalize()
-        .map_err(|e| format!("failed to finalize ASR normalized WAV: {e}"))?;
-    repair_wav_header_sizes(output)?;
-    Ok(())
 }
 
 fn whisper_language_for_track(_track: MeetingAudioTrack, default_language: &str) -> String {
@@ -6744,9 +6843,109 @@ fn meeting_track_config(config: &WhisperCppConfig, audio_path: &Path) -> Whisper
     per_track
 }
 
+fn transcribe_with_nemotron_q4(
+    summary: &MicCaptureSummary,
+    track: MeetingAudioTrack,
+    cancel_check: Option<&dyn Fn() -> bool>,
+    progress: Option<&dyn Fn(WhisperChunkProgress)>,
+) -> Result<WhisperTranscriptionDone, String> {
+    let started = Instant::now();
+    let chunk_ms = final_asr_chunk_ms();
+    if summary.duration_ms <= chunk_ms {
+        if let Some(progress) = progress {
+            progress(WhisperChunkProgress {
+                track,
+                current: 1,
+                total: 1,
+            });
+        }
+        return transcribe_with_nemotron_q4_for(summary, cancel_check);
+    }
+
+    let chunks = write_wav_asr_chunks(summary, chunk_ms)?;
+    let total = chunks.len() as u64;
+    let mut segments = Vec::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        fail_if_cancelled(cancel_check, "Nemotron")?;
+        if let Some(progress) = progress {
+            progress(WhisperChunkProgress {
+                track,
+                current: (index + 1) as u64,
+                total,
+            });
+        }
+        if !has_transcribable_audio(&chunk.summary) {
+            continue;
+        }
+        match transcribe_with_nemotron_q4_for(&chunk.summary, cancel_check) {
+            Ok(done) => segments.extend(done.segments.into_iter().map(|mut segment| {
+                segment.start_ms = chunk.start_ms.saturating_add(segment.start_ms);
+                segment.end_ms = chunk.start_ms.saturating_add(segment.end_ms);
+                segment
+            })),
+            Err(error) if error.contains("No speech detected") || error.contains("no speech") => {}
+            Err(error) => {
+                return Err(format!(
+                    "Nemotron chunk {}/{} at {} failed: {error}",
+                    index + 1,
+                    total,
+                    format_timestamp_ms(chunk.start_ms)
+                ));
+            }
+        }
+    }
+    let transcript = segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if transcript.is_empty() {
+        return Err("Nemotron returned no speech transcript".to_string());
+    }
+    if let Some(chunk_dir) = chunks
+        .first()
+        .and_then(|chunk| chunk.summary.path.parent())
+        .map(Path::to_path_buf)
+    {
+        let _ = fs::remove_dir_all(chunk_dir);
+    }
+    Ok(WhisperTranscriptionDone {
+        transcript,
+        latency_ms: started.elapsed().as_millis() as u64,
+        segments,
+    })
+}
+
+fn transcribe_with_meeting_provider(
+    summary: &MicCaptureSummary,
+    paths: &TranscriptPaths,
+    provider: &MeetingAsrProvider,
+    track: MeetingAudioTrack,
+    cancel_check: Option<&dyn Fn() -> bool>,
+    progress: Option<&dyn Fn(WhisperChunkProgress)>,
+) -> Result<WhisperTranscriptionDone, String> {
+    match provider {
+        MeetingAsrProvider::Whisper(config) => {
+            let track_config = meeting_track_config(config, &summary.path);
+            transcribe_with_whisper_cpp(
+                summary,
+                paths,
+                &track_config,
+                track,
+                cancel_check,
+                progress,
+            )
+        }
+        MeetingAsrProvider::NemotronQ4 => {
+            transcribe_with_nemotron_q4(summary, track, cancel_check, progress)
+        }
+    }
+}
+
 fn transcribe_meeting_plan(
     plan: &MeetingTranscriptionPlan,
-    config: &WhisperCppConfig,
+    provider: &MeetingAsrProvider,
     cancel_check: Option<&dyn Fn() -> bool>,
     progress: Option<&dyn Fn(MeetingProcessingProgress)>,
 ) -> Result<MeetingPlanTranscriptionDone, String> {
@@ -6792,11 +6991,10 @@ fn transcribe_meeting_plan(
                 plan.mic.peak
             ));
         }
-        let mic_config = meeting_track_config(config, &plan.mic.path);
-        let mic_done = transcribe_with_whisper_cpp(
+        let mic_done = transcribe_with_meeting_provider(
             &plan.mic,
             &mic_paths,
-            &mic_config,
+            provider,
             MeetingAudioTrack::Mic,
             cancel_check,
             Some(&report_chunk_progress),
@@ -6818,11 +7016,10 @@ fn transcribe_meeting_plan(
     };
 
     let mic_result = if has_transcribable_audio(&plan.mic) {
-        let mic_config = meeting_track_config(config, &plan.mic.path);
-        Some(transcribe_with_whisper_cpp(
+        Some(transcribe_with_meeting_provider(
             &plan.mic,
             &mic_paths,
-            &mic_config,
+            provider,
             MeetingAudioTrack::Mic,
             cancel_check,
             Some(&report_chunk_progress),
@@ -6840,11 +7037,10 @@ fn transcribe_meeting_plan(
     }
     let system_paths = transcript_paths_for_wav(&system_summary.path);
     let system_result = if has_transcribable_audio(system_summary) {
-        let system_config = meeting_track_config(config, &system_summary.path);
-        Some(transcribe_with_whisper_cpp(
+        Some(transcribe_with_meeting_provider(
             system_summary,
             &system_paths,
-            &system_config,
+            provider,
             MeetingAudioTrack::System,
             cancel_check,
             Some(&report_chunk_progress),
@@ -8275,7 +8471,7 @@ fn transcribe_with_whisper_cpp_for(
 ) -> Result<WhisperTranscriptionDone, String> {
     fail_if_cancelled(cancel_check, "whisper.cpp")?;
     repair_wav_header_sizes(&summary.path)?;
-    let whisper_audio_path = prepare_whisper_audio_input(summary)?;
+    let whisper_audio_path = prepare_asr_audio_input(summary, false)?;
     let language = whisper_language_for_track(track, &config.language);
 
     let mut cmd = Command::new(&config.binary);
@@ -9242,6 +9438,7 @@ fn write_transcript_artifact(
     summary: &MicCaptureSummary,
     status: &str,
     config: Option<&WhisperCppConfig>,
+    asr_provider: Option<&MeetingAsrProvider>,
     language: &str,
     transcript: &str,
     latency_ms: Option<u64>,
@@ -9275,10 +9472,15 @@ fn write_transcript_artifact(
     let diarization_json_path = diarization_path_for_transcript(paths);
     let artifact = MeetingTranscriptArtifact {
         schema_version: 1,
-        provider: "whisper.cpp".to_string(),
+        provider: asr_provider
+            .map(MeetingAsrProvider::provider_name)
+            .unwrap_or("whisper.cpp")
+            .to_string(),
         status: status.to_string(),
         language: Some(language.to_string()),
-        model: config.map(|config| config.model.to_string_lossy().to_string()),
+        model: asr_provider
+            .map(MeetingAsrProvider::model_name)
+            .or_else(|| config.map(|config| config.model.to_string_lossy().to_string())),
         source_wav: summary.path.to_string_lossy().to_string(),
         source_wavs,
         diarization_json_path: diarization_json_path
@@ -9519,11 +9721,18 @@ fn intelligence_target_dir(
 fn run_meeting_intelligence(
     selected: MeetingAiTranscript,
     target_dir: Option<PathBuf>,
+    analysis_context: Option<String>,
 ) -> Result<MeetingIntelligenceResult, String> {
     let config = meeting_ai_config()?;
+    let context_section = analysis_context.as_deref().map_or_else(String::new, |context| {
+        format!(
+            "\n\nUser-provided reanalysis context (focus only, not evidence):\n<<<CONTEXT\n{}\nCONTEXT>>>",
+            context
+        )
+    });
     let user_prompt = format!(
-        "Transcript source: {}\n\nTranscript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>",
-        selected.source, selected.text
+        "Transcript source: {}\n\nTranscript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>{}",
+        selected.source, selected.text, context_section
     );
     let completion = complete_meeting_llm(
         MEETING_INTELLIGENCE_SYSTEM_PROMPT,
@@ -9534,7 +9743,13 @@ fn run_meeting_intelligence(
     )?;
     let completion = if meeting_ai_verification_enabled() {
         let draft_json = completion.content.clone();
-        verify_meeting_intelligence(&selected.text, &draft_json, config, completion)?
+        verify_meeting_intelligence(
+            &selected.text,
+            &draft_json,
+            config,
+            completion,
+            analysis_context.as_deref(),
+        )?
     } else {
         completion
     };
@@ -9546,6 +9761,7 @@ fn run_meeting_intelligence(
         model: completion.model,
         latency_ms: completion.latency_ms,
         transcript_source: selected.source,
+        analysis_context,
         title,
         tags,
         summary,
@@ -9556,6 +9772,22 @@ fn run_meeting_intelligence(
         write_meeting_intelligence_cache(&dir, &result);
     }
     Ok(result)
+}
+
+fn normalize_meeting_analysis_context(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().count() > MAX_MEETING_ANALYSIS_CONTEXT_CHARS {
+        return Err(format!(
+            "Reanalysis context must be at most {MAX_MEETING_ANALYSIS_CONTEXT_CHARS} characters."
+        ));
+    }
+    Ok(Some(value.to_string()))
 }
 
 fn load_cached_meeting_intelligence(
@@ -10159,6 +10391,7 @@ fn parse_bench_meeting_intelligence_record(
         model,
         latency_ms,
         transcript_source: "cached-final".to_string(),
+        analysis_context: None,
         title,
         tags,
         summary,
@@ -10199,10 +10432,17 @@ fn verify_meeting_intelligence(
     draft_json: &str,
     config: MeetingCleanupConfig,
     draft_completion: MeetingLlmCompletion,
+    analysis_context: Option<&str>,
 ) -> Result<MeetingLlmCompletion, String> {
+    let context_section = analysis_context.map_or_else(String::new, |context| {
+        format!(
+            "\n\nUser-provided reanalysis context (focus only, not evidence):\n<<<CONTEXT\n{}\nCONTEXT>>>",
+            context
+        )
+    });
     let user_prompt = format!(
-        "Transcript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>\n\nDraft JSON:\n<<<JSON\n{}\nJSON>>>",
-        transcript, draft_json
+        "Transcript:\n<<<TRANSCRIPT\n{}\nTRANSCRIPT>>>\n\nDraft JSON:\n<<<JSON\n{}\nJSON>>>{}",
+        transcript, draft_json, context_section
     );
     let verified = complete_meeting_llm(
         MEETING_INTELLIGENCE_VERIFIER_SYSTEM_PROMPT,
@@ -11078,6 +11318,7 @@ fn run_meeting_digest(refs: Vec<DigestMeetingRef>, missing: &str) -> Result<Dige
                             text,
                         },
                         Some(dir.clone()),
+                        None,
                     ) {
                         Ok(generated) => intel = Some(generated),
                         Err(e) => skipped.push(DigestSkipped {
@@ -13377,6 +13618,13 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
 /// which the backend loads at startup.
 pub const DICTATION_MODEL_URL: &str = "https://huggingface.co/anish2305/airnote-hinglish-stt-ggml/resolve/main/ggml-oriserve-hinglish-fp16.bin";
 const DICTATION_MODEL_SIZE_HINT: u64 = 148_000_000;
+const DICTATION_MODEL_MIN_VALID_BYTES: u64 = DICTATION_MODEL_SIZE_HINT * 9 / 10;
+
+fn dictation_model_is_installed(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.len() >= DICTATION_MODEL_MIN_VALID_BYTES)
+        .unwrap_or(false)
+}
 
 #[derive(serde::Serialize)]
 pub struct DictationModelStatus {
@@ -13390,7 +13638,7 @@ pub fn dictation_model_status() -> DictationModelStatus {
     let path = said_core::paths::whisper_model_path();
     let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     DictationModelStatus {
-        installed: path.is_file(),
+        installed: dictation_model_is_installed(&path),
         size_bytes,
         path: path.to_string_lossy().to_string(),
     }
@@ -13399,10 +13647,21 @@ pub fn dictation_model_status() -> DictationModelStatus {
 /// Remove the on-device dictation model file (frees ~148 MB). Idempotent.
 #[tauri::command]
 pub fn delete_dictation_model() -> Result<(), String> {
+    let prefs = said_core::prefs::load();
+    if prefs.dictation_stt == crate::stt_policy::LOCAL_PREF
+        && prefs.local_stt_model == crate::stt_policy::ORISERVE_PREF
+    {
+        return Err(
+            "Switch dictation to Cloud Nemotron before removing the active Oriserve model."
+                .to_string(),
+        );
+    }
     let path = said_core::paths::whisper_model_path();
     if path.is_file() {
         fs::remove_file(&path).map_err(|e| format!("couldn't delete model: {e}"))?;
     }
+    let part = path.with_extension("bin.part");
+    let _ = fs::remove_file(part);
     Ok(())
 }
 
@@ -13431,8 +13690,12 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| said_core::paths::data_dir().join("models"));
-    if dest.is_file() {
+    if dictation_model_is_installed(&dest) {
         return Ok(()); // already installed — idempotent
+    }
+    if dest.is_file() {
+        fs::remove_file(&dest)
+            .map_err(|e| format!("couldn't remove incomplete speech model: {e}"))?;
     }
     {
         let mut inflight = model_downloads_inflight()
@@ -13625,12 +13888,70 @@ pub fn dictation_whisper_model_installed() -> bool {
     selected_whisper_model_path().is_some()
 }
 
+/// Resolve the local engine that Meetings actually uses on this device. This is
+/// deliberately independent from the user's Dictation toggle: on a capable
+/// Apple Silicon Mac the recommended Q4 model powers both products, while
+/// Windows and Intel Macs retain the compact Oriserve requirement.
+fn resolve_meeting_asr_provider() -> Result<MeetingAsrProvider, String> {
+    let policy = crate::stt_policy::current();
+    if meeting_policy_uses_nemotron_q4(&policy) {
+        if crate::nemotron::installed(crate::nemotron::Variant::Q4) {
+            return Ok(MeetingAsrProvider::NemotronQ4);
+        }
+        return Err(
+            "Meetings use this Mac's recommended local model, Nemotron Streaming 3.5 (Q4). Download it from Settings → Speech recognition before starting a meeting."
+                .to_string(),
+        );
+    }
+    let config = resolve_whisper_cpp_config()?;
+    if meeting_vad_enabled() && config.vad_model.is_none() {
+        return Err(
+            "Silero VAD is required for local meeting transcription but is unavailable. Check your connection, then start the meeting again."
+                .to_string(),
+        );
+    }
+    Ok(MeetingAsrProvider::Whisper(config))
+}
+
+/// The current machine's meeting model is Q4 only on capable Apple Silicon.
+/// The UI uses this policy through `local_model_inventory`; keeping it explicit
+/// here prevents stale IPC calls from routing a Windows meeting to cloud STT.
+pub fn meetings_use_nemotron_q4() -> bool {
+    meeting_policy_uses_nemotron_q4(&crate::stt_policy::current())
+}
+
+fn meeting_policy_uses_nemotron_q4(policy: &crate::stt_policy::SttSetupPolicy) -> bool {
+    policy.local_pref() == Some(crate::stt_policy::NEMOTRON_Q4_PREF)
+}
+
+/// Validate the native meeting dependency before capture begins. Windows and
+/// Intel Macs require Oriserve; high-memory Apple Silicon requires Q4.
+pub fn require_meeting_local_model() -> Result<(), String> {
+    resolve_meeting_asr_provider().map(|_| ())
+}
+
+/// Validate the complete local stack before recording any audio.
+pub fn ensure_meeting_local_transcription_ready() -> Result<(), String> {
+    resolve_meeting_asr_provider()?;
+    if meeting_vad_enabled() && !silero_vad_model_installed() {
+        return Err(
+            "Silero VAD is required for local meeting transcription but is unavailable. Check your connection, then start the meeting again."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub fn dictation_whisper_runtime_ready() -> bool {
     resolve_dictation_local_asr_config(DEFAULT_WHISPER_LANGUAGE).is_ok()
 }
 
 pub fn silero_vad_model_installed() -> bool {
     resolve_silero_vad_model_path().is_some()
+}
+
+fn meeting_vad_enabled() -> bool {
+    env_bool("AIRNOTE_MEETING_VAD", true)
 }
 
 #[derive(Debug, Serialize)]
@@ -13705,10 +14026,11 @@ pub async fn meeting_download_silero_vad_model(app: AppHandle) -> Result<(), Str
 #[tauri::command]
 pub fn meeting_delete_silero_vad_model() -> Result<(), String> {
     let path = meeting_whisper_models_dir().join(SILERO_VAD_MODEL_NAME);
-    if !path.is_file() {
-        return Err("Silero VAD model is not installed".to_string());
+    if path.is_file() {
+        fs::remove_file(&path).map_err(|e| format!("couldn't delete Silero VAD model: {e}"))?;
     }
-    fs::remove_file(&path).map_err(|e| format!("couldn't delete Silero VAD model: {e}"))?;
+    let part = meeting_whisper_models_dir().join(format!("{SILERO_VAD_MODEL_NAME}.part"));
+    let _ = fs::remove_file(part);
     Ok(())
 }
 
@@ -14289,13 +14611,17 @@ fn find_silero_vad_model(dir: &Path) -> Option<PathBuf> {
 }
 
 fn resolve_live_transcript_config() -> Result<LiveTranscriptConfig, String> {
-    let mut whisper = resolve_whisper_cpp_config()
-        .map_err(|e| format!("live transcript requires whisper.cpp; {e}"))?;
-    whisper.max_context_tokens = env_i32_at_least(
-        "AIRNOTE_MEETING_LIVE_WHISPER_MAX_CONTEXT_TOKENS",
-        DEFAULT_LIVE_WHISPER_MAX_CONTEXT_TOKENS,
-        -1,
-    );
+    let provider = match resolve_meeting_asr_provider()? {
+        MeetingAsrProvider::Whisper(mut whisper) => {
+            whisper.max_context_tokens = env_i32_at_least(
+                "AIRNOTE_MEETING_LIVE_WHISPER_MAX_CONTEXT_TOKENS",
+                DEFAULT_LIVE_WHISPER_MAX_CONTEXT_TOKENS,
+                -1,
+            );
+            MeetingAsrProvider::Whisper(whisper)
+        }
+        MeetingAsrProvider::NemotronQ4 => MeetingAsrProvider::NemotronQ4,
+    };
 
     let context_secs = env_u64(
         "AIRNOTE_MEETING_LIVE_TRANSCRIPT_CONTEXT_SECS",
@@ -14327,7 +14653,7 @@ fn resolve_live_transcript_config() -> Result<LiveTranscriptConfig, String> {
     .clamp(10, 15 * 60);
 
     Ok(LiveTranscriptConfig {
-        whisper,
+        provider,
         context_samples: context_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
         step_samples: step_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
         min_samples: min_secs.saturating_mul(SAMPLE_RATE as u64) as usize,
@@ -14858,6 +15184,38 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reanalysis_context_is_trimmed_bounded_and_optional() {
+        assert_eq!(normalize_meeting_analysis_context(None).unwrap(), None);
+        assert_eq!(
+            normalize_meeting_analysis_context(Some("  focus on decisions  ".to_string())).unwrap(),
+            Some("focus on decisions".to_string())
+        );
+        assert!(
+            normalize_meeting_analysis_context(Some(
+                "x".repeat(MAX_MEETING_ANALYSIS_CONTEXT_CHARS + 1)
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn meetings_follow_the_onboarding_local_model_recommendation() {
+        let high_memory_apple_silicon =
+            crate::stt_policy::policy_for("macos", "arm64", false, 9 * 1024 * 1024 * 1024);
+        let eight_gib_apple_silicon =
+            crate::stt_policy::policy_for("macos", "arm64", false, 8 * 1024 * 1024 * 1024);
+        let windows =
+            crate::stt_policy::policy_for("windows", "x86_64", false, 32 * 1024 * 1024 * 1024);
+        let intel_mac =
+            crate::stt_policy::policy_for("macos", "x86_64", false, 32 * 1024 * 1024 * 1024);
+
+        assert!(meeting_policy_uses_nemotron_q4(&high_memory_apple_silicon));
+        assert!(!meeting_policy_uses_nemotron_q4(&eight_gib_apple_silicon));
+        assert!(!meeting_policy_uses_nemotron_q4(&windows));
+        assert!(!meeting_policy_uses_nemotron_q4(&intel_mac));
+    }
 
     #[test]
     fn bundled_whisper_candidates_include_windows_exe_names() {
@@ -15627,39 +15985,6 @@ mod tests {
     }
 
     #[test]
-    fn asr_gain_boosts_quiet_tracks_but_leaves_loud_tracks() {
-        // Already at/above the clip ceiling — no gain.
-        assert_eq!(asr_gain_for_peak(0.95), 1.0);
-        assert_eq!(asr_gain_for_peak(0.0), 1.0);
-        // Below the floor — no gain (can't tell signal from noise).
-        assert_eq!(asr_gain_for_peak(0.0005), 1.0);
-        assert_eq!(asr_gain_for_peak(0.001), 1.0);
-        // Very quiet → clamped to the bounded max (no more 64x).
-        assert_eq!(asr_gain_for_peak(0.005), ASR_MAX_GAIN);
-        assert!(asr_gain_for_peak(0.005) <= ASR_MAX_GAIN);
-    }
-
-    #[test]
-    fn asr_gain_for_levels_targets_loudness_without_clipping() {
-        // Loud, healthy track — barely any gain.
-        let g = asr_gain_for_levels(0.90, 0.040);
-        assert!((1.0..=1.2).contains(&g), "loud track gain {g}");
-        // Genuinely quiet but real voice (decent RMS) — gained toward target,
-        // but limited so the peak never clips.
-        let g = asr_gain_for_levels(0.08, 0.020);
-        assert!(
-            g > 1.0 && g <= ASR_TARGET_PEAK / 0.08 + 0.01,
-            "quiet voice gain {g}"
-        );
-        // Near-silent / noise-dominated — gain is hard-capped, never the old 64x.
-        let g = asr_gain_for_levels(0.019, 0.0007);
-        assert!(g <= ASR_MAX_GAIN, "noise gain {g} must stay capped");
-        // Degenerate inputs.
-        assert_eq!(asr_gain_for_levels(0.0, 0.0), 1.0);
-        assert_eq!(asr_gain_for_levels(f32::NAN, 0.01), 1.0);
-    }
-
-    #[test]
     fn rms_silence_gate_drops_noise_but_keeps_speech() {
         // The real Hindi meeting's mic: high-ish transient peak, silence RMS.
         // Must be gated (RMS below floor) so it isn't hallucinated.
@@ -15731,13 +16056,8 @@ mod tests {
                 peak,
             };
             let decision = has_transcribable_audio(&summary);
-            let gain = if rms > 0.0 {
-                asr_gain_for_levels(peak, rms)
-            } else {
-                1.0
-            };
             eprintln!(
-                "[{track:7}] peak={peak:.4} rms={rms:.5} -> {} (gain {gain:.1}x)",
+                "[{track:7}] peak={peak:.4} rms={rms:.5} -> {} (conditioned before ASR)",
                 if decision {
                     "TRANSCRIBE"
                 } else {
@@ -15748,24 +16068,29 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_quiet_wav_for_asr_without_changing_source() {
+    fn conditions_meeting_wav_for_asr_without_changing_source() {
         let dir = std::env::temp_dir().join(format!(
-            "airnote-asr-normalize-test-{}-{}",
+            "airnote-asr-condition-test-{}-{}",
             std::process::id(),
             now_ms()
         ));
         fs::create_dir_all(&dir).unwrap();
         let input = dir.join("mic.wav");
         let output = dir.join("mic.asr.wav");
-        write_test_wav(&input, &[100, -200, 0]).unwrap();
+        let source = [100, -200, 0, 400, -800, 1_600];
+        write_test_wav(&input, &source).unwrap();
+        let summary = MicCaptureSummary {
+            path: input.clone(),
+            samples_written: source.len() as u64,
+            dropped_chunks: 0,
+            native_rate: SAMPLE_RATE,
+            duration_ms: 0,
+            peak: 1_600.0 / i16::MAX as f32,
+        };
 
-        normalize_wav_for_asr(&input, &output, 64.0).unwrap();
-
-        assert_eq!(read_test_wav_samples(&input).unwrap(), vec![100, -200, 0]);
-        assert_eq!(
-            read_test_wav_samples(&output).unwrap(),
-            vec![6_400, -12_800, 0]
-        );
+        assert_eq!(prepare_asr_audio_input(&summary, false).unwrap(), output);
+        assert_eq!(read_test_wav_samples(&input).unwrap(), source);
+        assert_eq!(read_test_wav_samples(&output).unwrap().len(), source.len());
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -16393,6 +16718,7 @@ mod tests {
             &paths,
             &summary,
             "completed",
+            None,
             None,
             "en",
             "[00:00 You] Hello.\n[00:00 Speaker 1] Hi.",
@@ -17336,6 +17662,7 @@ mod tests {
             &paths,
             &summary,
             "completed",
+            None,
             None,
             DEFAULT_WHISPER_LANGUAGE,
             "hello from the saved transcript",

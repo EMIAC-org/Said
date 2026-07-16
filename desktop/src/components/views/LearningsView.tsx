@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Sparkles } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   getLearningsSnapshot,
   refreshLearnings,
@@ -26,6 +27,40 @@ function relativeTime(iso: string | null): string {
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.round(hrs / 24)}d ago`;
+}
+
+// ── Loading skeleton — mirrors the knowledge-base panel ─────────────────────
+function LearningsSkeleton() {
+  return (
+    <div className="panel p-5">
+      <div className="flex items-center justify-between mb-4">
+        <Skeleton className="h-3.5 w-40" />
+        <Skeleton className="h-3 w-16" />
+      </div>
+      <div className="space-y-2 mb-5">
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-11/12" />
+        <Skeleton className="h-3 w-3/4" />
+      </div>
+      <div className="flex flex-wrap gap-1.5 mb-6">
+        {[16, 20, 12, 24, 14].map((w, i) => (
+          <Skeleton key={i} className="h-5 rounded-md" style={{ width: w * 4 }} />
+        ))}
+      </div>
+      <Skeleton className="h-2.5 w-32 mb-3" />
+      <div className="space-y-3">
+        {[0, 1].map((i) => (
+          <div key={i} className="rounded-lg p-3" style={{ background: "hsl(var(--surface-4))" }}>
+            <Skeleton className="h-3 w-28 mb-2.5" style={{ background: "hsl(var(--surface-3))" }} />
+            <div className="space-y-1.5">
+              <Skeleton className="h-2.5 w-full" style={{ background: "hsl(var(--surface-3))" }} />
+              <Skeleton className="h-2.5 w-5/6" style={{ background: "hsl(var(--surface-3))" }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -84,11 +119,7 @@ export function LearningsView() {
         )}
 
         {/* Loading */}
-        {data === undefined && (
-          <div className="panel p-5">
-            <p className="text-[12px] text-muted-foreground">Loading…</p>
-          </div>
-        )}
+        {data === undefined && <LearningsSkeleton />}
 
         {/* Warming up — endpoint responded but nothing learned yet */}
         {data && !learned && (

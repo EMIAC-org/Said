@@ -149,15 +149,7 @@ jobs:
             /System/Library/Keychains/SystemRootCertificates.keychain
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      # ── macOS: CLI binary + AirNote.app + DMG + notarization ───────────────
-      - name: Build CLI binary (Mac)
-        if: matrix.platform == 'darwin'
-        shell: bash
-        run: |
-          cargo build -p said --release --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/airnote airnote-${{ matrix.target }}
-          chmod +x airnote-${{ matrix.target }}
-
+      # ── macOS: AirNote.app + DMG + notarization ────────────────────────────
       - name: Build airnote-backend sidecar (Mac)
         if: matrix.platform == 'darwin'
         shell: bash
@@ -309,8 +301,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           mkdir -p release-artifacts
-          cp airnote-${{ matrix.target }} release-artifacts/
-
           cp "target/${{ matrix.target }}/release/bundle/dmg/${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.dmg" release-artifacts/
 
           UPDATE_TAR="${PRODUCT_NAME}_${{ steps.ver_mac.outputs.version }}_${{ matrix.arch_short }}.app.tar.gz"

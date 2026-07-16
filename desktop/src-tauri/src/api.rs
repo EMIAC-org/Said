@@ -5,7 +5,7 @@
 
 use futures::StreamExt;
 use reqwest::Client;
-use said_core::transcript::TranscriptMeta;
+use said_core::{text::Utf8LineBuffer, transcript::TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
@@ -41,7 +41,7 @@ pub struct Preferences {
     #[serde(default)]
     pub groq_api_key: Option<String>,
     #[serde(default)]
-    pub cerebras_api_key: Option<String>,
+    pub together_api_key: Option<String>,
     #[serde(default)]
     pub deepinfra_api_key: Option<String>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
@@ -91,7 +91,7 @@ pub struct PrefsUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groq_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cerebras_api_key: Option<Option<String>>,
+    pub together_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deepinfra_api_key: Option<Option<String>>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
@@ -247,7 +247,7 @@ fn redact_pref_key_fields(raw: &str) -> String {
         "gateway_api_key",
         "gemini_api_key",
         "groq_api_key",
-        "cerebras_api_key",
+        "together_api_key",
         "deepinfra_api_key",
     ] {
         if let Some(slot) = value.get_mut(field) {
@@ -657,7 +657,7 @@ where
     S: StreamExt<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
     F: FnMut(PolishEvent),
 {
-    let mut buf = String::new();
+    let mut line_buffer = Utf8LineBuffer::default();
     let mut done_event: Option<PolishDone> = None;
     let mut last_error: Option<String> = None;
     // Track the most recently seen `event:` line so we can dispatch correctly
@@ -665,12 +665,14 @@ where
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
 
-        // Process complete SSE lines
-        while let Some(nl) = buf.find('\n') {
-            let line = buf[..nl].trim().to_string();
-            buf = buf[nl + 1..].to_string();
+        // HTTP chunks can split a multi-byte UTF-8 character. Decode only
+        // after a complete SSE line has arrived.
+        for raw_line in line_buffer
+            .push(&chunk)
+            .map_err(|e| format!("invalid UTF-8 in SSE stream: {e}"))?
+        {
+            let line = raw_line.trim().to_string();
 
             if line.is_empty() {
                 event_name.clear();
@@ -892,38 +894,6 @@ pub async fn patch_preferences(
             said_core::text::truncate_utf8(&text, 200)
         )
     })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolishModelEntry {
-    pub key: String,
-    pub label: String,
-    pub provider: String,
-    pub model_id: String,
-    pub beta_only: bool,
-    pub available: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListPolishModelsResponse {
-    pub models: Vec<PolishModelEntry>,
-    pub selected_model: String,
-}
-
-pub async fn list_polish_models(
-    ep: &BackendEndpoint,
-    beta: bool,
-) -> Result<ListPolishModelsResponse, String> {
-    let url = format!("{}/v1/polish/models?beta={}", ep.url, beta);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("list polish models failed: {e}"))?
-        .json::<ListPolishModelsResponse>()
-        .await
-        .map_err(|e| format!("parse polish models failed: {e}"))
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
@@ -1655,6 +1625,8 @@ pub struct ClassifyEditResponse {
     pub reason: String,
     pub pending_id: Option<String>,
     #[serde(default)]
+    pub review_session_id: Option<String>,
+    #[serde(default)]
     pub learned: bool,
     #[serde(default)]
     pub notify: bool,
@@ -1683,6 +1655,24 @@ pub struct ClassifyEditResponse {
     /// Changes the user should review before learning.
     #[serde(default)]
     pub review_candidates: Vec<ReviewCandidateResponse>,
+    /// Every deterministic change detected in the final owned text. This is
+    /// intentionally broader than `review_candidates`, which contains only the
+    /// subset eligible for learning or explicit review.
+    #[serde(default)]
+    pub changes: Vec<AnalyzedChangeResponse>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AnalyzedChangeResponse {
+    pub original: String,
+    pub corrected: String,
+    pub reason: String,
+    #[serde(default)]
+    pub should_learn: bool,
+    #[serde(default)]
+    pub confidence: f64,
+    #[serde(default)]
+    pub skip_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1724,6 +1714,8 @@ pub struct ConfirmBatchRequestItem {
     pub corrected: String,
     #[serde(default)]
     pub context: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1736,10 +1728,24 @@ pub struct ConfirmBatchResponse {
     pub server_owned: bool,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct EditReviewSessionResponse {
+    pub id: String,
+    pub recording_id: String,
+    pub ai_output: String,
+    pub user_kept: String,
+    #[serde(default)]
+    pub review_candidates: Vec<ReviewCandidateResponse>,
+    #[serde(default)]
+    pub detected_changes: Vec<AnalyzedChangeResponse>,
+    pub created_at_ms: i64,
+}
+
 pub async fn confirm_batch(
     ep: &BackendEndpoint,
     items: &[ConfirmBatchRequestItem],
     recording_id: Option<&str>,
+    review_session_id: Option<&str>,
 ) -> Result<ConfirmBatchResponse, String> {
     let url = format!("{}/v1/confirm-batch", ep.url);
     let items_json: Vec<serde_json::Value> = items
@@ -1749,12 +1755,14 @@ pub async fn confirm_batch(
                 "original": item.original,
                 "corrected": item.corrected,
                 "context": item.context,
+                "tag": item.tag,
             })
         })
         .collect();
     let body = serde_json::json!({
         "items": items_json,
         "recording_id": recording_id,
+        "review_session_id": review_session_id,
     });
     Client::new()
         .post(&url)
@@ -1767,6 +1775,44 @@ pub async fn confirm_batch(
         .json::<ConfirmBatchResponse>()
         .await
         .map_err(|e| format!("parse confirm batch: {e}"))
+}
+
+pub async fn get_next_edit_review_session(
+    ep: &BackendEndpoint,
+) -> Result<Option<EditReviewSessionResponse>, String> {
+    let url = format!("{}/v1/edit-review-sessions/next", ep.url);
+    Client::new()
+        .get(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("get next edit review session failed: {e}"))?
+        .json::<Option<EditReviewSessionResponse>>()
+        .await
+        .map_err(|e| format!("parse next edit review session: {e}"))
+}
+
+pub async fn skip_edit_review_session(
+    ep: &BackendEndpoint,
+    session_id: &str,
+) -> Result<(), String> {
+    let url = format!("{}/v1/edit-review-sessions/{session_id}/skip", ep.url);
+    let response = Client::new()
+        .post(&url)
+        .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("skip edit review session failed: {e}"))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "skip edit review session returned {}",
+            response.status()
+        ))
+    }
 }
 
 /// Classify an edit using the four-way classifier.
@@ -2210,6 +2256,8 @@ pub struct TelemetryRunPatch {
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_clipboard_fallback: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speech_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

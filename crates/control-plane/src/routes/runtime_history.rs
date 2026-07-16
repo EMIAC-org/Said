@@ -678,6 +678,7 @@ pub async fn write_history_from_runtime(
     output: &str,
     model_used: &str,
     source: &str,
+    target_app: Option<&str>,
     transcribe_ms: Option<i64>,
     polish_ms: Option<i64>,
 ) {
@@ -686,8 +687,8 @@ pub async fn write_history_from_runtime(
         "INSERT INTO runtime_history_items
              (account_id, org_id, run_id, client_run_id, recording_id, source,
               transcript, polished_output, final_text, model_used,
-              word_count, transcribe_ms, polish_ms)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12)
+              word_count, target_app, transcribe_ms, polish_ms)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13)
          ON CONFLICT DO NOTHING",
     )
     .bind(account_id)
@@ -700,6 +701,7 @@ pub async fn write_history_from_runtime(
     .bind(output)
     .bind(model_used)
     .bind(word_count)
+    .bind(target_app)
     .bind(transcribe_ms)
     .bind(polish_ms)
     .execute(&state.db)

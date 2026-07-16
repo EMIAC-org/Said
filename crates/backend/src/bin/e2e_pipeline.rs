@@ -20,10 +20,9 @@
 use said_backend::llm::phonetic_triage;
 use said_backend::llm::phonetics;
 use said_backend::llm::prompt;
-use said_backend::llm::vocab_resolver;
+use said_backend::llm::vocab_retrieval::{VocabRetrievalRequest, retrieve_after_transcription};
 use said_backend::store::prefs::Preferences;
-use said_backend::store::stt_replacements::{self, ApplyResult, SttReplacement};
-use said_backend::store::vocab_embeddings;
+use said_backend::store::stt_replacements::{self, SttReplacement};
 use said_backend::store::vocab_fts;
 use said_backend::store::vocabulary;
 use said_backend::store::{self, DbPool};
@@ -307,17 +306,8 @@ fn main() {
         let raw_transcript = "MEAH ke naam se karenge hum";
         let alias_result = stt_replacements::apply_with_matches(raw_transcript, &rules);
         let rewritten = &alias_result.text;
-        let selected = vocab_embeddings::select_for_prompt(
-            &pool,
-            "eval-user",
-            "hinglish",
-            None,
-            Some(rewritten),
-        );
-        let all_terms = vocabulary::top_terms(&pool, "eval-user", 100);
-        let resolved =
-            vocab_resolver::resolve_for_prompt(rewritten, &selected, &all_terms, &alias_result);
-        let found = resolved.resolved_terms.iter().any(|t| t.term == "Emiac");
+        let selected = retrieve_terms(&pool, rewritten);
+        let found = selected.iter().any(|t| t == "Emiac");
         check(
             &mut total_pass,
             &mut total_fail,
@@ -325,13 +315,9 @@ fn main() {
             "C1: Full pipeline: STT 'MEAH'→'Emiac' + vocab selection + resolution",
             found,
             &format!(
-                "rewritten={rewritten:?}, selected={}, resolved={:?}",
+                "rewritten={rewritten:?}, selected={}, terms={:?}",
                 selected.len(),
-                resolved
-                    .resolved_terms
-                    .iter()
-                    .map(|t| &t.term)
-                    .collect::<Vec<_>>(),
+                selected,
             ),
         );
     }
@@ -348,18 +334,8 @@ fn main() {
         let rules = vec![make_stt_rule("MEAH", "Emiac")];
         let raw_transcript = "MEAH ke naam se karenge hum";
         let rewritten = stt_replacements::apply(raw_transcript, &rules);
-        let selected = vocab_embeddings::select_for_prompt(
-            &pool,
-            "eval-user",
-            "hinglish",
-            None,
-            Some(&rewritten),
-        );
-        let all_terms = vocabulary::top_terms(&pool, "eval-user", 100);
-        let alias_result = stt_replacements::apply_with_matches(raw_transcript, &rules);
-        let resolved =
-            vocab_resolver::resolve_for_prompt(&rewritten, &selected, &all_terms, &alias_result);
-        let found = resolved.resolved_terms.iter().any(|t| t.term == "Emiac");
+        let selected = retrieve_terms(&pool, &rewritten);
+        let found = selected.iter().any(|t| t == "Emiac");
         check(
             &mut total_pass,
             &mut total_fail,
@@ -367,13 +343,9 @@ fn main() {
             "C2: After STT replacement 'MEAH'→'Emiac', vocab resolves correctly",
             found,
             &format!(
-                "rewritten={rewritten:?}, selected={}, resolved={:?}",
+                "rewritten={rewritten:?}, selected={}, terms={:?}",
                 selected.len(),
-                resolved
-                    .resolved_terms
-                    .iter()
-                    .map(|t| &t.term)
-                    .collect::<Vec<_>>(),
+                selected,
             ),
         );
     }
@@ -388,38 +360,15 @@ fn main() {
             source: "auto",
         }]);
         let transcript = "main corps ka IPO ka 12 hazaar batana";
-        let selected = vocab_embeddings::select_for_prompt(
-            &pool,
-            "eval-user",
-            "hinglish",
-            None,
-            Some(transcript),
-        );
-        let all_terms = vocabulary::top_terms(&pool, "eval-user", 100);
-        let alias_result = ApplyResult {
-            text: transcript.to_string(),
-            matches: vec![],
-            traces: vec![],
-        };
-        let resolved =
-            vocab_resolver::resolve_for_prompt(transcript, &selected, &all_terms, &alias_result);
-        let found = resolved.resolved_terms.iter().any(|t| t.term == "MACOBS");
+        let selected = retrieve_terms(&pool, transcript);
+        let found = selected.iter().any(|t| t == "MACOBS");
         check(
             &mut total_pass,
             &mut total_fail,
             &mut failures,
             "C3: MACOBS context-resolved from 'main corps ka IPO ka 12 hazaar'",
             found,
-            &format!(
-                "selected={}, resolved={:?}, context_matches={}",
-                selected.len(),
-                resolved
-                    .resolved_terms
-                    .iter()
-                    .map(|t| &t.term)
-                    .collect::<Vec<_>>(),
-                resolved.context_match_count,
-            ),
+            &format!("selected={}, terms={:?}", selected.len(), selected,),
         );
     }
 
@@ -433,36 +382,15 @@ fn main() {
             source: "auto",
         }]);
         let transcript = "128 GB RAM hai mere laptop mein";
-        let selected = vocab_embeddings::select_for_prompt(
-            &pool,
-            "eval-user",
-            "hinglish",
-            None,
-            Some(transcript),
-        );
-        let all_terms = vocabulary::top_terms(&pool, "eval-user", 100);
-        let alias_result = ApplyResult {
-            text: transcript.to_string(),
-            matches: vec![],
-            traces: vec![],
-        };
-        let resolved =
-            vocab_resolver::resolve_for_prompt(transcript, &selected, &all_terms, &alias_result);
-        let injected = resolved.resolved_terms.iter().any(|t| t.term == "8GB");
+        let selected = retrieve_terms(&pool, transcript);
+        let injected = selected.iter().any(|t| t == "8GB");
         check(
             &mut total_pass,
             &mut total_fail,
             &mut failures,
             "C4: '8GB' must NOT inject into '128 GB RAM hai mere laptop mein'",
             !injected,
-            &format!(
-                "injected={injected}, resolved={:?}",
-                resolved
-                    .resolved_terms
-                    .iter()
-                    .map(|t| &t.term)
-                    .collect::<Vec<_>>(),
-            ),
+            &format!("injected={injected}, selected={selected:?}"),
         );
     }
 
@@ -481,17 +409,8 @@ fn main() {
         let raw_transcript = "MEX technologies ke naam se hoga sab kuch";
         let alias_result = stt_replacements::apply_with_matches(raw_transcript, &rules);
         let rewritten = &alias_result.text;
-        let selected = vocab_embeddings::select_for_prompt(
-            &pool,
-            "eval-user",
-            "hinglish",
-            None,
-            Some(rewritten),
-        );
-        let all_terms = vocabulary::top_terms(&pool, "eval-user", 100);
-        let resolved =
-            vocab_resolver::resolve_for_prompt(rewritten, &selected, &all_terms, &alias_result);
-        let found = resolved.resolved_terms.iter().any(|t| t.term == "Emiac");
+        let selected = retrieve_terms(&pool, rewritten);
+        let found = selected.iter().any(|t| t == "Emiac");
         check(
             &mut total_pass,
             &mut total_fail,
@@ -499,13 +418,9 @@ fn main() {
             "C5: Different distortion: stored 'MEAH'→'Emiac', Speech engine says 'MEX' → still fixes",
             found,
             &format!(
-                "rewritten={rewritten:?}, selected={}, resolved={:?}",
+                "rewritten={rewritten:?}, selected={}, terms={:?}",
                 selected.len(),
-                resolved
-                    .resolved_terms
-                    .iter()
-                    .map(|t| &t.term)
-                    .collect::<Vec<_>>(),
+                selected,
             ),
         );
     }
@@ -515,8 +430,7 @@ fn main() {
     // ═══════════════════════════════════════════════════════════
     println!("\n══ LAYER D: PROMPT BUILDING ══\n");
 
-    // D1: When Emiac is resolved, it should appear in the prompt with
-    // the "PERSONAL VOCABULARY" header.
+    // D1: Retrieved vocab appears in the prompt as a soft candidate card.
     {
         let entries = vec![prompt::VocabEntry {
             term: "Emiac".to_string(),
@@ -525,22 +439,24 @@ fn main() {
             context: Some("Emiac ke naam se karenge hum".to_string()),
             resolution: prompt::VocabResolution::Resolved,
             stt_aliases: vec![],
+            evidence: vec![],
+            do_not_use_when: None,
         }];
         let prompt_text =
             prompt::build_system_prompt_with_vocab_entries(&make_test_prefs(), &[], &[], &entries);
         let has_vocab = prompt_text.contains("Emiac");
-        let has_header = prompt_text.contains("PERSONAL VOCABULARY");
+        let has_header = prompt_text.contains("VOCAB CANDIDATES");
         check(
             &mut total_pass,
             &mut total_fail,
             &mut failures,
-            "D1: Resolved 'Emiac' appears in prompt with PERSONAL VOCABULARY header",
+            "D1: Retrieved 'Emiac' appears in prompt with VOCAB CANDIDATES header",
             has_vocab && has_header,
             &format!("has_vocab={has_vocab}, has_header={has_header}"),
         );
     }
 
-    // D2: Candidate (unresolved) terms should NOT appear in the prompt.
+    // D2: Candidate cards are visible, but only as soft evidence.
     {
         let entries = vec![prompt::VocabEntry {
             term: "RandomTerm".to_string(),
@@ -549,17 +465,20 @@ fn main() {
             context: None,
             resolution: prompt::VocabResolution::Candidate,
             stt_aliases: vec![],
+            evidence: vec!["meaning(something)".to_string()],
+            do_not_use_when: None,
         }];
         let prompt_text =
             prompt::build_system_prompt_with_vocab_entries(&make_test_prefs(), &[], &[], &entries);
         let has_term = prompt_text.contains("RandomTerm");
+        let has_soft_header = prompt_text.contains("soft evidence only");
         check(
             &mut total_pass,
             &mut total_fail,
             &mut failures,
-            "D2: Unresolved candidate 'RandomTerm' must NOT appear in prompt",
-            !has_term,
-            &format!("has_term={has_term}"),
+            "D2: Candidate 'RandomTerm' appears only under soft evidence",
+            has_term && has_soft_header,
+            &format!("has_term={has_term}, has_soft_header={has_soft_header}"),
         );
     }
 
@@ -677,6 +596,25 @@ fn main() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn retrieve_terms(pool: &DbPool, transcript: &str) -> Vec<String> {
+    retrieve_after_transcription(
+        pool,
+        VocabRetrievalRequest {
+            user_id: "eval-user".to_string(),
+            transcript: transcript.to_string(),
+            output_language: "hinglish".to_string(),
+            target_app: None,
+            bucket: None,
+            screen_context: None,
+            transcript_embedding: None,
+            limit: 8,
+        },
+    )
+    .into_iter()
+    .map(|card| card.term)
+    .collect()
+}
 
 fn check(
     pass: &mut usize,
@@ -827,7 +765,7 @@ fn make_test_prefs() -> Preferences {
         gateway_api_key: None,
         gemini_api_key: None,
         groq_api_key: None,
-        cerebras_api_key: None,
+        together_api_key: None,
         deepinfra_api_key: None,
         llm_provider: "gateway".to_string(),
     }

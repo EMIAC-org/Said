@@ -33,7 +33,11 @@ pub async fn list(
         Some(items) => items,
         None => crate::store::history::list_recordings(&state.pool, &user_id, q.limit, q.before),
     };
-    enrich_recordings_with_local_audio(&state.pool, &user_id, &mut items);
+    enrich_recordings_with_local_metadata(&state.pool, &user_id, &mut items);
+    // Server history can lag (or miss) on-device rows that have not uploaded yet.
+    // Union local-only recordings so Insights/streaks match what the user actually
+    // dictated on this Mac — without dropping server-only rows.
+    merge_local_only_recordings(&state.pool, &user_id, &q, &mut items);
     Ok(Json(items))
 }
 
@@ -218,9 +222,9 @@ fn count_words(text: &str) -> i64 {
     text.split_whitespace().count() as i64
 }
 
-/// Server runtime history omits audio_id; merge from local SQLite when the row
-/// still exists on this device so play/download work in the History UI.
-fn enrich_recordings_with_local_audio(
+/// Server history can lag desktop-only metadata. Merge fields that are known
+/// locally without replacing server-owned transcript or polish content.
+fn enrich_recordings_with_local_metadata(
     pool: &crate::store::DbPool,
     user_id: &str,
     recordings: &mut [Recording],
@@ -231,41 +235,94 @@ fn enrich_recordings_with_local_audio(
         crate::store::history::list_recordings(pool, user_id, 500, None);
     let mut local_by_ts: HashMap<i64, Recording> = HashMap::new();
     let mut local_by_id: HashMap<String, Recording> = HashMap::new();
-    let mut local_with_audio: Vec<Recording> = Vec::new();
+    let mut local_candidates: Vec<Recording> = Vec::new();
     for local in local_rows {
-        if local.audio_id.is_some() {
-            local_by_id
-                .entry(local.id.clone())
-                .or_insert_with(|| local.clone());
-            local_by_ts
-                .entry(local.timestamp_ms)
-                .or_insert_with(|| local.clone());
-            local_with_audio.push(local);
-        }
+        local_by_id
+            .entry(local.id.clone())
+            .or_insert_with(|| local.clone());
+        local_by_ts
+            .entry(local.timestamp_ms)
+            .or_insert_with(|| local.clone());
+        local_candidates.push(local);
     }
 
     for rec in recordings.iter_mut() {
-        if rec.audio_id.is_some() {
-            continue;
-        }
         if let Some(local) = local_by_id.get(&rec.id) {
-            rec.audio_id = local.audio_id.clone();
+            merge_local_metadata(rec, local);
             continue;
         }
         // Server row id may differ from the local SQLite id — match by timestamp.
         if let Some(local) = local_by_ts.get(&rec.timestamp_ms) {
             rec.id = local.id.clone();
-            rec.audio_id = local.audio_id.clone();
+            merge_local_metadata(rec, local);
             continue;
         }
-        if let Some(local) = find_best_local_audio_match(rec, &local_with_audio) {
+        if let Some(local) = find_best_local_match(rec, &local_candidates) {
             rec.id = local.id.clone();
-            rec.audio_id = local.audio_id.clone();
+            merge_local_metadata(rec, local);
         }
     }
 }
 
-fn find_best_local_audio_match<'a>(
+/// Append local SQLite rows that are missing from the (server-first) page so
+/// Insights does not under-count recent on-device dictation.
+fn merge_local_only_recordings(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    q: &HistoryQuery,
+    recordings: &mut Vec<Recording>,
+) {
+    use std::collections::HashSet;
+
+    let local_rows =
+        crate::store::history::list_recordings(pool, user_id, q.limit.max(500), q.before);
+    if local_rows.is_empty() {
+        return;
+    }
+
+    // After enrich, matched server rows carry the local id — those are covered.
+    let existing_ids: HashSet<String> = recordings.iter().map(|r| r.id.clone()).collect();
+
+    let mut added = 0usize;
+    for local in local_rows {
+        if existing_ids.contains(&local.id) {
+            continue;
+        }
+        // Server row id may still differ; skip if a page row is a time/content match.
+        if recordings
+            .iter()
+            .any(|rec| find_best_local_match(rec, std::slice::from_ref(&local)).is_some())
+        {
+            continue;
+        }
+        recordings.push(local);
+        added += 1;
+    }
+
+    if added == 0 {
+        return;
+    }
+    recordings.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+    if recordings.len() > q.limit as usize {
+        recordings.truncate(q.limit as usize);
+    }
+    tracing::debug!("[history] merged {added} local-only recording(s) into server history page");
+}
+
+fn merge_local_metadata(server: &mut Recording, local: &Recording) {
+    if server.audio_id.is_none() {
+        server.audio_id = local.audio_id.clone();
+    }
+    if server
+        .target_app
+        .as_deref()
+        .is_none_or(|app| app.trim().is_empty())
+    {
+        server.target_app = local.target_app.clone();
+    }
+}
+
+fn find_best_local_match<'a>(
     rec: &Recording,
     local_rows: &'a [Recording],
 ) -> Option<&'a Recording> {
@@ -372,6 +429,24 @@ mod tests {
         assert_eq!(rec.word_count, 3);
         assert_eq!(rec.recording_seconds, 0.0);
         assert_eq!(rec.model_used, "server_runtime");
+    }
+
+    #[test]
+    fn local_metadata_fills_missing_server_app_without_replacing_server_app() {
+        let mut server = server_row_to_recording(runtime_row(), "default");
+        let mut local = server.clone();
+        local.target_app = Some("ai.traycer.desktop".to_string());
+        local.audio_id = Some("local-audio".to_string());
+
+        server.target_app = None;
+        server.audio_id = None;
+        merge_local_metadata(&mut server, &local);
+        assert_eq!(server.target_app.as_deref(), Some("ai.traycer.desktop"));
+        assert_eq!(server.audio_id.as_deref(), Some("local-audio"));
+
+        server.target_app = Some("com.apple.Notes".to_string());
+        merge_local_metadata(&mut server, &local);
+        assert_eq!(server.target_app.as_deref(), Some("com.apple.Notes"));
     }
 }
 

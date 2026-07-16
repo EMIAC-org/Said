@@ -376,7 +376,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=("groq", "cerebras", "deepinfra"),
+        choices=("groq", "together", "deepinfra"),
         action="append",
         help="Limit to provider(s)",
     )

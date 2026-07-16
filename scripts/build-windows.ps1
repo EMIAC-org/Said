@@ -73,6 +73,13 @@ param(
   [switch]$RebuildWhisper,
   [switch]$RequireWhisper,
   [switch]$SkipBackend,
+  # airnote-asr-gpu is the isolated GPU (Vulkan) dictation worker. It needs the
+  # Vulkan SDK + Ninja (ggml-vulkan shader-gen overflows MAX_PATH under MSBuild).
+  # If it can't be built the app still ships and dictation runs on CPU, so a
+  # missing worker is a warning unless -RequireWorker.
+  [switch]$SkipWorker,
+  [switch]$RebuildWorker,
+  [switch]$RequireWorker,
   [switch]$Clean,
   [switch]$Sign,
   [switch]$RequireInstaller
@@ -80,13 +87,26 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# ---- Deterministic CPU ISA for distributable whisper binaries ----------------
+# ggml's cmake (FindSIMD) probes the BUILD host's CPU when GGML_NATIVE is on:
+# an 11th-gen builder (AVX512) bakes /arch:AVX512 into ggml, which DIES with an
+# illegal instruction on 12th-gen+ consumer CPUs (AVX512 fused off) — observed
+# in the field as the app going silent mid-decode. Pin a safe, deterministic
+# AVX2 floor instead (every Intel/AMD CPU since 2013). whisper-rs-sys forwards
+# any GGML_* env var to cmake as a define.
+# NOTE: cargo does not watch these env vars — after changing them, force a
+# rebuild with: cargo clean -p whisper-rs-sys (per target dir).
+$env:GGML_NATIVE = 'OFF'
+$env:GGML_AVX2   = 'ON'
+
 # ---- Paths ------------------------------------------------------------------
 $RepoRoot    = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $DesktopDir  = Join-Path $RepoRoot 'desktop'
 $TauriDir    = Join-Path $DesktopDir 'src-tauri'
 $BinariesDir = Join-Path $TauriDir 'binaries'
-$MeetingRs   = Join-Path $TauriDir 'src\meeting_engine.rs'
-$BackendMain = Join-Path $RepoRoot 'crates\backend\src\main.rs'
+$MeetingRs     = Join-Path $TauriDir 'src\meeting_engine.rs'
+$DictationStt  = Join-Path $TauriDir 'src\dictation_stt.rs'
+$BackendMain   = Join-Path $RepoRoot 'crates\backend\src\main.rs'
 $SileroSrc   = Join-Path $TauriDir 'resources\models\ggml-silero-v5.1.2.bin'
 $ReleaseDir  = Join-Path $RepoRoot ("target\{0}\release" -f $Target)
 $BundleDir   = Join-Path $ReleaseDir 'bundle'
@@ -97,6 +117,13 @@ $WhisperSrc  = Join-Path $ReleaseDir 'whisper-cli.exe'
 $WhisperDest = Join-Path $BinariesDir ("whisper-cli-{0}.exe" -f $Target)
 $AppExe      = Join-Path $ReleaseDir 'AirNote.exe'
 $WhisperBuildScript = Join-Path $PSScriptRoot 'build-whisper-cli-windows.ps1'
+# Isolated GPU ASR worker (Vulkan). Built into a SHORT target dir (MAX_PATH) with
+# Ninja, then synced into the externalBin slot so Tauri bundles it next to the app.
+$WorkerManifest    = Join-Path $RepoRoot 'crates\asr-gpu-worker\Cargo.toml'
+$WorkerShortTarget = if ($env:AIRNOTE_WORKER_TARGET) { $env:AIRNOTE_WORKER_TARGET } else { 'C:\stw' }
+$WorkerSrc         = Join-Path $WorkerShortTarget ("{0}\release\airnote-asr-gpu.exe" -f $Target)
+$WorkerDest        = Join-Path $BinariesDir ("airnote-asr-gpu-{0}.exe" -f $Target)
+$NinjaDir          = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
 $MinSileroBytes = 100000   # mirrors MIN_SILERO_VAD_BYTES in meeting_engine.rs
 
 # ---- Output helpers ---------------------------------------------------------
@@ -177,9 +204,9 @@ if ($Clean) {
 }
 
 # ---- Bundle build-time keys (option_env!) -----------------------------------
-# said-desktop bakes DEEPSEEK_API_KEY (meeting summaries) via option_env!, so
-# meeting summaries work without users entering that key. Speech recognition is
-# local-only and does not require a bundled cloud STT key.
+# said-desktop bakes two keys via option_env! so users never enter them:
+#   DEEPSEEK_API_KEY  — meeting summaries (meeting_engine.rs)
+#   TOGETHER_API_KEY  — Together AI live Nemotron Windows dictation STT
 # Keys must be set BEFORE the backend build (said-core compiles there) and stay
 # set through the tauri build; the crates' build.rs rerun-if-env-changed
 # directives re-bake on change. Loaded from repo-root .env, then unset after the
@@ -188,7 +215,8 @@ Step "Bundle build-time keys (option_env!)"
 $EnvFile = Join-Path $RepoRoot '.env'
 $ScriptSetKeys = @()
 $BundledKeys = @(
-  @{ name = 'DEEPSEEK_API_KEY'; purpose = 'meeting summaries' }
+  @{ name = 'DEEPSEEK_API_KEY';  purpose = 'meeting summaries' }
+  @{ name = 'TOGETHER_API_KEY';  purpose = 'Together AI dictation STT (cloud choices will be unavailable)' }
 )
 foreach ($k in $BundledKeys) {
   $n = $k.name
@@ -200,9 +228,11 @@ foreach ($k in $BundledKeys) {
   if ($cur) { OK "$n will be bundled (length $($cur.Length); value not shown)" }
   else { Warn "$n not set (env or .env) - $($k.purpose) will FAIL in the build until it is added to .env." }
 }
-# Belt-and-suspenders re-bake of the said-desktop (DeepSeek) option_env! site;
-# said-core's keys re-bake via crates/core/build.rs rerun-if-env-changed.
+# Belt-and-suspenders re-bake of the said-desktop option_env! sites (DeepSeek in
+# meeting_engine.rs, Together AI in dictation_stt.rs); said-core's keys re-bake via
+# crates/core/build.rs rerun-if-env-changed.
 Touch $MeetingRs
+Touch $DictationStt
 
 # ---- Build the Rust sidecar (release) ---------------------------------------
 if ($SkipBackend) {
@@ -224,6 +254,54 @@ if ($SkipBackend) {
     Fail "could not write $SidecarDest - is AirNote.exe still running? Close it and re-run. ($_)"
   }
   OK "synced sidecar -> binaries\airnote-backend-$Target.exe"
+}
+
+# ---- airnote-asr-gpu sidecar: build (Vulkan) on demand / sync ---------------
+# The isolated GPU dictation worker. Built in a SCOPED env: Ninja generator +
+# short CARGO_TARGET_DIR (ggml-vulkan's shader-gen ExternalProject overflows
+# Windows MAX_PATH otherwise) + VULKAN_SDK. Failure is non-fatal (the app runs
+# CPU dictation) unless -RequireWorker. Needs MSVC (cl.exe) on PATH, like the
+# whisper-cli build. Skipped with -SkipWorker.
+Step "Resolve airnote-asr-gpu (GPU dictation worker) externalBin"
+$haveWorker = Test-Path $WorkerDest
+if ($SkipWorker) {
+  if ($haveWorker) { OK "airnote-asr-gpu present (skip build)" }
+  else { Warn "airnote-asr-gpu missing and -SkipWorker set - GPU dictation disabled; CPU only." }
+} elseif ($haveWorker -and -not $RebuildWorker) {
+  OK "airnote-asr-gpu present: binaries\airnote-asr-gpu-$Target.exe"
+} else {
+  Step "Build airnote-asr-gpu (Vulkan, Ninja, short target $WorkerShortTarget)"
+  $workerOk = $false
+  if (-not $env:VULKAN_SDK) {
+    Warn "VULKAN_SDK not set - cannot build the GPU worker. Install: winget install KhronosGroup.VulkanSDK"
+  } elseif (-not (Test-Path (Join-Path $NinjaDir 'ninja.exe'))) {
+    Warn "Ninja not found ($NinjaDir) - install the VS 'C++ CMake tools' component."
+  } else {
+    # Scope env so it never leaks into the tauri build (which uses the NORMAL
+    # target and must NOT see CMAKE_GENERATOR / CARGO_TARGET_DIR).
+    $savedGen = $env:CMAKE_GENERATOR; $savedTgt = $env:CARGO_TARGET_DIR; $savedPath = $env:PATH
+    try {
+      $env:CMAKE_GENERATOR  = 'Ninja'
+      $env:CARGO_TARGET_DIR = $WorkerShortTarget
+      $env:PATH             = "$NinjaDir;$env:PATH"
+      cargo build --release --target $Target --manifest-path $WorkerManifest
+      if ($LASTEXITCODE -eq 0 -and (Test-Path $WorkerSrc)) { $workerOk = $true }
+    } finally {
+      $env:CMAKE_GENERATOR = $savedGen; $env:CARGO_TARGET_DIR = $savedTgt; $env:PATH = $savedPath
+    }
+  }
+
+  if ($workerOk) {
+    New-Item -ItemType Directory -Force -Path $BinariesDir | Out-Null
+    Copy-Item $WorkerSrc $WorkerDest -Force
+    $haveWorker = $true
+    OK "built + synced airnote-asr-gpu -> binaries\airnote-asr-gpu-$Target.exe"
+  } else {
+    $msg = "airnote-asr-gpu build failed (Vulkan SDK / Ninja / MAX_PATH?). GPU dictation unavailable; app runs CPU dictation."
+    if ($RequireWorker) { Fail "$msg  (-RequireWorker)" }
+    elseif ($haveWorker) { Warn "$msg  Keeping the existing worker." }
+    else { Warn $msg }
+  }
 }
 
 # ---- whisper-cli sidecar: verify / build on demand / sync -------------------
@@ -314,15 +392,25 @@ if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
   $skp = Get-EnvValue 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD' (Join-Path $RepoRoot '.env')
   if ($skp) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $skp; $ScriptSetSignPwd = $true }
 }
-$NoUpdaterCfg = $null
+# Build a single --config merge (temp file, to dodge npm/PowerShell quoting) that:
+#  (a) sets externalBin to EXACTLY the sidecars present, so a missing whisper-cli
+#      or GPU worker doesn't fail the bundle (and the Win-only worker never leaks
+#      into the macOS build, which uses the base tauri.conf untouched); and
+#  (b) disables unsigned updater artifacts when no signing key is available.
+$ExternalBin = @('binaries/airnote-backend')
+if (Test-Path $WhisperDest) { $ExternalBin += 'binaries/whisper-cli' }
+if ($haveWorker)            { $ExternalBin += 'binaries/airnote-asr-gpu' }
+$ebJson = ($ExternalBin | ForEach-Object { '"' + $_ + '"' }) -join ','
 if ($env:TAURI_SIGNING_PRIVATE_KEY) {
   OK "updater artifacts will be SIGNED (TAURI_SIGNING_PRIVATE_KEY present)"
+  $updaterJson = ''
 } else {
   Warn "TAURI_SIGNING_PRIVATE_KEY not set - disabling updater artifacts (installer still works; no auto-update signature)."
-  # Pass the override as a temp file, not inline JSON, to dodge npm/PowerShell quoting.
-  $NoUpdaterCfg = Join-Path ([System.IO.Path]::GetTempPath()) ("airnote-noupdater-{0}.json" -f $PID)
-  Set-Content -LiteralPath $NoUpdaterCfg -Value '{"bundle":{"createUpdaterArtifacts":false}}' -Encoding ASCII
+  $updaterJson = ',"createUpdaterArtifacts":false'
 }
+OK ("externalBin bundled: " + ($ExternalBin -join ', '))
+$MergeCfg = Join-Path ([System.IO.Path]::GetTempPath()) ("airnote-winbuild-{0}.json" -f $PID)
+Set-Content -LiteralPath $MergeCfg -Value ('{"bundle":{"externalBin":[' + $ebJson + ']' + $updaterJson + '}}') -Encoding ASCII
 
 # ---- Tauri build ------------------------------------------------------------
 Step "Run tauri build (--target $Target)"
@@ -334,11 +422,7 @@ try {
     npm ci
     if ($LASTEXITCODE -ne 0) { Fail "npm ci failed" }
   }
-  if ($NoUpdaterCfg) {
-    npm run tauri:build -- --target $Target --config $NoUpdaterCfg
-  } else {
-    npm run tauri:build -- --target $Target
-  }
+  npm run tauri:build -- --target $Target --config $MergeCfg
   if ($LASTEXITCODE -ne 0) { Fail "tauri build failed" }
   OK "tauri build finished"
 } finally {
@@ -350,12 +434,15 @@ try {
   foreach ($n in $ScriptSetKeys) { [Environment]::SetEnvironmentVariable($n, $null) }
   if ($ScriptSetSignKey)  { Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue }
   if ($ScriptSetSignPwd)  { Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue }
-  if ($NoUpdaterCfg -and (Test-Path $NoUpdaterCfg)) { Remove-Item -LiteralPath $NoUpdaterCfg -Force -ErrorAction SilentlyContinue }
+  if ($MergeCfg -and (Test-Path $MergeCfg)) { Remove-Item -LiteralPath $MergeCfg -Force -ErrorAction SilentlyContinue }
 }
 
 # ---- Verify (and optionally sign) the installer -----------------------------
 Step "Verify NSIS installer"
-$Nsis = Get-ChildItem -Path $NsisDir -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+# Pick the NEWEST installer, not the alphabetically-first: a stale older-version
+# setup.exe from a prior build must not be mistaken for this run's output (and
+# must not let -RequireInstaller pass against a stale artifact).
+$Nsis = Get-ChildItem -Path $NsisDir -Filter '*.exe' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $Nsis) {
   if ($RequireInstaller -or $env:AIRNOTE_REQUIRE_INSTALLER -eq '1') {
     Fail "NSIS installer not found in $NsisDir - tauri build produced no installer."

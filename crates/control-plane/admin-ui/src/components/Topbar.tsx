@@ -1,51 +1,56 @@
-import { useNavigate } from 'react-router'
-import { Search, Bell, Plus, Sun, Moon } from 'lucide-react'
+import { useLocation } from 'react-router'
 import { useTheme } from '../hooks/useTheme'
-import { useAuth } from '../hooks/useAuth'
-import { Avatar } from './Avatar'
+import { useWindowRange, type Win } from '../lib/window'
+import { useSearch } from './Search'
+
+const SECTION: { match: (p: string) => boolean; label: string }[] = [
+  { match: p => p === '/', label: 'Overview' },
+  { match: p => p.startsWith('/runs'), label: 'Runs' },
+  { match: p => p.startsWith('/meetings'), label: 'Meetings' },
+  { match: p => p.startsWith('/people'), label: 'People' },
+]
+
+const WINDOWS: { w: Win; label: string }[] = [
+  { w: 'today', label: 'Today' },
+  { w: '7d', label: '7 days' },
+  { w: '30d', label: '30 days' },
+  { w: 'all', label: 'All' },
+]
 
 export function Topbar() {
-  const navigate = useNavigate()
+  const { pathname } = useLocation()
   const { theme, toggle } = useTheme()
-  const { user } = useAuth()
-  const email = user?.account?.email || ''
-  const name = email.split('@')[0] || 'Admin'
-  const display = name.charAt(0).toUpperCase() + name.slice(1)
+  const { win, setWin } = useWindowRange()
+  const search = useSearch()
+  const section = SECTION.find(s => s.match(pathname))?.label ?? 'Overview'
 
   return (
-    <div className="flex items-center justify-between px-6 py-4 shrink-0">
-      {/* Left — filter pill */}
-      <div className="flex items-center gap-3">
-        <button className="text-xs font-medium px-4 py-2 rounded-lg border border-border bg-transparent text-fg-3 hover:text-fg hover:border-fg-5 transition-colors">
-          This Month
-        </button>
+    <div className="topbar">
+      <div className="crumb"><b>{section}</b></div>
+      <div className="spacer" />
+      <div className="search" onClick={search.open}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
+        <span>Search runs, people…</span>
+        <span className="kbd mono">⌘K</span>
       </div>
-
-      {/* Right */}
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-[hsla(0,0%,0%,0.25)] text-xs text-fg-4 min-w-[180px] cursor-text focus-within:border-accent/45 focus-within:shadow-[0_0_0_3px_hsla(226,80%,78%,0.10)] transition-all">
-          <Search size={13} className="opacity-40" />
-          <span>Search...</span>
-          <kbd className="ml-auto text-[9px] bg-surface-4 border border-border px-1.5 py-0.5 rounded text-fg-4 font-mono">/</kbd>
-        </div>
-
-        <button onClick={toggle} className="w-8 h-8 rounded-lg flex items-center justify-center text-fg-4 hover:text-fg-3 hover:bg-surface-4/50 border border-transparent hover:border-border transition-all" title="Toggle theme">
-          {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-        </button>
-
-        <button className="w-8 h-8 rounded-lg flex items-center justify-center text-fg-4 hover:text-fg-3 hover:bg-surface-4/50 border border-transparent hover:border-border transition-all relative">
-          <Bell size={15} />
-          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-accent" />
-        </button>
-
-        <button
-          onClick={() => navigate('/meetings/new')}
-          className="inline-flex items-center gap-1.5 text-[13px] font-semibold px-4 h-9 rounded-lg bg-[hsl(0_0%_98%)] text-[hsl(240_8%_8%)] hover:opacity-90 hover:-translate-y-px active:translate-y-0 transition-all ml-1"
-        >
-          <Plus size={13} strokeWidth={2.5} /> New Meeting
-        </button>
-
-        <Avatar name={display} className="ml-1 cursor-pointer" />
+      <div className="seg">
+        {WINDOWS.map(x => (
+          <button key={x.w} className={win === x.w ? 'active' : ''} onClick={() => setWin(x.w)}>
+            {x.label}
+          </button>
+        ))}
+      </div>
+      <div className="icon-btn" onClick={toggle} title="Toggle theme">
+        {theme === 'dark' ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19" />
+          </svg>
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+          </svg>
+        )}
       </div>
     </div>
   )

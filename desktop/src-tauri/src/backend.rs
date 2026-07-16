@@ -68,8 +68,12 @@ impl Drop for BackendHandle {
 
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            if let Ok(Some(_)) = child.try_wait() {
-                info!("[backend] daemon exited cleanly");
+            if let Ok(Some(status)) = child.try_wait() {
+                if status.success() {
+                    info!("[backend] daemon exited cleanly");
+                } else {
+                    warn!("[backend] daemon exited during shutdown with status={status}");
+                }
                 return;
             }
             if std::time::Instant::now() >= deadline {
@@ -123,7 +127,19 @@ pub fn spawn() -> Result<BackendHandle, String> {
         .env(
             "DEEPINFRA_API_KEY",
             std::env::var("DEEPINFRA_API_KEY").unwrap_or_default(),
+        )
+        .env(
+            "TOGETHER_API_KEY",
+            std::env::var("TOGETHER_API_KEY").unwrap_or_default(),
         );
+
+    #[cfg(target_os = "macos")]
+    {
+        command.env(
+            "GGML_METAL_NO_RESIDENCY",
+            std::env::var("GGML_METAL_NO_RESIDENCY").unwrap_or_else(|_| "1".into()),
+        );
+    }
 
     #[cfg(unix)]
     unsafe {

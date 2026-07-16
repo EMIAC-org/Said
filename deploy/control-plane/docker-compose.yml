@@ -33,6 +33,7 @@ services:
       OPENAI_CLIENT_ID: ${OPENAI_CLIENT_ID:-}
       OPENAI_REDIRECT_URI: ${OPENAI_REDIRECT_URI:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GATEWAY_API_KEY: ${GATEWAY_API_KEY:-}
       RUNTIME_CREDENTIALS_KEY: ${RUNTIME_CREDENTIALS_KEY:-}
@@ -42,7 +43,10 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       DEEPSEEK_MESSAGE_POLISH_MODEL: ${DEEPSEEK_MESSAGE_POLISH_MODEL:-deepseek-v4-flash}
-      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      # Reserved for the Together-hosted STT paths. Current desktop cloud STT
+      # receives this credential locally, but keeping it in the dev service
+      # makes the deployment contract explicit for server-side callers.
+      TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
       DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
     ports:
       - "${CONTROL_PLANE_BIND:-127.0.0.1}:${CONTROL_PLANE_PORT:-3100}:8080"

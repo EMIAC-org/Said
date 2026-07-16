@@ -21,7 +21,7 @@
 --   2. vocab_fts — FTS5 virtual table over (term, example_context) for
 --      BM25 keyword search. Vocabulary is exact-match-heavy (acronyms,
 --      brand names, code identifiers) — purely dense retrieval misses
---      these. We fuse dense + BM25 ranks via RRF in select_for_polish.
+--      these. The original implementation fused dense + BM25 ranks via RRF.
 --      SQLite ships FTS5; no new dependency.
 --
 --      Why: documented 15–30% recall improvement on exact-match-critical
@@ -31,7 +31,7 @@
 --   3. Time-decay reinforcement is implemented entirely in code (no schema
 --      change) — we already have weight/use_count/last_used columns;
 --      they're just never updated. Migration is silent on this; see
---      vocab_embeddings::top_k_relevant + bump_last_used in the same PR.
+--      the vocabulary retrieval code plus bump_last_used in the same PR.
 
 -- ── 1. Per-sighting examples (FIFO ring per term) ────────────────────────────
 CREATE TABLE IF NOT EXISTS vocab_embedding_examples (

@@ -110,15 +110,14 @@ fn simulate_user_edit(
             }
         }
 
-        // Learn: vocab + aliases + proactive seeds, then approve ALL at the end
+        // Learn only the user-observed alias, then approve it. Synthetic
+        // proactive aliases are intentionally not generated in the meaning-first
+        // vocab pipeline.
         vocabulary::upsert_for_language_with_context(
             pool, "u1", &corrected, 1.0, "auto", "hinglish", None,
         );
         stt_replacements::upsert_aliases_for_language(
             pool, "u1", &original, &original, &corrected, 1.0, "hinglish",
-        );
-        stt_replacements::generate_proactive_distortions(
-            pool, "u1", &corrected, &original, "hinglish",
         );
         tier2_edit_policy::record_explicit_edit(
             pool,
@@ -584,12 +583,11 @@ fn lifecycle_learn_one_correction_then_auto_correct() {
 }
 
 #[test]
-fn lifecycle_proactive_seeding_catches_variants() {
-    // After one correction, proactive seeding should generate extra aliases
-    // for terms with 4+ chars (short terms like "n8n" produce fewer seeds).
+fn lifecycle_does_not_proactively_seed_variants() {
+    // One correction should create only the alias the user actually confirmed.
+    // Similar-looking variants must wait for their own evidence.
     let (pool, _db_path) = fresh_db();
 
-    // Pick EMIAC — long enough for productive seeding
     let (transcript, corrected) = (
         "meah ka quarterly revenue dekhna hai",
         "EMIAC ka quarterly revenue dekhna hai",
@@ -601,9 +599,20 @@ fn lifecycle_proactive_seeding_catches_variants() {
         .iter()
         .filter(|r| r.correct_form == "EMIAC")
         .collect();
-    assert!(
-        emiac_rules.len() >= 3,
-        "EMIAC should have 3+ aliases after proactive seeding (got {}): {:?}",
+    assert_eq!(
+        emiac_rules.len(),
+        1,
+        "EMIAC should only have the observed alias after one correction (got {}): {:?}",
+        emiac_rules.len(),
+        emiac_rules
+            .iter()
+            .map(|r| &r.transcript_form)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        emiac_rules[0].transcript_form,
+        "meah",
+        "EMIAC should keep the real observed alias only (got {}): {:?}",
         emiac_rules.len(),
         emiac_rules
             .iter()
@@ -615,7 +624,6 @@ fn lifecycle_proactive_seeding_catches_variants() {
 #[test]
 fn lifecycle_multiple_distortions_each_learned_fires() {
     // Each distortion must be learned individually, then it fires.
-    // Proactive seeding may also catch some variants automatically.
     let (pool, _db_path) = fresh_db();
 
     for term in DEV_TERMS {

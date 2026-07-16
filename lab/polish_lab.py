@@ -41,13 +41,13 @@ PROMPT_SYSTEM = LAB / "prompt_system.md"
 OUTPUT_LANGUAGE = "hinglish"
 
 STT_MODEL = "Oriserve/Whisper-Hindi2Hinglish-Swift"
-GROQ_BASE = "https://api.groq.com/openai/v1"
-GROQ_SMART_DEFAULT = "openai/gpt-oss-120b"
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+OPENROUTER_GEMMA_4_NITRO = "google/gemma-4-31b-it:nitro"
 HTTP_USER_AGENT = "airnote-lab/1.0"
 
 
 def api_headers(api_key: str) -> dict[str, str]:
-    """Groq blocks default Python urllib User-Agent (Cloudflare 1010)."""
+    """Common headers for OpenAI-compatible provider endpoints."""
     return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -150,24 +150,20 @@ def transcribe_swift(wav: Path) -> tuple[str, float]:
 
 def resolve_polish_routes() -> list[dict[str, str]]:
     routes: list[dict[str, str]] = []
-    groq_key = os.getenv("GROQ_API_KEY", "").strip() or os.getenv(
-        "GATEWAY_API_KEY", ""
-    ).strip()
-    if groq_key:
-        model = (
-            os.getenv("AIRNOTE_SMART_POLISH_MODEL", "").strip() or GROQ_SMART_DEFAULT
-        )
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if openrouter_key:
         routes.append(
             {
-                "provider": "groq",
-                "base_url": GROQ_BASE,
-                "api_key": groq_key,
-                "model": model,
+                "provider": "openrouter",
+                "base_url": OPENROUTER_BASE,
+                "api_key": openrouter_key,
+                "model": OPENROUTER_GEMMA_4_NITRO,
                 "temperature": "0.0",
+                "extra_payload": {"reasoning": {"enabled": False}},
             }
         )
     if not routes:
-        raise RuntimeError("Set GROQ_API_KEY (or GATEWAY_API_KEY) in .env")
+        raise RuntimeError("Set OPENROUTER_API_KEY in .env")
     return routes
 
 
@@ -201,6 +197,7 @@ def polish_transcript(
         payload["reasoning_effort"] = "low"
     extra = route.get("extra_payload")
     if isinstance(extra, dict):
+        extra = dict(extra)
         payload.update(extra)
     url = f"{route['base_url']}/chat/completions"
     req = urllib.request.Request(

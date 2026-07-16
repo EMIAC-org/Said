@@ -87,7 +87,7 @@ jobs:
           test -n "${{ secrets.LARK_REDIRECT_URI }}" || (echo "LARK_REDIRECT_URI is missing" && exit 1)
           test -n "${{ secrets.RUNTIME_CREDENTIALS_KEY }}" || (echo "RUNTIME_CREDENTIALS_KEY is missing" && exit 1)
           test -n "${{ secrets.DEEPSEEK_API_KEY }}" || (echo "DEEPSEEK_API_KEY is missing" && exit 1)
-          test -n "${{ secrets.CEREBRAS_API_KEY }}" || (echo "CEREBRAS_API_KEY is missing" && exit 1)
+          test -n "${{ secrets.OPENROUTER_API_KEY }}" || (echo "OPENROUTER_API_KEY is missing" && exit 1)
           test -n "${{ secrets.OPENAI_API_KEY }}" || (echo "OPENAI_API_KEY is missing" && exit 1)
           test -n "${{ secrets.DEEPINFRA_API_KEY }}" || (echo "DEEPINFRA_API_KEY is missing" && exit 1)
 
@@ -107,7 +107,7 @@ jobs:
           LARK_REDIRECT_URI: ${{ secrets.LARK_REDIRECT_URI }}
           RUNTIME_CREDENTIALS_KEY: ${{ secrets.RUNTIME_CREDENTIALS_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
         run: |
@@ -119,7 +119,7 @@ jobs:
             printf 'LARK_REDIRECT_URI=%s\n' "$LARK_REDIRECT_URI"
             printf 'RUNTIME_CREDENTIALS_KEY=%s\n' "$RUNTIME_CREDENTIALS_KEY"
             printf 'DEEPSEEK_API_KEY=%s\n' "$DEEPSEEK_API_KEY"
-            printf 'CEREBRAS_API_KEY=%s\n' "$CEREBRAS_API_KEY"
+            printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY"
             printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
             printf 'DEEPINFRA_API_KEY=%s\n' "$DEEPINFRA_API_KEY"
           } > /tmp/airnote-control-plane-secrets.env
@@ -192,7 +192,7 @@ jobs:
           docker compose pull control-plane
           docker compose up -d --force-recreate control-plane
           CID=$(docker compose ps -q control-plane)
-          for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI RUNTIME_CREDENTIALS_KEY CEREBRAS_API_KEY OPENAI_API_KEY DEEPINFRA_API_KEY; do
+          for key in LARK_APP_ID LARK_APP_SECRET LARK_REDIRECT_URI RUNTIME_CREDENTIALS_KEY OPENROUTER_API_KEY OPENAI_API_KEY DEEPINFRA_API_KEY; do
             docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}' \
               | grep -q "^${key}=." || (echo "$key was not propagated into the control-plane container" && exit 1)
           done

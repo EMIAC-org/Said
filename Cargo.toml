@@ -5,13 +5,16 @@ members = [
     "crates/paster",
     "crates/hotkey",
     "crates/backend",
-    "crates/said",
+    "crates/asr-core",
+    "crates/asr-cloud",
     "desktop/src-tauri",
 ]
 # control-plane excluded: it deploys to Fly.io and uses sqlx-postgres which
 # conflicts with rusqlite's libsqlite3-sys linkage in the same resolver graph.
 # Build it standalone: `cd crates/control-plane && cargo build`
-exclude = ["crates/control-plane"]
+# asr-gpu-worker is excluded so its `vulkan` feature on asr-core never unifies
+# into the desktop app; it's built standalone as a sidecar (see its Cargo.toml).
+exclude = ["crates/control-plane", "crates/asr-gpu-worker"]
 resolver = "2"
 
 # Shared package metadata. Member crates inherit by setting `field.workspace = true`.

@@ -1,12 +1,33 @@
 //! Standalone voice polish pipeline — mirrors `voice_polish` / `polish_runtime_transcript`
 //! in `routes/runtime.rs` without DB, auth, or telemetry. For local STT comparison scripts.
 
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::format_recover;
 use crate::number_format;
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
+const RUNTIME_VOCAB_CARD_LIMIT: usize = 8;
+
+/// Bounded local retrieval evidence sent with a runtime polish request.
+/// It is always treated as soft context and sanitized again server-side.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RuntimeVocabCard {
+    pub term: String,
+    #[serde(default)]
+    pub term_type: Option<String>,
+    #[serde(default)]
+    pub meaning: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    #[serde(default)]
+    pub do_not_use_when: Option<String>,
+}
 
 /// Full server-runtime polish path: number_format pre → Groq → literal restore → number_format post → email recover.
 pub async fn polish_transcript(
@@ -263,6 +284,7 @@ pub fn build_voice_system_prompt(
         tone_preset,
         custom_prompt,
         screen_context,
+        &[],
         safe_vocab_terms,
         profile_markdown,
         &[],
@@ -274,13 +296,12 @@ pub fn build_voice_system_prompt_with_recent(
     tone_preset: &str,
     custom_prompt: Option<&str>,
     screen_context: Option<&str>,
+    vocab_cards: &[RuntimeVocabCard],
     safe_vocab_terms: &[String],
     profile_markdown: Option<&str>,
     recent_speech_hints: &[String],
 ) -> String {
-    use said_core::polish::prompt::{
-        VocabEntry, VocabResolution, build_system_prompt_with_profile_and_recent_speech,
-    };
+    use said_core::polish::prompt::build_system_prompt_with_profile_and_recent_speech;
     use said_core::polish::types::PolishPrefs;
 
     // Apply the account's chosen tone, and (only when tone_preset == "custom") their
@@ -291,26 +312,7 @@ pub fn build_voice_system_prompt_with_recent(
         tone_preset: tone_preset.to_string(),
         custom_prompt: custom_prompt.map(str::to_string),
     };
-    // Server vocab arrives as already-trusted bare terms (no STT aliases), so
-    // they render as Resolved entries and the common-word filter never fires.
-    let vocab_entries: Vec<VocabEntry> = safe_vocab_terms
-        .iter()
-        .filter_map(|t| {
-            let trimmed = t.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(VocabEntry {
-                    term: trimmed.to_string(),
-                    context: None,
-                    resolution: VocabResolution::Resolved,
-                    term_type: None,
-                    meaning: None,
-                    stt_aliases: vec![],
-                })
-            }
-        })
-        .collect();
+    let vocab_entries = vocab_entries_from_runtime_cards(vocab_cards, safe_vocab_terms);
 
     let mut prompt = build_system_prompt_with_profile_and_recent_speech(
         &prefs,
@@ -330,6 +332,95 @@ pub fn build_voice_system_prompt_with_recent(
     }
 
     prompt
+}
+
+fn clean_runtime_vocab_text(raw: &str, max_chars: usize) -> String {
+    raw.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+fn supported_runtime_vocab_term_type(term_type: Option<&str>) -> Option<String> {
+    match term_type.map(str::trim) {
+        Some("acronym" | "proper_noun" | "brand" | "code_identifier" | "phrase" | "other") => {
+            term_type.map(str::trim).map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
+fn clean_runtime_vocab_optional(value: Option<&String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = clean_runtime_vocab_text(value, 180);
+        (!value.is_empty()).then_some(value)
+    })
+}
+
+fn vocab_entries_from_runtime_cards(
+    vocab_cards: &[RuntimeVocabCard],
+    fallback_terms: &[String],
+) -> Vec<said_core::polish::prompt::VocabEntry> {
+    use std::collections::HashSet;
+
+    use said_core::polish::prompt::{VocabEntry, VocabResolution};
+
+    let mut seen = HashSet::new();
+    let mut entries = Vec::with_capacity(vocab_cards.len() + fallback_terms.len());
+    for card in vocab_cards.iter().take(RUNTIME_VOCAB_CARD_LIMIT) {
+        let term = clean_runtime_vocab_text(&card.term, 96);
+        let key = term.to_lowercase();
+        if term.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        entries.push(VocabEntry {
+            term,
+            context: clean_runtime_vocab_optional(card.context.as_ref()),
+            resolution: VocabResolution::Resolved,
+            term_type: supported_runtime_vocab_term_type(card.term_type.as_deref()),
+            meaning: clean_runtime_vocab_optional(card.meaning.as_ref()),
+            stt_aliases: card
+                .aliases
+                .iter()
+                .map(|alias| clean_runtime_vocab_text(alias, 80))
+                .filter(|alias| !alias.is_empty())
+                .take(6)
+                .map(|alias| (alias, 1))
+                .collect(),
+            evidence: card
+                .evidence
+                .iter()
+                .map(|evidence| clean_runtime_vocab_text(evidence, 100))
+                .filter(|evidence| !evidence.is_empty())
+                .take(4)
+                .collect(),
+            do_not_use_when: clean_runtime_vocab_optional(card.do_not_use_when.as_ref()),
+        });
+    }
+
+    // Keep server memory and old clients working, but never let their bare
+    // term overwrite a rich card selected by the local retriever.
+    for term in fallback_terms {
+        let term = clean_runtime_vocab_text(term, 96);
+        let key = term.to_lowercase();
+        if term.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        entries.push(VocabEntry {
+            term,
+            context: None,
+            resolution: VocabResolution::Resolved,
+            term_type: None,
+            meaning: None,
+            stt_aliases: vec![],
+            evidence: vec![],
+            do_not_use_when: None,
+        });
+    }
+    entries
 }
 
 pub fn build_voice_user_message(transcript: &str, output_language: &str) -> String {
@@ -594,6 +685,64 @@ mod guard_tests {
         // Echo with no trailing real text: keep original rather than emit empty.
         let only = "=== BEGIN TRANSCRIPT ===";
         assert_eq!(strip_leaked_instructions(only), only);
+    }
+
+    #[test]
+    fn rich_runtime_vocab_card_reaches_the_voice_prompt() {
+        let cards = vec![RuntimeVocabCard {
+            term: "Macobs".to_string(),
+            term_type: Some(" proper_noun ".to_string()),
+            meaning: Some("Internal onboarding and product workflow.".to_string()),
+            context: Some("Macobs ka onboarding flow review karo.".to_string()),
+            aliases: vec!["main cops".to_string(), "mac ops".to_string()],
+            evidence: vec![
+                "phonetic(main cops)".to_string(),
+                "meaning(onboarding flow)".to_string(),
+            ],
+            do_not_use_when: Some("cosmetics, makeup products, beauty context".to_string()),
+        }];
+        let prompt = build_voice_system_prompt_with_recent(
+            "hinglish",
+            "neutral",
+            None,
+            None,
+            &cards,
+            &["Macobs".to_string()],
+            None,
+            &[],
+        );
+
+        assert!(prompt.contains("- Macobs (name)"));
+        assert!(prompt.contains("means: Internal onboarding and product workflow."));
+        assert!(prompt.contains("heard-as: main cops, mac ops"));
+        assert!(prompt.contains("evidence: phonetic(main cops), meaning(onboarding flow)"));
+        assert!(prompt.contains("do-not-use-when: cosmetics, makeup products, beauty context"));
+        assert_eq!(prompt.matches("- Macobs (name)").count(), 1);
+    }
+
+    #[test]
+    fn runtime_vocab_cards_are_bounded_and_legacy_terms_still_work() {
+        let cards = (0..(RUNTIME_VOCAB_CARD_LIMIT + 2))
+            .map(|index| RuntimeVocabCard {
+                term: format!("Term{index}"),
+                meaning: Some("word\n\u{0000} ".repeat(100)),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let entries = vocab_entries_from_runtime_cards(&cards, &["LegacyTerm".to_string()]);
+
+        assert_eq!(entries.len(), RUNTIME_VOCAB_CARD_LIMIT + 1);
+        assert_eq!(entries[0].term, "Term0");
+        assert!(
+            entries[0]
+                .meaning
+                .as_deref()
+                .is_some_and(|meaning| !meaning.contains('\u{0000}'))
+        );
+        assert_eq!(
+            entries.last().map(|entry| entry.term.as_str()),
+            Some("LegacyTerm")
+        );
     }
 
     #[test]

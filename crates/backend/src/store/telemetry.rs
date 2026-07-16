@@ -29,6 +29,7 @@ pub struct RunSummaryPatch {
     pub success: Option<bool>,
     pub error_code: Option<String>,
     pub used_clipboard_fallback: Option<bool>,
+    pub speech_provider: Option<String>,
     pub speech_model: Option<String>,
     pub speech_path: Option<String>,
     pub edit_detected: Option<bool>,
@@ -78,6 +79,7 @@ pub struct RunSummaryRow {
     pub success: bool,
     pub error_code: Option<String>,
     pub used_clipboard_fallback: bool,
+    pub speech_provider: Option<String>,
     pub speech_model: Option<String>,
     pub speech_path: Option<String>,
     pub edit_detected: bool,
@@ -191,6 +193,7 @@ pub fn patch_run(
         success: false,
         error_code: None,
         used_clipboard_fallback: false,
+        speech_provider: None,
         speech_model: None,
         speech_path: None,
         edit_detected: false,
@@ -261,6 +264,7 @@ pub fn patch_run(
     merge_bool!(success);
     merge_opt_str!(error_code);
     merge_bool!(used_clipboard_fallback);
+    merge_opt_str!(speech_provider);
     merge_opt_str!(speech_model);
     merge_opt_str!(speech_path);
     merge_bool!(edit_detected);
@@ -309,7 +313,7 @@ fn write_run(pool: &DbPool, row: &RunSummaryRow, ready_at_ms: Option<i64>) -> Re
             run_id, recording_id, user_id, device_id, mode, target_app, platform, app_version,
             machine_class, audio_seconds, word_count, char_count, transcribe_ms, embed_ms,
             polish_ms, total_ms, paste_ms, success, error_code, used_clipboard_fallback,
-            speech_model, speech_path, edit_detected, edit_bucket,
+            speech_provider, speech_model, speech_path, edit_detected, edit_bucket,
             edit_distance_chars, edit_distance_words, accepted_as_is, deleted_entire_output,
             re_recorded_quickly, learning_candidate, learning_modal_shown, learning_confirmed,
             learning_dismissed, server_learning_saved, server_learning_blocked, has_numbers,
@@ -317,7 +321,7 @@ fn write_run(pool: &DbPool, row: &RunSummaryRow, ready_at_ms: Option<i64>) -> Re
             protected_term_hit, status, created_at_ms, updated_at_ms, ready_at_ms
         ) VALUES (
             ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,
-            ?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39,?40,?41,?42,?43,?44,?45,?46,?47
+            ?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39,?40,?41,?42,?43,?44,?45,?46,?47,?48
         ) ON CONFLICT(run_id) DO UPDATE SET
             recording_id=excluded.recording_id, device_id=excluded.device_id, mode=excluded.mode,
             target_app=excluded.target_app, platform=excluded.platform, app_version=excluded.app_version,
@@ -327,7 +331,8 @@ fn write_run(pool: &DbPool, row: &RunSummaryRow, ready_at_ms: Option<i64>) -> Re
             polish_ms=excluded.polish_ms, total_ms=excluded.total_ms, paste_ms=excluded.paste_ms,
             success=excluded.success, error_code=excluded.error_code,
             used_clipboard_fallback=excluded.used_clipboard_fallback,
-            speech_model=excluded.speech_model, speech_path=excluded.speech_path,
+            speech_provider=excluded.speech_provider, speech_model=excluded.speech_model,
+            speech_path=excluded.speech_path,
             edit_detected=excluded.edit_detected, edit_bucket=excluded.edit_bucket,
             edit_distance_chars=excluded.edit_distance_chars,
             edit_distance_words=excluded.edit_distance_words,
@@ -367,6 +372,7 @@ fn write_run(pool: &DbPool, row: &RunSummaryRow, ready_at_ms: Option<i64>) -> Re
             i32::from(row.success),
             row.error_code,
             i32::from(row.used_clipboard_fallback),
+            row.speech_provider,
             row.speech_model,
             row.speech_path,
             i32::from(row.edit_detected),
@@ -495,7 +501,7 @@ pub fn list_ready_runs(
             "SELECT run_id, recording_id, user_id, device_id, mode, target_app, platform, app_version,
                     machine_class, audio_seconds, word_count, char_count, transcribe_ms, embed_ms,
                     polish_ms, total_ms, paste_ms, success, error_code, used_clipboard_fallback,
-                    speech_model, speech_path, edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
+                    speech_provider, speech_model, speech_path, edit_detected, edit_bucket, edit_distance_chars, edit_distance_words,
                     accepted_as_is, deleted_entire_output, re_recorded_quickly, learning_candidate,
                     learning_modal_shown, learning_confirmed, learning_dismissed, server_learning_saved,
                     server_learning_blocked, has_numbers, has_currency, has_percent, has_email, has_url,
@@ -585,7 +591,7 @@ fn load_run(pool: &DbPool, user_id: &str, run_id: &str) -> Result<RunSummaryRow,
         "SELECT run_id, recording_id, user_id, device_id, mode, target_app, platform, app_version,
                 machine_class, audio_seconds, word_count, char_count, transcribe_ms, embed_ms,
                 polish_ms, total_ms, paste_ms, success, error_code, used_clipboard_fallback,
-                speech_model, speech_path, edit_detected, edit_bucket, edit_distance_chars, edit_distance_words, accepted_as_is,
+                speech_provider, speech_model, speech_path, edit_detected, edit_bucket, edit_distance_chars, edit_distance_words, accepted_as_is,
                 deleted_entire_output, re_recorded_quickly, learning_candidate, learning_modal_shown,
                 learning_confirmed, learning_dismissed, server_learning_saved, server_learning_blocked,
                 has_numbers, has_currency, has_percent, has_email, has_url, has_code_like_terms,
@@ -619,33 +625,78 @@ fn map_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunSummaryRow> {
         success: row.get::<_, i32>(17)? != 0,
         error_code: row.get(18)?,
         used_clipboard_fallback: row.get::<_, i32>(19)? != 0,
-        speech_model: row.get(20)?,
-        speech_path: row.get(21)?,
-        edit_detected: row.get::<_, i32>(22)? != 0,
-        edit_bucket: row.get(23)?,
-        edit_distance_chars: row.get(24)?,
-        edit_distance_words: row.get(25)?,
-        accepted_as_is: row.get::<_, i32>(26)? != 0,
-        deleted_entire_output: row.get::<_, i32>(27)? != 0,
-        re_recorded_quickly: row.get::<_, i32>(28)? != 0,
-        learning_candidate: row.get::<_, i32>(29)? != 0,
-        learning_modal_shown: row.get::<_, i32>(30)? != 0,
-        learning_confirmed: row.get::<_, i32>(31)? != 0,
-        learning_dismissed: row.get::<_, i32>(32)? != 0,
-        server_learning_saved: row.get::<_, i32>(33)? != 0,
-        server_learning_blocked: row.get::<_, i32>(34)? != 0,
-        has_numbers: row.get::<_, i32>(35)? != 0,
-        has_currency: row.get::<_, i32>(36)? != 0,
-        has_percent: row.get::<_, i32>(37)? != 0,
-        has_email: row.get::<_, i32>(38)? != 0,
-        has_url: row.get::<_, i32>(39)? != 0,
-        has_code_like_terms: row.get::<_, i32>(40)? != 0,
-        mixed_language: row.get::<_, i32>(41)? != 0,
-        protected_term_hit: row.get::<_, i32>(42)? != 0,
-        status: row.get(43)?,
-        created_at_ms: row.get(44)?,
-        updated_at_ms: row.get(45)?,
+        speech_provider: row.get(20)?,
+        speech_model: row.get(21)?,
+        speech_path: row.get(22)?,
+        edit_detected: row.get::<_, i32>(23)? != 0,
+        edit_bucket: row.get(24)?,
+        edit_distance_chars: row.get(25)?,
+        edit_distance_words: row.get(26)?,
+        accepted_as_is: row.get::<_, i32>(27)? != 0,
+        deleted_entire_output: row.get::<_, i32>(28)? != 0,
+        re_recorded_quickly: row.get::<_, i32>(29)? != 0,
+        learning_candidate: row.get::<_, i32>(30)? != 0,
+        learning_modal_shown: row.get::<_, i32>(31)? != 0,
+        learning_confirmed: row.get::<_, i32>(32)? != 0,
+        learning_dismissed: row.get::<_, i32>(33)? != 0,
+        server_learning_saved: row.get::<_, i32>(34)? != 0,
+        server_learning_blocked: row.get::<_, i32>(35)? != 0,
+        has_numbers: row.get::<_, i32>(36)? != 0,
+        has_currency: row.get::<_, i32>(37)? != 0,
+        has_percent: row.get::<_, i32>(38)? != 0,
+        has_email: row.get::<_, i32>(39)? != 0,
+        has_url: row.get::<_, i32>(40)? != 0,
+        has_code_like_terms: row.get::<_, i32>(41)? != 0,
+        mixed_language: row.get::<_, i32>(42)? != 0,
+        protected_term_hit: row.get::<_, i32>(43)? != 0,
+        status: row.get(44)?,
+        created_at_ms: row.get(45)?,
+        updated_at_ms: row.get(46)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use r2d2::Pool;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    use super::{RunSummaryPatch, load_run, patch_run};
+
+    #[test]
+    fn round_trips_actual_speech_provider() {
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch(&format!(
+                "{}\n{}\n{}",
+                include_str!("migrations/041_telemetry.sql"),
+                include_str!("migrations/042_telemetry_stt.sql"),
+                include_str!("migrations/064_telemetry_speech_provider.sql"),
+            ))
+            .unwrap();
+
+        patch_run(
+            &pool,
+            "user-1",
+            "run-1",
+            &RunSummaryPatch {
+                speech_provider: Some("together".into()),
+                speech_model: Some("together:nvidia/nemotron".into()),
+                speech_path: Some("websocket_live".into()),
+                audio_seconds: Some(60.0),
+                finalize: true,
+                ..RunSummaryPatch::default()
+            },
+        )
+        .unwrap();
+
+        let row = load_run(&pool, "user-1", "run-1").unwrap();
+        assert_eq!(row.speech_provider.as_deref(), Some("together"));
+        assert_eq!(row.speech_path.as_deref(), Some("websocket_live"));
+    }
 }
 
 pub fn should_upload(pool: &DbPool, user_id: &str) -> bool {

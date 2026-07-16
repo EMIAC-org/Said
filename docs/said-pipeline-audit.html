@@ -575,7 +575,6 @@ changes = deterministic_classify_hunks(hunks)   <span class="cm">no LLM classifi
             <summary>Show dead / unwired branches</summary>
             <table>
               <tr><th>Path</th><th>Why skipped</th></tr>
-              <tr><td><code>whisper_local</code> STT</td><td>Feature gate <code>local-stt</code> — not in standard builds</td></tr>
               <tr><td><code>local_whisper</code> STT provider</td><td>Only if user sets pref — default is Local speech</td></tr>
               <tr><td>Keystroke-only capture</td><td>AX empty → watcher returns before keystroke path</td></tr>
               <tr><td>Clipboard capture in edit watcher</td><td>Intentionally removed (ax_unreadable → skip learning)</td></tr>

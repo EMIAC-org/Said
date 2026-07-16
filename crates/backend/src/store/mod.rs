@@ -7,6 +7,7 @@ use tracing::{info, warn};
 pub mod alias_safety;
 pub mod company_vocab;
 pub mod corrections;
+pub mod edit_review_sessions;
 pub mod email_memory;
 pub mod history;
 pub mod openai_oauth;
@@ -87,6 +88,14 @@ const MIGRATION_054: &str = include_str!("migrations/054_recording_trace_json.sq
 const MIGRATION_055: &str = include_str!("migrations/055_drop_prompt_templates.sql");
 const MIGRATION_056: &str = include_str!("migrations/056_site_visits.sql");
 const MIGRATION_057: &str = include_str!("migrations/057_force_cerebras_gemma_4.sql");
+const MIGRATION_058: &str = include_str!("migrations/058_edit_review_sessions.sql");
+const MIGRATION_059: &str = include_str!("migrations/059_edit_review_sessions_repair.sql");
+const MIGRATION_060: &str = include_str!("migrations/060_openrouter_gemma_4_nitro.sql");
+const MIGRATION_061: &str = include_str!("migrations/061_together_gemma_4.sql");
+const MIGRATION_062: &str = include_str!("migrations/062_restore_openrouter_gemma_4_nitro.sql");
+const MIGRATION_063: &str = include_str!("migrations/063_vocab_card_fts.sql");
+const MIGRATION_064: &str = include_str!("migrations/064_telemetry_speech_provider.sql");
+const MIGRATION_065: &str = include_str!("migrations/065_telemetry_speech_identity.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -598,6 +607,177 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 57")
             .expect("failed to set user_version to 57");
     }
+
+    if version < 58 {
+        info!("running migration 058_edit_review_sessions");
+        conn.execute_batch(MIGRATION_058)
+            .expect("migration 058 failed");
+        conn.execute_batch("PRAGMA user_version = 58")
+            .expect("failed to set user_version to 58");
+    }
+
+    if version < 59 {
+        info!("running migration 059_edit_review_sessions_repair");
+        conn.execute_batch(MIGRATION_059)
+            .expect("migration 059 failed");
+        conn.execute_batch("PRAGMA user_version = 59")
+            .expect("failed to set user_version to 59");
+    }
+
+    if version < 60 {
+        info!("running migration 060_openrouter_gemma_4_nitro");
+        let preferences_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preferences')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check preferences table before migration 060");
+        if preferences_exists {
+            conn.execute_batch(MIGRATION_060)
+                .expect("migration 060 failed");
+        } else {
+            // A historical migration-repair test and some interrupted legacy
+            // installs can have a version marker without the preferences table.
+            // There is no credential or model to migrate in that state.
+            warn!("migration 060 skipped: preferences table is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 60")
+            .expect("failed to set user_version to 60");
+    }
+
+    if version < 61 {
+        info!("running migration 061_together_gemma_4");
+        let preferences_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preferences')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check preferences table before migration 061");
+        if preferences_exists {
+            conn.execute_batch(MIGRATION_061)
+                .expect("migration 061 failed");
+        } else {
+            warn!("migration 061 skipped: preferences table is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 61")
+            .expect("failed to set user_version to 61");
+    }
+
+    if version < 62 {
+        info!("running migration 062_restore_openrouter_gemma_4_nitro");
+        let preferences_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preferences')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check preferences table before migration 062");
+        if preferences_exists {
+            conn.execute_batch(MIGRATION_062)
+                .expect("migration 062 failed");
+        } else {
+            warn!("migration 062 skipped: preferences table is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 62")
+            .expect("failed to set user_version to 62");
+    }
+
+    if version < 63 {
+        info!("running migration 063_vocab_card_fts");
+        conn.execute_batch(MIGRATION_063)
+            .expect("migration 063 failed");
+        conn.execute_batch("PRAGMA user_version = 63")
+            .expect("failed to set user_version to 63");
+    }
+
+    if version < 64 {
+        info!("running migration 064_telemetry_speech_provider");
+        let telemetry_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_run_summaries')",
+                [],
+                |row| row.get(0),
+        )
+            .expect("failed to check telemetry table before migration 064");
+        if telemetry_exists {
+            let speech_provider_exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('telemetry_run_summaries') WHERE name = 'speech_provider'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(false);
+            if !speech_provider_exists {
+                conn.execute_batch(MIGRATION_064)
+                    .expect("migration 064 failed");
+            }
+        } else {
+            warn!("migration 064 skipped: telemetry_run_summaries is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 64")
+            .expect("failed to set user_version to 64");
+    }
+
+    if version < 65 {
+        info!("running migration 065_telemetry_speech_identity");
+        let telemetry_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_run_summaries')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check telemetry table before migration 065");
+        if telemetry_exists {
+            // The SQL migration is intentionally comment-only: SQLite has no
+            // `ADD COLUMN IF NOT EXISTS`, so the idempotent column checks live
+            // here. Keep executing it to make the versioned migration explicit.
+            conn.execute_batch(MIGRATION_065)
+                .expect("migration 065 prelude failed");
+            let has_column = |column: &str| -> bool {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('telemetry_run_summaries') WHERE name = ?1",
+                    [column],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(false)
+            };
+            for (column, definition) in [
+                ("speech_provider", "speech_provider TEXT"),
+                ("speech_model", "speech_model TEXT"),
+                ("speech_path", "speech_path TEXT"),
+            ] {
+                if !has_column(column) {
+                    conn.execute_batch(&format!(
+                        "ALTER TABLE telemetry_run_summaries ADD COLUMN {definition};"
+                    ))
+                    .unwrap_or_else(|e| panic!("migration 065 failed adding {column}: {e}"));
+                }
+            }
+            for (speech_column, legacy_column) in [
+                ("speech_provider", "stt_provider"),
+                ("speech_model", "stt_model"),
+                ("speech_path", "stt_path"),
+            ] {
+                if has_column(legacy_column) {
+                    conn.execute_batch(&format!(
+                        "UPDATE telemetry_run_summaries
+                            SET {speech_column} = COALESCE({speech_column}, {legacy_column});"
+                    ))
+                    .unwrap_or_else(|e| {
+                        panic!("migration 065 failed backfilling {speech_column}: {e}")
+                    });
+                }
+            }
+        } else {
+            warn!("migration 065 skipped: telemetry_run_summaries is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 65")
+            .expect("failed to set user_version to 65");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -661,6 +841,12 @@ fn repair_schema_gaps(pool: &DbPool) {
     add_column_if_missing(
         &conn,
         "preferences",
+        "openrouter_api_key",
+        "openrouter_api_key TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "preferences",
         "record_hotkey",
         "record_hotkey TEXT NOT NULL DEFAULT 'caps_lock'",
     );
@@ -673,8 +859,8 @@ fn repair_schema_gaps(pool: &DbPool) {
     add_column_if_missing(
         &conn,
         "preferences",
-        "cerebras_api_key",
-        "cerebras_api_key TEXT",
+        "together_api_key",
+        "together_api_key TEXT",
     );
     add_column_if_missing(
         &conn,
@@ -695,6 +881,44 @@ fn repair_schema_gaps(pool: &DbPool) {
         "deepinfra_api_key TEXT",
     );
     add_column_if_missing(&conn, "recordings", "trace_json", "trace_json TEXT");
+    add_column_if_missing(
+        &conn,
+        "telemetry_run_summaries",
+        "speech_provider",
+        "speech_provider TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "telemetry_run_summaries",
+        "speech_model",
+        "speech_model TEXT",
+    );
+    add_column_if_missing(
+        &conn,
+        "telemetry_run_summaries",
+        "speech_path",
+        "speech_path TEXT",
+    );
+    if has_column(&conn, "telemetry_run_summaries", "stt_provider")
+        && has_column(&conn, "telemetry_run_summaries", "stt_model")
+        && has_column(&conn, "telemetry_run_summaries", "stt_path")
+    {
+        if let Err(e) = conn.execute_batch(
+            "UPDATE telemetry_run_summaries
+                SET speech_provider = COALESCE(speech_provider, stt_provider),
+                    speech_model = COALESCE(speech_model, stt_model),
+                    speech_path = COALESCE(speech_path, stt_path);",
+        ) {
+            warn!("[schema-repair] telemetry speech identity backfill failed: {e}");
+        }
+    }
+
+    // Migration numbers collided on an older dev branch. Always repair this
+    // idempotently so a database with an advanced user_version cannot skip the
+    // durable review queue again.
+    if let Err(e) = conn.execute_batch(MIGRATION_059) {
+        warn!("[schema-repair] edit_review_sessions repair failed: {e}");
+    }
 }
 
 /// Return the default database path. Delegates to `paths::default_db_path()`
@@ -735,7 +959,7 @@ pub fn ensure_default_user(pool: &DbPool) -> String {
     conn.execute(
         "INSERT INTO preferences (user_id, selected_model, tone_preset, language,
          auto_paste, edit_capture, polish_text_hotkey, record_hotkey, server_runtime_enabled, updated_at)
-         VALUES (?1, 'cerebras-gemma-4', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
+         VALUES (?1, 'deepinfra-gemma-4-26b-a4b', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
         params![id, now_ms],
     )
     .expect("failed to create default preferences");
@@ -833,7 +1057,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 57);
+        assert_eq!(version, 65);
 
         for table in [
             "tier2_policy_weights",
@@ -844,6 +1068,7 @@ mod tests {
             "company_bucket_state",
             "company_vocabulary",
             "company_stt_replacements",
+            "edit_review_sessions",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -869,5 +1094,100 @@ mod tests {
                 .unwrap();
             assert_eq!(exists, 1, "recordings.{column} should exist");
         }
+
+        let together_key_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('preferences') WHERE name = 'together_api_key'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            together_key_exists, 1,
+            "preferences.together_api_key should exist"
+        );
+        for column in ["speech_provider", "speech_model", "speech_path"] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('telemetry_run_summaries') WHERE name = ?1",
+                    params![column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "telemetry_run_summaries.{column} should exist");
+        }
+    }
+
+    #[test]
+    fn migration_65_repairs_legacy_stt_column_names() {
+        let manager = SqliteConnectionManager::memory();
+        let pool = Pool::builder().max_size(1).build(manager).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE telemetry_run_summaries (
+                    run_id TEXT PRIMARY KEY,
+                    speech_provider TEXT,
+                    stt_provider TEXT,
+                    stt_model TEXT,
+                    stt_path TEXT
+                 );
+                 INSERT INTO telemetry_run_summaries
+                    (run_id, stt_provider, stt_model, stt_path)
+                 VALUES ('run-1', 'together', 'together:nvidia/nemotron', 'websocket_live');
+                 PRAGMA user_version = 63;",
+            )
+            .unwrap();
+        }
+
+        run_migrations(&pool);
+
+        let conn = pool.get().unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 65);
+        let identity: (String, String, String) = conn
+            .query_row(
+                "SELECT speech_provider, speech_model, speech_path
+                   FROM telemetry_run_summaries WHERE run_id = 'run-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(identity.0, "together");
+        assert_eq!(identity.1, "together:nvidia/nemotron");
+        assert_eq!(identity.2, "websocket_live");
+    }
+
+    #[test]
+    fn migration_59_repairs_version_58_collision() {
+        let manager = SqliteConnectionManager::memory();
+        let pool = Pool::builder().max_size(1).build(manager).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE local_user (id TEXT PRIMARY KEY);
+                 PRAGMA user_version = 58;",
+            )
+            .unwrap();
+        }
+
+        run_migrations(&pool);
+
+        let conn = pool.get().unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'table' AND name = 'edit_review_sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 65);
+        assert_eq!(table_exists, 1);
     }
 }

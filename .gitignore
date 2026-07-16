@@ -71,7 +71,15 @@ tools/stt-compare/.local_stt_benchmark.json
 # Reference repo (read-only design reference; not part of the build)
 /boring.notch/
 /reference-voicetypr/
+/reference-handy/
 
 # Native notch HUD sidecar (Swift) — build output + staged sidecar binary
 desktop/notch-sidecar/.build/
 desktop/src-tauri/binaries/airnote-notch-*
+
+# Windows GPU dictation worker sidecar binary (built by scripts/build-windows.ps1 -RebuildWorker)
+desktop/src-tauri/binaries/airnote-asr-gpu-*
+# Local build/run logs
+/*.log
+/desktop/*.log
+crates/asr-gpu-worker/*.log

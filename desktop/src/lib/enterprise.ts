@@ -16,6 +16,32 @@ export const DEFAULT_CLOUD_SERVER_URL =
 
 export type ServerUrlMode = "default" | "custom";
 
+const SERVER_HEALTH_TIMEOUT_MS = 8_000;
+const AUTH_REQUEST_TIMEOUT_MS = 20_000;
+const AUX_REQUEST_TIMEOUT_MS = 10_000;
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = AUTH_REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: init.signal ?? controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Request timed out. Check your connection and try again.");
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 /** Override mode — "default" (prod AirNote) or "custom" (user-pasted URL). */
 export function getServerUrlMode(): ServerUrlMode {
   try {
@@ -327,9 +353,9 @@ export async function fetchAuthenticatedAccount(
   jwt: string,
 ): Promise<{ id: string; email: string }> {
   const url = normalizeServerUrl(serverUrl);
-  const res = await fetch(`${url}/v1/auth/me`, {
+  const res = await fetchWithTimeout(`${url}/v1/auth/me`, {
     headers: { Authorization: `Bearer ${jwt}` },
-  });
+  }, AUX_REQUEST_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(await responseErrorMessage(res, "Invalid or expired token"));
   }
@@ -555,9 +581,9 @@ export async function checkConnection(): Promise<ConnectionStatus> {
 
   try {
     const url = conn.serverUrl.replace(/\/+$/, "");
-    const res = await fetch(`${url}/v1/auth/me`, {
+    const res = await fetchWithTimeout(`${url}/v1/auth/me`, {
       headers: { Authorization: `Bearer ${conn.jwt}` },
-    });
+    }, AUX_REQUEST_TIMEOUT_MS);
     if (res.ok) return "connected";
     if (res.status === 401 || res.status === 403) {
       disconnect();
@@ -575,7 +601,7 @@ export async function validateServer(serverUrl: string): Promise<boolean> {
   try {
     const url = serverUrl.replace(/\/+$/, "");
     setPendingServerUrl(url);
-    const res = await fetch(`${url}/v1/health`);
+    const res = await fetchWithTimeout(`${url}/v1/health`, {}, SERVER_HEALTH_TIMEOUT_MS);
     if (!res.ok) return false;
     const data = await res.json();
     if (data.ok === true) {
@@ -592,14 +618,14 @@ export async function validateServer(serverUrl: string): Promise<boolean> {
 export async function registerClient(serverUrl: string, jwt: string): Promise<void> {
   const url = serverUrl.replace(/\/+$/, "");
   const body = await clientPayload();
-  const res = await fetch(`${url}/v1/clients/register`, {
+  const res = await fetchWithTimeout(`${url}/v1/clients/register`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${jwt}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-  });
+  }, AUX_REQUEST_TIMEOUT_MS);
   if (!res.ok && res.status !== 204) {
     const detail = await res.text().catch(() => "");
     throw new Error(
@@ -612,14 +638,14 @@ export async function registerClient(serverUrl: string, jwt: string): Promise<vo
 export async function sendHeartbeat(serverUrl: string, jwt: string): Promise<void> {
   const url = serverUrl.replace(/\/+$/, "");
   const body = await clientPayload();
-  const res = await fetch(`${url}/v1/clients/heartbeat`, {
+  const res = await fetchWithTimeout(`${url}/v1/clients/heartbeat`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${jwt}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-  });
+  }, AUX_REQUEST_TIMEOUT_MS);
   if (!res.ok && res.status !== 204) {
     const detail = await res.text().catch(() => "");
     throw new Error(
@@ -655,9 +681,9 @@ export async function ensureDesktopRegistered(
 export async function checkLicense(serverUrl: string, jwt: string): Promise<boolean> {
   try {
     const url = serverUrl.replace(/\/+$/, "");
-    const res = await fetch(`${url}/v1/license/check`, {
+    const res = await fetchWithTimeout(`${url}/v1/license/check`, {
       headers: { Authorization: `Bearer ${jwt}` },
-    });
+    }, AUX_REQUEST_TIMEOUT_MS);
     if (!res.ok) return false;
     const data = await res.json();
     return data.active !== false;
@@ -673,15 +699,15 @@ export async function completeAuth(
 ): Promise<EnterpriseConnection> {
   const url = serverUrl.replace(/\/+$/, "");
 
-  const meRes = await fetch(`${url}/v1/auth/me`, {
+  const meRes = await fetchWithTimeout(`${url}/v1/auth/me`, {
     headers: { Authorization: `Bearer ${sessionToken}` },
-  });
+  }, AUTH_REQUEST_TIMEOUT_MS);
   if (!meRes.ok) throw new Error("Invalid or expired token");
   const me = await meRes.json();
 
-  const orgRes = await fetch(`${url}/v1/orgs/me`, {
+  const orgRes = await fetchWithTimeout(`${url}/v1/orgs/me`, {
     headers: { Authorization: `Bearer ${sessionToken}` },
-  });
+  }, AUX_REQUEST_TIMEOUT_MS);
   let orgName: string | undefined;
   let larkName: string | undefined;
   let larkAvatarUrl: string | undefined;
@@ -720,11 +746,11 @@ export async function completeEmailAuth(
   signup: boolean,
 ): Promise<EnterpriseConnection> {
   const url = serverUrl.replace(/\/+$/, "");
-  const res = await fetch(`${url}/v1/auth/desktop-email`, {
+  const res = await fetchWithTimeout(`${url}/v1/auth/desktop-email`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, signup }),
-  });
+  }, AUTH_REQUEST_TIMEOUT_MS);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data.error || "Email sign-in failed");
@@ -733,9 +759,9 @@ export async function completeEmailAuth(
   const sessionToken = data.token as string;
   const accountEmail = data.account?.email as string;
 
-  const orgRes = await fetch(`${url}/v1/orgs/me`, {
+  const orgRes = await fetchWithTimeout(`${url}/v1/orgs/me`, {
     headers: { Authorization: `Bearer ${sessionToken}` },
-  });
+  }, AUX_REQUEST_TIMEOUT_MS);
   let orgName: string | undefined;
   if (orgRes.ok) {
     const orgData = await orgRes.json();

@@ -12,8 +12,8 @@ use crate::{
     embedder::gemini,
     llm::{alias_safety, meaning, promotion_gate},
     store::{
-        openai_oauth, prefs::get_prefs, stt_replacements, tier2_edit_policy, users,
-        vocab_embeddings, vocab_fts, vocabulary,
+        corrections, edit_review_sessions, openai_oauth, prefs::get_prefs, stt_replacements,
+        tier2_edit_policy, users, vocab_embeddings, vocab_fts, vocabulary,
     },
 };
 
@@ -36,13 +36,25 @@ fn clean_vocab_context(context: Option<&str>) -> Option<String> {
     }
 }
 
+fn unsafe_confirmed_correction_source(original: &str, corrected: &str) -> bool {
+    corrected.trim().is_empty()
+        || original.split_whitespace().count() > 4
+        || corrected.split_whitespace().count() > 4
+        || ((alias_safety::is_common_alias_source(original)
+            || promotion_gate::is_common_word(original))
+            && matches!(
+                vocabulary::classify_term_type(corrected),
+                "brand" | "acronym" | "proper_noun" | "code_identifier"
+            ))
+}
+
 fn groq_key_for_learning(prefs: Option<&crate::store::prefs::Preferences>) -> String {
     prefs
         .and_then(|p| p.groq_api_key.clone())
         .or_else(|| std::env::var("GROQ_API_KEY").ok())
         .or_else(|| {
-            // Only pass true Groq keys to the Groq endpoint. Generic gateway or
-            // Cerebras keys belong to the server-runtime fallback below.
+            // Only pass true Groq keys to the Groq endpoint. Generic gateway
+            // keys must never be sent to a direct provider endpoint.
             std::env::var("GATEWAY_API_KEY")
                 .ok()
                 .filter(|key| key.trim_start().starts_with("gsk_"))
@@ -60,6 +72,8 @@ async fn generate_meaning_via_runtime(
     user_id: &str,
     term: &str,
     context: &str,
+    current_meaning: Option<&str>,
+    examples: &[String],
 ) -> Option<String> {
     let Some(user) = users::get_user(&state.pool, user_id) else {
         return None;
@@ -79,6 +93,8 @@ async fn generate_meaning_via_runtime(
     let body = serde_json::json!({
         "term": term,
         "context": context,
+        "current_meaning": current_meaning,
+        "examples": examples,
         "selected_model": said_core::polish::model::DEFAULT_POLISH_MODEL_KEY,
     });
     match state
@@ -116,6 +132,39 @@ async fn generate_meaning_via_runtime(
             None
         }
     }
+}
+
+fn meaning_examples(
+    pool: &crate::store::DbPool,
+    user_id: &str,
+    term: &str,
+    current_context: &str,
+) -> Vec<String> {
+    let mut examples = Vec::with_capacity(4);
+    let push_unique = |examples: &mut Vec<String>, value: Option<&str>| {
+        let value = value.map(str::trim).filter(|value| !value.is_empty());
+        if let Some(value) = value {
+            if !examples.iter().any(|example| example == value) {
+                examples.push(value.to_string());
+            }
+        }
+    };
+
+    // The first observed context is available even without embeddings. That
+    // makes a second confirmation genuinely useful on machines with no Gemini
+    // key, instead of asking the meaning model to infer everything from one
+    // latest sentence.
+    let anchor =
+        vocabulary::find_by_term_ci(pool, user_id, term).and_then(|entry| entry.example_context);
+    push_unique(&mut examples, anchor.as_deref());
+    for stored in vocab_embeddings::support_example_texts(pool, user_id, term, 4) {
+        if examples.len() >= 3 {
+            break;
+        }
+        push_unique(&mut examples, Some(&stored));
+    }
+    push_unique(&mut examples, Some(current_context));
+    examples
 }
 
 fn schedule_vocab_artifacts(
@@ -173,16 +222,23 @@ fn schedule_vocab_artifacts(
             .as_ref()
             .map(|token| token.access_token.as_str());
         let current = vocabulary::get_meaning(&state.pool, &user_id, &term);
-        let examples = {
-            let stored = vocab_embeddings::support_example_texts(&state.pool, &user_id, &term, 4);
-            if stored.is_empty() {
-                vec![context.clone()]
-            } else {
-                stored
-            }
-        };
+        let examples = meaning_examples(&state.pool, &user_id, &term, &context);
 
-        let generated_local = if let Some(current_meaning) = current.as_deref() {
+        // The signed-in control plane uses the quality polish route and sees
+        // the complete evidence set. This background call is the canonical
+        // meaning writer; local models keep offline learning functional.
+        let generated = generate_meaning_via_runtime(
+            &state,
+            &user_id,
+            &term,
+            &context,
+            current.as_deref(),
+            &examples,
+        )
+        .await;
+        let generated = if generated.is_some() {
+            generated
+        } else if let Some(current_meaning) = current.as_deref() {
             meaning::refine(
                 &state.http_client,
                 &groq_key,
@@ -204,14 +260,10 @@ fn schedule_vocab_artifacts(
             )
             .await
         };
-        let generated = if generated_local.is_some() {
-            generated_local
-        } else {
-            generate_meaning_via_runtime(&state, &user_id, &term, &context).await
-        };
 
         if let Some(new_meaning) = generated.filter(|value| !value.trim().is_empty()) {
             if vocabulary::update_meaning(&state.pool, &user_id, &term, &new_meaning) {
+                vocab_fts::upsert(&state.pool, &user_id, &term, Some(&context));
                 crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
                 refresh_local_profile_summary(&state, "vocab_meaning");
             }
@@ -519,21 +571,6 @@ pub async fn confirm_term(
                 &body.term,
                 &language,
             );
-
-            // ── Proactive distortion seeding ────────────────────────────────
-            let proactive = stt_replacements::generate_proactive_distortions(
-                &state.pool,
-                user_id,
-                &body.term,
-                &body.original,
-                &language,
-            );
-            if proactive > 0 {
-                info!(
-                    "[confirm] seeded {proactive} proactive distortion(s) for {:?}",
-                    body.term
-                );
-            }
         } else if !body.original.trim().is_empty() {
             info!(
                 "[confirm] skipped alias learning {:?} → {:?} — alias safety blocked source",
@@ -745,6 +782,8 @@ pub async fn block_correction(
 pub struct ConfirmBatchBody {
     pub items: Vec<ConfirmBatchItem>,
     pub recording_id: Option<String>,
+    #[serde(default)]
+    pub review_session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -753,6 +792,8 @@ pub struct ConfirmBatchItem {
     pub corrected: String,
     #[serde(default)]
     pub context: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -814,9 +855,42 @@ pub async fn confirm_batch(
     for item in &body.items {
         let corrected = item.corrected.trim();
         let original = item.original.trim();
+        let context_only = item.tag.as_deref() == Some("meaning_context");
         if corrected.is_empty() {
             continue;
         }
+        if matches!(
+            item.tag.as_deref(),
+            Some("polish_error" | "format_preference")
+        ) {
+            if original.is_empty()
+                || original == corrected
+                || unsafe_confirmed_correction_source(original, corrected)
+            {
+                info!(
+                    "[confirm-batch] blocked unsafe writing correction {:?} -> {:?}",
+                    original, corrected
+                );
+                continue;
+            }
+            corrections::upsert(
+                &state.pool,
+                user_id,
+                &[(original.to_ascii_lowercase(), corrected.to_string())],
+            );
+            learned_count += 1;
+            if !learned_terms.iter().any(|term| term == corrected) {
+                learned_terms.push(corrected.to_string());
+            }
+            info!(
+                "[confirm-batch] learned reviewed {} correction {:?} -> {:?}",
+                item.tag.as_deref().unwrap_or("writing"),
+                original,
+                corrected,
+            );
+            continue;
+        }
+
         if !original.is_empty()
             && tier2_edit_policy::normalize_token(original)
                 == tier2_edit_policy::normalize_token(corrected)
@@ -829,7 +903,7 @@ pub async fn confirm_batch(
         }
 
         let term_type = vocabulary::classify_term_type(corrected).to_string();
-        let alias_safe = if original.is_empty() {
+        let alias_safe = if context_only || original.is_empty() {
             false
         } else if deterministic_confirm_alias_allowed(
             &state.pool,
@@ -867,7 +941,7 @@ pub async fn confirm_batch(
             safety.allows_learning()
         };
 
-        if !original.is_empty() && !alias_safe {
+        if !original.is_empty() && !alias_safe && !context_only {
             info!(
                 "[confirm-batch] alias safety blocked {:?} -> {:?} — not storing vocab-only surrogate",
                 original, corrected
@@ -923,15 +997,6 @@ pub async fn confirm_batch(
                 &language,
             );
 
-            // Proactive distortions
-            stt_replacements::generate_proactive_distortions(
-                &state.pool,
-                user_id,
-                corrected,
-                original,
-                &language,
-            );
-
             // Auto-approve (user explicitly confirmed via batch)
             stt_replacements::approve_aliases_for_term(&state.pool, user_id, corrected);
 
@@ -960,7 +1025,7 @@ pub async fn confirm_batch(
             }));
         }
 
-        if inserted_or_updated || alias_safe {
+        if inserted_or_updated || alias_safe || context_only {
             learned_count += 1;
             if !learned_terms.iter().any(|term| term == corrected) {
                 learned_terms.push(corrected.to_string());
@@ -973,8 +1038,9 @@ pub async fn confirm_batch(
             );
         }
 
+        let kind = if context_only { "context" } else { "alias" };
         info!(
-            "[confirm-batch] learned {:?} from {:?}",
+            "[confirm-batch] learned {kind} evidence for {:?} from {:?}",
             corrected, original
         );
     }
@@ -1038,6 +1104,12 @@ pub async fn confirm_batch(
         });
     }
 
+    if let Some(session_id) = body.review_session_id.as_deref() {
+        if !edit_review_sessions::resolve(&state.pool, user_id, session_id, 1) {
+            warn!("[confirm-batch] review session {session_id} was not pending");
+        }
+    }
+
     (
         StatusCode::OK,
         Json(ConfirmBatchResponse {
@@ -1047,4 +1119,20 @@ pub async fn confirm_batch(
             server_owned: false,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unsafe_confirmed_correction_source;
+
+    #[test]
+    fn reviewed_writing_correction_gate_keeps_rules_small_and_non_aliasing() {
+        assert!(!unsafe_confirmed_correction_source("colour", "color"));
+        assert!(!unsafe_confirmed_correction_source("8am", "8:00 AM"));
+        assert!(unsafe_confirmed_correction_source("please", "AirNote"));
+        assert!(unsafe_confirmed_correction_source(
+            "a very long source phrase here",
+            "short"
+        ));
+    }
 }

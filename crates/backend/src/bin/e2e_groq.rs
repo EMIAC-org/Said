@@ -56,6 +56,8 @@ fn main() {
                 context: Some("Emiac ke naam se karenge hum".to_string()),
                 resolution: VocabResolution::Resolved,
                 stt_aliases: vec![("meah".to_string(), 2)],
+                evidence: vec!["known_alias(meah)".to_string()],
+                do_not_use_when: None,
             }];
 
             let screen_context = "Emiac technology mein kaam karte hain";
@@ -110,6 +112,8 @@ fn main() {
                 context: Some("Emiac ke naam se karenge hum".to_string()),
                 resolution: VocabResolution::Resolved,
                 stt_aliases: vec![("meah".to_string(), 2)],
+                evidence: vec!["known_alias(meah)".to_string()],
+                do_not_use_when: None,
             }];
 
             let screen_context = "Emiac technology mein kaam karte hain";
@@ -278,7 +282,7 @@ fn make_test_prefs() -> Preferences {
         gateway_api_key: None,
         gemini_api_key: None,
         groq_api_key: None,
-        cerebras_api_key: None,
+        together_api_key: None,
         deepinfra_api_key: None,
         llm_provider: "groq".to_string(),
     }

@@ -163,6 +163,34 @@ const MIGRATIONS: &[Migration] = &[
         id: "035_force_cerebras_gemma_4",
         sql: include_str!("../migrations/035_force_cerebras_gemma_4.sql"),
     },
+    Migration {
+        id: "036_openrouter_gemma_4_nitro",
+        sql: include_str!("../migrations/036_openrouter_gemma_4_nitro.sql"),
+    },
+    Migration {
+        id: "037_together_gemma_4",
+        sql: include_str!("../migrations/037_together_gemma_4.sql"),
+    },
+    Migration {
+        id: "038_openrouter_gemma_4_nitro",
+        sql: include_str!("../migrations/038_openrouter_gemma_4_nitro.sql"),
+    },
+    Migration {
+        id: "039_telemetry_model_costs",
+        sql: include_str!("../migrations/039_telemetry_model_costs.sql"),
+    },
+    Migration {
+        id: "040_backfill_late_telemetry_costs",
+        sql: include_str!("../migrations/040_backfill_late_telemetry_costs.sql"),
+    },
+    Migration {
+        id: "041_deepinfra_gemma_4_26b_a4b",
+        sql: include_str!("../migrations/041_deepinfra_gemma_4_26b_a4b.sql"),
+    },
+    Migration {
+        id: "042_meeting_provider_usage",
+        sql: include_str!("../migrations/042_meeting_provider_usage.sql"),
+    },
 ];
 
 /// Connect to Postgres and apply the schema.

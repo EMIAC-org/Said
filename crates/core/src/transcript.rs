@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptOrigin {
     DictationLocal,
+    /// Dictation transcribed by a hosted (cloud) STT provider — the Windows path.
+    DictationHosted,
     MeetingLocal,
     #[default]
     #[serde(other)]
@@ -26,6 +28,14 @@ pub struct TranscriptMeta {
     pub languages: Vec<String>,
     #[serde(default)]
     pub model: String,
+    /// Stable provider identifier for telemetry and cost attribution.
+    /// Examples: `local_whisper`, `local_nemotron`, `together`.
+    #[serde(default)]
+    pub provider: String,
+    /// Concrete execution path for this transcript, such as `local_batch` or
+    /// `websocket_live`. This is per-run metadata, not a selected preference.
+    #[serde(default)]
+    pub path: String,
     #[serde(default)]
     pub duration_ms: u64,
     #[serde(default)]

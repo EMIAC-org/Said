@@ -441,7 +441,9 @@ fn provider_secrets(prefs: &Preferences) -> Vec<ProviderSecret> {
             secret,
         });
     }
-    // Cerebras + DeepInfra are server-managed (control-plane .env) — not synced from users.
+    // Together stays local for optional cloud STT. The control-plane vault is
+    // only for server-side runtime providers, so never upload this key there.
+    // DeepInfra is server-managed (control-plane .env) — not synced from users.
     out
 }
 
@@ -475,7 +477,7 @@ mod tests {
             gateway_api_key: Some("gsk_test_gateway_key_1234567890".into()),
             gemini_api_key: None,
             groq_api_key: None,
-            cerebras_api_key: None,
+            together_api_key: None,
             deepinfra_api_key: None,
             llm_provider: "groq".into(),
         };

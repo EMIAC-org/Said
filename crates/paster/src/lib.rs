@@ -52,6 +52,7 @@ mod imp {
                 unicode_string: *const u16,
             );
             pub fn CFRelease(cf: *mut c_void);
+            pub fn CFHash(cf: *const c_void) -> usize;
             pub fn AXIsProcessTrusted() -> bool;
             pub fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
 
@@ -527,6 +528,30 @@ mod imp {
             ffi::CFRelease(el);
             ffi::CFRelease(app);
             result
+        }
+    }
+
+    /// Stable CoreFoundation identity for the currently focused AX element in
+    /// `pid`. The edit watcher combines this with the target PID and owned text
+    /// span so a later field change can be distinguished from an edit.
+    pub fn focused_element_fingerprint_for_pid(pid: i32) -> Option<u64> {
+        if pid <= 0 {
+            return None;
+        }
+        unsafe {
+            if !ffi::AXIsProcessTrusted() {
+                return None;
+            }
+            let app = ffi::AXUIElementCreateApplication(pid);
+            if app.is_null() {
+                return None;
+            }
+            let element = ax_attr(app as *const _, "AXFocusedUIElement");
+            ffi::CFRelease(app);
+            let element = element?;
+            let fingerprint = ffi::CFHash(element as *const _) as u64;
+            ffi::CFRelease(element);
+            Some(fingerprint)
         }
     }
 
@@ -2008,3 +2033,36 @@ pub use imp_windows::*;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use imp_other::*;
+
+/// How [`insert_text`] delivered the text into the focused field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertMethod {
+    /// Injected directly as keystrokes — the user's clipboard was never touched.
+    Typed,
+    /// Fell back to a clipboard paste (direct injection was unavailable/blocked).
+    Clipboard,
+}
+
+/// Insert `text` into the focused field using the safest strategy for the host:
+/// **direct keystroke injection first** (which never touches the user's
+/// clipboard), falling back to a clipboard paste only when direct injection is
+/// unavailable — no Accessibility grant on macOS, or `SendInput` blocked by an
+/// elevated target on Windows.
+///
+/// This is the canonical "put this text in the focused field" entry point.
+/// Prefer it over calling [`type_text`]/[`paste`] directly, so the direct-first
+/// policy — and thus "never clobber the clipboard on the common path" — lives in
+/// exactly one place instead of being re-derived at each call site.
+pub fn insert_text(text: &str) -> Result<InsertMethod, String> {
+    if text.is_empty() {
+        return Ok(InsertMethod::Typed);
+    }
+    match type_text(text) {
+        Ok(true) => Ok(InsertMethod::Typed),
+        Ok(false) => paste(text).map(|()| InsertMethod::Clipboard),
+        Err(e) => {
+            tracing::warn!("[paster] direct typing failed ({e}); falling back to clipboard paste");
+            paste(text).map(|()| InsertMethod::Clipboard)
+        }
+    }
+}

@@ -261,6 +261,7 @@ mod imp {
         WordBackspace, // Option+Backspace — delete word before cursor
         LineBackspace, // Cmd+Backspace    — delete to line start
         SelectAll,     // Cmd+A
+        Paste,         // Cmd+V — explicit boundary for post-dictation edit capture
         Cut,           // Cmd+X — marks reconstruction uncertain
         Undo,          // Cmd+Z — marks reconstruction uncertain
         MouseClick,    // mouse repositioned cursor — uncertain
@@ -397,30 +398,74 @@ mod imp {
         true
     }
 
-    /// Called inside a kCGEventKeyDown handler. Returns `true` if the event was
-    /// Fn+Space for the Function record hotkey.
-    unsafe fn check_and_fire_long_dictation(event: ffi::CGEventRef) -> bool {
-        if !matches!(current_record_hotkey(), RecordHotkey::Function) {
-            return false;
+    const DEVICE_L_CTRL: u64 = 0x0000_0001;
+    const DEVICE_L_SHIFT: u64 = 0x0000_0002;
+    const DEVICE_R_SHIFT: u64 = 0x0000_0004;
+    const DEVICE_L_CMD: u64 = 0x0000_0008;
+    const DEVICE_R_CMD: u64 = 0x0000_0010;
+    const DEVICE_R_CTRL: u64 = 0x0000_2000;
+    const GENERIC_MODIFIER_FLAGS: u64 = ffi::K_CG_FLAG_CAPS_LOCK
+        | ffi::K_CG_FLAG_SHIFT
+        | ffi::K_CG_FLAG_CONTROL
+        | ffi::K_CG_FLAG_ALT
+        | ffi::K_CG_FLAG_COMMAND
+        | ffi::K_CG_FLAG_SECONDARY_FN;
+
+    fn expected_generic_flag_for_device_mask(mask: u64) -> Option<u64> {
+        match mask {
+            DEVICE_L_CTRL | DEVICE_R_CTRL => Some(ffi::K_CG_FLAG_CONTROL),
+            DEVICE_L_SHIFT | DEVICE_R_SHIFT => Some(ffi::K_CG_FLAG_SHIFT),
+            DEVICE_L_CMD | DEVICE_R_CMD => Some(ffi::K_CG_FLAG_COMMAND),
+            ffi::NX_DEVICELALTKEYMASK | ffi::NX_DEVICERALTKEYMASK => Some(ffi::K_CG_FLAG_ALT),
+            _ => None,
         }
+    }
+
+    fn only_expected_generic_modifiers(flags: u64, expected: u64) -> bool {
+        (flags & GENERIC_MODIFIER_FLAGS & !expected) == 0
+    }
+
+    /// Called inside a kCGEventKeyDown handler. Returns `true` if the event was
+    /// current record hotkey + Space.
+    unsafe fn check_and_fire_long_dictation(event: ffi::CGEventRef) -> bool {
         let flags = unsafe { ffi::CGEventGetFlags(event) };
         let keycode =
             unsafe { ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE) };
-        let fn_on = (flags & ffi::K_CG_FLAG_SECONDARY_FN) != 0;
-        let cmd = (flags & ffi::K_CG_FLAG_COMMAND) != 0;
-        let alt = (flags & ffi::K_CG_FLAG_ALT) != 0;
-        let shift = (flags & ffi::K_CG_FLAG_SHIFT) != 0;
-        let ctrl = (flags & ffi::K_CG_FLAG_CONTROL) != 0;
 
-        if !fn_on || keycode != ffi::KC_SPACE || cmd || alt || shift || ctrl {
+        if keycode != ffi::KC_SPACE {
             return false;
         }
 
-        tracing::info!("[hotkey] Fn+Space detected — locking long dictation");
+        let hotkey_down = match current_record_hotkey() {
+            RecordHotkey::CapsLock => {
+                (flags & ffi::K_CG_FLAG_CAPS_LOCK) != 0
+                    && only_expected_generic_modifiers(flags, ffi::K_CG_FLAG_CAPS_LOCK)
+            }
+            RecordHotkey::RightOption => {
+                (flags & ffi::NX_DEVICERALTKEYMASK) != 0
+                    && only_expected_generic_modifiers(flags, ffi::K_CG_FLAG_ALT)
+            }
+            RecordHotkey::Function => {
+                (flags & ffi::K_CG_FLAG_SECONDARY_FN) != 0
+                    && only_expected_generic_modifiers(flags, ffi::K_CG_FLAG_SECONDARY_FN)
+            }
+            RecordHotkey::Modifier { mac_mask, .. } => {
+                let Some(expected) = expected_generic_flag_for_device_mask(mac_mask) else {
+                    return false;
+                };
+                (flags & mac_mask) != 0 && only_expected_generic_modifiers(flags, expected)
+            }
+        };
+
+        if !hotkey_down {
+            return false;
+        }
+
+        tracing::info!("[hotkey] record-key+Space detected — locking long dictation");
         if let Some(cb) = LONG_DICTATION_CB.get() {
             cb();
         } else {
-            tracing::warn!("[hotkey] Fn+Space fired but LONG_DICTATION_CB not registered!");
+            tracing::warn!("[hotkey] record-key+Space fired but LONG_DICTATION_CB not registered!");
         }
         true
     }
@@ -713,6 +758,7 @@ mod imp {
         } else if cmd {
             match keycode {
                 ffi::KC_A => KeyEvt::SelectAll,
+                ffi::KC_V => KeyEvt::Paste,
                 ffi::KC_X => KeyEvt::Cut,
                 ffi::KC_Z => KeyEvt::Undo,
                 ffi::KC_LEFT => KeyEvt::LineStart,
@@ -1014,14 +1060,13 @@ mod imp {
         let tap = unsafe { ffi::CGEventTapCreate(0, 0, 0, mask, callback, std::ptr::null_mut()) };
 
         if tap.is_null() {
+            LAST_IM_GRANTED.store(false, Ordering::Relaxed);
+            tracing::info!("[hotkey] CGEventTapCreate failed — Input Monitoring not granted");
             tracing::info!(
-                "[hotkey] CGEventTapCreate failed — requesting Input Monitoring permission"
+                "[hotkey] Skipping automatic Input Monitoring prompt from hotkey thread"
             );
-            // Trigger the macOS TCC permission dialog for Input Monitoring.
-            // NSInputMonitoringUsageDescription in Info.plist is required for this to work.
-            unsafe { ffi::CGRequestListenEventAccess() };
             tracing::info!(
-                "[hotkey] Restart the app after granting Input Monitoring in System Settings."
+                "[hotkey] Open System Settings → Privacy → Input Monitoring, grant access, then restart the app."
             );
             return;
         }

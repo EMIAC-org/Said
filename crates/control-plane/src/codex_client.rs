@@ -64,6 +64,19 @@ pub struct TokenResponse {
 pub struct CodexResponse {
     pub text: String,
     pub plan_type: Option<String>,
+    /// Token usage from the `response.completed` event (None when the stream
+    /// did not report it).
+    pub input_tokens: Option<i32>,
+    pub cached_input_tokens: Option<i32>,
+    pub output_tokens: Option<i32>,
+}
+
+/// Token usage parsed from the Codex `response.completed` SSE event.
+#[derive(Default)]
+struct CodexUsage {
+    input_tokens: Option<i32>,
+    cached_input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
 }
 
 // ── PKCE session creation ───────────────────────────────────────────────────
@@ -226,9 +239,15 @@ pub async fn call_codex(
 
     // Read the SSE stream.
     let full_body = resp.bytes().await?;
-    let text = parse_sse_deltas(&full_body);
+    let (text, usage) = parse_sse_deltas(&full_body);
 
-    Ok(CodexResponse { text, plan_type })
+    Ok(CodexResponse {
+        text,
+        plan_type,
+        input_tokens: usage.input_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        output_tokens: usage.output_tokens,
+    })
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────
@@ -252,9 +271,14 @@ fn client_id() -> String {
 /// `response.output_text.delta` events into a single string.
 ///
 /// SSE format: `data: {"type":"response.output_text.delta","delta":"...",...}\n\n`
-fn parse_sse_deltas(raw: &[u8]) -> String {
+///
+/// Returns the concatenated output text plus any token usage carried by the
+/// terminal `response.completed` event (`response.usage.{input_tokens,
+/// output_tokens,input_tokens_details.cached_tokens}`).
+fn parse_sse_deltas(raw: &[u8]) -> (String, CodexUsage) {
     let body_str = String::from_utf8_lossy(raw);
     let mut result = String::new();
+    let mut usage = CodexUsage::default();
 
     for line in body_str.lines() {
         let Some(data) = line.strip_prefix("data: ") else {
@@ -275,10 +299,24 @@ fn parse_sse_deltas(raw: &[u8]) -> String {
                     result.push_str(delta);
                 }
             }
-            Some("response.completed") => break,
+            Some("response.completed") => {
+                if let Some(u) = parsed.pointer("/response/usage") {
+                    usage.input_tokens = u.get("input_tokens").and_then(json_i32);
+                    usage.output_tokens = u.get("output_tokens").and_then(json_i32);
+                    usage.cached_input_tokens = u
+                        .pointer("/input_tokens_details/cached_tokens")
+                        .and_then(json_i32);
+                }
+                break;
+            }
             _ => {}
         }
     }
 
-    result
+    (result, usage)
+}
+
+/// Coerce a JSON number into an `i32`, ignoring absent/non-numeric values.
+fn json_i32(v: &serde_json::Value) -> Option<i32> {
+    v.as_i64().and_then(|n| i32::try_from(n).ok())
 }

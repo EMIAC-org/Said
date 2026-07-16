@@ -1,6 +1,7 @@
 //! Vocabulary HTTP routes.
 //!
-//! GET    /v1/vocabulary/terms      — light: top-N term strings (STT-bias hot path)
+//! GET    /v1/stt/bias              — bounded local Whisper bias pack
+//! GET    /v1/vocabulary/terms      — compatibility: starred term strings
 //! GET    /v1/vocabulary            — full: rows with weight/source/use_count
 //! POST   /v1/vocabulary            — manual add (source = 'manual')
 //! DELETE /v1/vocabulary/:term      — hard remove a single term
@@ -18,7 +19,7 @@ use tracing::{info, warn};
 use crate::{
     AppState,
     embedder::gemini,
-    llm::meaning,
+    llm::{meaning, vocab_retrieval},
     store::{
         now_ms, pending_promotions, prefs::get_prefs, stt_replacements, vocab_embeddings,
         vocab_fts, vocabulary,
@@ -129,6 +130,12 @@ pub fn spawn_prompt_artifact_repair(state: AppState) {
                 .await
                 {
                     if vocabulary::update_meaning(&state.pool, &user_id, &term.term, &new_meaning) {
+                        vocab_fts::upsert(
+                            &state.pool,
+                            &user_id,
+                            &term.term,
+                            term.example_context.as_deref(),
+                        );
                         meaning_repaired += 1;
                     }
                 }
@@ -168,6 +175,39 @@ pub async fn list_terms(
     // Users star the terms they care most about.
     let terms = vocabulary::starred_term_strings(&state.pool, &state.default_user_id);
     Json(TermsResponse { terms })
+}
+
+// ── GET /v1/stt/bias (local Whisper hot path) ────────────────────────────────
+
+#[derive(Deserialize, Default)]
+pub struct SttBiasQuery {
+    pub language: Option<String>,
+    pub target_app: Option<String>,
+    pub bucket: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SttBiasResponse {
+    pub keyterms: Vec<String>,
+    pub prompt: String,
+    pub generated_at_ms: i64,
+}
+
+pub async fn stt_bias(
+    State(state): State<AppState>,
+    Query(q): Query<SttBiasQuery>,
+) -> Json<SttBiasResponse> {
+    let _ = (&q.target_app, &q.bucket);
+    let pack = vocab_retrieval::build_asr_bias_pack(
+        &state.pool,
+        &state.default_user_id,
+        q.language.as_deref(),
+    );
+    Json(SttBiasResponse {
+        keyterms: pack.keyterms,
+        prompt: pack.prompt,
+        generated_at_ms: pack.generated_at_ms,
+    })
 }
 
 // ── GET /v1/vocabulary (management UI) ───────────────────────────────────────
@@ -422,6 +462,7 @@ pub async fn patch(
         updated |= vocabulary::update_example_context(&state.pool, uid, trimmed, ctx);
     }
     if updated {
+        vocab_fts::upsert(&state.pool, uid, trimmed, body.example_context.as_deref());
         // Edits to meaning/type/context feed STT bias + polish, so the cached
         // lexicon must be refreshed or the change won't take effect for up to
         // the cache TTL (looks like "the edit didn't save").

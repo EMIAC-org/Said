@@ -553,11 +553,10 @@ pub fn top_term_strings_for_language(
         .collect()
 }
 
-/// Threshold: number of new examples before triggering a meaning regeneration.
-/// Smaller = more responsive (semantic understanding refines quickly), larger
-/// = cheaper (fewer Groq calls). 3 is a balance — refreshes after every few
-/// confirmed sightings without burning through budget.
-pub const MEANING_REFRESH_THRESHOLD: i64 = 3;
+/// One new confirmed context is enough to refine a meaning. Meaning runs only
+/// in the background, and the second distinct use is precisely when a vague
+/// first description can become useful without delaying dictation.
+pub const MEANING_REFRESH_THRESHOLD: i64 = 1;
 
 /// Persist a freshly-generated meaning + reset the example counter so the
 /// next refresh trigger fires after MEANING_REFRESH_THRESHOLD more examples.
@@ -1176,12 +1175,8 @@ mod tests {
         let pool = mem_pool();
         upsert(&pool, "u1", "TERM", 1.0, "auto");
         update_meaning(&pool, "u1", "TERM", "first description");
-        // Below threshold — quiet.
-        for _ in 0..(MEANING_REFRESH_THRESHOLD - 1) {
-            bump_examples_since_meaning(&pool, "u1", "TERM");
-        }
-        assert!(!meaning_needs_refresh(&pool, "u1", "TERM"));
-        // Crossing threshold — fires.
+        // The second confirmed use supplies the first new context, so refresh
+        // immediately instead of waiting through several more dictations.
         bump_examples_since_meaning(&pool, "u1", "TERM");
         assert!(meaning_needs_refresh(&pool, "u1", "TERM"));
     }

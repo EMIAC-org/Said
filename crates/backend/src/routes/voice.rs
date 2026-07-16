@@ -18,7 +18,10 @@ use axum::{
     },
 };
 use futures::StreamExt;
-use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
+use said_core::{
+    text::Utf8LineBuffer,
+    transcript::{TranscriptMeta, TranscriptOrigin},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::convert::Infallible;
@@ -69,6 +72,10 @@ fn backend_ai_payload_log_path() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("airnote-backend-ai-payloads.jsonl"))
 }
 
+fn recent_speech_hints_allowed(vocab_entries: &[VocabEntry]) -> bool {
+    !vocab_entries.is_empty()
+}
+
 async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest) {
     if !backend_ai_payload_log_enabled() {
         return;
@@ -99,6 +106,7 @@ async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest
         "target_app": &req.target_app,
         "screen_context": &req.screen_context,
         "safe_vocab_terms": &req.safe_vocab_terms,
+        "vocab_cards": &req.vocab_cards,
         "recent_speech_hints": &req.recent_speech_hints,
         "transcript": &req.transcript,
     })
@@ -118,11 +126,12 @@ async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest
                 );
             } else {
                 info!(
-                    "[voice] backend AI payload log wrote path={} run_id={} transcript_chars={} vocab_terms={} recent_speech_hints={}",
+                    "[voice] backend AI payload log wrote path={} run_id={} transcript_chars={} vocab_terms={} vocab_cards={} recent_speech_hints={}",
                     path.display(),
                     req.client_run_id.as_deref().unwrap_or("none"),
                     req.transcript.chars().count(),
                     req.safe_vocab_terms.len(),
+                    req.vocab_cards.len(),
                     req.recent_speech_hints.len()
                 );
             }
@@ -196,16 +205,32 @@ fn voice_error_payload(
     audio_id: Option<&str>,
     explicit_code: Option<&str>,
 ) -> Value {
-    let message = message.into();
-    let error_code = voice_error_code_for(&message, explicit_code);
-    let retryable = audio_id.is_some() && voice_error_retryable(&error_code);
+    let raw_message = message.into();
+    let details = crate::llm::decode_llm_error(&raw_message);
+    let message = details
+        .as_ref()
+        .map(|details| details.message.clone())
+        .unwrap_or(raw_message);
+    let detail_code = details
+        .as_ref()
+        .and_then(|details| details.error_code.as_deref());
+    let error_code = voice_error_code_for(&message, explicit_code.or(detail_code));
+    let retryable = audio_id.is_some()
+        && details
+            .as_ref()
+            .and_then(|details| details.retryable)
+            .unwrap_or_else(|| voice_error_retryable(&error_code));
     let owned_by_airnote = voice_error_owned_by_airnote(&error_code, &message);
-    let diagnostic = format!(
-        "AirNote voice pipeline failure; code={}; retryable={}; saved_audio={}",
-        error_code,
-        retryable,
-        audio_id.unwrap_or("none")
-    );
+    let diagnostic = details
+        .and_then(|details| details.diagnostic)
+        .unwrap_or_else(|| {
+            format!(
+                "AirNote voice pipeline failure; code={}; retryable={}; saved_audio={}",
+                error_code,
+                retryable,
+                audio_id.unwrap_or("none")
+            )
+        });
     json!({
         "message": message,
         "run_id": run_id,
@@ -234,11 +259,33 @@ fn voice_run_failed_event(
     audio_id: Option<&str>,
     explicit_code: Option<&str>,
 ) -> Event {
-    let message = message.into();
+    let raw_message = message.into();
+    let details = crate::llm::decode_llm_error(&raw_message);
+    let message = details
+        .as_ref()
+        .map(|details| details.message.clone())
+        .unwrap_or(raw_message);
+    let detail_code = details
+        .as_ref()
+        .and_then(|details| details.error_code.as_deref());
     let error_code = voice_error_code_for(&message, explicit_code);
-    let retryable = audio_id.is_some() && voice_error_retryable(&error_code);
+    let error_code = detail_code.unwrap_or(&error_code).to_string();
+    let retryable = audio_id.is_some()
+        && details
+            .as_ref()
+            .and_then(|details| details.retryable)
+            .unwrap_or_else(|| voice_error_retryable(&error_code));
     let owned_by_airnote = voice_error_owned_by_airnote(&error_code, &message);
     let payload = voice_error_payload(&message, Some(run_id), audio_id, Some(&error_code));
+    let payload = if let Some(diagnostic) = details.and_then(|details| details.diagnostic) {
+        let mut payload = payload;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("diagnostic".to_string(), json!(diagnostic));
+        }
+        payload
+    } else {
+        payload
+    };
     let _ = crate::store::voice_runs::mark_voice_run_failed(
         pool,
         run_id,
@@ -437,18 +484,17 @@ use crate::{
             VocabEntry, build_user_message_with_hints, build_voice_repair_system_prompt,
             build_voice_repair_user_message, default_voice_prompt_template,
             render_voice_system_prompt_template_with_profile_and_recent,
-            resolved_vocab_terms_to_entries_with_aliases,
         },
         script,
         stream_safety::{
             STREAM_RESET_SENTINEL, StreamProvider, StreamSafetyFilter, scrub_polished_output,
         },
-        vocab_resolver,
+        vocab_retrieval::{self, VocabRetrievalRequest},
     },
     store::{
         company_vocab,
         history::{InsertRecording, insert_recording},
-        openai_oauth, stt_replacements, vocab_embeddings, vocabulary,
+        openai_oauth, vocab_embeddings, vocabulary,
     },
 };
 
@@ -486,6 +532,11 @@ struct ServerRuntimeVoiceRequest {
     selected_model: String,
     screen_context: Option<String>,
     safe_vocab_terms: Vec<String>,
+    /// Rich, evidence-backed cards selected by the local retriever. The control
+    /// plane treats them as soft evidence; the term list below remains only for
+    /// literal-token restoration and older control-plane versions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    vocab_cards: Vec<ServerRuntimeVocabCard>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     recent_speech_hints: Vec<String>,
     /// Focused-app key (bundle-id / exe). Lets the server pick the per-app profile
@@ -494,6 +545,85 @@ struct ServerRuntimeVoiceRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     target_app: Option<String>,
     client_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ServerRuntimeVocabCard {
+    term: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    term_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meaning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    evidence: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    do_not_use_when: Option<String>,
+}
+
+const SERVER_VOCAB_CARD_LIMIT: usize = 8;
+
+fn clean_server_vocab_text(raw: &str, max_chars: usize) -> String {
+    raw.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+fn supported_vocab_term_type(term_type: Option<&str>) -> Option<String> {
+    match term_type.map(str::trim) {
+        Some("acronym" | "proper_noun" | "brand" | "code_identifier" | "phrase" | "other") => {
+            term_type.map(str::trim).map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
+fn server_vocab_cards(entries: &[VocabEntry]) -> Vec<ServerRuntimeVocabCard> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let term = clean_server_vocab_text(&entry.term, 96);
+            if term.is_empty() {
+                return None;
+            }
+
+            let clean_optional = |value: Option<&String>| {
+                value.and_then(|value| {
+                    let value = clean_server_vocab_text(value, 180);
+                    (!value.is_empty()).then_some(value)
+                })
+            };
+            Some(ServerRuntimeVocabCard {
+                term,
+                term_type: supported_vocab_term_type(entry.term_type.as_deref()),
+                meaning: clean_optional(entry.meaning.as_ref()),
+                context: clean_optional(entry.context.as_ref()),
+                aliases: entry
+                    .stt_aliases
+                    .iter()
+                    .map(|(alias, _)| clean_server_vocab_text(alias, 80))
+                    .filter(|alias| !alias.is_empty())
+                    .take(6)
+                    .collect(),
+                evidence: entry
+                    .evidence
+                    .iter()
+                    .map(|evidence| clean_server_vocab_text(evidence, 100))
+                    .filter(|evidence| !evidence.is_empty())
+                    .take(4)
+                    .collect(),
+                do_not_use_when: clean_optional(entry.do_not_use_when.as_ref()),
+            })
+        })
+        .take(SERVER_VOCAB_CARD_LIMIT)
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -891,9 +1021,6 @@ pub async fn repair_transcript(
         let groq_key = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
-        let cerebras_key = prefs.cerebras_api_key.clone()
-            .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
-            .unwrap_or_default();
         let deepinfra_key = prefs.deepinfra_api_key.clone()
             .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
             .unwrap_or_default();
@@ -924,7 +1051,6 @@ pub async fn repair_transcript(
                 &groq_key,
                 &gateway_key,
                 &gemini_key,
-                &cerebras_key,
                 &deepinfra_key,
                 openai_token_opt.as_deref(),
                 &llm_provider_for_task,
@@ -1108,11 +1234,10 @@ async fn run_server_runtime_voice_stream(
         .unwrap_or("https://airnote.emiactech.com")
         .to_string();
 
-    let safe_vocab_terms = vocab_entries
+    let vocab_cards = server_vocab_cards(&vocab_entries);
+    let safe_vocab_terms = vocab_cards
         .iter()
-        .map(|entry| entry.term.trim().to_string())
-        .filter(|term| !term.is_empty())
-        .take(20)
+        .map(|card| card.term.clone())
         .collect::<Vec<_>>();
 
     let req = ServerRuntimeVoiceRequest {
@@ -1121,6 +1246,7 @@ async fn run_server_runtime_voice_stream(
         selected_model,
         screen_context: screen_context.map(|s| s.chars().take(500).collect()),
         safe_vocab_terms,
+        vocab_cards,
         recent_speech_hints,
         target_app,
         client_run_id: client_run_id
@@ -1134,7 +1260,7 @@ async fn run_server_runtime_voice_stream(
     );
     let start = Instant::now();
     info!(
-        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} recent_speech_hints={} target_app={} screen_context_chars={} setup_ms={}",
+        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} vocab_cards={} recent_speech_hints={} target_app={} screen_context_chars={} setup_ms={}",
         req.client_run_id.as_deref().unwrap_or("none"),
         url,
         req.transcript.chars().count(),
@@ -1142,6 +1268,7 @@ async fn run_server_runtime_voice_stream(
         req.selected_model,
         req.output_language,
         req.safe_vocab_terms.len(),
+        req.vocab_cards.len(),
         req.recent_speech_hints.len(),
         req.target_app.as_deref().unwrap_or("none"),
         req.screen_context
@@ -1176,7 +1303,7 @@ async fn run_server_runtime_voice_stream(
     }
 
     let mut byte_stream = resp.bytes_stream();
-    let mut buffer = String::new();
+    let mut line_buffer = Utf8LineBuffer::default();
     let mut event_name = String::from("message");
     let mut data_lines: Vec<String> = Vec::new();
     let mut parsed_done: Option<ServerRuntimeVoiceResponse> = None;
@@ -1185,11 +1312,13 @@ async fn run_server_runtime_voice_stream(
 
     while let Some(chunk) = byte_stream.next().await {
         let chunk = chunk.map_err(|e| format!("server runtime stream read failed: {e}"))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-        while let Some(newline_pos) = buffer.find('\n') {
-            let mut line = buffer[..newline_pos].to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+        // HTTP chunks can split a multi-byte UTF-8 character. Decode only
+        // after a complete SSE line has arrived.
+        for mut line in line_buffer
+            .push(&chunk)
+            .map_err(|e| format!("server runtime stream contained invalid UTF-8: {e}"))?
+        {
             if line.ends_with('\r') {
                 line.pop();
             }
@@ -1294,7 +1423,6 @@ async fn run_local_voice_polish_no_stream(
     gateway_key: String,
     gemini_key: String,
     groq_key: String,
-    cerebras_key: String,
     deepinfra_key: String,
     system_prompt: String,
     user_message: String,
@@ -1320,7 +1448,6 @@ async fn run_local_voice_polish_no_stream(
         &groq_key,
         &gateway_key,
         &gemini_key,
-        &cerebras_key,
         &deepinfra_key,
         openai_token_opt.as_deref(),
         &llm_provider,
@@ -1701,9 +1828,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         let groq_key = prefs.groq_api_key.clone()
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .unwrap_or_default();
-        let cerebras_key = prefs.cerebras_api_key.clone()
-            .or_else(|| std::env::var("CEREBRAS_API_KEY").ok())
-            .unwrap_or_default();
         let deepinfra_key = prefs.deepinfra_api_key.clone()
             .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
             .unwrap_or_default();
@@ -2010,11 +2134,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ..Default::default()
         });
 
-        // ── STEP 3: Relevance-aware vocabulary slice ──────────────────────────────
-        // Use the transcript embedding to pick the vocab entries that match
-        // what the user actually said. Skip flooding the prompt with all 200
-        // vocab rows — pick starred + top-weight + top-relevance (deduped,
-        // capped at 25). Falls back to starred + top-weight when no embedding.
+        // ── STEP 3: Meaning-first vocabulary cards ───────────────────────────────
+        // Retrieve a tiny evidence-backed card set. The retriever never rewrites
+        // the transcript and never calls the network; the polish LLM gets soft
+        // cards only when the current transcript has sound/meaning support.
         let vocab_t0 = Instant::now();
         let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = {
             let pool_v   = pool.clone();
@@ -2022,82 +2145,67 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let lang_v   = prefs.output_language.clone();
             let emb_v    = embedding.clone();
             let txt_v = alias_result.text.clone();
-            let mut chosen = tokio::task::spawn_blocking(move || {
-                vocab_embeddings::select_for_prompt(
-                    &pool_v, &uid_v, &lang_v, emb_v.as_deref(), Some(&txt_v),
+            let target_app_v = target_app.clone();
+            let screen_context_v = screen_context.clone();
+            let cards = tokio::task::spawn_blocking(move || {
+                vocab_retrieval::retrieve_after_transcription(
+                    &pool_v,
+                    VocabRetrievalRequest {
+                        user_id: uid_v,
+                        transcript: txt_v,
+                        output_language: lang_v,
+                        target_app: target_app_v,
+                        bucket: None,
+                        screen_context: screen_context_v,
+                        transcript_embedding: emb_v,
+                        limit: 8,
+                    },
                 )
             }).await.unwrap_or_default();
-            // Company terms are not embedded in the local personal-vector index.
-            // Include the highest-priority company entries in the resolver
-            // candidate set so fresh enterprise installs get day-one value.
-            for term in vocab_full.iter().filter(|t| t.source == "company") {
-                if chosen.len() >= 25 {
-                    break;
-                }
-                if !chosen.iter().any(|t| t.term.eq_ignore_ascii_case(&term.term)) {
-                    chosen.push(term.clone());
-                }
-            }
-            // Load safe STT aliases for prompt rendering. These are displayed
-            // only for terms the resolver admits below; Tier 2 now carries
-            // protected-term evidence through polish and mutates only at the end.
-            let alias_map: std::collections::HashMap<String, Vec<(String, i64)>> = {
-                let mut map: std::collections::HashMap<String, Vec<(String, i64)>> =
-                    std::collections::HashMap::new();
-                for rule in &stt_replacement_rules {
-                    if stt_replacements::is_plausible_alias(&rule.transcript_form, &rule.correct_form) {
-                        map.entry(rule.correct_form.to_lowercase())
-                            .or_default()
-                            .push((rule.transcript_form.clone(), rule.use_count));
-                    }
-                }
-                map
-            };
 
-            if chosen.is_empty() {
+            if cards.is_empty() {
                 info!(
-                    "[voice] vocab selector picked 0/{} entries — no transcript evidence",
+                    "[voice] vocab retriever picked 0/{} entries — no transcript evidence",
                     vocab_full.len(),
                 );
                 (alias_result.text.clone(), vec![])
             } else {
-                let resolve_t0 = Instant::now();
-                let resolved = vocab_resolver::resolve_for_prompt(
-                    &alias_result.text,
-                    &chosen,
-                    &vocab_full,
-                    &alias_result,
-                );
-                let resolve_ms = resolve_t0.elapsed().as_millis() as i64;
                 info!(
-                    "[voice] vocab resolver={}ms alias_matches={} context_matches={} resolved={} candidates={}",
-                    resolve_ms,
-                    resolved.alias_match_count,
-                    resolved.context_match_count,
-                    resolved.resolved_terms.len(),
-                    resolved.candidate_terms.len(),
+                    "[voice] vocab retriever selected {} card(s): {}",
+                    cards.len(),
+                    cards
+                        .iter()
+                        .map(|card| {
+                            let evidence = card
+                                .evidence
+                                .iter()
+                                .map(|e| format!("{:?}", e.kind))
+                                .collect::<Vec<_>>()
+                                .join("+");
+                            format!("{}[{:.1}:{evidence}]", card.term, card.score)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 );
-                let entries = resolved_vocab_terms_to_entries_with_aliases(
-                    resolved.resolved_terms,
-                    &alias_map,
-                );
-                (resolved.transcript, entries)
+                let entries = vocab_retrieval::cards_to_vocab_entries(cards);
+                (alias_result.text.clone(), entries)
             }
         };
         let vocab_ms = vocab_t0.elapsed().as_millis() as i64;
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "vocab.resolve_for_prompt",
+            stage: "vocab.retrieve_after_transcription",
             component: "backend",
-            function: "vocab_resolver::resolve_for_prompt",
+            function: "vocab_retrieval::retrieve_after_transcription",
             input: Some(&stt_transcript),
             output: Some(&resolved_transcript),
             duration_ms: Some(vocab_ms),
-            reason: Some("select memory/vocabulary candidates for prompt"),
+            reason: Some("retrieve meaning-first vocabulary cards for prompt"),
             risk: Some("prompt_context_bias"),
             metadata: json!({
                 "candidate_terms_total": vocab_full.len(),
                 "selected_terms": vocab_entries.len(),
                 "terms": vocab_entries.iter().take(20).map(|v| v.term.clone()).collect::<Vec<_>>(),
+                "evidence": vocab_entries.iter().take(20).map(|v| v.evidence.clone()).collect::<Vec<_>>(),
             }),
             ..Default::default()
         });
@@ -2144,7 +2252,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ..Default::default()
         });
         let recent_hints_t0 = Instant::now();
-        let recent_speech_hints = {
+        let recent_speech_suppressed = !recent_speech_hints_allowed(&vocab_entries);
+        let recent_speech_hints = if recent_speech_suppressed {
+            Vec::new()
+        } else {
             let pool_recent = pool.clone();
             let uid_recent = user_id.clone();
             let run_recent = voice_run_id.clone();
@@ -2165,13 +2276,21 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .unwrap_or_default()
         };
         let recent_hints_ms = recent_hints_t0.elapsed().as_millis() as i64;
-        info!(
-            "[voice] recent speech hints loaded in {}ms app={} hints={} terms={:?}",
-            recent_hints_ms,
-            target_app.as_deref().unwrap_or("none"),
-            recent_speech_hints.len(),
-            recent_speech_hints
-        );
+        if recent_speech_suppressed {
+            info!(
+                "[voice] recent speech hints suppressed in {}ms app={} reason=no_evidence_backed_vocab",
+                recent_hints_ms,
+                target_app.as_deref().unwrap_or("none"),
+            );
+        } else {
+            info!(
+                "[voice] recent speech hints loaded in {}ms app={} hints={} terms={:?}",
+                recent_hints_ms,
+                target_app.as_deref().unwrap_or("none"),
+                recent_speech_hints.len(),
+                recent_speech_hints
+            );
+        }
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "context.recent_speech_hints",
             component: "backend",
@@ -2185,6 +2304,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 "target_app": target_app.as_deref(),
                 "hint_count": recent_speech_hints.len(),
                 "hints": &recent_speech_hints,
+                "suppressed": recent_speech_suppressed,
                 "ttl_ms": crate::recent_speech_context::RECENT_SPEECH_TTL_MS,
                 "run_limit": crate::recent_speech_context::RECENT_SPEECH_RUN_LIMIT,
             }),
@@ -2408,7 +2528,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         gateway_key.clone(),
                         gemini_key.clone(),
                         groq_key.clone(),
-                        cerebras_key.clone(),
                         deepinfra_key.clone(),
                         system_prompt.clone(),
                         user_message.clone(),
@@ -2464,7 +2583,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         gateway_key.clone(),
                         gemini_key.clone(),
                         groq_key.clone(),
-                        cerebras_key.clone(),
                         deepinfra_key.clone(),
                         system_prompt.clone(),
                         user_message.clone(),
@@ -2529,7 +2647,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             let gk          = gateway_key.clone();
             let gk_gemini   = gemini_key.clone();
             let gk_groq     = groq_key.clone();
-            let gk_cerebras = cerebras_key.clone();
             let gk_deepinfra = deepinfra_key.clone();
 
             info!("[timing] LLM start — route={:?}", route.label());
@@ -2542,7 +2659,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     &gk_groq,
                     &gk,
                     &gk_gemini,
-                    &gk_cerebras,
                     &gk_deepinfra,
                     openai_token_opt.as_deref(),
                     &llm_provider_for_task,
@@ -2872,54 +2988,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }),
             ..Default::default()
         });
-
-        // The formatter prompt is now responsible for numbers, emails, and
-        // aliases. These deterministic post-LLM mutators were too context-blind:
-        // they could rewrite correct model output into the wrong final paste.
-        let before_number_final = llm_result.polished.clone();
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.number_format",
-            component: "backend",
-            function: "number_format::apply",
-            input: Some(&before_number_final),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(0),
-            reason: Some("disabled: preserve model-formatted numbers"),
-            risk: Some("post_model_observer"),
-            metadata: json!({ "disabled": true }),
-            ..Default::default()
-        });
-
-        let before_email_recover = llm_result.polished.clone();
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.email_recover",
-            component: "backend",
-            function: "format_recover::recover_emails_with_candidates",
-            input: Some(&before_email_recover),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(0),
-            reason: Some("disabled: preserve model-formatted emails"),
-            risk: Some("post_model_observer"),
-            metadata: json!({ "disabled": true }),
-            ..Default::default()
-        });
-
-        let before_exact_alias = llm_result.polished.clone();
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.exact_alias_resolver",
-            component: "backend",
-            function: "stt_replacements::apply_exact_safe",
-            input: Some(&before_exact_alias),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(0),
-            reason: Some("disabled: aliases are prompt evidence, not final rewrite rules"),
-            risk: Some("post_model_observer"),
-            metadata: json!({ "disabled": true }),
-            ..Default::default()
-        });
-
-        // Desktop reconciliation now only patches safety-cleaned model output
-        // against any live-streamed tokens for the current recording.
 
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms vocab={}ms llm={}ms",
@@ -3473,6 +3541,48 @@ mod scrub_tests {
 // These tests cover the pure, side-effect-free math in wav_duration_secs and
 // estimated_secs.  They are a reliability safety net: if the byte offsets in the
 // WAV header parser drift, these catch it immediately.
+
+#[cfg(test)]
+mod recent_speech_guard_tests {
+    use super::{VocabEntry, recent_speech_hints_allowed};
+
+    #[test]
+    fn recent_speech_hints_need_vocab_evidence() {
+        assert!(!recent_speech_hints_allowed(&[]));
+        assert!(recent_speech_hints_allowed(&[VocabEntry::from_term(
+            "Macobs"
+        )]));
+    }
+}
+
+#[cfg(test)]
+mod server_vocab_card_tests {
+    use super::{VocabEntry, server_vocab_cards};
+
+    #[test]
+    fn rich_retrieval_card_is_preserved_for_server_runtime() {
+        let mut entry = VocabEntry::from_term(" Macobs ");
+        entry.term_type = Some(" proper_noun ".to_string());
+        entry.meaning = Some("Internal onboarding workflow".to_string());
+        entry.context = Some("Macobs ka onboarding flow".to_string());
+        entry.stt_aliases = vec![("main cops".to_string(), 4)];
+        entry.evidence = vec!["phonetic(main cops)".to_string()];
+        entry.do_not_use_when = Some("makeup products".to_string());
+
+        let cards = server_vocab_cards(&[entry]);
+        assert_eq!(cards.len(), 1);
+        let card = &cards[0];
+        assert_eq!(card.term, "Macobs");
+        assert_eq!(card.term_type.as_deref(), Some("proper_noun"));
+        assert_eq!(
+            card.meaning.as_deref(),
+            Some("Internal onboarding workflow")
+        );
+        assert_eq!(card.aliases, ["main cops"]);
+        assert_eq!(card.evidence, ["phonetic(main cops)"]);
+        assert_eq!(card.do_not_use_when.as_deref(), Some("makeup products"));
+    }
+}
 
 #[cfg(test)]
 mod live_token_tests {

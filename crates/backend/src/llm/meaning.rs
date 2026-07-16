@@ -41,8 +41,9 @@ const MAX_MEANING_CHARS: usize = 280;
 /// Two-stage fallback: try Groq first (cheap + fast); if it returns None for
 /// any reason (no key, network error, parse failure, empty content), fall
 /// back to OpenAI gpt-4.1-nano via `OPENAI_API_KEY`. If both fail, returns
-/// None and the caller leaves `meaning` NULL (the polish prompt then filters
-/// the term out — see `select_for_polish_hybrid`).
+/// None and the caller leaves `meaning` NULL. The meaning-first retriever can
+/// still surface the term via exact/alias/phonetic evidence; it simply has less
+/// semantic context until the background meaning succeeds.
 ///
 /// The caller persists the result via `vocabulary::update_meaning()`.
 pub async fn generate_initial(

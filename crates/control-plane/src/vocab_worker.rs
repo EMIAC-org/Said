@@ -42,7 +42,6 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         notifications: crate::notification_hub::NotificationHub::new(),
                         openai_api_key: String::new(),
                         groq_api_key: String::new(),
-                        cerebras_api_key: String::new(),
                         deepinfra_api_key: String::new(),
                         diagnostics_rate_limit:
                             routes::diagnostics::DiagnosticsRateLimiter::default(),

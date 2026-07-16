@@ -1,0 +1,22 @@
+[package]
+name              = "asr-cloud"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true
+
+# Together cloud STT via Nemotron's realtime WebSocket protocol.
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+tokio      = { workspace = true }
+base64     = "0.22"
+futures-util = "0.3"
+hound      = "3.5"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }

@@ -32,24 +32,7 @@ in English, Hindi, Hinglish, or whatever mix comes out of your mouth.
 
 ### macOS
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/EMIAC-org/Said/main/install.sh | bash
-```
-
-That's it. The installer pulls the latest build, registers a LaunchAgent, and leaves you with one command:
-
-```bash
-said              # start
-said stop         # stop
-said update       # pull latest
-said status       # is it alive?
-said logs         # tail logs
-```
-
-Apple Silicon and Intel both work; minimum macOS 13.
-
-> [!NOTE]
-> Said is **ad-hoc signed** (no paid Apple Developer ID). The first time you open the DMG, macOS shows "Said cannot be opened because the developer cannot be verified." Right-click the app → **Open** → confirm. After that it launches normally.
+Download the signed AirNote DMG from the [latest release](https://github.com/EMIAC-org/Said/releases/latest), move AirNote to Applications, then open it. Apple Silicon and Intel Macs are supported; macOS 13 is the minimum.
 
 ### Windows (beta)
 
@@ -74,7 +57,7 @@ Windows known limitations in v3.0:
 <details>
 <summary>Other ways to install</summary>
 
-- **From source:** `git clone` this repo, then `just dev` for the desktop app or `cargo build --release -p said` for the standalone CLI (macOS only for now). See [Build from source](#build-from-source).
+- **From source:** `git clone` this repo, then `just dev` for the desktop app. See [Build from source](#build-from-source).
 - **macOS DMG:** grab `Said_<version>_aarch64.dmg` (Apple Silicon) or `Said_<version>_x86_64.dmg` (Intel) from the [latest release](https://github.com/EMIAC-org/Said/releases/latest).
 - **Windows installer:** `Said_<version>_x64-setup.exe` on the same release page.
 
@@ -99,7 +82,7 @@ A hand-written 80-glyph Devanagari→Roman romanizer ([`script.rs`](crates/backe
 
 ### Wispr-Flow speed, on the free tier
 
-**~150–400 ms time-to-first-token** measured through Groq's LPU hardware ([`groq.rs:4`](crates/backend/src/llm/groq.rs)). Polished text streams into your focused field token-by-token while you're still letting go of the key.
+**~150–400 ms time-to-first-token** measured through the streaming polish path. Tokens appear in AirNote's live preview, then the final polished result is inserted into the focused field once to avoid partial-text reconciliation errors.
 
 Local whisper.cpp speech recognition runs on-device first; the backend only receives transcript text for polishing.
 
@@ -206,8 +189,6 @@ Six components, all in this repo:
 - [**`crates/paster`**](crates/paster) — Accessibility-API typing into the focused field, with edit-watch.
 - [**`desktop/`**](desktop) — Tauri shell, React UI, menu-bar tray, 39 commands.
 
-A standalone `said` CLI binary ([`crates/said`](crates/said)) wires the above together for headless use without the desktop app.
-
 ---
 
 ## Quick start
@@ -267,7 +248,6 @@ Common tasks (`just --list` for everything):
 | `just dev` | run desktop app in dev mode |
 | `just check` | fmt + clippy + test |
 | `just dmg` | build a release DMG for the host arch |
-| `cargo build -p said --release` | standalone CLI only |
 
 Toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml) — stable Rust, edition 2024. Node 20 for the desktop frontend.
 

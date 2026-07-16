@@ -15,14 +15,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 GROQ_BASE = "https://api.groq.com/openai/v1"
-CEREBRAS_BASE = "https://api.cerebras.ai/v1"
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 DEEPINFRA_BASE = "https://api.deepinfra.com/v1/openai"
 
 
 @dataclass(frozen=True)
 class ModelSpec:
     slug: str
-    provider: str  # groq | cerebras | deepinfra
+    provider: str  # groq | openrouter | deepinfra
     model: str
     label: str
     temperature: float = 0.0
@@ -32,7 +32,7 @@ class ModelSpec:
     def to_route(self, api_key: str) -> dict[str, str | float | dict[str, Any]]:
         base = {
             "groq": GROQ_BASE,
-            "cerebras": CEREBRAS_BASE,
+            "openrouter": OPENROUTER_BASE,
             "deepinfra": DEEPINFRA_BASE,
         }.get(self.provider, GROQ_BASE)
         return {
@@ -90,13 +90,13 @@ LAB_MODEL_CATALOG: list[ModelSpec] = [
         label="Llama 3.3 70B (Groq)",
         bench_tier="large",
     ),
-    # ── Cerebras (production smart alt) ──────────────────────────────────────
+    # ── OpenRouter Nitro (production route) ─────────────────────────────────
     ModelSpec(
-        slug="cerebras-gpt-oss",
-        provider="cerebras",
-        model="gpt-oss-120b",
-        label="GPT OSS 120B (Cerebras)",
-        extra_payload=dict(_GROQ_OSS_EXTRA),
+        slug="openrouter-gemma-4-nitro",
+        provider="openrouter",
+        model="google/gemma-4-31b-it:nitro",
+        label="Gemma 4 31B (OpenRouter Nitro)",
+        extra_payload={"reasoning": {"enabled": False}},
         bench_tier="large",
     ),
     # ── DeepInfra — small / fast (dictation polish shootout) ───────────────
@@ -242,8 +242,8 @@ def groq_api_key() -> str:
     return os.getenv("GROQ_API_KEY", "").strip() or os.getenv("GATEWAY_API_KEY", "").strip()
 
 
-def cerebras_api_key() -> str:
-    return os.getenv("CEREBRAS_API_KEY", "").strip()
+def openrouter_api_key() -> str:
+    return os.getenv("OPENROUTER_API_KEY", "").strip()
 
 
 def deepinfra_api_key() -> str:
@@ -259,7 +259,7 @@ def available_lab_routes(
     """Return routes for catalog entries whose provider API key is set."""
     items = catalog or LAB_MODEL_CATALOG
     g_key = groq_api_key()
-    c_key = cerebras_api_key()
+    o_key = openrouter_api_key()
     d_key = deepinfra_api_key()
     routes: list[dict[str, str | float | dict[str, Any]]] = []
     for spec in items:
@@ -271,10 +271,10 @@ def available_lab_routes(
             if not g_key:
                 continue
             routes.append(spec.to_route(g_key))
-        elif spec.provider == "cerebras":
-            if not c_key:
+        elif spec.provider == "openrouter":
+            if not o_key:
                 continue
-            routes.append(spec.to_route(c_key))
+            routes.append(spec.to_route(o_key))
         elif spec.provider == "deepinfra":
             if not d_key:
                 continue

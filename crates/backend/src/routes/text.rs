@@ -31,19 +31,17 @@ use crate::{
             build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
             build_tray_format_system_prompt, build_tray_format_user_message,
             build_tray_system_prompt, build_tray_user_message, build_user_message,
-            resolved_vocab_terms_to_entries,
         },
         script,
         stream_safety::{
             STREAM_RESET_SENTINEL, StreamProvider, StreamSafetyFilter, scrub_polished_output,
         },
-        vocab_resolver,
+        vocab_retrieval::{self, VocabRetrievalRequest},
     },
     store::{
         history::{InsertRecording, insert_recording},
-        openai_oauth, stt_replacements,
+        openai_oauth,
         vectors::retrieve_similar,
-        vocab_embeddings, vocabulary,
     },
 };
 
@@ -75,6 +73,18 @@ fn invalidate_openai_session_on_auth_error(
     openai_oauth::delete_token(pool, user_id);
     warn!("[text] invalidated stored OpenAI OAuth token after auth failure");
     true
+}
+
+fn llm_error_payload(raw: &str, message: String) -> serde_json::Value {
+    if let Some(details) = crate::llm::decode_llm_error(raw) {
+        return json!({
+            "message": message,
+            "error_code": details.error_code,
+            "retryable": details.retryable,
+            "diagnostic": details.diagnostic,
+        });
+    }
+    json!({ "message": message })
 }
 
 pub async fn polish(
@@ -113,11 +123,6 @@ pub async fn polish(
     let tone_override = body.tone_override.clone();
 
     // Load prefs + lexicon from cache and grab shared HTTP client before stream.
-    let vocab_task = {
-        let pool_c = pool.clone();
-        let uid_c = user_id.clone();
-        tokio::task::spawn_blocking(move || vocabulary::top_terms(&pool_c, &uid_c, 500))
-    };
     let prefs_opt = crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await;
     let Some(prefs_for_guard) = prefs_opt.as_ref() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -128,7 +133,6 @@ pub async fn polish(
     }
     let (word_corrections_cached, _stt_replacement_rules) =
         crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id).await;
-    let vocab_full = vocab_task.await.unwrap_or_default();
     let http_client = state.http_client.clone();
 
     let stream = async_stream::stream! {
@@ -182,39 +186,39 @@ pub async fn polish(
             info!("[text] {} word correction(s) loaded", word_corrections.len());
         }
 
-        // Vocab resolution — formatter and normal polish get context-aware
-        // vocab; other tray tones get raw transcript with no vocab.
+        // Vocab retrieval — formatter and normal polish get meaning-first
+        // evidence cards; other tray tones get raw transcript with no vocab.
         let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = if tone_override.is_none() || is_formatter {
             let alias_t0 = Instant::now();
-            let alias_result = stt_replacements::ApplyResult {
-                text: transcript.clone(),
-                matches: vec![],
-                traces: vec![],
-            };
-            let selected_terms = vocab_embeddings::select_for_prompt(
-                &pool,
-                &user_id,
-                &prefs.output_language,
-                embedding.as_deref(),
-                Some(&alias_result.text),
-            );
-            let resolved = vocab_resolver::resolve_for_prompt(
-                &alias_result.text,
-                &selected_terms,
-                &vocab_full,
-                &alias_result,
-            );
+            let pool_v = pool.clone();
+            let uid_v = user_id.clone();
+            let lang_v = prefs.output_language.clone();
+            let emb_v = embedding.clone();
+            let transcript_v = transcript.clone();
+            let target_app_v = target_app.clone();
+            let cards = tokio::task::spawn_blocking(move || {
+                vocab_retrieval::retrieve_after_transcription(
+                    &pool_v,
+                    VocabRetrievalRequest {
+                        user_id: uid_v,
+                        transcript: transcript_v,
+                        output_language: lang_v,
+                        target_app: target_app_v,
+                        bucket: None,
+                        screen_context: None,
+                        transcript_embedding: emb_v,
+                        limit: 8,
+                    },
+                )
+            }).await.unwrap_or_default();
             let resolve_ms = alias_t0.elapsed().as_millis() as i64;
             info!(
-                "[text] vocab resolver={}ms alias_matches={} context_matches={} resolved={} candidates={}",
+                "[text] vocab retriever={}ms selected={}",
                 resolve_ms,
-                resolved.alias_match_count,
-                resolved.context_match_count,
-                resolved.resolved_terms.len(),
-                resolved.candidate_terms.len(),
+                cards.len(),
             );
-            let entries = resolved_vocab_terms_to_entries(resolved.resolved_terms);
-            (resolved.transcript, entries)
+            let entries = vocab_retrieval::cards_to_vocab_entries(cards);
+            (transcript.clone(), entries)
         } else {
             (transcript.clone(), vec![])
         };
@@ -328,11 +332,11 @@ pub async fn polish(
                 let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
                     "OpenAI not connected — go to Settings to connect your account".to_string()
                 } else {
-                    e.clone()
+                    crate::llm::llm_error_message(&e)
                 };
                 warn!("[text] LLM error: {e}");
                 yield Ok(Event::default().event("error")
-                    .data(json!({"message": message}).to_string()));
+                    .data(llm_error_payload(&e, message).to_string()));
                 return;
             }
             Err(_) => {
@@ -651,11 +655,11 @@ pub async fn refine_last(
                 let message = if invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e) {
                     "OpenAI not connected — go to Settings to connect your account".to_string()
                 } else {
-                    e.clone()
+                    crate::llm::llm_error_message(&e)
                 };
                 warn!("[text-refine] LLM error: {e}");
                 yield Ok(Event::default().event("error")
-                    .data(json!({"message": message}).to_string()));
+                    .data(llm_error_payload(&e, message).to_string()));
                 return;
             }
             Err(_) => {
@@ -728,12 +732,9 @@ pub async fn refine_last(
 
 #[cfg(test)]
 mod tests {
-    use crate::llm::{
-        prompt::{resolved_vocab_terms_to_entries, vocab_terms_to_entries},
-        vocab_resolver,
-    };
+    use crate::llm::vocab_retrieval::{VocabRetrievalRequest, retrieve_after_transcription};
     use crate::store::vocab_embeddings::upsert_embedding;
-    use crate::store::{DbPool, now_ms, stt_replacements, vocab_embeddings};
+    use crate::store::{DbPool, now_ms, vocab_fts};
     use r2d2_sqlite::SqliteConnectionManager;
     use rusqlite::params;
 
@@ -775,8 +776,46 @@ mod tests {
                  example_text  TEXT NOT NULL,
                  recorded_at   INTEGER NOT NULL
              );
+             CREATE TABLE stt_replacements (
+                 user_id TEXT NOT NULL,
+                 transcript_form TEXT NOT NULL,
+                 correct_form TEXT NOT NULL,
+                 phonetic_key TEXT NOT NULL DEFAULT '',
+                 weight REAL NOT NULL DEFAULT 1.0,
+                 use_count INTEGER NOT NULL DEFAULT 1,
+                 last_used INTEGER NOT NULL DEFAULT 0,
+                 language TEXT,
+                 export_tier TEXT NOT NULL DEFAULT 'local_only',
+                 contradiction_count INTEGER NOT NULL DEFAULT 0,
+                 review_status TEXT NOT NULL DEFAULT 'approved',
+                 review_reason TEXT,
+                 last_reviewed_at INTEGER
+             );
+             CREATE TABLE company_vocabulary (
+                 user_id TEXT NOT NULL,
+                 term TEXT NOT NULL,
+                 term_norm TEXT NOT NULL,
+                 term_type TEXT,
+                 language TEXT,
+                 weight REAL NOT NULL DEFAULT 1.0,
+                 priority INTEGER NOT NULL DEFAULT 0,
+                 status TEXT NOT NULL DEFAULT 'approved',
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE company_stt_replacements (
+                 user_id TEXT NOT NULL,
+                 transcript_form TEXT NOT NULL,
+                 transcript_norm TEXT NOT NULL,
+                 correct_form TEXT NOT NULL,
+                 correct_norm TEXT NOT NULL,
+                 language TEXT,
+                 weight REAL NOT NULL DEFAULT 1.0,
+                 safety_status TEXT NOT NULL DEFAULT 'approved',
+                 status TEXT NOT NULL DEFAULT 'approved',
+                 updated_at INTEGER NOT NULL
+             );
              CREATE VIRTUAL TABLE vocab_fts USING fts5(
-                 user_id UNINDEXED, term, example_context,
+                 user_id UNINDEXED, term UNINDEXED, card_text,
                  tokenize = 'unicode61 remove_diacritics 2'
              );",
             )
@@ -798,14 +837,7 @@ mod tests {
              VALUES ('u1', ?1, ?2, 1, ?3, 'auto', 'english', ?4, 'proper_noun', ?5)",
             params![term, weight, now_ms(), context, meaning],
         ).unwrap();
-        pool.get()
-            .unwrap()
-            .execute(
-                "INSERT INTO vocab_fts (user_id, term, example_context)
-             VALUES ('u1', ?1, ?2)",
-                params![term, context],
-            )
-            .unwrap();
+        vocab_fts::upsert(pool, "u1", term, Some(context));
         upsert_embedding(pool, "u1", term, embedding);
     }
 
@@ -821,26 +853,19 @@ mod tests {
             &[1.0, 0.0, 0.0, 0.0],
         );
 
-        let selected = vocab_embeddings::select_for_prompt(
+        let chosen = retrieve_after_transcription(
             &pool,
-            "u1",
-            "english",
-            Some(&[0.99, 0.0, 0.0, 0.0]),
-            Some("what time is it"),
+            VocabRetrievalRequest {
+                user_id: "u1".into(),
+                transcript: "what time is it".into(),
+                output_language: "english".into(),
+                target_app: None,
+                bucket: None,
+                screen_context: None,
+                transcript_embedding: Some(vec![0.99, 0.0, 0.0, 0.0]),
+                limit: 8,
+            },
         );
-        let alias_result = stt_replacements::ApplyResult {
-            text: "what time is it".into(),
-            matches: vec![],
-            traces: vec![],
-        };
-        let resolved = vocab_resolver::resolve_for_prompt(
-            &alias_result.text,
-            &selected,
-            &selected,
-            &alias_result,
-        );
-        let mut chosen = resolved_vocab_terms_to_entries(resolved.resolved_terms);
-        chosen.extend(vocab_terms_to_entries(resolved.candidate_terms));
         assert!(
             chosen.is_empty(),
             "text polish should not inject unrelated top-weight vocab"

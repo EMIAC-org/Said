@@ -49,7 +49,6 @@ impl TestServer {
             notifications: said_control_plane::notification_hub::NotificationHub::new(),
             openai_api_key: String::new(),
             groq_api_key: String::new(),
-            cerebras_api_key: String::new(),
             deepinfra_api_key: String::new(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             divo_base_url: String::new(),

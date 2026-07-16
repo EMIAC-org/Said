@@ -17,9 +17,10 @@ use std::collections::HashSet;
 use super::types::{Correction, PolishPrefs};
 
 /// Render a single vocab entry for the polish prompt. Output shape:
-///   `  MACOBS [acronym]`
-///   `    means: indian SME stock acronym used in market-cap discussions`
-///   `    example: "MACOBS ka IPO ka 12 hazaar batana"`
+///   `- MACOBS (acronym)`
+///   `  means: indian SME stock acronym used in market-cap discussions`
+///   `  heard-as: main cops, mac ops`
+///   `  evidence: phonetic(main cops), meaning(onboarding flow)`
 ///
 /// Three layers of structured signal in one entry:
 ///   • The bracketed type tag drives type-aware reasoning (an acronym entry
@@ -48,16 +49,50 @@ fn format_vocab_entry(e: &VocabEntry, is_common: fn(&str) -> bool) -> String {
         .filter(|(form, _)| !is_common(form))
         .map(|(form, _)| form.as_str())
         .collect();
-    if aliases.is_empty() {
-        format!("{} ({})", e.term, type_short)
-    } else {
-        format!(
-            "{} ({}) \u{2192} {}",
-            e.term,
-            type_short,
-            aliases.join(", ")
-        )
+
+    let mut lines = vec![format!("- {} ({})", e.term, type_short)];
+    if let Some(meaning) = e.meaning.as_deref().map(clean_vocab_prompt_line) {
+        if !meaning.is_empty() {
+            lines.push(format!("  means: {meaning}"));
+        }
     }
+    if !aliases.is_empty() {
+        lines.push(format!("  heard-as: {}", aliases.join(", ")));
+    }
+    if let Some(context) = e.context.as_deref().map(clean_vocab_prompt_line) {
+        if !context.is_empty() {
+            lines.push(format!("  example: {context}"));
+        }
+    }
+    if !e.evidence.is_empty() {
+        let evidence = e
+            .evidence
+            .iter()
+            .map(|s| clean_vocab_prompt_line(s))
+            .filter(|s| !s.is_empty())
+            .take(6)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !evidence.is_empty() {
+            lines.push(format!("  evidence: {evidence}"));
+        }
+    }
+    if let Some(negative) = e.do_not_use_when.as_deref().map(clean_vocab_prompt_line) {
+        if !negative.is_empty() {
+            lines.push(format!("  do-not-use-when: {negative}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn clean_vocab_prompt_line(raw: &str) -> String {
+    raw.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(180)
+        .collect()
 }
 
 pub struct RagExample {
@@ -102,6 +137,15 @@ pub struct VocabEntry {
     /// the polish prompt ("STT often hears: ...") instead of hard provider
     /// biasing rules. Empty when no aliases are known yet.
     pub stt_aliases: Vec<(String, i64)>,
+    /// Retrieval evidence from the meaning-first candidate retriever. These are
+    /// intentionally short, human-readable spans such as `phonetic(main cops)`
+    /// or `meaning(onboarding flow)`. The polish LLM may use them only as soft
+    /// support for the current transcript.
+    pub evidence: Vec<String>,
+    /// Optional negative scope for common false friends. This is not a hard
+    /// replacement rule; it tells the polish model when a candidate should be
+    /// ignored even if it sounds nearby.
+    pub do_not_use_when: Option<String>,
 }
 
 impl VocabEntry {
@@ -113,6 +157,8 @@ impl VocabEntry {
             term_type: None,
             meaning: None,
             stt_aliases: vec![],
+            evidence: vec![],
+            do_not_use_when: None,
         }
     }
 }
@@ -260,7 +306,6 @@ fn voice_prompt_blocks(
     let vocab_block = {
         let entries = vocabulary_entries
             .iter()
-            .filter(|e| e.resolution == VocabResolution::Resolved)
             .map(|e| format_vocab_entry(e, is_common))
             .collect::<Vec<_>>()
             .join("\n");
@@ -268,9 +313,12 @@ fn voice_prompt_blocks(
             String::new()
         } else {
             format!(
-                "VOCAB (soft spelling hints; use only with current-transcript evidence):\n\
+                "VOCAB CANDIDATES (soft evidence only; use only with current-transcript support):\n\
                  {entries}\n\
-                 Never introduce a vocab term that the current transcript does not support.\n\n"
+                 Replace only the matching spoken span when BOTH its sound/phrase evidence AND its meaning/context fit. \
+                 Keep the candidate at that same position; never insert it elsewhere or rewrite neighboring words to force a fit. \
+                 A similar sound, app, recency, or star alone is never enough. Never introduce a vocab term from this block alone. \
+                 If unsure, keep the transcript's closest spoken form.\n\n"
             )
         }
     };
@@ -997,8 +1045,6 @@ mod tests {
     #[test]
     fn vocab_block_appears_when_terms_present() {
         let p = prefs();
-        // build_system_prompt_with_vocab passes bare strings as Candidate,
-        // which are now dropped. Use Resolved entries to test block rendering.
         let entries = vec![
             VocabEntry {
                 term: "n8n".into(),
@@ -1007,6 +1053,8 @@ mod tests {
                 term_type: None,
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
             VocabEntry {
                 term: "Vipassana".into(),
@@ -1015,11 +1063,13 @@ mod tests {
                 term_type: None,
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
         ];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
         assert!(
-            prompt.contains("VOCAB (soft spelling hints"),
+            prompt.contains("VOCAB CANDIDATES"),
             "vocab glossary block should be emitted"
         );
         assert!(prompt.contains("n8n"));
@@ -1112,8 +1162,7 @@ mod tests {
 
     #[test]
     fn vocab_block_compact_form_no_verbose_rules() {
-        // Candidate terms are now dropped from the prompt entirely.
-        // Only resolved terms render. Verify no verbose leftovers remain.
+        // Candidate cards render as soft evidence, not mandatory rules.
         let p = prefs();
         let entries = vec![VocabEntry {
             term: "MACOBS".into(),
@@ -1122,18 +1171,17 @@ mod tests {
             term_type: Some("acronym".into()),
             meaning: None,
             stt_aliases: vec![],
+            evidence: vec!["phonetic(main cops)".into()],
+            do_not_use_when: None,
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
 
-        // Candidate-only entries should produce NO vocab block at all.
-        assert!(
-            !prompt.contains("PERSONAL VOCABULARY"),
-            "candidate-only entries should not produce a vocab block"
-        );
-        assert!(
-            !prompt.contains("MACOBS"),
-            "candidate terms must not appear in the prompt"
-        );
+        assert!(!prompt.contains("PERSONAL VOCABULARY"));
+        assert!(prompt.contains("VOCAB CANDIDATES"));
+        assert!(prompt.contains("MACOBS (acronym)"));
+        assert!(prompt.contains("evidence: phonetic(main cops)"));
+        assert!(prompt.contains("Keep the candidate at that same position"));
+        assert!(prompt.contains("A similar sound, app, recency, or star alone is never enough"));
     }
 
     #[test]
@@ -1146,14 +1194,16 @@ mod tests {
             term_type: Some("acronym".into()),
             meaning: Some("Indian SME stock acronym.".into()),
             stt_aliases: vec![],
+            evidence: vec![],
+            do_not_use_when: None,
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
-        assert!(prompt.contains("VOCAB (soft spelling hints"));
+        assert!(prompt.contains("VOCAB CANDIDATES"));
         assert!(prompt.contains("MACOBS (acronym)"));
     }
 
     #[test]
-    fn candidate_terms_are_excluded_from_prompt() {
+    fn candidate_terms_render_as_soft_cards() {
         let p = prefs();
         let entries = vec![VocabEntry {
             term: "CandidateOnlyXYZ".into(),
@@ -1162,13 +1212,14 @@ mod tests {
             term_type: Some("code_identifier".into()),
             meaning: Some("Workflow automation tool.".into()),
             stt_aliases: vec![],
+            evidence: vec!["meaning(workflow automation)".into()],
+            do_not_use_when: None,
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
-        assert!(
-            !prompt.contains("CandidateOnlyXYZ"),
-            "candidate terms must not appear in the prompt"
-        );
         assert!(!prompt.contains("PERSONAL VOCABULARY"));
+        assert!(prompt.contains("CandidateOnlyXYZ"));
+        assert!(prompt.contains("means: Workflow automation tool."));
+        assert!(prompt.contains("evidence: meaning(workflow automation)"));
     }
 
     #[test]
@@ -1369,6 +1420,8 @@ mod tests {
                 term_type: Some("acronym".into()),
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
             VocabEntry {
                 term: "Anish".into(),
@@ -1377,6 +1430,8 @@ mod tests {
                 term_type: Some("proper_noun".into()),
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
             VocabEntry {
                 term: "n8n".into(),
@@ -1385,6 +1440,8 @@ mod tests {
                 term_type: Some("code_identifier".into()),
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
             VocabEntry {
                 term: "ClaudeCode".into(),
@@ -1393,6 +1450,8 @@ mod tests {
                 term_type: Some("brand".into()),
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
             VocabEntry {
                 term: "Cloud Code".into(),
@@ -1401,6 +1460,8 @@ mod tests {
                 term_type: Some("phrase".into()),
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
             VocabEntry {
                 term: "weird".into(),
@@ -1409,6 +1470,8 @@ mod tests {
                 term_type: Some("other".into()),
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
         ];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
@@ -1433,6 +1496,8 @@ mod tests {
                 term_type: None,
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
             VocabEntry {
                 term: "n8n".into(),
@@ -1441,6 +1506,8 @@ mod tests {
                 term_type: None,
                 meaning: None,
                 stt_aliases: vec![],
+                evidence: vec![],
+                do_not_use_when: None,
             },
         ];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
@@ -1464,12 +1531,15 @@ mod tests {
             term_type: Some("acronym".into()),
             meaning: Some("Indian SME stock acronym used in market-cap discussions.".into()),
             stt_aliases: vec![],
+            evidence: vec![],
+            do_not_use_when: None,
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
         assert!(
             prompt.contains("MACOBS (acronym)"),
             "term + type tag render in compact format"
         );
+        assert!(prompt.contains("means: Indian SME stock acronym used in market-cap discussions."));
     }
 
     #[test]
@@ -1482,6 +1552,8 @@ mod tests {
             term_type: Some("proper_noun".into()),
             meaning: None,
             stt_aliases: vec![],
+            evidence: vec![],
+            do_not_use_when: None,
         }];
         let prompt = build_system_prompt_with_vocab_entries(&p, &[], &[], &entries, no_common);
         assert!(prompt.contains("Anish (name)"));

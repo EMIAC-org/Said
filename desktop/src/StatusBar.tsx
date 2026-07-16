@@ -112,7 +112,7 @@ type BarState =
   | { kind: "negative_confirm"; term: string; wrongReplacement: string }
   | { kind: "wrong_fixed"; term: string; wrongReplacement: string }
   | { kind: "queued"; term: string; remaining: number }
-  | { kind: "reviewing"; candidates: ReviewCandidate[]; selected: Set<number>; recordingId: string }
+  | { kind: "reviewing"; candidates: ReviewCandidate[]; detectedChanges: DetectedChange[]; selected: Set<number>; recordingId: string; reviewSessionId: string }
   | { kind: "placement"; message: string }
   | { kind: "polish_mode"; enabled: boolean; message: string }
   | { kind: "problem_ambiguous"; candidates: DeveloperContextCandidate[] }
@@ -164,6 +164,22 @@ type ReviewCandidate = {
   learnable: boolean;
   tag: string;
   context?: string | null;
+};
+
+type DetectedChange = {
+  original: string;
+  corrected: string;
+  reason: string;
+  should_learn: boolean;
+  confidence: number;
+  skip_reason?: string | null;
+};
+
+type EditReviewSession = {
+  id: string;
+  recording_id: string;
+  review_candidates: ReviewCandidate[];
+  detected_changes: DetectedChange[];
 };
 
 type VoiceErrorPayload = {
@@ -248,6 +264,12 @@ function reviewTagHint(tag: string): string {
   switch (tag) {
     case "added": return "new word";
     case "case": return "capitalization";
+    case "stt_error": return "speech recognition";
+    case "meaning_context": return "add context";
+    case "polish_error": return "writing correction";
+    case "format_preference": return "formatting";
+    case "style_preference": return "rephrasing";
+    case "structural_rewrite": return "larger rewrite";
     default: return "swapped";
   }
 }
@@ -348,6 +370,7 @@ export default function StatusBar() {
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
   const [polishModeEnabled, setPolishModeEnabled] = useState(false);
+  const [longDictationLocked, setLongDictationLocked] = useState(false);
   const [divo, setDivo] = useState<DivoActivity>(() => emptyDivo());
   const [divoCopied, setDivoCopied] = useState(false);
   const [divoDraft, setDivoDraft] = useState("");
@@ -391,6 +414,34 @@ export default function StatusBar() {
       console.warn("[status-bar] native present failed", err);
       win.show().catch((showErr) => console.warn("[status-bar] fallback show failed", showErr));
     });
+  };
+  const presentNextReviewSession = async (withSound: boolean): Promise<boolean> => {
+    try {
+      const session = await invoke<EditReviewSession | null>("get_next_edit_review_session");
+      if (!session) return false;
+      if (["recording", "processing", "divo_stage", "divo_route", "divo_streaming", "divo_answer"].includes(barKindRef.current)) {
+        return false;
+      }
+      const selected = new Set<number>();
+      session.review_candidates.forEach((candidate, index) => {
+        if (candidate.learnable) selected.add(index);
+      });
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      presentStatusBar("vocab-review-queue");
+      if (withSound) playSound("knock");
+      setBar({
+        kind: "reviewing",
+        candidates: session.review_candidates,
+        detectedChanges: session.detected_changes,
+        selected,
+        recordingId: session.recording_id,
+        reviewSessionId: session.id,
+      });
+      return true;
+    } catch (error) {
+      console.warn("[status-bar] failed to load edit review queue", error);
+      return false;
+    }
   };
   const showPinnedUpdate = (next: UpdateReadyState, reason: string) => {
     pinnedUpdateRef.current = next;
@@ -479,7 +530,9 @@ export default function StatusBar() {
     }
   })();
 
-  const candidateCount = bar.kind === "reviewing" ? bar.candidates.length : 0;
+  const candidateCount = bar.kind === "reviewing"
+    ? Math.max(bar.candidates.length, bar.detectedChanges.length)
+    : 0;
   const compactActionCount = bar.kind === "error" ? 2 + (bar.audioId ? 2 : 0) : 0;
   const innerSize = pillSize(
     bar.kind,
@@ -783,6 +836,7 @@ export default function StatusBar() {
           : { kind: "recording", startMs: Date.now() },
       );
     } else if (snap.state === "processing") {
+      setLongDictationLocked(false);
       if (runId) setCurrentRunId(runId);
       setBar((prev) =>
         prev.kind === "processing"
@@ -790,6 +844,7 @@ export default function StatusBar() {
           : { kind: "processing", phase: "stt" },
       );
     } else if (snap.state === "idle") {
+      setLongDictationLocked(false);
       clearRunTranscript();
       if (restorePinnedUpdate(`auto-update-ready-${source}-idle`)) return;
       setBar((prev) => {
@@ -866,6 +921,7 @@ export default function StatusBar() {
             : { kind: "recording", startMs: Date.now() }
         ));
       } else if (state === "processing") {
+        setLongDictationLocked(false);
         if (runId) setCurrentRunId(runId);
         setBar((prev) =>
           prev.kind === "recording"
@@ -880,6 +936,7 @@ export default function StatusBar() {
           setBar((prev) => prev.kind === "processing" ? { kind: "idle" } : prev);
         }, 15000);
       } else if (state === "idle") {
+        setLongDictationLocked(false);
         clearRunTranscript();
         if (restorePinnedUpdate("auto-update-ready-idle")) return;
         setBar((prev) => {
@@ -1051,9 +1108,20 @@ export default function StatusBar() {
 
     listen("long-dictation-locked", () => {
       console.info("[status-bar] long-dictation-locked event");
+      setLongDictationLocked(true);
+      if (barKindRef.current === "recording") {
+        presentStatusBar("long-dictation-locked");
+      }
     }).then((fn) => {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] long-dictation subscribe failed", err));
+
+    listen("long-dictation-unlocked", () => {
+      console.info("[status-bar] long-dictation-unlocked event");
+      setLongDictationLocked(false);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch((err) => console.warn("[status-bar] long-dictation unlock subscribe failed", err));
 
     listen<{ message?: string }>("status-bar-placement-mode", (e) => {
       console.info("[status-bar] placement mode event", e.payload);
@@ -1140,24 +1208,12 @@ export default function StatusBar() {
     }).catch(() => {});
 
     // ── Review card — multi-change edit review ────────────────────────
-    listen<{ candidates: ReviewCandidate[]; recording_id: string }>("vocab-review", (e) => {
+    listen<{ review_session_id?: string; recording_id: string }>("vocab-review", (e) => {
       // Review is an actionable prompt, not a passive "word learned" toast.
       // It must remain visible even if learned-notification toasts are disabled.
       console.info("[status-bar] vocab-review", e.payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      presentStatusBar("vocab-review");
-      playSound("knock");
-      const learnable = e.payload.candidates.filter(c => c.learnable);
-      const selected = new Set<number>(learnable.map((_, i) => {
-        const idx = e.payload.candidates.indexOf(learnable[i]);
-        return idx;
-      }));
-      setBar({
-        kind: "reviewing",
-        candidates: e.payload.candidates,
-        selected,
-        recordingId: e.payload.recording_id,
-      });
+      if (barKindRef.current === "reviewing") return;
+      void presentNextReviewSession(true);
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
@@ -1384,6 +1440,15 @@ export default function StatusBar() {
     const t = window.setTimeout(() => {
       emit("frontend-ready").catch(() => {});
     }, 100);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (barKindRef.current === "idle") {
+        void presentNextReviewSession(false);
+      }
+    }, 500);
     return () => window.clearTimeout(t);
   }, []);
 
@@ -1849,18 +1914,42 @@ export default function StatusBar() {
   if (bar.kind === "reviewing") {
     const sel = bar.selected;
     const selCount = sel.size;
-    const learnableTotal = bar.candidates.filter((c) => c.learnable).length;
+    const pairKey = (original: string, corrected: string) =>
+      `${original.trim().toLocaleLowerCase()}\u0000${corrected.trim().toLocaleLowerCase()}`;
+    const matchedCandidateIndexes = new Set<number>();
+    const allEntries = bar.detectedChanges.map((change) => {
+      const candidateIndex = bar.candidates.findIndex((candidate, index) =>
+        !matchedCandidateIndexes.has(index)
+        && pairKey(candidate.original, candidate.corrected) === pairKey(change.original, change.corrected));
+      if (candidateIndex >= 0) matchedCandidateIndexes.add(candidateIndex);
+      const candidate = candidateIndex >= 0 ? bar.candidates[candidateIndex] : null;
+      const c: ReviewCandidate = candidate ?? {
+        original: change.original,
+        corrected: change.corrected,
+        term_type: "other",
+        learnable: false,
+        tag: change.reason,
+        context: null,
+      };
+      return { c, candidateIndex: candidateIndex >= 0 ? candidateIndex : null };
+    });
+    bar.candidates.forEach((candidate, candidateIndex) => {
+      if (!matchedCandidateIndexes.has(candidateIndex)) {
+        allEntries.push({ c: candidate, candidateIndex });
+      }
+    });
     const learnableEntries = bar.candidates
-      .map((c, i) => ({ c, i }))
+      .map((c, candidateIndex) => ({ c, candidateIndex }))
       .filter(({ c }) => c.learnable);
     const displayEntries = showAllCandidates
-      ? learnableEntries
-      : learnableEntries.filter(({ i }) => sel.has(i));
+      ? allEntries
+      : learnableEntries.filter(({ candidateIndex }) => sel.has(candidateIndex));
     const totalPages = Math.max(1, Math.ceil(displayEntries.length / REVIEW_PAGE_SIZE));
     const page = Math.min(reviewPage, totalPages - 1);
     const pageStart = page * REVIEW_PAGE_SIZE;
     const pageItems = displayEntries.slice(pageStart, pageStart + REVIEW_PAGE_SIZE);
-    const hiddenCount = learnableTotal - selCount;
+    const detectedTotal = allEntries.length;
+    const hiddenCount = Math.max(0, detectedTotal - selCount);
 
     const toggleIdx = (idx: number) => {
       if (!bar.candidates[idx]?.learnable) return;
@@ -1876,11 +1965,16 @@ export default function StatusBar() {
     const handleLearn = async () => {
       const items = bar.candidates
         .filter((_, i) => sel.has(i))
-        .map((c) => ({ original: c.original, corrected: c.corrected, context: c.context || null }));
+        .map((c) => ({ original: c.original, corrected: c.corrected, context: c.context || null, tag: c.tag }));
       if (items.length === 0) return;
       try {
-        const result = await invoke<{ learned_count: number; server_owned?: boolean }>("confirm_batch", { items, recordingId: bar.recordingId });
+        const result = await invoke<{ learned_count: number; server_owned?: boolean }>("confirm_batch", {
+          items,
+          recordingId: bar.recordingId,
+          reviewSessionId: bar.reviewSessionId,
+        });
         const n = result.learned_count;
+        if (await presentNextReviewSession(false)) return;
         if (result.server_owned) {
           // Server-owned: defer toast and let the WS vocab-learned notification take over.
           // Fallback after 1.5s if WS event does not arrive.
@@ -1906,10 +2000,18 @@ export default function StatusBar() {
         }
       } catch (e) { console.error("[review] confirm_batch failed", e); }
     };
-    const handleSkip = () => {
+    const handleSkip = async () => {
+      try {
+        await invoke("skip_edit_review_session", { sessionId: bar.reviewSessionId });
+      } catch (error) {
+        console.error("[review] skip failed", error);
+        return;
+      }
       setReviewPage(0);
-      setBar({ kind: "idle" });
-      invoke("dismiss_status_bar").catch(() => {});
+      if (!(await presentNextReviewSession(false))) {
+        setBar({ kind: "idle" });
+        invoke("dismiss_status_bar").catch(() => {});
+      }
     };
     const handleNext = () => {
       if (!isLastPage) {
@@ -1918,7 +2020,7 @@ export default function StatusBar() {
       }
       void handleLearn();
     };
-    const pillText = reviewPillLabel(selCount);
+    const pillText = reviewPillLabel(detectedTotal);
     const pillW = innerSize.width;
 
     return (
@@ -1937,7 +2039,7 @@ export default function StatusBar() {
           <div className="sb-survey-top">
             <div className="sb-survey-kicker-row">
               <span className="sb-survey-kicker">
-                {selCount} selected{learnableTotal !== selCount ? ` · ${learnableTotal} total` : ""}
+                {detectedTotal} detected · {selCount} learnable
               </span>
               {!showAllCandidates && hiddenCount > 0 && (
                 <button
@@ -1945,16 +2047,16 @@ export default function StatusBar() {
                   className="sb-survey-edit"
                   onClick={() => { setShowAllCandidates(true); setReviewPage(0); }}
                 >
-                  +{hiddenCount} more
+                  View all
                 </button>
               )}
-              {showAllCandidates && learnableTotal > selCount && (
+              {showAllCandidates && detectedTotal > selCount && (
                 <button
                   type="button"
                   className="sb-survey-edit"
                   onClick={() => { setShowAllCandidates(false); setReviewPage(0); }}
                 >
-                  Show selected
+                  Show learnable
                 </button>
               )}
             </div>
@@ -1984,7 +2086,7 @@ export default function StatusBar() {
           </div>
 
           <div className="sb-survey-question">
-            {showAllCandidates ? "Tap to include or exclude" : "These will be learned"}
+            {showAllCandidates ? "All detected changes; dimmed items will not be learned" : "Safe learning suggestions"}
           </div>
 
           <div className="sb-survey-list" ref={reviewListRef}>
@@ -2001,16 +2103,22 @@ export default function StatusBar() {
                   </button>
                 )}
               </div>
-            ) : pageItems.map(({ c, i }, slot) => {
-              const selected = sel.has(i);
+            ) : pageItems.map(({ c, candidateIndex }, slot) => {
+              const learnable = candidateIndex !== null && c.learnable;
+              const selected = learnable && sel.has(candidateIndex);
               return (
                 <div
-                  key={`${c.original}-${c.corrected}-${i}`}
-                  className={`sb-survey-row${selected ? " selected" : ""}`}
-                  onClick={() => toggleIdx(i)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleIdx(i); } }}
+                  key={`${c.original}-${c.corrected}-${candidateIndex ?? `detected-${slot}`}`}
+                  className={`sb-survey-row${selected ? " selected" : ""}${learnable ? "" : " disabled"}`}
+                  onClick={() => { if (candidateIndex !== null) toggleIdx(candidateIndex); }}
+                  role={learnable ? "button" : undefined}
+                  tabIndex={learnable ? 0 : -1}
+                  onKeyDown={(e) => {
+                    if (candidateIndex !== null && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      toggleIdx(candidateIndex);
+                    }
+                  }}
                 >
                   <span className="sb-survey-letter">{reviewLetter(slot)}</span>
                   <p className="sb-survey-copy">
@@ -2018,6 +2126,7 @@ export default function StatusBar() {
                     <span className="sb-survey-desc">
                       {" "}— was “{c.original || "—"}”
                       {" · "}{reviewTagHint(c.tag)}
+                      {!learnable ? " · not learnable" : ""}
                     </span>
                   </p>
                 </div>
@@ -2026,7 +2135,7 @@ export default function StatusBar() {
           </div>
 
           <div className="sb-survey-footer">
-            <button type="button" className="sb-survey-skip" onClick={handleSkip}>Skip</button>
+            <button type="button" className="sb-survey-skip" onClick={() => { void handleSkip(); }}>Skip</button>
             <button
               type="button"
               className="sb-survey-next"
@@ -2307,8 +2416,8 @@ export default function StatusBar() {
               // Phase is conveyed by motion + hue, not text — but keep the exact
               // sub-phase (Server transcribing / Using local runtime / Enhancing…)
               // reachable on hover + for a11y so the diagnostic isn't lost.
-              title={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? "Listening" : undefined}
-              aria-label={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? "Listening" : undefined}
+              title={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? (longDictationLocked ? "Long dictation" : "Listening") : undefined}
+              aria-label={bar.kind === "processing" ? processingLabel(bar.phase) : bar.kind === "recording" ? (longDictationLocked ? "Long dictation" : "Listening") : undefined}
             >
               {bar.kind === "recording" && polishModeEnabled && (
                 <span className="sb-mode-badge sb-mode-badge--recording">Polish</span>

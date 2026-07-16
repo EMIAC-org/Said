@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AirNote BYOK providers — research</title>
+  <style>
+    :root { --bg:#090b11; --panel:#121622; --panel2:#181d2c; --ink:#eff3ff; --muted:#a7b0c7; --line:#29314a; --blue:#91a9ff; --green:#61d6a5; --amber:#ffc56a; --red:#ff858f; }
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(900px 560px at 78% -10%,#172247 0%,transparent 55%),var(--bg);color:var(--ink);font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    main{max-width:1180px;margin:auto;padding:52px 28px 76px}.eyebrow{letter-spacing:.16em;color:var(--blue);font-size:11px;font-weight:800;text-transform:uppercase}.hero{display:grid;grid-template-columns:1.35fr .65fr;gap:34px;align-items:end;padding-bottom:32px;border-bottom:1px solid var(--line)}h1{font-size:clamp(34px,5vw,61px);line-height:1.02;margin:12px 0 18px;letter-spacing:-.055em}h2{font-size:23px;letter-spacing:-.025em;margin:0 0 12px}h3{font-size:16px;margin:0 0 6px}.lede{font-size:19px;color:#c8d0e4;max-width:720px;margin:0}.verdict{padding:19px 20px;border:1px solid #4964b4;background:#111a35;border-radius:14px}.verdict b{display:block;color:var(--blue);font-size:12px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}.section{margin-top:42px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.card{background:linear-gradient(145deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:14px;padding:19px}.card p{margin:0;color:var(--muted)}.status{font-size:11px;text-transform:uppercase;letter-spacing:.1em;font-weight:800;color:var(--green);margin-bottom:8px}.status.warn{color:var(--amber)}.status.risk{color:var(--red)}.provider{display:flex;justify-content:space-between;gap:8px;align-items:start}.price{color:var(--blue);font-size:13px;white-space:nowrap}.chip{display:inline-block;border:1px solid var(--line);padding:3px 8px;border-radius:999px;font-size:11px;color:var(--muted);margin:10px 5px 0 0}.matrix{display:grid;grid-template-columns:1.05fr 1fr 1fr 1.1fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:13px;overflow:hidden}.matrix>*{background:var(--panel);padding:13px}.matrix .head{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--blue);font-weight:800;background:#131b30}.yes{color:var(--green);font-weight:700}.no{color:var(--red);font-weight:700}.note{color:var(--muted)}.steps{counter-reset:step;display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.step{position:relative;padding:20px;background:var(--panel);border:1px solid var(--line);border-radius:14px}.step:before{counter-increment:step;content:"0" counter(step);display:block;color:var(--blue);font-weight:850;font-size:12px;margin-bottom:17px;letter-spacing:.1em}.step p{color:var(--muted);margin:0}.callout{border-left:3px solid var(--amber);padding:16px 18px;background:#191712;border-radius:0 10px 10px 0;color:#dce0ea}.callout b{color:var(--amber)}details{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:0 17px;margin-top:10px}summary{cursor:pointer;padding:15px 0;font-weight:700}details p,details ul{color:var(--muted)}a{color:#9bb3ff;text-decoration:none}a:hover{text-decoration:underline}.source{font-size:13px;color:var(--muted)}.filter{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.filter button{border:1px solid var(--line);background:var(--panel);color:var(--muted);padding:7px 10px;border-radius:8px;cursor:pointer}.filter button.active{border-color:var(--blue);color:var(--ink);background:#172348}.hidden{display:none}.footer{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px}@media(max-width:800px){.hero,.grid,.steps{grid-template-columns:1fr}.matrix{grid-template-columns:1fr 1fr}.matrix .head:nth-child(n+3){display:none}main{padding:34px 17px}}
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div>
+      <div class="eyebrow">AirNote / provider &amp; BYOK decision</div>
+      <h1>Make polish provider choice a user choice — without adding another messy pipeline.</h1>
+      <p class="lede">Cerebras Gemma 4 is currently the server-polish default. BYOK is feasible with a small extension of the runtime we already have, but it must be a controlled provider contract, not arbitrary endpoints or silent fallback billing.</p>
+    </div>
+    <aside class="verdict"><b>Recommendation</b><strong>Ship a curated OpenAI-compatible BYOK tier first:</strong> Groq, DeepInfra, DeepSeek, Gemini. Keep Cerebras as AirNote-managed default. Add OpenRouter later as an explicit advanced gateway, never as a hidden fallback.</aside>
+  </section>
+
+  <section class="section">
+    <div class="eyebrow">What the code already proves</div>
+    <h2>We are closer than it looks</h2>
+    <div class="grid">
+      <article class="card"><div class="status">Already present</div><h3>Encrypted runtime credentials</h3><p>The control plane has an AES-GCM runtime credential store and provider credential flows for Groq, Cerebras, and DeepInfra.</p></article>
+      <article class="card"><div class="status">Already present</div><h3>Same transport shape</h3><p>Groq, Cerebras, and DeepInfra modules all send a bearer key to Chat Completions and consume streamed SSE output.</p></article>
+      <article class="card"><div class="status warn">Important mismatch</div><h3>“Fast” does not mean Groq today</h3><p>The catalog labels an 8B Groq option, but model resolution currently maps legacy fast/smart choices back to Cerebras Gemma 4. Settings must show the real active provider.</p></article>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="eyebrow">Provider shortlist — prices checked 14 July 2026</div>
+    <h2>Use a real choice set, not twenty providers</h2>
+    <div class="filter"><button class="active" data-filter="all">All</button><button data-filter="now">Can add now</button><button data-filter="later">Advanced / later</button></div>
+    <div class="grid" id="providers">
+      <article class="card" data-kind="now"><div class="provider"><div><div class="status">Best first</div><h3>Groq</h3></div><span class="price">GPT-OSS 20B: $0.075 / $0.30</span></div><p>Already integrated. Excellent latency and an inexpensive fast option. Benchmark it on Hinglish polish before presenting it as a quality replacement for Gemma.</p><span class="chip">OpenAI-compatible</span><span class="chip">SSE</span></article>
+      <article class="card" data-kind="now"><div class="provider"><div><div class="status">Best first</div><h3>DeepInfra</h3></div><span class="price">model-specific</span></div><p>Already integrated, exposes OpenAI-compatible streaming, and supports a broad open-model catalog. It is the natural place to test a small quality/cost menu.</p><span class="chip">OpenAI-compatible</span><span class="chip">SSE usage</span></article>
+      <article class="card" data-kind="now"><div class="provider"><div><div class="status">Best first</div><h3>DeepSeek direct</h3></div><span class="price">V4 Flash: $0.14 / $0.28</span></div><p>Very low published token cost and OpenAI-compatible streaming. Use non-thinking mode only for polish; reasoning tokens would make a short dictation slower and less predictable.</p><span class="chip">OpenAI-compatible</span><span class="chip">cheap candidate</span></article>
+      <article class="card" data-kind="now"><div class="provider"><div><div class="status">Best first</div><h3>Google Gemini</h3></div><span class="price">3.1 Flash-Lite: $0.25 / $1.50</span></div><p>Official OpenAI-compatibility endpoint; paid requests are not used to improve Google products. Good multilingual candidate, but compatibility is still beta and needs contract tests.</p><span class="chip">OpenAI-compatible beta</span><span class="chip">multilingual</span></article>
+      <article class="card" data-kind="later"><div class="provider"><div><div class="status warn">Phase two</div><h3>Mistral</h3></div><span class="price">Small 4: $0.15 / $0.60</span></div><p>A strong direct-provider candidate. It should follow the common adapter after we verify the prompt suite, not precede it.</p><span class="chip">chat completions</span><span class="chip">quality candidate</span></article>
+      <article class="card" data-kind="later"><div class="provider"><div><div class="status warn">Phase two</div><h3>Together / Fireworks</h3></div><span class="price">catalog priced</span></div><p>Useful if benchmarked model availability or latency wins. Both are serverless per-token platforms; do not surface them until a specific model beats the initial shortlist.</p><span class="chip">open models</span><span class="chip">catalogs change</span></article>
+      <article class="card" data-kind="later"><div class="provider"><div><div class="status risk">Advanced only</div><h3>OpenRouter</h3></div><span class="price">gateway layer</span></div><p>Convenient one-key route to many providers and supports upstream BYOK. It adds routing and fallback semantics, so users must explicitly opt in and pin the chosen upstream provider.</p><span class="chip">not default</span><span class="chip">cost risk if unpinned</span></article>
+      <article class="card" data-kind="now"><div class="provider"><div><div class="status">Keep as managed</div><h3>Cerebras</h3></div><span class="price">current quality baseline</span></div><p>Do not remove it before benchmarks. Its public pricing page currently does not list Gemma 4 31B, so it is not a dependable self-serve price baseline for user comparison.</p><span class="chip">current default</span><span class="chip">benchmark control</span></article>
+    </div>
+    <p class="source">Prices are input / output USD per 1M tokens where published. They change; treat them as selection hints, not a billing promise.</p>
+  </section>
+
+  <section class="section">
+    <div class="eyebrow">The right boundary</div><h2>One provider contract, several presets</h2>
+    <div class="matrix">
+      <div class="head">Decision</div><div class="head">Use it?</div><div class="head">Why</div><div class="head">Rule</div>
+      <div>Generic OpenAI-compatible stream client</div><div class="yes">Yes</div><div class="note">Matches existing Groq/DeepInfra request + SSE parsing.</div><div class="note">Provider preset owns base URL, auth, supported options, models.</div>
+      <div>Arbitrary user-entered URL</div><div class="no">No</div><div class="note">Turns the control plane into an SSRF/proxy surface.</div><div class="note">No custom endpoint in V1. Whitelist reviewed presets.</div>
+      <div>Per-user provider + model</div><div class="yes">Yes</div><div class="note">That is the actual BYOK choice.</div><div class="note">Store provider ID, model ID, encrypted key, explicit fallback policy.</div>
+      <div>Silent platform/Cerebras fallback</div><div class="no">No</div><div class="note">Violates user cost expectations.</div><div class="note">Default: show provider failure. Separate opt-in fallback toggle.</div>
+      <div>OpenRouter default routing</div><div class="no">No</div><div class="note">Its BYOK system may try configured keys, OpenRouter endpoints, then fallback keys.</div><div class="note">Advanced mode only; pin upstream and disable shared fallback.</div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="eyebrow">Implementation agenda</div><h2>Smallest safe route to real BYOK</h2>
+    <div class="steps">
+      <article class="step"><h3>Unify transport</h3><p>Replace copy-pasted provider stream modules with a narrow OpenAI-compatible adapter. Preserve the current prompt, streaming behavior, timeout, and post-token romanization.</p></article>
+      <article class="step"><h3>Add four presets</h3><p>Groq, DeepInfra, DeepSeek, Gemini. A preset supplies only reviewed endpoint/model choices and request quirks — not a free-form URL.</p></article>
+      <article class="step"><h3>Make cost behavior honest</h3><p>Show active provider/model in the UI. Validate a key with a bounded request. Never fall back to AirNote credits unless the user enables it.</p></article>
+      <article class="step"><h3>Benchmark before promotion</h3><p>Run the existing lab’s fixed history suite against every candidate with the same prompt. Score exact preservation, Hindi/Hinglish romanization, hallucination, latency, and output length.</p></article>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="callout"><b>Key-custody truth:</b> the existing control-plane pattern encrypts keys at rest, but AirNote’s server still holds and uses them. That is acceptable for a normal hosted BYOK feature if disclosed; it is not “key never leaves the device.” A later privacy tier can use a desktop-held key or a user-run local gateway.</div>
+    <details><summary>Why price alone is not the answer</summary><p>Polish is a constrained multilingual transformation, not generic chat. The cheapest model can cost more in user trust if it changes identifiers, expands a short sentence, mishandles Hinglish, or leaks thinking text. The lab should use the same frozen prompt and held-out history for every model. Promote a provider only when it clears the current Gemma baseline on correctness and p95 latency at the desired price.</p></details>
+    <details><summary>What to measure in the lab</summary><ul><li>Exact output / minimum-edit score against your approved historical final text.</li><li>Technical term and identifier preservation.</li><li>Hindi/Devanagari → Roman Hinglish accuracy and no mojibake.</li><li>Hallucination / added-content rate.</li><li>p50 and p95 time-to-first-token plus completion time.</li><li>Input and output token counts to calculate actual cost per utterance.</li></ul></details>
+    <details><summary>Why OpenRouter is not the V1 default</summary><p>It is useful for power users because one account can hold upstream provider keys and define an order. Its documented routing can proceed from prioritized keys to OpenRouter endpoints to fallback keys unless configured otherwise. For a user who selected BYOK to control cost and data path, that extra routing layer should be an explicit advanced choice, not invisible behavior.</p></details>
+  </section>
+
+  <footer class="footer"><span class="dot"></span><strong>High confidence:</strong> local architecture and API compatibility. <span class="dot" style="background:var(--amber)"></span><strong>Medium confidence:</strong> model quality for Hinglish polish until benchmarked.<br><br>Primary sources: <a href="https://console.groq.com/docs/models">Groq model catalog</a> · <a href="https://docs.deepinfra.com/chat/streaming">DeepInfra streaming</a> · <a href="https://api-docs.deepseek.com/quick_start/pricing">DeepSeek pricing</a> · <a href="https://ai.google.dev/gemini-api/docs/pricing">Gemini pricing</a> · <a href="https://ai.google.dev/gemini-api/docs/openai">Gemini compatibility</a> · <a href="https://docs.mistral.ai/models/model-cards/mistral-small-4-0-26-03">Mistral Small 4</a> · <a href="https://docs.together.ai/docs/inference/pricing">Together pricing</a> · <a href="https://docs.fireworks.ai/serverless/overview">Fireworks serverless</a> · <a href="https://openrouter.ai/docs/guides/overview/auth/byok">OpenRouter BYOK</a> · <a href="https://inference-docs.cerebras.ai/support/pricing">Cerebras pricing</a>.</footer>
+</main>
+<script>
+  const buttons=document.querySelectorAll('[data-filter]'); const cards=document.querySelectorAll('#providers [data-kind]');
+  buttons.forEach(b=>b.addEventListener('click',()=>{buttons.forEach(x=>x.classList.remove('active'));b.classList.add('active');const f=b.dataset.filter;cards.forEach(c=>c.classList.toggle('hidden',f!=='all'&&c.dataset.kind!==f));}));
+</script>
+</body>
+</html>

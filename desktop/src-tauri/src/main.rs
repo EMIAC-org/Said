@@ -2,6 +2,7 @@
 
 mod api;
 mod app_identity; // resolve target_app pid → bundle-id/exe + app icon (App Identity Service)
+mod asr; // adaptive, process-isolated on-device dictation ASR (GPU worker + CPU safety)
 mod backend;
 mod backend_guard;
 mod browser_context; // opt-in: active browser tab → site host (AppleScript, macOS)
@@ -14,14 +15,17 @@ mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plan
 mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
-mod local_asr;
+mod hud_manager;
+mod local_models;
 mod meeting_engine;
+mod nemotron; // optional experimental GGUF local-ASR provider; never used by Meetings
 mod notch_sidecar;
 mod whisper_dictation_stream; // crash-recovery PCM tap during on-device dictation (batch-only STT)
 // mod meeting_audio; // Removed: meeting mode reuses the main pipeline
 mod permissions;
 mod recovery; // crash-safe dictation audio capture + relaunch recovery
 mod speaker_suppression;
+mod stt_policy;
 mod telemetry;
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -126,7 +130,7 @@ fn guard_panics<R>(label: &'static str, f: impl FnOnce() -> R) -> Option<R> {
 /// Dispatch `f` to the AppKit main thread wrapped in the panic seatbelt. Use this
 /// instead of `run_on_main_thread` for any closure touching windows/panels/tray so
 /// a panic inside it can never SIGABRT the app.
-fn run_on_main_guarded(
+pub(crate) fn run_on_main_guarded(
     app: &tauri::AppHandle,
     label: &'static str,
     f: impl FnOnce() + Send + 'static,
@@ -148,6 +152,18 @@ fn exit_after_shutdown_cleanup(code: i32) -> ! {
 fn exit_after_shutdown_cleanup(code: i32) -> ! {
     std::process::exit(code)
 }
+
+#[cfg(target_os = "macos")]
+fn configure_ggml_metal_shutdown_guard() {
+    if std::env::var_os("GGML_METAL_NO_RESIDENCY").is_none() {
+        // Must be set before whisper.cpp/ggml initializes Metal. Newer ggml
+        // residency-set teardown can assert during libc finalizers on app quit.
+        unsafe { std::env::set_var("GGML_METAL_NO_RESIDENCY", "1") };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_ggml_metal_shutdown_guard() {}
 
 fn record_hotkey_label(raw: &str) -> &'static str {
     // Platform-aware: the same pref maps to different physical keys. On Windows
@@ -226,49 +242,7 @@ tauri_panel! {
     })
 }
 
-#[cfg(target_os = "macos")]
-fn status_bar_collection_behavior() -> CollectionBehavior {
-    // `.stationary` + `.can_join_all_spaces` conflict in release builds:
-    // macOS silently ignores setCollectionBehavior after Space/fullscreen transitions
-    // (Tauri #5566). Use only what is needed: pin to all spaces, allow over fullscreen.
-    CollectionBehavior::new()
-        .can_join_all_spaces()
-        .full_screen_auxiliary()
-}
-
-#[cfg(target_os = "macos")]
-fn tune_status_bar_panel(app: &tauri::AppHandle) {
-    let Ok(panel) = app.get_webview_panel("status-bar") else {
-        return;
-    };
-    panel.set_level(PanelLevel::Custom(28).value());
-    panel.set_floating_panel(true);
-    panel.set_hides_on_deactivate(false);
-    panel.set_works_when_modal(true);
-    panel.set_ignores_mouse_events(!status_bar_interactive(app));
-    panel.set_collection_behavior(status_bar_collection_behavior().into());
-    panel.set_style_mask(StyleMask::empty().borderless().nonactivating_panel().into());
-    panel.set_transparent(true);
-    panel.set_has_shadow(false);
-}
-
-#[cfg(target_os = "macos")]
-fn show_status_bar_panel(app: &tauri::AppHandle) -> bool {
-    match app.get_webview_panel("status-bar") {
-        Ok(panel) => {
-            tune_status_bar_panel(app);
-            panel.show();
-            panel.order_front_regardless();
-            true
-        }
-        Err(_) => {
-            tracing::warn!("[status-bar] panel handle missing; falling back to webview window");
-            false
-        }
-    }
-}
-
-fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
+pub(crate) fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
     let state = app
         .try_state::<SharedApp>()
         .and_then(|shared| shared.0.lock().ok().map(|d| d.state.as_str().to_string()))
@@ -283,67 +257,13 @@ fn emit_status_bar_resync(app: &tauri::AppHandle, reason: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn configure_status_bar_macos(win: &tauri::WebviewWindow) {
-    use objc::Message;
-    use objc::runtime::{Object, Sel};
-
-    let Ok(ns_window) = win.ns_window() else {
-        tracing::warn!("[status-bar] macOS tune failed: ns_window unavailable");
-        return;
-    };
-    if ns_window.is_null() {
-        tracing::warn!("[status-bar] macOS tune failed: ns_window was null");
-        return;
-    }
-
-    // Non-activating floating panel available on every Space and over fullscreen apps.
-    // `.stationary` (1<<4) and `.ignoresExposeCycle` (1<<6) are intentionally omitted:
-    // combining them with `.canJoinAllSpaces` silently breaks setCollectionBehavior in
-    // release builds after Space/fullscreen transitions (Tauri #5566).
-    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
-    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
-    const NONACTIVATING_PANEL_STYLE: usize = 1 << 7;
-    const FULL_SIZE_CONTENT_VIEW_STYLE: usize = 1 << 15;
-    const NS_STATUS_WINDOW_LEVEL_PLUS_THREE: isize = 28;
-
-    unsafe {
-        let ns_window = &*(ns_window as *mut Object);
-        let style_mask: usize = ns_window
-            .send_message(Sel::register("styleMask"), ())
-            .unwrap_or(0);
-        let panel_style = style_mask | NONACTIVATING_PANEL_STYLE | FULL_SIZE_CONTENT_VIEW_STYLE;
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setStyleMask:"), (panel_style,));
-
-        let behavior = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setCollectionBehavior:"), (behavior,));
-        let _: Result<(), _> = ns_window.send_message(
-            Sel::register("setLevel:"),
-            (NS_STATUS_WINDOW_LEVEL_PLUS_THREE,),
-        );
-        let _: Result<(), _> = ns_window.send_message(Sel::register("setCanHide:"), (false,));
-        let ignores_mouse = !status_bar_interactive(win.app_handle());
-        let _: Result<(), _> =
-            ns_window.send_message(Sel::register("setIgnoresMouseEvents:"), (ignores_mouse,));
-        for (selector_name, value) in [
-            ("setHidesOnDeactivate:", false),
-            ("setFloatingPanel:", true),
-        ] {
-            let selector = Sel::register(selector_name);
-            let responds: bool = ns_window
-                .send_message(Sel::register("respondsToSelector:"), (selector,))
-                .unwrap_or(false);
-            if responds {
-                let _: Result<(), _> = ns_window.send_message(selector, (value,));
-            }
-        }
-        let _: Result<(), _> = ns_window.send_message(Sel::register("orderFrontRegardless"), ());
-        tracing::debug!(
-            "[status-bar] macOS tuned style={panel_style:#x} behavior={behavior:#x} level={NS_STATUS_WINDOW_LEVEL_PLUS_THREE}"
-        );
-    }
+fn configure_main_window_macos(_win: &tauri::WebviewWindow) {
+    // The dynamic acceptsFirstMouse subclassing path caused foreign Cocoa
+    // exceptions to unwind through tao's event loop in dev builds.
 }
+
+#[cfg(not(target_os = "macos"))]
+fn configure_main_window_macos(_win: &tauri::WebviewWindow) {}
 
 const STATUS_BAR_WIDTH: f64 = 300.0;
 const STATUS_BAR_HEIGHT: f64 = 142.0;
@@ -428,7 +348,7 @@ fn apply_status_bar_position(
 }
 
 /// Keep the floating status bar visible at idle only when `SAID_STATUS_BAR_PIN=1`.
-fn status_bar_pinned() -> bool {
+pub(crate) fn status_bar_pinned() -> bool {
     matches!(
         std::env::var("SAID_STATUS_BAR_PIN").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
@@ -489,24 +409,29 @@ fn present_status_bar_macos_on_main(
     state: &str,
     resync: bool,
 ) {
+    diag::breadcrumb(format!("status_bar:present:{state}:begin"));
     reposition_status_bar(app, win);
-    configure_status_bar_macos(win);
+    diag::breadcrumb(format!("status_bar:present:{state}:repositioned"));
+    hud_manager::configure_window(win);
     if let Err(e) = win.set_always_on_top(true) {
         tracing::warn!("[status-bar] set_always_on_top failed: {e}");
     }
+    diag::breadcrumb(format!("status_bar:present:{state}:show"));
     match win.show() {
         Ok(_) => tracing::debug!("[status-bar] show ok for state={state}"),
         Err(e) => tracing::warn!("[status-bar] show failed for state={state}: {e}"),
     }
-    configure_status_bar_macos(win);
-    let _ = show_status_bar_panel(app);
+    hud_manager::configure_window(win);
+    let _ = hud_manager::show_panel(app);
     if resync {
+        diag::breadcrumb(format!("status_bar:present:{state}:resync"));
         emit_status_bar_resync(app, state);
     }
+    diag::breadcrumb(format!("status_bar:present:{state}:end"));
 }
 
 #[cfg(target_os = "macos")]
-fn schedule_present_status_bar_macos(
+pub(crate) fn schedule_present_status_bar_macos(
     app: &tauri::AppHandle,
     win: &tauri::WebviewWindow,
     state: &str,
@@ -516,6 +441,7 @@ fn schedule_present_status_bar_macos(
     let app_in_closure = app_for_main.clone();
     let win = win.clone();
     let state = state.to_string();
+    diag::breadcrumb(format!("status_bar:schedule_present:{state}"));
     if let Err(e) = run_on_main_guarded(&app_for_main, "status_bar.present", move || {
         present_status_bar_macos_on_main(&app_in_closure, &win, &state, resync);
     }) {
@@ -528,35 +454,30 @@ fn present_status_bar_native(
     reason: &str,
     resync: bool,
 ) -> Result<(), String> {
-    if app.get_webview_window("status-bar").is_none() {
-        // The status-bar window is pre-created at startup. If it is somehow missing,
-        // do NOT create it here on Windows: this fn is reachable from the
-        // present_status_bar / set_status_bar_persistent IPC commands, and creating
-        // a WebView2 window from inside an IPC handler deadlocks Windows IPC
-        // (wry #583 — the same class that wedged End-meeting). macOS's NSPanel path
-        // is safe.
-        #[cfg(target_os = "macos")]
-        create_status_bar(app);
-        #[cfg(not(target_os = "macos"))]
-        {
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).present(reason, resync);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if app.get_webview_window("status-bar").is_none() {
+            // The status-bar window is pre-created at startup. If it is somehow missing,
+            // do NOT create it here on Windows: this fn is reachable from the
+            // present_status_bar / set_status_bar_persistent IPC commands, and creating
+            // a WebView2 window from inside an IPC handler deadlocks Windows IPC
+            // (wry #583 — the same class that wedged End-meeting). macOS's NSPanel path
+            // is safe.
             tracing::warn!(
                 "[status-bar] window missing — not recreating from an IPC path on Windows"
             );
             return Err("status-bar window not available".to_string());
         }
-    }
-    let win = app
-        .get_webview_window("status-bar")
-        .ok_or_else(|| "status-bar window not found".to_string())?;
-    tracing::debug!("[status-bar] native present reason={reason} resync={resync}");
+        let win = app
+            .get_webview_window("status-bar")
+            .ok_or_else(|| "status-bar window not found".to_string())?;
+        tracing::debug!("[status-bar] native present reason={reason} resync={resync}");
 
-    #[cfg(target_os = "macos")]
-    {
-        schedule_present_status_bar_macos(app, &win, reason, resync);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
         // Position the HUD before showing — the macOS path repositions via the
         // panel presenter, but the native path must do it explicitly or the
         // window appears at its stale/default origin.
@@ -569,9 +490,9 @@ fn present_status_bar_native(
         if resync {
             emit_status_bar_resync(app, reason);
         }
-    }
 
-    Ok(())
+        Ok(())
+    }
 }
 
 // ── Keystroke reconstruction (edit detection for AX-blind apps) ──────────────
@@ -713,6 +634,9 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("gemini") && (lower.contains("401") || lower.contains("403")) {
         return "Gemini key invalid".into();
     }
+    if lower.contains("together") && (lower.contains("rate limit") || lower.contains("429")) {
+        return "Together AI rate limit hit".into();
+    }
     if lower.contains("rate") || lower.contains("429") {
         return "Rate limited — wait a moment".into();
     }
@@ -750,46 +674,10 @@ fn strip_voice_error_already_emitted(raw: &str) -> &str {
         .unwrap_or(raw)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LiveTypingDecision {
-    ResetAndDisable,
-    PreviewOnly,
-    TypeToken,
-}
-
-#[derive(Debug, Default)]
-struct LiveTypingGuard {
-    disabled: bool,
-    typed_tokens: usize,
-}
-
-impl LiveTypingGuard {
-    fn on_token(&mut self, token: &str) -> LiveTypingDecision {
-        if token == STREAM_RESET_SENTINEL {
-            if self.typed_tokens == 0 {
-                tracing::info!(
-                    "[main] live typing reset before target typing — keeping word-by-word enabled"
-                );
-                return LiveTypingDecision::PreviewOnly;
-            }
-            self.disabled = true;
-            return LiveTypingDecision::ResetAndDisable;
-        }
-        if self.disabled {
-            return LiveTypingDecision::PreviewOnly;
-        }
-        LiveTypingDecision::TypeToken
-    }
-
-    fn note_typed(&mut self) {
-        self.typed_tokens += 1;
-    }
-}
-
 // ── Managed state ─────────────────────────────────────────────────────────────
 
 /// Holds the local recording state machine.
-struct SharedApp(Arc<Mutex<DesktopApp>>);
+pub(crate) struct SharedApp(Arc<Mutex<DesktopApp>>);
 
 /// Holds the backend endpoint (url + secret). None until daemon starts.
 struct BackendState(Arc<Mutex<Option<BackendEndpoint>>>);
@@ -912,9 +800,36 @@ fn start_backend_watchdog(app: tauri::AppHandle, using_external_backend: bool) {
         });
 }
 
-/// Owns the currently running post-paste edit watcher. Starting a new watcher
-/// cancels the previous one so rapid recordings cannot stack poll loops.
-struct EditWatcherState(Mutex<Option<CancellationToken>>);
+#[derive(Clone)]
+struct EditWatcherControl {
+    generation: u64,
+    cancel: CancellationToken,
+    finalize: CancellationToken,
+}
+
+fn new_edit_watcher_control(generation: u64) -> EditWatcherControl {
+    EditWatcherControl {
+        generation,
+        cancel: CancellationToken::new(),
+        finalize: CancellationToken::new(),
+    }
+}
+
+fn edit_watch_crossed_app_boundary(initial_pid: Option<i32>, now_pid: Option<i32>) -> bool {
+    matches!((initial_pid, now_pid), (Some(initial), Some(now)) if initial != now)
+}
+
+fn edit_watcher_generation_is_current(
+    current: Option<&EditWatcherControl>,
+    task_generation: u64,
+) -> bool {
+    current.is_some_and(|control| control.generation == task_generation)
+}
+
+/// Owns the currently running post-paste edit watcher. A new recording asks the
+/// previous watcher to finalize; unrelated replacement actions may hard-cancel.
+struct EditWatcherState(Mutex<Option<EditWatcherControl>>);
+static EDIT_WATCHER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The frontmost app PID when recording started.
 ///
@@ -929,15 +844,56 @@ struct EditTargetState(Mutex<Option<i32>>);
 /// "MACOBS", the LLM knows "main corps" is likely "MACOBS").
 struct ScreenContextState(Mutex<Option<String>>);
 
-async fn local_pre_transcript(
+async fn stt_pre_transcript(
     wav: &[u8],
     language: &str,
-) -> Result<dictation_stt::LocalTranscript, String> {
+    is_meeting: bool,
+) -> Result<dictation_stt::PreTranscript, String> {
     let started = std::time::Instant::now();
-    let transcript = dictation_stt::transcribe_wav_bytes(wav, language).await?;
+    let transcript = if is_meeting {
+        dictation_stt::transcribe_meeting_wav_bytes(wav, language).await?
+    } else {
+        dictation_stt::transcribe_wav_bytes(wav, language).await?
+    };
     tracing::info!(
-        "[finish] local speech transcript ready in {}ms chars={} words={}",
+        "[finish] speech transcript ready in {}ms provider={} chars={} words={}",
         started.elapsed().as_millis(),
+        transcript.meta.provider,
+        transcript.transcript.len(),
+        transcript.transcript.split_whitespace().count()
+    );
+    Ok(transcript)
+}
+
+async fn finish_live_nemotron_transcript(
+    mut live_run: LiveNemotronRun,
+) -> Result<dictation_stt::PreTranscript, String> {
+    let started = std::time::Instant::now();
+    if let Some(drain_done_rx) = live_run.drain_done_rx.take() {
+        // The drain is the single producer of live PCM commands. Wait for it
+        // before committing so the final release cannot overtake its last
+        // recorder chunk through a separate mpsc sender.
+        tokio::task::spawn_blocking(move || drain_done_rx.recv_timeout(Duration::from_secs(2)))
+            .await
+            .map_err(|error| format!("live audio drain task failed: {error}"))?
+            .map_err(|_| "Live audio capture did not finish cleanly. Try again.".to_string())?;
+    }
+    live_run
+        .controller
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    let transcript = tokio::time::timeout(Duration::from_secs(75), live_run.final_rx)
+        .await
+        .map_err(|_| {
+            "The speech service didn't respond within 75s — check your connection and try again."
+                .to_string()
+        })?
+        .map_err(|_| "Live speech transcription stopped unexpectedly. Try again.".to_string())??;
+    tracing::info!(
+        "[finish] live speech transcript finalized in {}ms provider={} chars={} words={}",
+        started.elapsed().as_millis(),
+        dictation_stt::provider_name(),
         transcript.transcript.len(),
         transcript.transcript.split_whitespace().count()
     );
@@ -1041,6 +997,7 @@ struct LongDictationState {
     locked: Arc<AtomicBool>,
     pending_lock: Arc<AtomicBool>,
     stop_consumed: Arc<AtomicBool>,
+    finishing: Arc<AtomicBool>,
 }
 
 impl LongDictationState {
@@ -1049,13 +1006,28 @@ impl LongDictationState {
             locked: Arc::new(AtomicBool::new(false)),
             pending_lock: Arc::new(AtomicBool::new(false)),
             stop_consumed: Arc::new(AtomicBool::new(false)),
+            finishing: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn reset(&self) {
-        self.locked.store(false, Ordering::SeqCst);
-        self.pending_lock.store(false, Ordering::SeqCst);
-        self.stop_consumed.store(false, Ordering::SeqCst);
+    fn reset(&self) -> bool {
+        let was_locked = self.locked.swap(false, Ordering::SeqCst);
+        let had_pending_lock = self.pending_lock.swap(false, Ordering::SeqCst);
+        let had_consumed_stop = self.stop_consumed.swap(false, Ordering::SeqCst);
+        let was_finishing = self.finishing.swap(false, Ordering::SeqCst);
+        was_locked || had_pending_lock || had_consumed_stop || was_finishing
+    }
+
+    fn clear_recording_lock(&self) -> bool {
+        let was_locked = self.locked.swap(false, Ordering::SeqCst);
+        let had_pending_lock = self.pending_lock.swap(false, Ordering::SeqCst);
+        was_locked || had_pending_lock
+    }
+
+    fn clear_finishing(&self) -> bool {
+        let had_consumed_stop = self.stop_consumed.swap(false, Ordering::SeqCst);
+        let was_finishing = self.finishing.swap(false, Ordering::SeqCst);
+        had_consumed_stop || was_finishing
     }
 }
 
@@ -1172,7 +1144,7 @@ struct HotPathCacheInner {
 
 /// Generation counter for status-bar idle hide timers.
 /// Each idle sync increments this; a timer whose generation no longer matches is silently dropped.
-struct StatusBarHideGen(Arc<AtomicU64>);
+pub(crate) struct StatusBarHideGen(Arc<AtomicU64>);
 
 /// True while the status bar is showing a user-action-required notification.
 /// Idle app-state syncs must not hide the native window until the frontend
@@ -1195,6 +1167,19 @@ struct RecordingSessionState {
     active_id: Mutex<Option<String>>,
     processing_id: Mutex<Option<String>>,
 }
+
+/// One active Together Nemotron session, captured at recording start. It is
+/// separate from `RecordingSessionState` because its command channel must stay
+/// available to the recorder drain while the final transcript receiver moves to
+/// the release pipeline.
+struct LiveNemotronRun {
+    generation: u64,
+    controller: asr_cloud::LiveTranscriptionController,
+    drain_done_rx: Option<std::sync::mpsc::Receiver<()>>,
+    final_rx: tokio::sync::oneshot::Receiver<Result<dictation_stt::PreTranscript, String>>,
+}
+
+struct LiveNemotronState(Mutex<Option<LiveNemotronRun>>);
 
 impl RecordingSessionState {
     fn begin(&self) -> (u64, String) {
@@ -1250,6 +1235,145 @@ impl Default for RecordingSessionState {
     }
 }
 
+fn start_live_nemotron_session(app: &tauri::AppHandle, generation: u64, run_id: String) {
+    if !dictation_stt::uses_live_nemotron() {
+        return;
+    }
+
+    let (controller, input) = asr_cloud::live_transcription_input();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (final_tx, final_rx) = tokio::sync::oneshot::channel();
+    let app_for_events = app.clone();
+    let run_for_events = run_id.clone();
+
+    // Together's deltas replace the prior hypothesis. They are strictly HUD
+    // preview; the focused app still receives only server-polished output.
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            let still_recording = app_for_events
+                .try_state::<SharedApp>()
+                .and_then(|shared| {
+                    shared
+                        .0
+                        .lock()
+                        .ok()
+                        .map(|app_state| app_state.state == desktop::AppState::Recording)
+                })
+                .unwrap_or(false);
+            let generation_is_current = app_for_events
+                .try_state::<RecordingSessionState>()
+                .map(|session| session.generation.load(Ordering::SeqCst) == generation)
+                .unwrap_or(false);
+            if !still_recording || !generation_is_current {
+                continue;
+            }
+            match event {
+                asr_cloud::LiveTranscriptEvent::Ready => {
+                    tracing::info!(
+                        run_id = %run_for_events,
+                        generation,
+                        "[nemotron_live] websocket session ready while recording"
+                    );
+                    emit_voice_status(
+                        &app_for_events,
+                        "live_stt",
+                        Some("Listening…"),
+                        Some(&run_for_events),
+                    );
+                }
+                asr_cloud::LiveTranscriptEvent::Delta { transcript } => {
+                    emit_voice_status(
+                        &app_for_events,
+                        "live_stt",
+                        Some(&transcript),
+                        Some(&run_for_events),
+                    );
+                }
+            }
+        }
+    });
+
+    tauri::async_runtime::spawn(async move {
+        let result = dictation_stt::transcribe_live_nemotron(input, event_tx).await;
+        let _ = final_tx.send(result);
+    });
+
+    let live_state = app.state::<LiveNemotronState>();
+    let mut guard = live_state
+        .0
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    // A new recording is allowed to supersede an abandoned old one. Dropping
+    // its controller closes the command channel once its recorder drain ends.
+    *guard = Some(LiveNemotronRun {
+        generation,
+        controller,
+        drain_done_rx: None,
+        final_rx,
+    });
+    tracing::info!(
+        run_id = %run_id,
+        generation,
+        "[nemotron_live] session opening at recording start"
+    );
+}
+
+fn live_nemotron_controller(
+    app: &tauri::AppHandle,
+    generation: u64,
+) -> Option<asr_cloud::LiveTranscriptionController> {
+    let state = app.try_state::<LiveNemotronState>()?;
+    let guard = state.0.lock().ok()?;
+    guard
+        .as_ref()
+        .filter(|run| run.generation == generation)
+        .map(|run| run.controller.clone())
+}
+
+fn attach_live_nemotron_drain(
+    app: &tauri::AppHandle,
+    generation: u64,
+    drain_done_rx: std::sync::mpsc::Receiver<()>,
+) {
+    let Some(state) = app.try_state::<LiveNemotronState>() else {
+        return;
+    };
+    let Ok(mut guard) = state.0.lock() else {
+        return;
+    };
+    if let Some(run) = guard.as_mut().filter(|run| run.generation == generation) {
+        run.drain_done_rx = Some(drain_done_rx);
+    }
+}
+
+fn take_live_nemotron_run(
+    app: &tauri::AppHandle,
+    generation: Option<u64>,
+) -> Option<LiveNemotronRun> {
+    let generation = generation?;
+    let state = app.try_state::<LiveNemotronState>()?;
+    let mut guard = state.0.lock().ok()?;
+    if guard
+        .as_ref()
+        .is_some_and(|run| run.generation == generation)
+    {
+        guard.take()
+    } else {
+        None
+    }
+}
+
+fn discard_live_nemotron_run(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<LiveNemotronState>() else {
+        return;
+    };
+    if let Ok(mut guard) = state.0.lock() {
+        if guard.take().is_some() {
+            tracing::debug!("[nemotron_live] session discarded before commit");
+        }
+    }
+}
+
 fn snapshot_for_ui(app: &tauri::AppHandle, snap: &AppSnapshot) -> AppSnapshot {
     let mut snap = snap.clone();
     snap.recording_id = app
@@ -1288,7 +1412,7 @@ fn emit_voice_done(app: &tauri::AppHandle, done: &api::PolishDone, run_id: Optio
     let _ = app.emit("voice-done", payload);
 }
 
-fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
+pub(crate) fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
     app.try_state::<StatusBarPersistentHold>()
         .map(|s| s.0.load(Ordering::SeqCst))
         .unwrap_or(false)
@@ -1296,51 +1420,25 @@ fn status_bar_persistent_hold(app: &tauri::AppHandle) -> bool {
 
 /// Whether the status bar currently wants to accept clicks. Defaults to false
 /// (click-through) when the state hasn't been registered yet.
-fn status_bar_interactive(app: &tauri::AppHandle) -> bool {
-    app.try_state::<StatusBarInteractive>()
-        .map(|s| s.0.load(Ordering::SeqCst))
-        .unwrap_or(false)
-}
-
+#[cfg(not(target_os = "macos"))]
 fn apply_status_bar_interactive_state(win: &tauri::WebviewWindow, interactive: bool) {
     let _ = win.set_ignore_cursor_events(!interactive);
-    #[cfg(target_os = "macos")]
-    {
-        use objc::Message;
-        use objc::runtime::{Object, Sel};
-        if let Ok(ns_window) = win.ns_window() {
-            if !ns_window.is_null() {
-                unsafe {
-                    let ns_window = &*(ns_window as *mut Object);
-                    let _: Result<(), _> = ns_window
-                        .send_message(Sel::register("setIgnoresMouseEvents:"), (!interactive,));
-                }
-            }
-        }
-    }
     tracing::debug!("[status-bar] interactive={interactive}");
 }
 
 fn set_status_bar_interactive_state(app: &tauri::AppHandle, interactive: bool) {
-    if let Some(state) = app.try_state::<StatusBarInteractive>() {
-        state.0.store(interactive, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    {
+        hud_manager::MacHudManager::new(app).set_interactive(interactive);
+        return;
     }
-    if let Some(win) = app.get_webview_window("status-bar") {
-        #[cfg(target_os = "macos")]
-        {
-            let app_for_main = app.clone();
-            let win_for_main = win.clone();
-            if let Err(e) =
-                run_on_main_guarded(&app_for_main, "status_bar.interactive", move || {
-                    apply_status_bar_interactive_state(&win_for_main, interactive);
-                })
-            {
-                tracing::warn!("[status-bar] schedule interactive state failed: {e}");
-            }
-        }
 
-        #[cfg(not(target_os = "macos"))]
-        {
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(state) = app.try_state::<StatusBarInteractive>() {
+            state.0.store(interactive, Ordering::SeqCst);
+        }
+        if let Some(win) = app.get_webview_window("status-bar") {
             apply_status_bar_interactive_state(&win, interactive);
         }
     }
@@ -1362,8 +1460,10 @@ fn set_placement_mode_active(app: &tauri::AppHandle, active: bool) {
 struct DebugLogs {
     desktop_path: String,
     backend_path: String,
+    breadcrumb_path: String,
     desktop: String,
     backend: String,
+    breadcrumbs: String,
     combined: String,
     truncated: bool,
 }
@@ -1659,6 +1759,7 @@ fn build_tray_menu_for_state(
 }
 
 fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
+    diag::breadcrumb(format!("status_bar:sync:{state}"));
     #[cfg(target_os = "macos")]
     {
         let app = handle.clone();
@@ -1675,127 +1776,112 @@ fn sync_status_bar(handle: &tauri::AppHandle, state: &str) {
 }
 
 fn sync_status_bar_on_main(handle: &tauri::AppHandle, state: &str) {
-    let win = match handle.get_webview_window("status-bar") {
-        Some(win) => win,
-        None if state != "idle" => {
-            tracing::warn!(
-                "[status-bar] sync requested for active state={state}, but window was not found — recreating"
-            );
-            create_status_bar(handle);
-            let Some(win) = handle.get_webview_window("status-bar") else {
-                tracing::warn!(
-                    "[status-bar] recreate failed; still no status-bar window for state={state}"
-                );
-                return;
-            };
-            win
-        }
-        None => {
-            tracing::warn!(
-                "[status-bar] sync requested for state={state}, but window was not found"
-            );
-            return;
-        }
-    };
-
-    tracing::debug!("[status-bar] sync state={state}");
-    if state == "idle" {
-        if status_bar_pinned() || status_bar_persistent_hold(handle) {
-            tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
-            #[cfg(target_os = "macos")]
-            schedule_present_status_bar_macos(handle, &win, state, false);
-            #[cfg(not(target_os = "macos"))]
-            {
-                reposition_status_bar(handle, &win);
-                let _ = win.set_always_on_top(true);
-                let _ = win.set_visible_on_all_workspaces(true);
-                let _ = win.show();
-            }
-            return;
-        }
-        tracing::debug!("[status-bar] idle state — scheduling native hide");
-        let my_gen = handle
-            .try_state::<StatusBarHideGen>()
-            .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
-            .unwrap_or(0);
-        let hide_gen_arc = handle
-            .try_state::<StatusBarHideGen>()
-            .map(|s| Arc::clone(&s.0));
-        let app = handle.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
-            // If a newer idle sync fired after us, let it own the hide decision.
-            if let Some(counter) = &hide_gen_arc {
-                if counter.load(Ordering::Relaxed) != my_gen {
-                    return;
-                }
-            }
-            let still_idle = app
-                .try_state::<SharedApp>()
-                .and_then(|shared| {
-                    shared
-                        .0
-                        .lock()
-                        .ok()
-                        .map(|d| d.state == desktop::AppState::Idle)
-                })
-                .unwrap_or(true);
-            if !still_idle {
-                tracing::debug!("[status-bar] hide skipped — app is active again");
-                return;
-            }
-            if status_bar_pinned() || status_bar_persistent_hold(&app) {
-                tracing::debug!("[status-bar] hide skipped — status bar is pinned/held");
-                return;
-            }
-            if app.get_webview_window("status-bar").is_some() {
-                #[cfg(target_os = "macos")]
-                {
-                    let app_main = app.clone();
-                    if let Err(e) =
-                        run_on_main_guarded(&app_main.clone(), "status_bar.idle_hide", move || {
-                            if let Some(win) = app_main.get_webview_window("status-bar") {
-                                match win.hide() {
-                                    Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
-                                    Err(e) => {
-                                        tracing::warn!("[status-bar] hide after idle failed: {e}")
-                                    }
-                                }
-                            }
-                        })
-                    {
-                        tracing::warn!("[status-bar] schedule idle hide failed: {e}");
-                    }
-                }
-                #[cfg(not(target_os = "macos"))]
-                if let Some(win) = app.get_webview_window("status-bar") {
-                    match win.hide() {
-                        Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
-                        Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
-                    }
-                }
-            }
-        });
-        return;
-    }
-
-    // Invalidate any pending idle-hide timer immediately. The timer also checks
-    // state before hiding, but bumping the generation avoids relying on a mutex
-    // read from an old async task when recordings happen in quick succession.
-    if let Some(counter) = handle
-        .try_state::<StatusBarHideGen>()
-        .map(|s| Arc::clone(&s.0))
-    {
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-
     #[cfg(target_os = "macos")]
     {
-        schedule_present_status_bar_macos(handle, &win, state, state != "placement");
+        hud_manager::MacHudManager::new(handle).sync_on_main(state);
+        return;
     }
 
     #[cfg(not(target_os = "macos"))]
     {
+        diag::breadcrumb(format!("status_bar:sync_main:{state}:begin"));
+        let win = match handle.get_webview_window("status-bar") {
+            Some(win) => win,
+            None if state != "idle" => {
+                diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_recreate"));
+                tracing::warn!(
+                    "[status-bar] sync requested for active state={state}, but window was not found — recreating"
+                );
+                create_status_bar(handle);
+                let Some(win) = handle.get_webview_window("status-bar") else {
+                    diag::breadcrumb(format!("status_bar:sync_main:{state}:recreate_failed"));
+                    tracing::warn!(
+                        "[status-bar] recreate failed; still no status-bar window for state={state}"
+                    );
+                    return;
+                };
+                win
+            }
+            None => {
+                diag::breadcrumb(format!("status_bar:sync_main:{state}:missing_idle"));
+                tracing::warn!(
+                    "[status-bar] sync requested for state={state}, but window was not found"
+                );
+                return;
+            }
+        };
+
+        tracing::debug!("[status-bar] sync state={state}");
+        if state == "idle" {
+            if status_bar_pinned() || status_bar_persistent_hold(handle) {
+                diag::breadcrumb("status_bar:sync_main:idle:held_visible");
+                tracing::debug!("[status-bar] idle state — pinned/held, keeping visible");
+                reposition_status_bar(handle, &win);
+                let _ = win.set_always_on_top(true);
+                let _ = win.set_visible_on_all_workspaces(true);
+                let _ = win.show();
+                return;
+            }
+            tracing::debug!("[status-bar] idle state — scheduling native hide");
+            diag::breadcrumb("status_bar:sync_main:idle:schedule_hide");
+            let my_gen = handle
+                .try_state::<StatusBarHideGen>()
+                .map(|s| s.0.fetch_add(1, Ordering::Relaxed) + 1)
+                .unwrap_or(0);
+            let hide_gen_arc = handle
+                .try_state::<StatusBarHideGen>()
+                .map(|s| Arc::clone(&s.0));
+            let app = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+                // If a newer idle sync fired after us, let it own the hide decision.
+                if let Some(counter) = &hide_gen_arc {
+                    if counter.load(Ordering::Relaxed) != my_gen {
+                        return;
+                    }
+                }
+                let still_idle = app
+                    .try_state::<SharedApp>()
+                    .and_then(|shared| {
+                        shared
+                            .0
+                            .lock()
+                            .ok()
+                            .map(|d| d.state == desktop::AppState::Idle)
+                    })
+                    .unwrap_or(true);
+                if !still_idle {
+                    tracing::debug!("[status-bar] hide skipped — app is active again");
+                    return;
+                }
+                if status_bar_pinned() || status_bar_persistent_hold(&app) {
+                    tracing::debug!("[status-bar] hide skipped — status bar is pinned/held");
+                    return;
+                }
+                if app.get_webview_window("status-bar").is_some() {
+                    if let Some(win) = app.get_webview_window("status-bar") {
+                        match win.hide() {
+                            Ok(_) => tracing::debug!("[status-bar] hidden after idle"),
+                            Err(e) => tracing::warn!("[status-bar] hide after idle failed: {e}"),
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
+        // Invalidate any pending idle-hide timer immediately. The timer also checks
+        // state before hiding, but bumping the generation avoids relying on a mutex
+        // read from an old async task when recordings happen in quick succession.
+        if let Some(counter) = handle
+            .try_state::<StatusBarHideGen>()
+            .map(|s| Arc::clone(&s.0))
+        {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+
+        diag::breadcrumb(format!("status_bar:sync_main:{state}:end"));
+
         reposition_status_bar(handle, &win);
         match win.set_always_on_top(true) {
             Ok(_) => tracing::debug!("[status-bar] set_always_on_top ok"),
@@ -1868,96 +1954,46 @@ static NOTCH_FIRST_CLASS: AtomicBool = AtomicBool::new(false);
 /// The window loads the same SPA with an explicit statusbar marker so
 /// `main.tsx` renders `<StatusBar />` instead of the full app. It starts hidden
 /// at idle and is shown by `sync_status_bar()` when recording/processing begins.
-fn create_status_bar(app: &tauri::AppHandle) {
-    if NOTCH_FIRST_CLASS.load(Ordering::Relaxed) {
-        // Notch sidecar is the HUD; never bring up the pill (incl. auto-recreate).
-        return;
-    }
-    if app.get_webview_window("status-bar").is_some() {
-        tracing::info!("[status-bar] create skipped; window already exists");
-        return;
-    }
-
-    // Position: bottom-center, low above the dock. Match VoiceInk's panel model:
-    // keep a max-size transparent native canvas and expand the inner HUD inside it.
-    let idle_w = STATUS_BAR_WIDTH;
-    let idle_h = STATUS_BAR_HEIGHT;
-    let (x, y) = status_bar_target_origin(app, idle_w, idle_h);
-
-    let recovery_preview_enabled = std::env::var("AIRNOTE_RECOVERY_PREVIEW")
-        .or_else(|_| std::env::var("VITE_AIRNOTE_RECOVERY_PREVIEW"))
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    let url = if recovery_preview_enabled {
-        "index.html?view=statusbar&recoveryPreview=1#statusbar"
-    } else {
-        "index.html?view=statusbar#statusbar"
-    };
-    tracing::info!(
-        "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
-    );
-
+pub(crate) fn create_status_bar(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
-        match PanelBuilder::<_, StatusBarPanel>::new(app, "status-bar")
-            .url(tauri::WebviewUrl::App(url.into()))
-            .title("AirNote")
-            .size(tauri::Size::Logical(tauri::LogicalSize::new(
-                idle_w, idle_h,
-            )))
-            .position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
-            .level(PanelLevel::Custom(28))
-            .floating(true)
-            .hides_on_deactivate(false)
-            .works_when_modal(true)
-            .ignores_mouse_events(true)
-            .has_shadow(false)
-            .transparent(true)
-            .style_mask(StyleMask::empty().borderless().nonactivating_panel())
-            .collection_behavior(status_bar_collection_behavior())
-            .no_activate(true)
-            .with_window(|window| {
-                window
-                    .background_throttling(
-                        tauri::utils::config::BackgroundThrottlingPolicy::Disabled,
-                    )
-                    .decorations(false)
-                    .always_on_top(true)
-                    .visible_on_all_workspaces(true)
-                    .skip_taskbar(true)
-                    .focused(false)
-                    .resizable(true)
-                    .shadow(false)
-                    .transparent(true)
-                    .visible(false)
-            })
-            .build()
-        {
-            Ok(panel) => {
-                tracing::info!("[status-bar] NSPanel created label={}", panel.label());
-                tune_status_bar_panel(app);
-                if status_bar_pinned() {
-                    tracing::info!("[status-bar] dev pin active — showing at idle");
-                } else {
-                    panel.hide();
-                }
-                if let Some(win) = app.get_webview_window("status-bar") {
-                    match win.url() {
-                        Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
-                        Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
-                    }
-                    let _ = win.set_ignore_cursor_events(true);
-                    configure_status_bar_macos(&win);
-                }
-                sync_status_bar(app, "idle");
-            }
-            Err(e) => tracing::warn!("[status-bar] could not create NSPanel: {e}"),
-        }
+        hud_manager::MacHudManager::new(app).ensure_created();
         return;
     }
 
     #[cfg(not(target_os = "macos"))]
-    match tauri::WebviewWindowBuilder::new(app, "status-bar", tauri::WebviewUrl::App(url.into()))
+    {
+        if NOTCH_FIRST_CLASS.load(Ordering::Relaxed) {
+            // Notch sidecar is the HUD; never bring up the pill (incl. auto-recreate).
+            return;
+        }
+        if app.get_webview_window("status-bar").is_some() {
+            tracing::info!("[status-bar] create skipped; window already exists");
+            return;
+        }
+
+        let idle_w = STATUS_BAR_WIDTH;
+        let idle_h = STATUS_BAR_HEIGHT;
+        let (x, y) = status_bar_target_origin(app, idle_w, idle_h);
+
+        let recovery_preview_enabled = std::env::var("AIRNOTE_RECOVERY_PREVIEW")
+            .or_else(|_| std::env::var("VITE_AIRNOTE_RECOVERY_PREVIEW"))
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let url = if recovery_preview_enabled {
+            "index.html?view=statusbar&recoveryPreview=1#statusbar"
+        } else {
+            "index.html?view=statusbar#statusbar"
+        };
+        tracing::info!(
+            "[status-bar] creating window url={url} x={x:.0} y={y:.0} size={idle_w:.0}x{idle_h:.0} visible=false"
+        );
+
+        match tauri::WebviewWindowBuilder::new(
+            app,
+            "status-bar",
+            tauri::WebviewUrl::App(url.into()),
+        )
         .title("AirNote")
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
         .inner_size(idle_w, idle_h)
@@ -1972,18 +2008,40 @@ fn create_status_bar(app: &tauri::AppHandle) {
         .transparent(true)
         .visible(false)
         .build()
-    {
-        Ok(win) => {
-            tracing::info!("[status-bar] window created label={}", win.label());
-            match win.url() {
-                Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
-                Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
+        {
+            Ok(win) => {
+                tracing::info!("[status-bar] window created label={}", win.label());
+                match win.url() {
+                    Ok(url) => tracing::info!("[status-bar] resolved url={url}"),
+                    Err(e) => tracing::warn!("[status-bar] could not read window url: {e}"),
+                }
+                let _ = win.set_ignore_cursor_events(true);
+                sync_status_bar(app, "idle");
             }
-            let _ = win.set_ignore_cursor_events(true);
-            sync_status_bar(app, "idle");
+            Err(e) => tracing::warn!("[status-bar] could not create window: {e}"),
         }
-        Err(e) => tracing::warn!("[status-bar] could not create window: {e}"),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_status_bar_startup_preload(app: &tauri::AppHandle) {
+    let app_h = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Avoid creating AppKit/WebView state inside Tauri setup, but have the
+        // hidden panel ready before the first hold-to-talk transition.
+        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+        let app_main = app_h.clone();
+        if let Err(e) = run_on_main_guarded(&app_h, "status_bar.startup_preload", move || {
+            if app_main.get_webview_window("status-bar").is_some() {
+                return;
+            }
+            diag::breadcrumb("status_bar:startup_preload:create");
+            tracing::info!("[status-bar] startup preload creating hidden HUD");
+            create_status_bar(&app_main);
+        }) {
+            tracing::warn!("[status-bar] startup preload failed: {e}");
+        }
+    });
 }
 
 // ── Tray action helpers ───────────────────────────────────────────────────────
@@ -1999,12 +2057,18 @@ fn emit_tray_error(app: &tauri::AppHandle, message: impl Into<String>) {
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        activate_airnote(app, "show_main_window");
+        return;
+    }
+
+    #[cfg(not(target_os = "macos"))]
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
-    activate_airnote(app, "show_main_window");
 }
 
 // ── Live-meeting floating pill ────────────────────────────────────────────────
@@ -2068,6 +2132,7 @@ fn show_meeting_pill(app: tauri::AppHandle) {
                 panel.order_front_regardless();
                 return;
             }
+            let main_was_visible = hud_manager::main_window_is_visible(&app_for_main);
             match PanelBuilder::<_, MeetingPillPanel>::new(&app_for_main, "meeting-pill")
                 .url(tauri::WebviewUrl::App(url.into()))
                 .title("AirNote Meeting")
@@ -2108,6 +2173,7 @@ fn show_meeting_pill(app: tauri::AppHandle) {
                     panel.order_front_regardless();
                     make_pill_transparent_macos(&app_for_main);
                     tracing::info!("[meeting-pill] NSPanel created");
+                    hud_manager::restore_after_no_activate_panel(&app_for_main, main_was_visible);
                 }
                 Err(e) => tracing::warn!("[meeting-pill] panel create failed: {e}"),
             }
@@ -2193,6 +2259,18 @@ fn activate_airnote(app: &tauri::AppHandle, reason: &'static str) {
 #[cfg(not(target_os = "macos"))]
 fn activate_airnote(_app: &tauri::AppHandle, _reason: &'static str) {}
 
+#[cfg(target_os = "macos")]
+fn activate_airnote_after(app: &tauri::AppHandle, reason: &'static str, delay_ms: u64) {
+    let app_h = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        activate_airnote(&app_h, reason);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_airnote_after(_app: &tauri::AppHandle, _reason: &'static str, _delay_ms: u64) {}
+
 fn apply_launch_at_login(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let manager = app
         .try_state::<tauri_plugin_autostart::AutoLaunchManager>()
@@ -2229,7 +2307,45 @@ fn activate_long_dictation_lock(app: &tauri::AppHandle) {
 
 fn reset_long_dictation_lock(app: &tauri::AppHandle) {
     if let Some(long) = app.try_state::<LongDictationState>() {
-        long.reset();
+        if long.reset() {
+            let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
+        }
+    }
+}
+
+fn clear_long_dictation_recording_lock(app: &tauri::AppHandle) {
+    if let Some(long) = app.try_state::<LongDictationState>() {
+        if long.clear_recording_lock() {
+            let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
+        }
+    }
+}
+
+fn clear_long_dictation_finishing(app: &tauri::AppHandle, reason: &'static str) {
+    if let Some(long) = app.try_state::<LongDictationState>() {
+        if long.clear_finishing() {
+            tracing::debug!("[hotkey] long dictation finishing cleared ({reason})");
+        }
+    }
+}
+
+fn long_dictation_finishing(app: &tauri::AppHandle) -> bool {
+    app.try_state::<LongDictationState>()
+        .map(|long| long.finishing.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+fn stop_long_dictation_lock(
+    app: &tauri::AppHandle,
+    locked: &AtomicBool,
+    stop_consumed: &AtomicBool,
+    finishing: &AtomicBool,
+) {
+    stop_consumed.store(true, Ordering::SeqCst);
+    finishing.store(true, Ordering::SeqCst);
+    if locked.swap(false, Ordering::SeqCst) {
+        tracing::info!("[hotkey] long dictation unlocked for processing");
+        let _ = app.emit("long-dictation-unlocked", serde_json::json!({}));
     }
 }
 
@@ -2322,16 +2438,17 @@ fn toggle_message_polish_mode(app: &tauri::AppHandle) {
     );
 }
 
+/// Insert dictation output into the focused field. Delegates the direct-first /
+/// clipboard-fallback policy to `paster::insert_text` (one source of truth). The
+/// returned bool is `used_clipboard`, which the edit-watcher uses to decide how
+/// to reconcile later.
 fn insert_text_prefer_direct(label: &str, text: &str) -> (Result<(), String>, bool) {
-    match paster::type_text(text) {
-        Ok(true) => (Ok(()), false),
-        Ok(false) => {
-            tracing::warn!("[{label}] direct typing unavailable — falling back to clipboard paste");
-            (paster::paste(text), true)
-        }
+    match paster::insert_text(text) {
+        Ok(paster::InsertMethod::Typed) => (Ok(()), false),
+        Ok(paster::InsertMethod::Clipboard) => (Ok(()), true),
         Err(e) => {
-            tracing::warn!("[{label}] direct typing failed: {e} — falling back to clipboard paste");
-            (paster::paste(text), true)
+            tracing::warn!("[{label}] text insert failed: {e}");
+            (Err(e), true)
         }
     }
 }
@@ -2707,28 +2824,36 @@ fn dismiss_status_bar(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn dismiss_status_bar_on_main(app: &tauri::AppHandle) -> Result<(), String> {
-    if status_bar_pinned() || status_bar_persistent_hold(app) {
-        return Ok(());
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).dismiss_on_main();
     }
-    let is_active = app
-        .try_state::<SharedApp>()
-        .and_then(|shared| {
-            shared
-                .0
-                .lock()
-                .ok()
-                .map(|d| d.state != desktop::AppState::Idle)
-        })
-        .unwrap_or(false);
-    if is_active {
-        tracing::debug!("[status-bar] dismiss skipped — app state is active");
-        return Ok(());
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if status_bar_pinned() || status_bar_persistent_hold(app) {
+            return Ok(());
+        }
+        let is_active = app
+            .try_state::<SharedApp>()
+            .and_then(|shared| {
+                shared
+                    .0
+                    .lock()
+                    .ok()
+                    .map(|d| d.state != desktop::AppState::Idle)
+            })
+            .unwrap_or(false);
+        if is_active {
+            tracing::debug!("[status-bar] dismiss skipped — app state is active");
+            return Ok(());
+        }
+        if let Some(win) = app.get_webview_window("status-bar") {
+            win.hide()
+                .map_err(|e| format!("hide status bar failed: {e}"))?;
+        }
+        Ok(())
     }
-    if let Some(win) = app.get_webview_window("status-bar") {
-        win.hide()
-            .map_err(|e| format!("hide status bar failed: {e}"))?;
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -2861,6 +2986,7 @@ fn set_status_bar_persistent(
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn read_window_bottom_anchor(win: &tauri::WebviewWindow) -> Option<(f64, f64)> {
     let scale = win.scale_factor().ok()?;
     let pos = win.outer_position().ok()?;
@@ -2875,6 +3001,7 @@ fn read_window_bottom_anchor(win: &tauri::WebviewWindow) -> Option<(f64, f64)> {
     Some((x + w / 2.0, y + h))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn origin_from_bottom_anchor(center_x: f64, bottom_y: f64, width: f64, height: f64) -> (f64, f64) {
     (center_x - width / 2.0, bottom_y - height)
 }
@@ -2901,19 +3028,27 @@ fn resize_status_bar_on_main(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    let win = app
-        .get_webview_window("status-bar")
-        .ok_or_else(|| "status-bar window not found".to_string())?;
-    let (center_x, bottom_y) = read_window_bottom_anchor(&win).unwrap_or_else(|| {
-        let (x, y) = status_bar_target_origin(app, width, height);
-        (x + width / 2.0, y + height)
-    });
-    win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
-        .map_err(|e| format!("resize status bar failed: {e}"))?;
-    let (x, y) = origin_from_bottom_anchor(center_x, bottom_y, width, height);
-    win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
-        .map_err(|e| format!("post-resize position failed: {e}"))?;
-    Ok(())
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).resize_on_main(width, height);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let win = app
+            .get_webview_window("status-bar")
+            .ok_or_else(|| "status-bar window not found".to_string())?;
+        let (center_x, bottom_y) = read_window_bottom_anchor(&win).unwrap_or_else(|| {
+            let (x, y) = status_bar_target_origin(app, width, height);
+            (x + width / 2.0, y + height)
+        });
+        win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+            .map_err(|e| format!("resize status bar failed: {e}"))?;
+        let (x, y) = origin_from_bottom_anchor(center_x, bottom_y, width, height);
+        win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .map_err(|e| format!("post-resize position failed: {e}"))?;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -2947,21 +3082,29 @@ fn set_status_bar_position(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), 
 }
 
 fn set_status_bar_position_on_main(app: &tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
-    let win = app
-        .get_webview_window("status-bar")
-        .ok_or_else(|| "status-bar window not found".to_string())?;
-    let scale = win.scale_factor().unwrap_or(1.0);
-    let size = win.inner_size().map_err(|e| format!("inner_size: {e}"))?;
-    let w = size.width as f64 / scale;
-    let h = size.height as f64 / scale;
-    let anchor = StatusBarAnchor {
-        center_x: x + w / 2.0,
-        bottom_y: y + h,
-    };
-    save_status_bar_anchor(anchor)?;
-    win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
-        .map_err(|e| format!("set position failed: {e}"))?;
-    Ok(())
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).set_position_on_main(x, y);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let win = app
+            .get_webview_window("status-bar")
+            .ok_or_else(|| "status-bar window not found".to_string())?;
+        let scale = win.scale_factor().unwrap_or(1.0);
+        let size = win.inner_size().map_err(|e| format!("inner_size: {e}"))?;
+        let w = size.width as f64 / scale;
+        let h = size.height as f64 / scale;
+        let anchor = StatusBarAnchor {
+            center_x: x + w / 2.0,
+            bottom_y: y + h,
+        };
+        save_status_bar_anchor(anchor)?;
+        win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .map_err(|e| format!("set position failed: {e}"))?;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -2979,11 +3122,19 @@ fn reset_status_bar_position(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn reset_status_bar_position_on_main(app: &tauri::AppHandle) -> Result<(), String> {
-    clear_status_bar_position()?;
-    if let Some(win) = app.get_webview_window("status-bar") {
-        apply_status_bar_position(app, &win)?;
+    #[cfg(target_os = "macos")]
+    {
+        return hud_manager::MacHudManager::new(app).reset_position_on_main();
     }
-    Ok(())
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        clear_status_bar_position()?;
+        if let Some(win) = app.get_webview_window("status-bar") {
+            apply_status_bar_position(app, &win)?;
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -3006,20 +3157,27 @@ async fn get_preferences(backend: State<'_, BackendState>) -> Result<api::Prefer
     api::get_preferences(&ep).await
 }
 
-#[tauri::command]
-async fn list_polish_models(
-    backend: State<'_, BackendState>,
-    beta: bool,
-) -> Result<api::ListPolishModelsResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::list_polish_models(&ep, beta).await
-}
-
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
+    /// Provider the next dictation will use: live Together Nemotron or the
+    /// mandated Apple-Silicon on-device model.
+    dictation_provider: &'static str,
+    /// Dictation can transcribe right now (model present / key baked).
+    dictation_ready: bool,
+    /// Effective persisted preference after device-policy normalization.
+    dictation_stt_pref: String,
+    /// Retained for diagnostics; matches the enforced route on locked devices.
+    dictation_auto_provider: &'static str,
+    // On-device Oriserve status — powers meetings everywhere and local
+    // dictation only on Apple Silicon when the device policy selects it.
     whisper_installed: bool,
     whisper_ready: bool,
     whisper_vad_installed: bool,
+    /// Selected local ASR implementation: "oriserve", "nemotron-q4", or
+    /// "nemotron-q8". Legacy "nemotron" remains Q8-compatible.
+    local_stt_model: String,
+    /// Whether the selected optional Nemotron model is fully present on disk.
+    nemotron_installed: bool,
 }
 
 #[tauri::command]
@@ -3027,22 +3185,30 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
     let whisper_installed = dictation_stt::model_installed();
     let whisper_ready = whisper_installed && dictation_stt::runtime_ready();
     let whisper_vad_installed = dictation_stt::vad_installed();
+    let desktop_prefs = stt_policy::normalize_prefs(said_core::prefs::load());
+    let info = SttRuntimeInfo {
+        dictation_provider: dictation_stt::provider_name(),
+        dictation_ready: dictation_stt::dictation_ready(),
+        dictation_stt_pref: desktop_prefs.dictation_stt,
+        dictation_auto_provider: dictation_stt::auto_provider_name(),
+        whisper_installed,
+        whisper_ready,
+        whisper_vad_installed,
+        local_stt_model: desktop_prefs.local_stt_model,
+        nemotron_installed: nemotron::selected_installed(),
+    };
 
-    match get_endpoint(&backend) {
-        Ok(ep) => {
-            let _ = api::get_preferences(&ep).await;
-            Ok(SttRuntimeInfo {
-                whisper_installed,
-                whisper_ready,
-                whisper_vad_installed,
-            })
-        }
-        Err(_) => Ok(SttRuntimeInfo {
-            whisper_installed,
-            whisper_ready,
-            whisper_vad_installed,
-        }),
+    if let Ok(ep) = get_endpoint(&backend) {
+        let _ = api::get_preferences(&ep).await;
     }
+    Ok(info)
+}
+
+/// Hardware-derived dictation setup policy. Used by onboarding, the forced
+/// post-update gate, and Settings; runtime routing consumes the same policy.
+#[tauri::command]
+fn get_stt_setup_policy() -> stt_policy::SttSetupPolicy {
+    stt_policy::current().clone()
 }
 
 #[tauri::command]
@@ -3932,34 +4098,6 @@ fn schedule_release_mic_cleanup(
     });
 }
 
-/// Best-effort fetch of the user's starred vocabulary keyterms from the local
-/// backend, used to bias the on-device Swift STT model toward proper nouns it
-/// would otherwise mangle (Kubernetes, n8n, EMIAC, names). Tight timeout because
-/// this runs on the recording-start path — a slow or failed fetch returns no
-/// terms (no biasing) rather than delaying dictation.
-#[cfg(target_os = "macos")]
-async fn fetch_stt_keyterms(ep: &BackendEndpoint) -> Vec<String> {
-    #[derive(serde::Deserialize)]
-    struct BiasKeyterms {
-        #[serde(default)]
-        keyterms: Vec<String>,
-    }
-    match reqwest::Client::new()
-        .get(format!("{}/v1/stt/bias", ep.url))
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_millis(400))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => resp
-            .json::<BiasKeyterms>()
-            .await
-            .map(|b| b.keyterms)
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
 /// Start recording. Called when user presses Caps Lock (or taps the button).
 fn do_start_recording(shared: &Arc<Mutex<DesktopApp>>, app: &tauri::AppHandle) {
     do_start_recording_inner(shared, app, true);
@@ -3974,8 +4112,10 @@ fn do_start_recording_inner(
     app: &tauri::AppHandle,
     enforce_cycle_gap: bool,
 ) {
+    diag::breadcrumb("record:start:enter");
     // Reject if another start is already in progress
     if RECORDING_STARTING.swap(true, Ordering::SeqCst) {
+        diag::breadcrumb("record:start:skip_in_flight");
         tracing::info!("[record] start skipped — another start already in progress");
         DIVO_START_PENDING.store(false, Ordering::SeqCst);
         PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
@@ -3986,6 +4126,7 @@ fn do_start_recording_inner(
     let now = now_ms_desktop();
     let last_finish = LAST_FINISH_MS.load(Ordering::SeqCst);
     if enforce_cycle_gap && last_finish > 0 && now.saturating_sub(last_finish) < MIN_CYCLE_GAP_MS {
+        diag::breadcrumb("record:start:skip_cycle_gap");
         tracing::info!(
             "[record] start skipped — too soon after last finish ({}ms < {}ms)",
             now.saturating_sub(last_finish),
@@ -4007,7 +4148,7 @@ fn do_start_recording_inner(
     }
     let _guard = StartGuard;
 
-    cancel_edit_watcher(app, "new recording");
+    finalize_edit_watcher(app, "new recording");
 
     let meeting_capture = app
         .try_state::<MeetingModeState>()
@@ -4096,7 +4237,7 @@ fn do_start_recording_inner(
     }
 
     {
-        let (_session_gen, run_id) = app.state::<RecordingSessionState>().begin();
+        let (session_gen, run_id) = app.state::<RecordingSessionState>().begin();
         let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
             RecordingRoute::Divo
         } else if PROBLEM_START_PENDING.swap(false, Ordering::SeqCst) {
@@ -4114,6 +4255,12 @@ fn do_start_recording_inner(
         };
         if let Ok(mut route_state) = app.state::<RecordingRouteState>().0.lock() {
             *route_state = Some(route);
+        }
+        // Every hold-to-talk route uses the live cloud session when Nemotron
+        // is selected. Meetings deliberately remain on their independent,
+        // local-only continuous-capture engine.
+        if route != RecordingRoute::Meeting {
+            start_live_nemotron_session(app, session_gen, run_id.clone());
         }
         let mode = match route {
             RecordingRoute::Divo => "divo",
@@ -4315,8 +4462,9 @@ fn do_start_recording_inner(
         }
     }
 
-    // Keep a local PCM tap for crash recovery. Speech recognition runs once,
-    // locally, after release.
+    // Keep a local PCM tap for crash recovery. On-device speech recognition
+    // still runs once after release; when Together Nemotron is selected the
+    // same capture drain also feeds its WebSocket session while the key is held.
     let chunk_recv = shared.lock().ok().and_then(|mut d| d.take_chunk_receiver());
     if let Some(chunk_recv) = chunk_recv {
         // Crash-safe recovery: capture this dictation's audio to disk so a crash
@@ -4329,9 +4477,12 @@ fn do_start_recording_inner(
         if !is_meeting_capture {
             recovery::begin();
         }
-        let recording_id = app
+        let session = app
             .try_state::<RecordingSessionState>()
-            .and_then(|s| s.current().map(|(_, id)| id))
+            .and_then(|s| s.current());
+        let recording_id = session
+            .as_ref()
+            .map(|(_, id)| id.clone())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         if !is_meeting_capture {
@@ -4347,8 +4498,22 @@ fn do_start_recording_inner(
                     }
                 });
             }
-            tracing::info!("[speech] local batch transcript will run on release");
-            whisper_dictation_stream::spawn_dictation_recovery_drain(recording_id, chunk_recv);
+            let live_nemotron = session
+                .as_ref()
+                .and_then(|(generation, _)| live_nemotron_controller(app, *generation));
+            tracing::info!(
+                provider = dictation_stt::provider_name(),
+                live_websocket = live_nemotron.is_some(),
+                "[speech] dictation audio drain started"
+            );
+            let drain_done_rx = whisper_dictation_stream::spawn_dictation_audio_drain(
+                recording_id,
+                chunk_recv,
+                live_nemotron,
+            );
+            if let Some((generation, _)) = session {
+                attach_live_nemotron_drain(app, generation, drain_done_rx);
+            }
             return;
         }
     } else {
@@ -4367,6 +4532,7 @@ fn do_cancel_recording(
     reset_long_dictation_lock(&app);
     restore_speaker_suppression(&app, reason);
     recovery::clear();
+    discard_live_nemotron_run(&app);
     PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
 
     if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
@@ -4416,9 +4582,10 @@ fn do_finish_recording(
     app: tauri::AppHandle,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
 ) {
+    diag::breadcrumb("record:finish:enter");
     FINISH_AFTER_START.store(false, Ordering::SeqCst);
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
-    reset_long_dictation_lock(&app);
+    clear_long_dictation_recording_lock(&app);
 
     let session_end = app
         .try_state::<RecordingSessionState>()
@@ -4429,6 +4596,10 @@ fn do_finish_recording(
     // take), the generation bumps and this finish must not touch the shared state
     // machine — the newer recording owns it now.
     let finish_generation = session_end.as_ref().map(|(g, _)| *g);
+    // Capture the live session before recorder shutdown. Its bridge owns a
+    // controller clone until the mic stream closes; this receiver is the only
+    // place that may commit and await the final transcript.
+    let live_nemotron = take_live_nemotron_run(&app, finish_generation);
     let session_tag = session_end
         .as_ref()
         .map(|(generation, id)| format!("id={id} generation={generation}"))
@@ -4467,11 +4638,20 @@ fn do_finish_recording(
                 Ok((stop_rx, was_too_short, snap))
             }
             Err(e) => {
+                if e == "not recording" && long_dictation_finishing(&app) {
+                    diag::breadcrumb("record:finish:duplicate_long_finish");
+                    tracing::debug!(
+                        "[record] duplicate finish ignored while long dictation is already finishing"
+                    );
+                    return;
+                }
                 if is_short_recording_cancel(&e) {
+                    diag::breadcrumb("record:finish:short_cancel");
                     tracing::info!("[record] short Option tap — cancelled recording");
                     let snap = d.finish_cancelled();
                     Err(BeginStopError::Short(snap))
                 } else {
+                    diag::breadcrumb("record:finish:begin_stop_failed");
                     let snap = d.finish_err(e);
                     Err(BeginStopError::Failed(snap))
                 }
@@ -4574,40 +4754,52 @@ fn do_finish_recording(
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
 
+        let mut live_nemotron = live_nemotron;
         let pre_transcript = if let Some(levels) = dictation_wav_is_no_speech(&wav) {
             tracing::warn!(
-                "[finish] no speech energy detected — suppressing local transcript (peak={:.5}, rms={:.5}, samples={})",
+                "[finish] no speech energy detected — suppressing transcription (peak={:.5}, rms={:.5}, samples={})",
                 levels.peak,
                 levels.rms,
                 levels.samples,
             );
-            None
+            // There is no final result to request for silence. Dropping this
+            // session cancels it instead of submitting an empty utterance.
+            drop(live_nemotron.take());
+            Err("No speech detected — try speaking again.".to_string())
+        } else if is_meeting {
+            // Meetings have a hard local-only speech path. Ignore any stale
+            // live cloud session rather than letting it change the model a
+            // meeting uses on Windows.
+            drop(live_nemotron.take());
+            stt_pre_transcript(&wav, &stt_language, true).await
+        } else if let Some(live_nemotron) = live_nemotron.take() {
+            finish_live_nemotron_transcript(live_nemotron).await
         } else {
-            match local_pre_transcript(&wav, &stt_language).await {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    tracing::warn!("[finish] local speech failed: {e}");
-                    None
-                }
-            }
+            stt_pre_transcript(&wav, &stt_language, false).await
         };
 
-        if pre_transcript.is_none() {
-            let message = "Local speech recognition failed. Download or repair the local speech model in Settings.";
-            emit_voice_error_quiet(&app2, message);
-            let snap = {
-                let mut d = match shared2.lock() {
-                    Ok(g) => g,
-                    Err(_) => return,
+        // The provider's errors are complete, actionable sentences (offline,
+        // missing model, rejected key, …) — surface them verbatim.
+        let pre_transcript = match pre_transcript {
+            Ok(t) => Some(t),
+            Err(message) => {
+                tracing::warn!("[finish] speech transcription failed: {message}");
+                emit_voice_error_quiet(&app2, &message);
+                let snap = {
+                    let mut d = match shared2.lock() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    d.finish_err(message)
                 };
-                d.finish_err(message.to_string())
-            };
-            recovery::clear();
-            sync_tray(&app2, &snap);
-            emit_app_state(&app2, &snap);
-            emit_meeting_stt_status(&app2);
-            return;
-        }
+                recovery::clear();
+                sync_tray(&app2, &snap);
+                emit_app_state(&app2, &snap);
+                emit_meeting_stt_status(&app2);
+                clear_long_dictation_finishing(&app2, "no_pre_transcript");
+                return;
+            }
+        };
 
         let screen_context = app2
             .try_state::<ScreenContextState>()
@@ -4666,6 +4858,7 @@ fn do_finish_recording(
             emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
             recovery::clear();
+            clear_long_dictation_finishing(&app2, "problem_done");
             return;
         }
 
@@ -4705,6 +4898,7 @@ fn do_finish_recording(
                 "[record] finish superseded by a newer recording — leaving the live run intact (run_id={})",
                 client_run_id.as_deref().unwrap_or("none"),
             );
+            clear_long_dictation_finishing(&app2, "superseded_finish");
             return;
         }
 
@@ -4793,6 +4987,7 @@ fn do_finish_recording(
                 _ => {}
             }
             recovery::clear();
+            clear_long_dictation_finishing(&app2, "divo_done");
             return;
         }
 
@@ -4876,6 +5071,7 @@ fn do_finish_recording(
                     do_start_recording(&shared3, &app3);
                 });
             }
+            clear_long_dictation_finishing(&app2, "meeting_done");
         } else {
             // Normal mode: paste and edit-watch
             // Spawn edit-watcher immediately after paste (non-blocking).
@@ -4887,6 +5083,7 @@ fn do_finish_recording(
                 let pre_paste = app2
                     .try_state::<ScreenContextState>()
                     .and_then(|s| s.0.lock().ok()?.clone());
+                let anchor = capture_edit_anchor(edit_target_pid, pre_paste, &done.polished);
                 start_edit_watcher(
                     back3,
                     app2.clone(),
@@ -4894,8 +5091,7 @@ fn do_finish_recording(
                     done.recording_id.clone(),
                     done.polished.clone(),
                     watch_start,
-                    edit_target_pid,
-                    pre_paste,
+                    anchor,
                 );
             }
 
@@ -4931,6 +5127,7 @@ fn do_finish_recording(
             sync_tray(&app2, &snap);
             emit_app_state(&app2, &snap);
             emit_meeting_stt_status(&app2);
+            clear_long_dictation_finishing(&app2, "normal_done");
         }
         // Dictation delivered (or surfaced as an error to the user) — the captured
         // audio is no longer needed, so the orphan file must not linger.
@@ -5087,7 +5284,7 @@ async fn run_problem_command(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
     wav: Vec<u8>,
     client_run_id: Option<String>,
-    pre_transcript: Option<dictation_stt::LocalTranscript>,
+    pre_transcript: Option<dictation_stt::PreTranscript>,
     screen_context: Option<String>,
     app: &tauri::AppHandle,
     edit_target_pid: Option<i32>,
@@ -5311,9 +5508,8 @@ fn emit_problem_context_event(
     );
 }
 
-/// Async SSE consumer: streams tokens from backend, types them word-by-word,
-/// and stores the result for paste-latest re-paste.
-/// In meeting mode (`is_meeting`), skips word-by-word typing entirely.
+/// Async SSE consumer: previews backend tokens, inserts the final result once,
+/// and stores it for paste-latest re-paste.
 /// Opt-in browser-context capture. If `target_app` is a browser and the
 /// `browser_context_enabled` pref is set, read the active tab's site (host only)
 /// and record it to the LOCAL backend. Fully fire-and-forget and on-device — the
@@ -5354,7 +5550,7 @@ async fn run_voice_polish_sse(
     wav: Vec<u8>,
     target_app: Option<String>,
     client_run_id: Option<String>,
-    pre_transcript: Option<dictation_stt::LocalTranscript>,
+    pre_transcript: Option<dictation_stt::PreTranscript>,
     repair_mode: Option<String>,
     screen_context: Option<String>,
     message_polish_override: Option<bool>,
@@ -5382,32 +5578,22 @@ async fn run_voice_polish_sse(
         .unwrap_or(0);
     let message_polish_mode = !suppress_local
         && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
-    if message_polish_mode {
-        tracing::info!(
-            "[pipeline] message polish mode enabled — suppressing live target typing until final output"
-        );
-    }
-
-    // Track whether word-by-word AX typing succeeded
-    let typed_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let typed_any2 = typed_any.clone();
-    let token_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let token_count2 = token_count.clone();
-    let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let fail_count2 = fail_count.clone();
-    let live_guard = std::sync::Arc::new(std::sync::Mutex::new(LiveTypingGuard {
-        disabled: message_polish_mode,
-        typed_tokens: 0,
-    }));
-    let live_guard2 = live_guard.clone();
-    let typed_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let typed_text2 = typed_text.clone();
+    tracing::debug!(
+        "[pipeline] target typing waits for final server output; stream tokens are preview-only"
+    );
     let initial_field_read_t0 = std::time::Instant::now();
     let initial_field_text = if suppress_local {
         None
     } else {
         paster::read_focused_value_fast()
     };
+    if !suppress_local {
+        if let Ok(mut context) = app.state::<ScreenContextState>().0.lock() {
+            *context = initial_field_text
+                .clone()
+                .filter(|text| !text.trim().is_empty());
+        }
+    }
     let initial_field_read_ms = initial_field_read_t0.elapsed().as_millis() as i64;
     let error_target_app = target_app.clone();
     let error_client_run_id = client_run_id.clone();
@@ -5472,13 +5658,8 @@ async fn run_voice_polish_sse(
     let mut on_polish_event = move |event| {
         match &event {
             api::PolishEvent::Token { token } => {
-                // Meeting / Divo: skip all typing — only emit for live preview
-                if suppress_local {
-                    let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-                    return;
-                }
                 // A newer recording superseded this run (user pressed the hotkey
-                // again to redo a mis-released take) — stop typing its tokens.
+                // again to redo a mis-released take) — stop previewing its tokens.
                 if app_clone
                     .try_state::<RecordingSessionState>()
                     .map(|s| s.generation.load(Ordering::SeqCst) != run_generation)
@@ -5486,51 +5667,11 @@ async fn run_voice_polish_sse(
                 {
                     return;
                 }
-                let decision = live_guard2
-                    .lock()
-                    .map(|mut guard| guard.on_token(token))
-                    .unwrap_or(LiveTypingDecision::PreviewOnly);
-                // Emit to UI for live preview
-                let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-                match decision {
-                    LiveTypingDecision::ResetAndDisable => {
-                        tracing::warn!(
-                            "[main] live typing reset — disabling word-by-word for this recording, will paste full output at end"
-                        );
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return;
-                    }
-                    LiveTypingDecision::PreviewOnly => {
-                        return;
-                    }
-                    LiveTypingDecision::TypeToken => {}
-                }
-                // Type word-by-word directly into focused app via AX
-                match paster::type_text(token) {
-                    Ok(true) => {
-                        if let Ok(mut guard) = live_guard2.lock() {
-                            guard.note_typed();
-                        }
-                        if let Ok(mut text) = typed_text2.lock() {
-                            text.push_str(token);
-                        }
-                        let prev = typed_any2.swap(true, std::sync::atomic::Ordering::Relaxed);
-                        let n = token_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        if !prev {
-                            tracing::info!(
-                                "[main] GAP-2: word-by-word typing started — first token {:?}",
-                                token
-                            );
-                        }
-                        let _ = n;
-                    }
-                    Ok(false) => {
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        fail_count2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tracing::warn!("[main] type_text error: {e}");
-                    }
+                // The backend uses this internal marker to invalidate an unsafe
+                // partial stream. It is never user-visible and final insertion
+                // does not need reconciliation.
+                if token != STREAM_RESET_SENTINEL {
+                    let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
                 }
             }
             api::PolishEvent::Status { phase, transcript } => {
@@ -5606,6 +5747,9 @@ async fn run_voice_polish_sse(
                     message_polish_mode,
                 );
                 let human = humanize_error(&message);
+                if error_code.as_deref() == Some("together_rate_limit") {
+                    notify_macos(&app_clone, "Together AI rate limit hit", &human);
+                }
                 let _ = app_clone.emit(
                     "voice-error",
                     serde_json::json!({
@@ -5666,6 +5810,7 @@ async fn run_voice_polish_sse(
     let Some(transcript) = pre_transcript else {
         return Err("Local transcript is required before voice polish".into());
     };
+    let speech_identity = telemetry::speech_identity(&transcript.meta);
     tracing::info!("[pipeline] sending WAV + local transcript to backend");
     let done_result = api::stream_voice_polish(
         &ep,
@@ -5746,8 +5891,6 @@ async fn run_voice_polish_sse(
         }
     };
 
-    let n_typed = token_count.load(std::sync::atomic::Ordering::Relaxed);
-    let n_failed = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     let mut output_pasted = false;
     let mut used_clipboard_fallback = false;
     // If a newer recording superseded this one, never paste the abandoned take.
@@ -5762,73 +5905,11 @@ async fn run_voice_polish_sse(
         );
     } else if suppress_local {
         tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
-    } else if typed_any.load(std::sync::atomic::Ordering::Relaxed) {
-        let typed_snapshot = typed_text
-            .lock()
-            .map(|text| text.clone())
-            .unwrap_or_default();
-        if n_failed > 0 {
-            // Some tokens typed, then the stream reset or a token failed. Reconcile
-            // only the text AirNote typed for this recording; never Cmd+A the field.
-            tracing::warn!(
-                "[main] word-by-word partial: {n_typed} ok, {n_failed} failed — reconciling current typed text"
-            );
-            if !done.polished.is_empty() {
-                match paster::reconcile_current_recording(
-                    initial_field_text.as_deref(),
-                    &typed_snapshot,
-                    &done.polished,
-                ) {
-                    Ok(changed) => {
-                        if changed {
-                            tracing::info!(
-                                "[main] current typed text reconciled after partial stream"
-                            );
-                        }
-                        output_pasted = true;
-                    }
-                    Err(e) => {
-                        tracing::warn!("[main] typed-text reconciliation failed: {e}");
-                    }
-                }
-            }
-        } else if done.polished.is_empty() {
-            tracing::warn!(
-                "[main] word-by-word complete but final output is empty — keeping streamed text"
-            );
-            output_pasted = !typed_snapshot.is_empty();
-        } else if typed_snapshot == done.polished {
-            tracing::info!("[main] word-by-word complete — {n_typed} token(s) typed directly");
-            output_pasted = true;
-        } else {
-            tracing::info!(
-                "[main] word-by-word complete — final text differs, reconciling current typed text (typed_chars={} final_chars={})",
-                typed_snapshot.chars().count(),
-                done.polished.chars().count()
-            );
-            match paster::reconcile_current_recording(
-                initial_field_text.as_deref(),
-                &typed_snapshot,
-                &done.polished,
-            ) {
-                Ok(changed) => {
-                    if changed {
-                        tracing::info!("[main] current typed text reconciled with final output");
-                    }
-                    output_pasted = true;
-                }
-                Err(e) => {
-                    tracing::warn!("[main] final typed-text reconciliation failed: {e}");
-                    output_pasted = !typed_snapshot.is_empty();
-                }
-            }
-        }
     } else {
-        // Live token typing did not produce output. Insert the final result
-        // directly first so normal dictation does not touch the user's
-        // clipboard; fall back to Cmd+V only if direct typing fails.
+        // Insert only the final server result so the focused field never needs
+        // a second reconciliation mutation.
         tracing::info!(
-            "[main] live typing produced no output — direct insert final result ({} chars)",
+            "[main] direct insert final server result ({} chars)",
             done.polished.len()
         );
         if !done.polished.is_empty() {
@@ -5901,43 +5982,22 @@ async fn run_voice_polish_sse(
     }
 
     if !is_divo {
-        let typed_snapshot_for_trace = typed_text
-            .lock()
-            .map(|text| text.clone())
-            .unwrap_or_default();
         let mut paste_trace = said_core::dictation_trace::DictationTrace::default();
         paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "desktop.live_typed_snapshot",
+            stage: "desktop.final_insert",
             component: "desktop",
-            function: "paster::type_text",
-            output: (!typed_snapshot_for_trace.is_empty())
-                .then_some(typed_snapshot_for_trace.as_str()),
-            reason: Some("tokens typed before final done reconciliation"),
-            risk: Some("live_typing"),
-            metadata: serde_json::json!({
-                "typed_tokens": n_typed,
-                "failed_tokens": n_failed,
-                "typed_any": !typed_snapshot_for_trace.is_empty(),
-                "message_polish": message_polish_mode,
-                "suppress_local": suppress_local,
-                "superseded": superseded,
-            }),
-            ..Default::default()
-        });
-        paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "desktop.final_reconcile",
-            component: "desktop",
-            function: "paster::reconcile_current_recording_or_insert",
-            input: (!typed_snapshot_for_trace.is_empty())
-                .then_some(typed_snapshot_for_trace.as_str()),
+            function: "insert_text_prefer_direct",
             output: Some(done.polished.as_str()),
-            reason: Some("desktop ensured final polished text is in focused field"),
-            risk: Some("paste_reconcile"),
+            reason: Some("desktop inserted the final server output once"),
+            risk: Some("paste_insert"),
             metadata: serde_json::json!({
                 "output_pasted": output_pasted,
                 "used_clipboard_fallback": used_clipboard_fallback,
                 "output_status": output_status,
                 "initial_field_readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
+                "message_polish": message_polish_mode,
+                "suppress_local": suppress_local,
+                "superseded": superseded,
             }),
             ..Default::default()
         });
@@ -5979,8 +6039,6 @@ async fn run_voice_polish_sse(
         let audio_seconds = wav_len as f64 / (16_000.0 * 2.0);
         let word_count = done.polished.split_whitespace().count() as i32;
         let char_count = done.polished.chars().count() as i32;
-        let speech_model = said_core::stt::telemetry_speech_model().to_string();
-        let speech_path = said_core::stt::telemetry_speech_path().to_string();
         telemetry::on_pipeline_done(
             &ep,
             run_id,
@@ -5998,8 +6056,9 @@ async fn run_voice_polish_sse(
                 success: !done.polished.is_empty() || output_pasted,
                 error_code: None,
                 used_clipboard_fallback,
-                speech_model,
-                speech_path,
+                speech_provider: speech_identity.provider.clone(),
+                speech_model: speech_identity.model.clone(),
+                speech_path: speech_identity.path.clone(),
                 polished_preview: done.polished.clone(),
             },
         );
@@ -6213,7 +6272,9 @@ fn paste_latest(latest: State<'_, LatestResult>) -> Result<bool, String> {
         }
         Some(t) => {
             tracing::info!("[paste_latest] pasting {} chars", t.len());
-            paster::paste(&t).map_err(|e| format!("paste failed: {e}"))?;
+            // Direct-first (never clobbers the clipboard); clipboard only if
+            // injection is blocked.
+            paster::insert_text(&t).map_err(|e| format!("paste failed: {e}"))?;
             Ok(true)
         }
     }
@@ -6648,7 +6709,26 @@ fn retry_recording_spawn(
             .and_then(|hot| hot.0.try_read().ok().map(|guard| guard.language.clone()))
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
-        let pre_transcript = local_pre_transcript(&wav, &stt_language).await.ok();
+        // The polish backend requires a pre_transcript, so an STT failure ends
+        // the retry here with the provider's own actionable message instead of
+        // a confusing backend 400.
+        let pre_transcript = match stt_pre_transcript(&wav, &stt_language, false).await {
+            Ok(t) => Some(t),
+            Err(message) => {
+                tracing::warn!("[retry] speech transcription failed: {message}");
+                emit_voice_error_quiet(&app2, &message);
+                let snap = {
+                    let mut d = match shared2.lock() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    d.finish_err(message)
+                };
+                sync_tray(&app2, &snap);
+                emit_app_state(&app2, &snap);
+                return;
+            }
+        };
         let result = run_voice_polish_sse(
             &back_arc2,
             wav,
@@ -6667,6 +6747,7 @@ fn retry_recording_spawn(
         let watch_start = std::time::Instant::now();
         if let Ok(ref done) = result {
             let back3 = Arc::clone(&back_arc2);
+            let anchor = capture_edit_anchor(None, None, &done.polished);
             start_edit_watcher(
                 back3,
                 app2.clone(),
@@ -6674,8 +6755,7 @@ fn retry_recording_spawn(
                 done.recording_id.clone(),
                 done.polished.clone(),
                 watch_start,
-                None,
-                None, // re-polish: no pre_paste context
+                anchor,
             );
         }
 
@@ -6840,6 +6920,7 @@ async fn confirm_batch(
     backend: State<'_, BackendState>,
     items: Vec<serde_json::Value>,
     recording_id: Option<String>,
+    review_session_id: Option<String>,
 ) -> Result<api::ConfirmBatchResponse, String> {
     let ep = get_endpoint(&backend)?;
     let request_items: Vec<api::ConfirmBatchRequestItem> = items
@@ -6851,14 +6932,25 @@ async fn confirm_batch(
                 .get("context")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string());
+            let tag = v
+                .get("tag")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
             Some(api::ConfirmBatchRequestItem {
                 original: orig,
                 corrected: corr,
                 context,
+                tag,
             })
         })
         .collect();
-    let result = api::confirm_batch(&ep, &request_items, recording_id.as_deref()).await?;
+    let result = api::confirm_batch(
+        &ep,
+        &request_items,
+        recording_id.as_deref(),
+        review_session_id.as_deref(),
+    )
+    .await?;
     let _ = app.emit("vocabulary-changed", ());
     tracing::info!(
         "[confirm-batch] user confirmed {} term(s) server_owned={}: {:?}",
@@ -6867,6 +6959,23 @@ async fn confirm_batch(
         result.learned_terms,
     );
     Ok(result)
+}
+
+#[tauri::command]
+async fn get_next_edit_review_session(
+    backend: State<'_, BackendState>,
+) -> Result<Option<api::EditReviewSessionResponse>, String> {
+    let ep = get_endpoint(&backend)?;
+    api::get_next_edit_review_session(&ep).await
+}
+
+#[tauri::command]
+async fn skip_edit_review_session(
+    backend: State<'_, BackendState>,
+    session_id: String,
+) -> Result<(), String> {
+    let ep = get_endpoint(&backend)?;
+    api::skip_edit_review_session(&ep, &session_id).await
 }
 
 #[tauri::command]
@@ -7128,7 +7237,10 @@ fn open_external(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn get_desktop_prefs() -> said_core::prefs::DesktopPrefs {
-    said_core::prefs::load()
+    stt_policy::normalize_persisted_prefs().unwrap_or_else(|error| {
+        tracing::warn!("[stt-policy] couldn't persist normalized preferences: {error}");
+        stt_policy::normalize_prefs(said_core::prefs::load())
+    })
 }
 
 #[tauri::command]
@@ -7137,9 +7249,35 @@ fn set_desktop_prefs(
     prefs: said_core::prefs::DesktopPrefs,
 ) -> Result<(), String> {
     let previous = said_core::prefs::load();
+    let prefs = stt_policy::normalize_prefs(prefs);
     said_core::prefs::save(&prefs)?;
     if previous.launch_at_login != prefs.launch_at_login {
         apply_launch_at_login(&app, prefs.launch_at_login)?;
+    }
+    if previous.dictation_stt != prefs.dictation_stt
+        || previous.local_stt_model != prefs.local_stt_model
+    {
+        if nemotron::is_nemotron_pref(&previous.local_stt_model)
+            && !nemotron::is_nemotron_pref(&prefs.local_stt_model)
+        {
+            // The cache owns roughly the model's mapped memory. Releasing it
+            // on switch keeps the experimental option from consuming RAM
+            // after the user has returned to the stable Whisper path.
+            nemotron::unload();
+        }
+        // Warm the newly selected provider off-thread so the next dictation
+        // doesn't pay its setup cost (model load / HTTP client).
+        tracing::info!(
+            from = %previous.dictation_stt,
+            to = %prefs.dictation_stt,
+            previous_local_model = %previous.local_stt_model,
+            local_model = %prefs.local_stt_model,
+            "[prefs] dictation STT provider changed — prewarming"
+        );
+        std::thread::Builder::new()
+            .name("dictation-stt-prewarm".into())
+            .spawn(dictation_stt::prewarm)
+            .ok();
     }
     Ok(())
 }
@@ -7188,6 +7326,7 @@ fn start_meeting_stt(
     meeting_mode: State<'_, MeetingModeState>,
     state: State<'_, SharedApp>,
 ) -> Result<MeetingSttStatus, String> {
+    meeting_engine::require_meeting_local_model()?;
     let was_inactive = meeting_mode.enter();
     tracing::info!("[meeting_mode] entered — auto-starting recording");
     if let Err(err) = meeting_mode.ensure_echo_reference() {
@@ -7667,10 +7806,15 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                                     .get("context")
                                     .and_then(|value| value.as_str())
                                     .map(|value| value.to_string());
+                                let tag = v
+                                    .get("tag")
+                                    .and_then(|value| value.as_str())
+                                    .map(|value| value.to_string());
                                 Some(api::ConfirmBatchRequestItem {
                                     original: v.get("original")?.as_str()?.to_string(),
                                     corrected: v.get("corrected")?.as_str()?.to_string(),
                                     context,
+                                    tag,
                                 })
                             })
                             .collect()
@@ -7679,7 +7823,7 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
                 if !request_items.is_empty() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if api::confirm_batch(&ep, &request_items, recording_id.as_deref())
+                        if api::confirm_batch(&ep, &request_items, recording_id.as_deref(), None)
                             .await
                             .is_ok()
                         {
@@ -7777,7 +7921,9 @@ fn read_recent_log(path: &std::path::Path, marker: &str) -> (String, bool) {
         return ("".into(), false);
     }
     let mut text = String::from_utf8_lossy(&bytes).to_string();
-    if let Some(idx) = text.rfind(marker) {
+    if !marker.is_empty()
+        && let Some(idx) = text.rfind(marker)
+    {
         text = text[idx..].to_string();
     }
     (text, start > 0)
@@ -7788,12 +7934,14 @@ fn get_debug_logs() -> DebugLogs {
     let dir = said_log_dir();
     let desktop_path = dir.join("said.log");
     let backend_path = dir.join("backend.log");
+    let breadcrumb_path = diag::breadcrumb_log_path();
     let (desktop, desktop_truncated) =
         read_recent_log(&desktop_path, "[main] said desktop starting");
     let (backend, backend_truncated) = read_recent_log(&backend_path, "airnote-backend build=");
+    let (breadcrumbs, breadcrumbs_truncated) = read_recent_log(&breadcrumb_path, "");
 
     let combined = format!(
-        "── AirNote desktop ({}) ──\n{}\n\n── airnote-backend ({}) ──\n{}",
+        "── AirNote desktop ({}) ──\n{}\n\n── airnote-backend ({}) ──\n{}\n\n── crash breadcrumbs ({}) ──\n{}",
         desktop_path.display(),
         if desktop.trim().is_empty() {
             "(no desktop log found)"
@@ -7806,15 +7954,23 @@ fn get_debug_logs() -> DebugLogs {
         } else {
             backend.trim_end()
         },
+        breadcrumb_path.display(),
+        if breadcrumbs.trim().is_empty() {
+            "(no crash breadcrumbs found)"
+        } else {
+            breadcrumbs.trim_end()
+        },
     );
 
     DebugLogs {
         desktop_path: desktop_path.display().to_string(),
         backend_path: backend_path.display().to_string(),
+        breadcrumb_path: breadcrumb_path.display().to_string(),
         desktop,
         backend,
+        breadcrumbs,
         combined,
-        truncated: desktop_truncated || backend_truncated,
+        truncated: desktop_truncated || backend_truncated || breadcrumbs_truncated,
     }
 }
 
@@ -7898,6 +8054,285 @@ fn get_performance_snapshot(
 const EDIT_WATCH_FAST_INTERVAL: Duration = Duration::from_millis(50);
 const EDIT_WATCH_SLOW_INTERVAL: Duration = Duration::from_millis(200);
 const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
+const EDIT_WATCH_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(300);
+const EDIT_WATCH_EMPTY_FIELD_BOUNDARY: Duration = Duration::from_millis(400);
+const EDIT_WATCH_MAX_OBSERVATIONS: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedTextSpan {
+    start_chars: usize,
+    len_chars: usize,
+    text: String,
+    prefix: String,
+    suffix: String,
+}
+
+#[derive(Debug, Clone)]
+struct EditCaptureAnchor {
+    target_pid: Option<i32>,
+    field_fingerprint: Option<u64>,
+    pre_paste_text: Option<String>,
+    post_paste_text: String,
+    owned_span: Option<OwnedTextSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditObservation {
+    elapsed_ms: u64,
+    field_value: String,
+    owned_text: String,
+}
+
+#[derive(Debug, Default)]
+struct EditObservationTimeline {
+    observations: std::collections::VecDeque<EditObservation>,
+    total_observations: usize,
+}
+
+impl EditObservationTimeline {
+    fn record(
+        &mut self,
+        anchor: &EditCaptureAnchor,
+        post_paste: &str,
+        field_value: &str,
+        elapsed_ms: u64,
+    ) -> Result<bool, &'static str> {
+        if field_value == post_paste || field_value.is_empty() {
+            return Ok(false);
+        }
+        let owned_text = extract_owned_text(anchor, field_value)?;
+        if self
+            .observations
+            .back()
+            .is_some_and(|last| last.field_value == field_value && last.owned_text == owned_text)
+        {
+            return Ok(false);
+        }
+        self.total_observations += 1;
+        if self.observations.len() == EDIT_WATCH_MAX_OBSERVATIONS {
+            self.observations.pop_front();
+        }
+        self.observations.push_back(EditObservation {
+            elapsed_ms,
+            field_value: field_value.to_string(),
+            owned_text,
+        });
+        Ok(true)
+    }
+
+    fn latest_field_value(&self) -> Option<&str> {
+        self.observations
+            .back()
+            .map(|observation| observation.field_value.as_str())
+    }
+
+    fn retained_count(&self) -> usize {
+        self.observations.len()
+    }
+
+    fn dropped_count(&self) -> usize {
+        self.total_observations
+            .saturating_sub(self.observations.len())
+    }
+
+    fn elapsed_span_ms(&self) -> Option<u64> {
+        let first = self.observations.front()?.elapsed_ms;
+        let last = self.observations.back()?.elapsed_ms;
+        Some(last.saturating_sub(first))
+    }
+}
+
+fn effective_owned_field_value(
+    anchor: &EditCaptureAnchor,
+    last_value: &str,
+    observations: &EditObservationTimeline,
+) -> String {
+    if !last_value.is_empty() && extract_owned_text(anchor, last_value).is_ok() {
+        last_value.to_string()
+    } else {
+        observations
+            .latest_field_value()
+            .unwrap_or(last_value)
+            .to_string()
+    }
+}
+
+fn derive_owned_text_span(
+    pre_paste: Option<&str>,
+    post_paste: &str,
+    polished: &str,
+) -> Option<OwnedTextSpan> {
+    if post_paste.is_empty() {
+        return None;
+    }
+
+    if let Some(pre) = pre_paste {
+        let prefix_bytes = common_prefix_bytes(pre, post_paste);
+        let pre_rest = &pre[prefix_bytes..];
+        let post_rest = &post_paste[prefix_bytes..];
+        let suffix_bytes = common_suffix_bytes(pre_rest, post_rest);
+        let inserted_end = post_paste.len().checked_sub(suffix_bytes)?;
+        if inserted_end <= prefix_bytes {
+            return None;
+        }
+        let text = post_paste[prefix_bytes..inserted_end].to_string();
+        return Some(OwnedTextSpan {
+            start_chars: post_paste[..prefix_bytes].chars().count(),
+            len_chars: text.chars().count(),
+            text,
+            prefix: post_paste[..prefix_bytes].to_string(),
+            suffix: post_paste[inserted_end..].to_string(),
+        });
+    }
+
+    let polished = polished.trim();
+    if polished.is_empty() {
+        return None;
+    }
+    let mut matches = post_paste.match_indices(polished);
+    let (offset, matched) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(OwnedTextSpan {
+        start_chars: post_paste[..offset].chars().count(),
+        len_chars: matched.chars().count(),
+        text: matched.to_string(),
+        prefix: post_paste[..offset].to_string(),
+        suffix: post_paste[offset + matched.len()..].to_string(),
+    })
+}
+
+fn extract_owned_text(
+    anchor: &EditCaptureAnchor,
+    current_text: &str,
+) -> Result<String, &'static str> {
+    let span = anchor.owned_span.as_ref().ok_or("anchor_missing")?;
+    let after_prefix = current_text
+        .strip_prefix(&span.prefix)
+        .ok_or("prefix_mismatch")?;
+    let owned = after_prefix
+        .strip_suffix(&span.suffix)
+        .ok_or("suffix_mismatch")?;
+    Ok(owned.trim().to_string())
+}
+
+fn capture_edit_anchor(
+    target_pid: Option<i32>,
+    pre_paste_text: Option<String>,
+    polished: &str,
+) -> EditCaptureAnchor {
+    let post_paste_text = match target_pid {
+        Some(pid) => paster::read_focused_value_fast_for_pid(pid),
+        None => paster::read_focused_value_fast(),
+    }
+    .unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let field_fingerprint = target_pid.and_then(paster::focused_element_fingerprint_for_pid);
+    #[cfg(not(target_os = "macos"))]
+    let field_fingerprint = None;
+    let owned_span = derive_owned_text_span(pre_paste_text.as_deref(), &post_paste_text, polished);
+    EditCaptureAnchor {
+        target_pid,
+        field_fingerprint,
+        pre_paste_text,
+        post_paste_text,
+        owned_span,
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn read_clipboard_text_readonly() -> Option<String> {
+    let read = tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("pbpaste").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout)
+            .ok()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    });
+    tokio::time::timeout(EDIT_WATCH_CLIPBOARD_TIMEOUT, read)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn read_clipboard_text_readonly() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn paste_shortcut_seen_since(since: std::time::Instant) -> bool {
+    said_hotkey::key_buffer().lock().is_ok_and(|events| {
+        events
+            .iter()
+            .any(|event| event.when >= since && matches!(event.evt, said_hotkey::KeyEvt::Paste))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn paste_shortcut_seen_since(_since: std::time::Instant) -> bool {
+    false
+}
+
+fn normalized_clipboard_candidate(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn clipboard_content_was_added(polished: &str, user_kept: &str, clipboard: &str) -> bool {
+    let polished = normalized_clipboard_candidate(polished);
+    let kept = normalized_clipboard_candidate(user_kept);
+    let clipboard = normalized_clipboard_candidate(clipboard);
+    if clipboard.chars().count() < 4
+        || polished.is_empty()
+        || kept.is_empty()
+        || clipboard == polished
+        || !kept.contains(&clipboard)
+    {
+        return false;
+    }
+
+    let Some(offset) = kept.find(&clipboard) else {
+        return false;
+    };
+    let clip_end = offset + clipboard.len();
+    let is_surrounding_addition =
+        kept[..offset].trim().is_empty() || kept[clip_end..].trim().is_empty();
+    if !is_surrounding_addition {
+        return false;
+    }
+
+    let without_clipboard = format!("{} {}", &kept[..offset], &kept[clip_end..]);
+    let remaining = normalized_clipboard_candidate(&without_clipboard);
+    remaining == polished || shares_word_overlap_ratio(&remaining, &polished) >= 0.6
+}
+
+fn shares_word_overlap_ratio(candidate: &str, reference: &str) -> f64 {
+    let candidate_words: std::collections::HashSet<String> = candidate
+        .split_whitespace()
+        .map(alnum_word_core)
+        .filter(|word| word.chars().count() > 2)
+        .map(str::to_lowercase)
+        .collect();
+    let reference_words: std::collections::HashSet<String> = reference
+        .split_whitespace()
+        .map(alnum_word_core)
+        .filter(|word| word.chars().count() > 2)
+        .map(str::to_lowercase)
+        .collect();
+    if reference_words.is_empty() {
+        return 0.0;
+    }
+    let shared = reference_words
+        .iter()
+        .filter(|word| candidate_words.contains(*word))
+        .count();
+    shared as f64 / reference_words.len() as f64
+}
 
 /// Compute edit-watch timeouts scaled by sentence length.
 ///
@@ -7966,7 +8401,22 @@ fn cancel_edit_watcher(app: &tauri::AppHandle, reason: &str) {
     };
     if let Some(prev) = guard.take() {
         tracing::info!("[edit-watch] cancelling watcher — {reason}");
-        prev.cancel();
+        prev.cancel.cancel();
+    }
+}
+
+fn finalize_edit_watcher(app: &tauri::AppHandle, reason: &str) {
+    let st = app.state::<EditWatcherState>();
+    let mut guard = match st.0.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!("[edit-watch] watcher state lock poisoned; recovering");
+            e.into_inner()
+        }
+    };
+    if let Some(prev) = guard.take() {
+        tracing::info!("[edit-watch] finalizing watcher — {reason}");
+        prev.finalize.cancel();
     }
 }
 
@@ -7977,10 +8427,9 @@ fn start_edit_watcher(
     recording_id: String,
     polished: String,
     watch_start: std::time::Instant,
-    target_pid: Option<i32>,
-    pre_paste_text: Option<String>,
+    anchor: EditCaptureAnchor,
 ) {
-    let token = {
+    let control = {
         let st = app.state::<EditWatcherState>();
         let mut guard = match st.0.lock() {
             Ok(g) => g,
@@ -7991,56 +8440,60 @@ fn start_edit_watcher(
         };
         if let Some(prev) = guard.take() {
             tracing::info!("[edit-watch] cancelling previous watcher");
-            prev.cancel();
+            prev.cancel.cancel();
             std::thread::yield_now();
         }
-        let token = CancellationToken::new();
-        *guard = Some(token.clone());
-        token
+        let control =
+            new_edit_watcher_control(EDIT_WATCHER_GENERATION.fetch_add(1, Ordering::Relaxed) + 1);
+        *guard = Some(control.clone());
+        control
     };
 
     let app_for_task = app.clone();
+    let task_generation = control.generation;
     tauri::async_runtime::spawn(async move {
         watch_for_edit(
-            token.clone(),
+            control.cancel.clone(),
+            control.finalize.clone(),
             back_arc,
             app_for_task.clone(),
             client_run_id,
             recording_id,
             polished,
             watch_start,
-            target_pid,
-            pre_paste_text,
+            anchor,
         )
         .await;
 
-        if !token.is_cancelled() {
-            if let Ok(mut guard) = app_for_task.state::<EditWatcherState>().0.lock() {
+        if let Ok(mut guard) = app_for_task.state::<EditWatcherState>().0.lock() {
+            if edit_watcher_generation_is_current(guard.as_ref(), task_generation) {
                 *guard = None;
             }
         }
     });
 }
 
-/// After pasting, poll the focused text element for up to 30 seconds.
-/// When the user stops typing for 5 s (or switches apps), emit "edit-detected"
-/// so the frontend can ask "Save this preference?" before writing to SQLite.
+/// After pasting, poll the focused text element through the sentence-scaled reading
+/// window. Once editing starts, allow up to 120 seconds total and wait for the
+/// sentence-scaled post-edit idle period before classifying the owned field value.
 async fn watch_for_edit(
-    token: CancellationToken,
+    cancel_token: CancellationToken,
+    finalize_token: CancellationToken,
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
     app: tauri::AppHandle,
     client_run_id: Option<String>,
     recording_id: String,
     polished: String,                // the AI-generated text we pasted
     watch_start: std::time::Instant, // captured at the call site, right after paste
-    target_pid: Option<i32>,
-    pre_paste_text: Option<String>, // field text BEFORE AirNote typed (from ScreenContextState)
+    mut anchor: EditCaptureAnchor,
 ) {
     use std::time::Instant;
 
+    let clipboard_at_watch_start = read_clipboard_text_readonly().await;
+
     // Let the paste animation settle and focus move into the text field.
     // 400ms covers paste animation (~200ms) + AX cache start; retries handle the rest.
-    if !cancellable_sleep(&token, Duration::from_millis(400)).await {
+    if !cancellable_sleep(&cancel_token, Duration::from_millis(400)).await {
         tracing::info!("[edit-watch] watcher cancelled before start for {recording_id}");
         return;
     }
@@ -8050,14 +8503,15 @@ async fn watch_for_edit(
     // whatever happens to be frontmost after our HUD/status UI has updated.
     let focused_pid_after_paste =
         blocking_ax_option("focused_pid after-paste", paster::focused_pid).await;
-    let initial_pid = target_pid.or(focused_pid_after_paste);
+    let initial_pid = anchor.target_pid.or(focused_pid_after_paste);
 
     // Attempt to get the initial field value.  Chrome / Electron may still be
     // building their AX cache even after the pre-unlock at recording-start, so
     // we retry a few times with increasing delays before declaring "AX blind".
     let post_paste = {
-        let mut val =
-            blocking_ax_option(
+        let mut val = anchor.post_paste_text.clone();
+        if val.is_empty() {
+            val = blocking_ax_option(
                 "read_focused_value_first initial",
                 move || match initial_pid {
                     Some(pid) => paster::read_focused_value_first_for_pid(pid),
@@ -8066,9 +8520,10 @@ async fn watch_for_edit(
             )
             .await
             .unwrap_or_default();
+        }
         if val.is_empty() {
             // 2nd attempt after 300 ms
-            if !cancellable_sleep(&token, Duration::from_millis(300)).await {
+            if !cancellable_sleep(&cancel_token, Duration::from_millis(300)).await {
                 tracing::info!(
                     "[edit-watch] watcher cancelled during initial retry for {recording_id}"
                 );
@@ -8086,7 +8541,7 @@ async fn watch_for_edit(
         }
         if val.is_empty() {
             // 3rd attempt after another 500 ms — AX tree should be ready by now
-            if !cancellable_sleep(&token, Duration::from_millis(500)).await {
+            if !cancellable_sleep(&cancel_token, Duration::from_millis(500)).await {
                 tracing::info!(
                     "[edit-watch] watcher cancelled during initial retry for {recording_id}"
                 );
@@ -8104,14 +8559,28 @@ async fn watch_for_edit(
         }
         val
     };
+    if anchor.post_paste_text.is_empty() && !post_paste.is_empty() {
+        anchor.post_paste_text = post_paste.clone();
+        anchor.owned_span =
+            derive_owned_text_span(anchor.pre_paste_text.as_deref(), &post_paste, &polished);
+        #[cfg(target_os = "macos")]
+        if anchor.field_fingerprint.is_none() {
+            anchor.field_fingerprint =
+                initial_pid.and_then(paster::focused_element_fingerprint_for_pid);
+        }
+    }
 
     let mut last_val = post_paste.clone();
-    let mut best_candidate = post_paste.clone();
+    let mut observations = EditObservationTimeline::default();
     let mut idle_at = Instant::now();
     let started = Instant::now();
     let mut last_change_at = Instant::now();
     let mut current_interval = EDIT_WATCH_FAST_INTERVAL;
     let mut last_pid = initial_pid;
+    let mut ownership_lost_reason: Option<&'static str> = None;
+    let mut finalize_requested = finalize_token.is_cancelled();
+    let mut field_empty_since: Option<Instant> = None;
+    let mut explicit_boundary: Option<&'static str> = None;
 
     // Scale timeouts by sentence length — long sentences need more reading time
     let word_count = polished.split_whitespace().count();
@@ -8130,38 +8599,39 @@ async fn watch_for_edit(
 
     tracing::info!(
         "[edit-watch] watching {recording_id} — target_pid={:?} focused_after_paste={:?} initial field readable: {} (len={})",
-        target_pid,
+        anchor.target_pid,
         focused_pid_after_paste,
         !post_paste.is_empty(),
         post_paste.len(),
     );
 
-    // Poll loop: adaptive cadence.  No mid-loop side effects — we only read AX
-    // and watch for app switches.  Clipboard verification (Cmd+A+C) is
-    // strictly an end-of-loop, same-app operation; doing it during the loop
-    // disrupts the user's typing in AX-blind apps like Claude input.
-    loop {
-        if !cancellable_sleep(&token, current_interval).await {
-            tracing::info!("[edit-watch] watcher cancelled for {recording_id}");
-            return;
+    // Poll loop: adaptive cadence. No mid-loop side effects: AX and pasteboard
+    // reads are non-mutating, and app/field/submit boundaries close the session.
+    while !finalize_requested {
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                tracing::info!("[edit-watch] watcher cancelled for {recording_id}");
+                return;
+            }
+            _ = finalize_token.cancelled() => {
+                finalize_requested = true;
+                tracing::info!("[edit-watch] finalize requested for {recording_id}");
+                break;
+            }
+            _ = tokio::time::sleep(current_interval) => {}
         }
 
-        // Check the frontmost PID first. With a locked target PID we keep
-        // monitoring that original app even if focus moves; without one, keep
-        // the old safety behavior and stop before reading another app's field.
+        // Leaving the target app closes this edit session. The last owned value
+        // remains valid, but text entered after the switch cannot belong to it.
         let now_pid = blocking_ax_option("focused_pid poll", paster::focused_pid).await;
-        let pid_switched = matches!(
-            (initial_pid, now_pid),
-            (Some(a), Some(b)) if a != b
-        );
-        if pid_switched && target_pid.is_none() {
+        let pid_switched = edit_watch_crossed_app_boundary(initial_pid, now_pid);
+        if pid_switched {
             app_switched_during_capture = true;
+            explicit_boundary = Some("app_switched");
             tracing::info!(
-                "[edit-watch] app_switched_skip for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
+                "[edit-watch] app boundary for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
             );
             break;
-        } else if pid_switched {
-            app_switched_during_capture = true;
         }
 
         // Detect if target app exited — stop polling a dead process
@@ -8217,9 +8687,24 @@ async fn watch_for_edit(
             );
         }
         if now_val != last_val {
+            #[cfg(target_os = "macos")]
+            if let (Some(pid), Some(expected)) = (initial_pid, anchor.field_fingerprint) {
+                let observed = blocking_ax_option("field fingerprint after change", move || {
+                    paster::focused_element_fingerprint_for_pid(pid)
+                })
+                .await;
+                if observed != Some(expected) {
+                    explicit_boundary = Some("field_changed");
+                    tracing::info!(
+                        "[edit-watch] field boundary for {recording_id} — finalizing last owned state"
+                    );
+                    break;
+                }
+            }
             idle_at = Instant::now();
             last_change_at = Instant::now();
             current_interval = EDIT_WATCH_FAST_INTERVAL;
+            field_empty_since = now_val.is_empty().then(Instant::now);
             if now_val != post_paste {
                 if !saw_user_edit {
                     tracing::info!(
@@ -8229,14 +8714,29 @@ async fn watch_for_edit(
                 }
                 saw_user_edit = true;
             }
-            // Only promote to best_candidate if the value still shares words
-            // with the polished text (guards against Send-cleared placeholders).
-            if shares_word_overlap(&now_val, &polished) {
-                best_candidate = now_val.clone();
+            if let Err(reason) = observations.record(
+                &anchor,
+                &post_paste,
+                &now_val,
+                started.elapsed().as_millis() as u64,
+            ) {
+                ownership_lost_reason = Some(reason);
+                tracing::info!(
+                    "[edit-watch] ownership lost for {recording_id} — {reason}; refusing changed field state"
+                );
+                break;
             }
             last_val = now_val;
         } else if last_change_at.elapsed() > Duration::from_secs(2) {
             current_interval = EDIT_WATCH_SLOW_INTERVAL;
+        }
+
+        if field_empty_since
+            .is_some_and(|empty_since| empty_since.elapsed() >= EDIT_WATCH_EMPTY_FIELD_BOUNDARY)
+        {
+            explicit_boundary = Some("field_cleared");
+            tracing::info!("[edit-watch] field-clear boundary for {recording_id}");
+            break;
         }
 
         let active_idle_timeout = if saw_user_edit {
@@ -8273,25 +8773,66 @@ async fn watch_for_edit(
         }
     }
 
-    // If the final field value lost all overlap with our polished text (e.g. the
-    // user sent the message and the input reverted to a placeholder), use the last
-    // meaningful intermediate value instead.
-    let effective_val = if shares_word_overlap(&last_val, &polished) {
-        last_val.clone()
-    } else if best_candidate != post_paste {
+    if finalize_requested {
+        explicit_boundary = Some("new_recording");
+        let final_value = blocking_ax_option("finalize current value", move || match initial_pid {
+            Some(pid) => paster::read_focused_value_fast_for_pid(pid),
+            None => paster::read_focused_value_fast(),
+        })
+        .await;
+        if let Some(now_val) = final_value {
+            let mut final_field_is_owned = true;
+            #[cfg(target_os = "macos")]
+            if let (Some(pid), Some(expected)) = (initial_pid, anchor.field_fingerprint) {
+                let observed = blocking_ax_option("finalize field fingerprint", move || {
+                    paster::focused_element_fingerprint_for_pid(pid)
+                })
+                .await;
+                if observed != Some(expected) {
+                    explicit_boundary = Some("field_changed");
+                    final_field_is_owned = false;
+                }
+            }
+            if final_field_is_owned && ownership_lost_reason.is_none() && now_val != last_val {
+                saw_user_edit = now_val != post_paste;
+                if let Err(reason) = observations.record(
+                    &anchor,
+                    &post_paste,
+                    &now_val,
+                    started.elapsed().as_millis() as u64,
+                ) {
+                    ownership_lost_reason = Some(reason);
+                }
+                last_val = now_val;
+            }
+        }
+    }
+
+    if let Some(reason) = ownership_lost_reason {
+        if let (Some(run_id), Some(ep)) = (
+            client_run_id.as_deref(),
+            back_arc.lock().ok().and_then(|guard| guard.clone()),
+        ) {
+            telemetry::on_edit_excluded(&ep, run_id, reason);
+        }
+        return;
+    }
+
+    // A submit can clear the field after several valid edits. Recover the latest
+    // anchored state rather than guessing from word overlap or a single snapshot.
+    let effective_val = effective_owned_field_value(&anchor, &last_val, &observations);
+    if effective_val != last_val {
         tracing::info!(
-            "[edit-watch] last_val lost overlap with polished (sent message?); using best_candidate"
+            "[edit-watch] final field unavailable (sent message?); using latest owned observation"
         );
-        best_candidate.clone()
-    } else {
-        last_val.clone()
-    };
+    }
 
     let final_front_pid = blocking_ax_option("focused_pid final", paster::focused_pid).await;
     tracing::info!(
-        "[edit-watch] done watching {recording_id} — field changed: {}, target still frontmost: {}",
+        "[edit-watch] done watching {recording_id} — field changed: {}, target still frontmost: {}, boundary={:?}",
         effective_val != post_paste,
         matches!((initial_pid, final_front_pid), (Some(a), Some(b)) if a == b),
+        explicit_boundary,
     );
 
     // ── Determine user_kept + capture_method ───────────────────────────────────
@@ -8318,12 +8859,21 @@ async fn watch_for_edit(
             }
             return;
         }
-        user_kept = extract_kept(
-            &polished,
-            &post_paste,
-            &effective_val,
-            pre_paste_text.as_deref(),
-        );
+        user_kept = match extract_owned_text(&anchor, &effective_val) {
+            Ok(text) => text,
+            Err(reason) => {
+                tracing::info!(
+                    "[edit-watch] ownership lost for {recording_id} — {reason}; skipping classification"
+                );
+                if let (Some(run_id), Some(ep)) = (
+                    client_run_id.as_deref(),
+                    back_arc.lock().ok().and_then(|guard| guard.clone()),
+                ) {
+                    telemetry::on_edit_excluded(&ep, run_id, reason);
+                }
+                return;
+            }
+        };
         capture_method = "ax";
         tracing::info!(
             "[edit-watch] ax_capture for {recording_id}: {:?} → {:?}",
@@ -8415,10 +8965,26 @@ async fn watch_for_edit(
 
     let ep_opt = back_arc.lock().ok().and_then(|g| g.clone());
     if let Some(ref ep) = ep_opt {
+        let clipboard_at_capture = read_clipboard_text_readonly().await;
+        let paste_shortcut_seen = paste_shortcut_seen_since(watch_start);
+        let clipboard_addition_seen = clipboard_at_watch_start
+            .as_deref()
+            .is_some_and(|clipboard| clipboard_content_was_added(&polished, &user_kept, clipboard))
+            || clipboard_at_capture.as_deref().is_some_and(|clipboard| {
+                clipboard_content_was_added(&polished, &user_kept, clipboard)
+            });
+        let matches_clipboard = paste_shortcut_seen || clipboard_addition_seen;
+        if matches_clipboard {
+            tracing::info!(
+                "[edit-watch] follow-up paste detected for {recording_id}; shortcut={} clipboard_addition={}",
+                paste_shortcut_seen,
+                clipboard_addition_seen,
+            );
+        }
         let capture_meta = api::CaptureMeta {
             time_since_paste_ms: watch_start.elapsed().as_millis() as u64,
             app_switched: app_switched_during_capture,
-            matches_clipboard: false,
+            matches_clipboard,
         };
         let mut edit_trace = said_core::dictation_trace::DictationTrace::default();
         edit_trace.add_stage(said_core::dictation_trace::TraceStageInput {
@@ -8438,6 +9004,14 @@ async fn watch_for_edit(
                 "saw_user_edit": saw_user_edit,
                 "initial_pid": initial_pid,
                 "final_front_pid": final_front_pid,
+                "boundary": explicit_boundary,
+                "field_fingerprint": anchor.field_fingerprint,
+                "owned_span_start_chars": anchor.owned_span.as_ref().map(|span| span.start_chars),
+                "owned_span_len_chars": anchor.owned_span.as_ref().map(|span| span.len_chars),
+                "observation_count": observations.total_observations,
+                "retained_observation_count": observations.retained_count(),
+                "dropped_observation_count": observations.dropped_count(),
+                "observation_span_ms": observations.elapsed_span_ms(),
             }),
             ..Default::default()
         });
@@ -8449,7 +9023,7 @@ async fn watch_for_edit(
             capture_method,
             capture_meta,
             client_run_id.as_deref(),
-            pre_paste_text.as_deref(),
+            anchor.pre_paste_text.as_deref(),
             Some(edit_trace.into_value()),
         )
         .await
@@ -8580,12 +9154,15 @@ async fn watch_for_edit(
                         "vocab-review",
                         serde_json::json!({
                             "candidates": candidates,
+                            "detected_changes": &resp.changes,
+                            "review_session_id": &resp.review_session_id,
                             "recording_id": recording_id,
                         }),
                     );
                     tracing::info!(
-                        "[edit-watch] review card: {} candidate(s)",
+                        "[edit-watch] review card: {} candidate(s), {} detected change(s)",
                         resp.review_candidates.len(),
+                        resp.changes.len(),
                     );
                 }
 
@@ -8782,76 +9359,6 @@ fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
     false
 }
 
-/// Given what we pasted (`polished`), where the field was right after paste
-/// (`post_paste`), the final field value (`last_val`), and optionally the field
-/// text from BEFORE AirNote typed (`pre_paste`), extract only the user's edited
-/// version of AirNote's output — stripping any pre-existing text.
-fn extract_kept(
-    polished: &str,
-    post_paste: &str,
-    last_val: &str,
-    pre_paste: Option<&str>,
-) -> String {
-    // ── Strategy 1: use pre_paste to reliably find prefix/suffix ─────────
-    // pre_paste = field content before AirNote typed.  post_paste = field content
-    // after AirNote typed.  The common prefix between them is text before cursor;
-    // the common suffix is text after cursor.  Whatever is in the middle of
-    // post_paste is what AirNote actually inserted (after any app normalization).
-    // We strip the same prefix/suffix from last_val to get the user's edit.
-    if let Some(pre) = pre_paste {
-        if !pre.is_empty() && post_paste.len() > pre.len() {
-            let prefix_bytes = common_prefix_bytes(pre, post_paste);
-            let pre_rest = &pre[prefix_bytes..];
-            let post_rest = &post_paste[prefix_bytes..];
-            let suffix_bytes = common_suffix_bytes(pre_rest, post_rest);
-
-            let prefix = &post_paste[..prefix_bytes];
-            let suffix = if suffix_bytes > 0 && suffix_bytes <= pre_rest.len() {
-                &pre_rest[pre_rest.len() - suffix_bytes..]
-            } else {
-                ""
-            };
-
-            if last_val.starts_with(prefix) {
-                let after_prefix = &last_val[prefix.len()..];
-                if !suffix.is_empty() {
-                    if let Some(middle) = after_prefix.strip_suffix(suffix) {
-                        tracing::info!(
-                            "[edit-watch] extract_kept via pre_paste: prefix={}b suffix={}b",
-                            prefix_bytes,
-                            suffix_bytes,
-                        );
-                        return middle.trim().to_string();
-                    }
-                }
-                tracing::info!(
-                    "[edit-watch] extract_kept via pre_paste prefix only: {}b",
-                    prefix_bytes,
-                );
-                return after_prefix.trim().to_string();
-            }
-        }
-    }
-
-    // ── Strategy 2 (fallback): find polished verbatim in post_paste ──────
-    let Some(offset) = post_paste.find(polished.trim()) else {
-        return last_val.to_string();
-    };
-
-    let prefix = &post_paste[..offset];
-    let after_end = offset + polished.trim().len();
-    let suffix = &post_paste[after_end..];
-
-    if let Some(lv_after_prefix) = last_val.strip_prefix(prefix) {
-        if let Some(edited) = lv_after_prefix.strip_suffix(suffix) {
-            return edited.trim().to_string();
-        }
-        return lv_after_prefix.trim().to_string();
-    }
-
-    last_val.to_string()
-}
-
 fn common_prefix_bytes(a: &str, b: &str) -> usize {
     let mut bytes = 0;
     for (ac, bc) in a.chars().zip(b.chars()) {
@@ -9046,6 +9553,7 @@ fn handle_enterprise_oauth_urls(app: &tauri::AppHandle, urls: &[String]) {
 }
 
 fn main() {
+    configure_ggml_metal_shutdown_guard();
     install_rustls_crypto_provider();
 
     // 1. Load env vars from .env files
@@ -9148,6 +9656,9 @@ fn main() {
         "[main] said desktop starting — log file: {}",
         log_path.display()
     );
+    if let Err(error) = stt_policy::normalize_persisted_prefs() {
+        tracing::warn!("[stt-policy] startup preference normalization failed: {error}");
+    }
 
     // 3. Shared state
     let shared_app = Arc::new(Mutex::new(DesktopApp::new()));
@@ -9182,6 +9693,9 @@ fn main() {
                     // NSPanel, so we no longer switch the whole app to Accessory.
                     app.set_activation_policy(tauri::ActivationPolicy::Regular);
                     tracing::info!("[main] macOS activation policy set to Regular (dock visible)");
+                    if let Some(w) = app.get_webview_window("main") {
+                        configure_main_window_macos(&w);
+                    }
                 }
 
                 // Crash recovery: repair WAV headers for any meeting interrupted
@@ -9203,9 +9717,10 @@ fn main() {
                             meeting_engine::ensure_bundled_silero_vad();
                             // Ensure a model is selected if any is installed.
                             meeting_engine::ensure_active_model_sync();
-                            // Warm dictation's in-process ASR worker so the
-                            // first real utterance avoids a fresh model load.
-                            local_asr::prewarm_default_language();
+                            // Warm this platform's dictation provider so the
+                            // first real utterance avoids setup costs (macOS:
+                            // model load; Windows: key check + HTTP client).
+                            dictation_stt::prewarm();
                             recovery_handle
                                 .state::<meeting_engine::MeetingEngineState>()
                                 .requeue_interrupted_meetings();
@@ -9546,7 +10061,9 @@ fn main() {
                         }
                     }
                     if !notch_active {
-                        create_status_bar(app.handle());
+                        tracing::info!(
+                            "[status-bar] startup preload scheduled — HUD will be created hidden after ready"
+                        );
                     }
                 }
 
@@ -9707,11 +10224,11 @@ fn main() {
                 // faults on a loop so a monitor can verify it tortures-and-heals.
                 chaos::maybe_start_soak(app.handle());
 
-                // ── HUD level watchdog (macOS) ─────────────────────────────────
-                // macOS silently resets NSPanel window level and collection behavior
-                // after sleep/wake and Space/fullscreen transitions. Re-tune every
-                // 30 s so the HUD never stays invisible for more than one interval.
-                // If the app is in a non-idle state but the panel is hidden, recover.
+                // ── HUD visibility watchdog (macOS) ────────────────────────────
+                // Keep this watchdog narrow and deterministic: it only checks
+                // whether the HUD disappeared while the app is active, and then
+                // re-presents it on demand. Avoid periodic panel retuning here;
+                // repeated AppKit mutation while idle is the crash suspect.
                 #[cfg(target_os = "macos")]
                 {
                     let app_wdg = app.handle().clone();
@@ -9722,33 +10239,29 @@ fn main() {
                         interval.tick().await; // skip the immediate first tick
                         loop {
                             interval.tick().await;
-                            let h = app_wdg.clone();
-                            if let Err(e) = run_on_main_guarded(&app_wdg, "hud_watchdog.retune", move || {
-                                tune_status_bar_panel(&h);
-                            }) {
-                                tracing::warn!("[hud-watchdog] retune dispatch failed: {e}");
-                            }
                             let is_active = shared_wdg
                                 .lock()
                                 .ok()
                                 .map(|d| d.state != desktop::AppState::Idle)
                                 .unwrap_or(false);
-                            if is_active {
-                                let visible = app_wdg
-                                    .get_webview_window("status-bar")
-                                    .and_then(|w| w.is_visible().ok())
-                                    .unwrap_or(true);
-                                if !visible {
-                                    tracing::warn!(
-                                        "[hud-watchdog] HUD hidden while state is active — recovering"
-                                    );
-                                    diag::breadcrumb("hud_watchdog:recover");
-                                    let _ = present_status_bar_native(
-                                        &app_wdg,
-                                        "watchdog-recover",
-                                        true,
-                                    );
-                                }
+                            if !is_active {
+                                continue;
+                            }
+
+                            let visible = app_wdg
+                                .get_webview_window("status-bar")
+                                .and_then(|w| w.is_visible().ok())
+                                .unwrap_or(true);
+                            if !visible {
+                                tracing::warn!(
+                                    "[hud-watchdog] HUD hidden while state is active — recovering"
+                                );
+                                diag::breadcrumb("hud_watchdog:recover");
+                                let _ = present_status_bar_native(
+                                    &app_wdg,
+                                    "watchdog-recover",
+                                    true,
+                                );
                             }
                         }
                     });
@@ -9774,6 +10287,8 @@ fn main() {
                         Arc::clone(&app.state::<LongDictationState>().stop_consumed);
                     let long_stop_consumed_release =
                         Arc::clone(&app.state::<LongDictationState>().stop_consumed);
+                    let long_finishing_press =
+                        Arc::clone(&app.state::<LongDictationState>().finishing);
                     let meeting_active_press = Arc::clone(&app.state::<MeetingModeState>().active);
                     let meeting_muted_press = Arc::clone(&app.state::<MeetingModeState>().muted);
                     let meeting_generation_press =
@@ -9803,6 +10318,7 @@ fn main() {
                                 let back = Arc::clone(&back_hold_press);
                                 let long_locked = Arc::clone(&long_locked_press);
                                 let long_stop_consumed = Arc::clone(&long_stop_consumed_press);
+                                let long_finishing = Arc::clone(&long_finishing_press);
                                 HOTKEY_START_IN_FLIGHT.store(true, Ordering::SeqCst);
                                 std::thread::spawn(move || {
                                     struct HotkeyStartGuard;
@@ -9819,8 +10335,12 @@ fn main() {
                                         tracing::info!(
                                             "[hotkey] record key pressed while long dictation locked → process"
                                         );
-                                        long_locked.store(false, Ordering::SeqCst);
-                                        long_stop_consumed.store(true, Ordering::SeqCst);
+                                        stop_long_dictation_lock(
+                                            &app_h,
+                                            &long_locked,
+                                            &long_stop_consumed,
+                                            &long_finishing,
+                                        );
                                         do_finish_recording(shared, app_h, back);
                                     } else if current == Some(desktop::AppState::Idle) {
                                         do_start_recording(&shared, &app_h);
@@ -9833,6 +10353,14 @@ fn main() {
                                             );
                                         }
                                     } else if current == Some(desktop::AppState::Processing) {
+                                        if long_stop_consumed.load(Ordering::SeqCst)
+                                            || long_finishing.load(Ordering::SeqCst)
+                                        {
+                                            tracing::debug!(
+                                                "[hotkey] record press ignored while long dictation is finishing"
+                                            );
+                                            return;
+                                        }
                                         // Pressing record again while the previous take is
                                         // still processing means the user abandoned it (e.g.
                                         // released the hotkey early by mistake). Reset that
@@ -10164,6 +10692,7 @@ fn main() {
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
         .manage(RecordingSessionState::default())
+        .manage(LiveNemotronState(Mutex::new(None)))
         .manage(StatusBarPersistentHold(AtomicBool::new(false)))
         .manage(StatusBarPlacementActive(AtomicBool::new(false)))
         .manage(StatusBarInteractive(AtomicBool::new(false)))
@@ -10201,8 +10730,8 @@ fn main() {
             set_status_bar_interactive,
             get_backend_endpoint,
             get_preferences,
-            list_polish_models,
             get_stt_runtime,
+            get_stt_setup_policy,
             patch_preferences,
             get_history,
             get_app_icon,
@@ -10270,6 +10799,8 @@ fn main() {
             delete_vocabulary_term,
             confirm_term,
             confirm_batch,
+            get_next_edit_review_session,
+            skip_edit_review_session,
             block_correction,
             reset_all_vocabulary,
             star_vocabulary_term,
@@ -10286,6 +10817,13 @@ fn main() {
             // Backed by `<data_dir>/desktop_prefs.json`, not the SQLite preferences DB.
             get_desktop_prefs,
             set_desktop_prefs,
+            nemotron::nemotron_model_status,
+            nemotron::download_nemotron_model,
+            nemotron::delete_nemotron_model,
+            local_models::local_model_inventory,
+            local_models::choose_installed_local_model,
+            local_models::remove_unused_local_dictation_models,
+            local_models::delete_all_local_speech_models,
             // Developer log viewer
             read_backend_log,
             backend_log_location,
@@ -10381,6 +10919,8 @@ fn main() {
                 } else {
                     show_main_window(app);
                 }
+                #[cfg(target_os = "macos")]
+                schedule_status_bar_startup_preload(app);
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
@@ -10479,35 +11019,6 @@ mod meaningful_edit_tests {
 }
 
 #[cfg(test)]
-mod live_typing_guard_tests {
-    use super::{LiveTypingDecision, LiveTypingGuard, STREAM_RESET_SENTINEL};
-
-    #[test]
-    fn streams_until_reset_then_previews() {
-        let mut guard = LiveTypingGuard::default();
-        assert_eq!(guard.on_token("Hello"), LiveTypingDecision::TypeToken);
-        guard.note_typed();
-        assert_eq!(guard.on_token("world"), LiveTypingDecision::TypeToken);
-        guard.note_typed();
-        assert_eq!(
-            guard.on_token(STREAM_RESET_SENTINEL),
-            LiveTypingDecision::ResetAndDisable
-        );
-        assert_eq!(guard.on_token("final"), LiveTypingDecision::PreviewOnly);
-    }
-
-    #[test]
-    fn reset_before_any_target_typing_does_not_disable_streaming() {
-        let mut guard = LiveTypingGuard::default();
-        assert_eq!(
-            guard.on_token(STREAM_RESET_SENTINEL),
-            LiveTypingDecision::PreviewOnly
-        );
-        assert_eq!(guard.on_token("final"), LiveTypingDecision::TypeToken);
-    }
-}
-
-#[cfg(test)]
 mod dictation_audio_level_tests {
     use super::{dictation_pcm16_levels, dictation_wav_is_no_speech};
 
@@ -10552,7 +11063,12 @@ mod dictation_audio_level_tests {
 
 #[cfg(test)]
 mod edit_watch_timeout_tests {
-    use super::edit_watch_timeouts;
+    use super::{
+        EDIT_WATCH_MAX_OBSERVATIONS, EditCaptureAnchor, EditObservationTimeline,
+        clipboard_content_was_added, derive_owned_text_span, edit_watch_crossed_app_boundary,
+        edit_watch_timeouts, edit_watcher_generation_is_current, effective_owned_field_value,
+        extract_owned_text, new_edit_watcher_control,
+    };
 
     #[test]
     fn gives_user_time_to_read_before_first_edit() {
@@ -10573,5 +11089,225 @@ mod edit_watch_timeout_tests {
         assert!(max.as_secs() >= 60);
         assert!(no_edit_idle.as_secs() >= 25);
         assert!(post_edit_idle.as_secs() >= 25);
+    }
+
+    #[test]
+    fn app_switch_closes_the_owned_edit_session() {
+        assert!(!edit_watch_crossed_app_boundary(Some(101), Some(101)));
+        assert!(edit_watch_crossed_app_boundary(Some(101), Some(202)));
+        assert!(!edit_watch_crossed_app_boundary(Some(101), None));
+        assert!(!edit_watch_crossed_app_boundary(None, Some(202)));
+    }
+
+    #[test]
+    fn rapid_dictation_finalizes_old_watch_without_hard_cancel() {
+        let previous = new_edit_watcher_control(7);
+        previous.finalize.cancel();
+        assert!(previous.finalize.is_cancelled());
+        assert!(!previous.cancel.is_cancelled());
+
+        let current = new_edit_watcher_control(8);
+        assert!(!edit_watcher_generation_is_current(Some(&current), 7));
+        assert!(edit_watcher_generation_is_current(Some(&current), 8));
+        assert!(!edit_watcher_generation_is_current(None, 8));
+    }
+
+    #[test]
+    fn detects_clipboard_text_appended_after_dictation() {
+        assert!(clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal. https://example.com/spec",
+            "https://example.com/spec",
+        ));
+    }
+
+    #[test]
+    fn detects_clipboard_text_prepended_before_dictation() {
+        assert!(clipboard_content_was_added(
+            "Please review the proposal.",
+            "Context from the client: Please review the proposal.",
+            "Context from the client:",
+        ));
+    }
+
+    #[test]
+    fn does_not_treat_word_correction_as_clipboard_addition() {
+        assert!(!clipboard_content_was_added(
+            "Please check the CQLite migration.",
+            "Please check the SQLite migration.",
+            "SQLite",
+        ));
+    }
+
+    #[test]
+    fn ignores_short_or_unrelated_clipboard_content() {
+        assert!(!clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal. yes",
+            "yes",
+        ));
+        assert!(!clipboard_content_was_added(
+            "Please review the proposal.",
+            "Please review the proposal carefully.",
+            "unrelated clipboard text",
+        ));
+    }
+
+    #[test]
+    fn owned_span_comes_from_immediate_pre_and_post_snapshots() {
+        let span = derive_owned_text_span(
+            Some("Hello  Thanks"),
+            "Hello AirNote output Thanks",
+            "AirNote output",
+        )
+        .expect("inserted span");
+        assert_eq!(span.start_chars, 6);
+        assert_eq!(span.len_chars, 14);
+        assert_eq!(span.text, "AirNote output");
+    }
+
+    #[test]
+    fn owned_span_handles_replaced_selection_and_unicode() {
+        let span =
+            derive_owned_text_span(Some("Start पुराना end"), "Start नया text end", "नया text")
+                .expect("replacement span");
+        assert_eq!(span.start_chars, 6);
+        assert_eq!(span.len_chars, 8);
+        assert_eq!(span.text, "नया text");
+    }
+
+    #[test]
+    fn owned_span_without_baseline_requires_unique_output() {
+        assert!(
+            derive_owned_text_span(None, "prefix unique output suffix", "unique output").is_some()
+        );
+        assert!(derive_owned_text_span(None, "same then same", "same").is_none());
+    }
+
+    #[test]
+    fn owned_text_extraction_requires_unchanged_surrounding_baseline() {
+        let span = derive_owned_text_span(
+            Some("Before  After"),
+            "Before AirNote output After",
+            "AirNote output",
+        );
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before AirNote output After".to_string(),
+            owned_span: span,
+        };
+        assert_eq!(
+            extract_owned_text(&anchor, "Before corrected output After"),
+            Ok("corrected output".to_string()),
+        );
+        assert_eq!(
+            extract_owned_text(&anchor, "Changed corrected output After"),
+            Err("prefix_mismatch"),
+        );
+        assert_eq!(
+            extract_owned_text(&anchor, "Before corrected output Changed"),
+            Err("suffix_mismatch"),
+        );
+    }
+
+    #[test]
+    fn observation_timeline_preserves_multiple_owned_edits() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before CQLite and MacOps After".to_string(),
+            owned_span: derive_owned_text_span(
+                Some("Before  After"),
+                "Before CQLite and MacOps After",
+                "CQLite and MacOps",
+            ),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Before SQLite and MacOps After",
+                500,
+            ),
+            Ok(true),
+        );
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Before SQLite and MACOBS After",
+                900,
+            ),
+            Ok(true),
+        );
+        assert_eq!(timeline.total_observations, 2);
+        assert_eq!(timeline.retained_count(), 2);
+        assert_eq!(timeline.elapsed_span_ms(), Some(400));
+        assert_eq!(
+            timeline.latest_field_value(),
+            Some("Before SQLite and MACOBS After"),
+        );
+        assert_eq!(
+            effective_owned_field_value(&anchor, "Before SQLite and MACOBS After", &timeline,),
+            "Before SQLite and MACOBS After",
+        );
+    }
+
+    #[test]
+    fn field_change_finalizes_prior_owned_edit_without_reading_new_field() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: None,
+            post_paste_text: "Original output".to_string(),
+            owned_span: derive_owned_text_span(None, "Original output", "Original output"),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        timeline
+            .record(&anchor, &anchor.post_paste_text, "Corrected output", 500)
+            .unwrap();
+
+        assert_eq!(
+            effective_owned_field_value(&anchor, "Corrected output", &timeline),
+            "Corrected output",
+        );
+    }
+
+    #[test]
+    fn observation_timeline_is_bounded_and_rejects_unowned_changes() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Before  After".to_string()),
+            post_paste_text: "Before original After".to_string(),
+            owned_span: derive_owned_text_span(
+                Some("Before  After"),
+                "Before original After",
+                "original",
+            ),
+        };
+        let mut timeline = EditObservationTimeline::default();
+        for index in 0..EDIT_WATCH_MAX_OBSERVATIONS + 5 {
+            let value = format!("Before edit-{index} After");
+            assert_eq!(
+                timeline.record(&anchor, &anchor.post_paste_text, &value, index as u64,),
+                Ok(true),
+            );
+        }
+        assert_eq!(timeline.retained_count(), EDIT_WATCH_MAX_OBSERVATIONS);
+        assert_eq!(timeline.dropped_count(), 5);
+        assert_eq!(
+            timeline.record(
+                &anchor,
+                &anchor.post_paste_text,
+                "Changed edit outside the anchor After",
+                100,
+            ),
+            Err("prefix_mismatch"),
+        );
     }
 }

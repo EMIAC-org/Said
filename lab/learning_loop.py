@@ -104,7 +104,7 @@ PROTECTED_HINTS = {
     "lark",
     "macobs",
     "n8n",
-    "openrouter",
+    "together",
     "postgres",
     "pytorch",
     "sentry",

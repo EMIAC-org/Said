@@ -26,3 +26,7 @@ __pycache__/
 server_runs/*
 !server_runs/.gitkeep
 .session_token
+
+# Manual prompt iterations can contain private dictated text and user-kept edits.
+context_prompt_runs/*
+!context_prompt_runs/.gitkeep

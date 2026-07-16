@@ -15,7 +15,7 @@ function getStoredTheme(): Theme {
     return legacyTheme
   }
 
-  return 'dark'
+  return 'light'
 }
 
 export function useTheme() {

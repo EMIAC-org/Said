@@ -9,7 +9,6 @@ import type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
-  ListPolishModelsResponse,
   PendingEditsResponse,
   PerformanceSnapshot,
   PolishDone,
@@ -276,19 +275,6 @@ export async function getSttRuntime(): Promise<SttRuntimeInfo | null> {
   if (!isTauriRuntime()) return null;
   try {
     return await tauriInvoke<SttRuntimeInfo>("get_stt_runtime");
-  } catch {
-    return null;
-  }
-}
-
-export async function listPolishModels(
-  beta = true
-): Promise<ListPolishModelsResponse | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<ListPolishModelsResponse>("list_polish_models", {
-      beta,
-    });
   } catch {
     return null;
   }
@@ -1024,16 +1010,16 @@ export async function starVocabularyTerm(term: string): Promise<boolean> {
  * still works. In Tauri, calls the native opener so mailto: actually launches
  * the user's mail client (window.open silently fails in the webview).
  */
-export async function openExternal(url: string): Promise<void> {
+export async function openExternal(url: string): Promise<boolean> {
   if (!isTauriRuntime()) {
-    window.open(url, "_blank");
-    return;
+    return window.open(url, "_blank") !== null;
   }
   try {
     await tauriInvoke("open_external", { url });
+    return true;
   } catch {
     // Last-ditch fallback so the user is never left with nothing happening.
-    window.open(url, "_blank");
+    return window.open(url, "_blank") !== null;
   }
 }
 
@@ -1099,6 +1085,52 @@ export interface DesktopPrefs {
   launch_at_login: boolean;
   beta_mode: boolean;
   browser_context_enabled: boolean;
+  /** Enforced device route: local or live Cloud Nemotron. */
+  dictation_stt: "local" | "cloud-nemotron-3.5";
+  /** Hardware-assigned local model. Meetings retain their own Oriserve path. */
+  local_stt_model: "oriserve" | "nemotron-q4" | "nemotron-q8";
+  /** Explicit decision to keep an older installed model during an upgrade. */
+  local_stt_compat_override?: "oriserve" | "nemotron-q8" | null;
+}
+
+export interface SttSetupPolicy {
+  platform: string;
+  cpu_family: "apple_silicon" | "intel" | "windows_or_other";
+  total_memory_bytes: number;
+  setup_kind: "cloud_locked" | "local_required";
+  local_model: "oriserve" | "nemotron-q4" | null;
+  local_model_name: string | null;
+  local_model_size_hint: string | null;
+}
+
+export type LocalModelKey = "oriserve" | "nemotron-q4" | "nemotron-q8";
+
+export interface LocalModelInfo {
+  key: LocalModelKey;
+  name: string;
+  installed: boolean;
+  size_bytes: number;
+  size_hint: string;
+  recommended: boolean;
+  active_for_dictation: boolean;
+  required_for_meetings: boolean;
+  compatibility_candidate: boolean;
+  safe_to_remove: boolean;
+}
+
+export interface LocalModelInventory {
+  setup_kind: "cloud_locked" | "local_required";
+  recommended_model: LocalModelKey | null;
+  selected_model: LocalModelKey;
+  recommended_installed: boolean;
+  existing_compatible_model: LocalModelKey | null;
+  models: LocalModelInfo[];
+  reclaimable_bytes: number;
+}
+
+export interface LocalModelCleanupResult {
+  removed: { key: string; name: string; size_bytes: number }[];
+  freed_bytes: number;
 }
 
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
@@ -1110,6 +1142,8 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       launch_at_login: false,
       beta_mode: false,
       browser_context_enabled: false,
+      dictation_stt: "local",
+      local_stt_model: "oriserve",
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
@@ -1118,6 +1152,100 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
 export async function setDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("set_desktop_prefs", { prefs });
+}
+
+/**
+ * Make the installed local speech model the active dictation route. Call this
+ * only after the downloader has confirmed the model exists; that ordering
+ * avoids switching a user away from live speech to a missing local model.
+ */
+export async function selectLocalDictationRoute(): Promise<DesktopPrefs> {
+  const current = await getDesktopPrefs();
+  const next: DesktopPrefs = { ...current, dictation_stt: "local" };
+  if (current.dictation_stt !== "local") {
+    await setDesktopPrefs(next);
+  }
+  return next;
+}
+
+/** Immutable device policy used for forced speech setup and Settings. */
+export async function getSttSetupPolicy(): Promise<SttSetupPolicy> {
+  if (!isTauriRuntime()) {
+    return {
+      platform: "macos",
+      cpu_family: "apple_silicon",
+      total_memory_bytes: 16 * 1024 * 1024 * 1024,
+      setup_kind: "local_required",
+      local_model: "nemotron-q4",
+      local_model_name: "Nemotron Streaming 3.5 (Q4)",
+      local_model_size_hint: "~496 MB",
+    };
+  }
+  return tauriInvoke<SttSetupPolicy>("get_stt_setup_policy");
+}
+
+export async function getLocalModelInventory(): Promise<LocalModelInventory> {
+  if (!isTauriRuntime()) {
+    return {
+      setup_kind: "local_required",
+      recommended_model: "nemotron-q4",
+      selected_model: "oriserve",
+      recommended_installed: false,
+      existing_compatible_model: "oriserve",
+      models: [
+        {
+          key: "oriserve",
+          name: "Oriserve Hinglish",
+          installed: true,
+          size_bytes: 148_000_000,
+          size_hint: "~148 MB",
+          recommended: false,
+          active_for_dictation: true,
+          required_for_meetings: true,
+          compatibility_candidate: true,
+          safe_to_remove: false,
+        },
+        {
+          key: "nemotron-q4",
+          name: "Nemotron Streaming 3.5 (Q4)",
+          installed: false,
+          size_bytes: 0,
+          size_hint: "~496 MB",
+          recommended: true,
+          active_for_dictation: false,
+          required_for_meetings: false,
+          compatibility_candidate: false,
+          safe_to_remove: false,
+        },
+        {
+          key: "nemotron-q8",
+          name: "Nemotron Streaming 3.5 (Q8)",
+          installed: false,
+          size_bytes: 0,
+          size_hint: "~751 MB",
+          recommended: false,
+          active_for_dictation: false,
+          required_for_meetings: false,
+          compatibility_candidate: false,
+          safe_to_remove: false,
+        },
+      ],
+      reclaimable_bytes: 0,
+    };
+  }
+  return tauriInvoke<LocalModelInventory>("local_model_inventory");
+}
+
+export async function chooseInstalledLocalModel(model: LocalModelKey): Promise<LocalModelInventory> {
+  return tauriInvoke<LocalModelInventory>("choose_installed_local_model", { model });
+}
+
+export async function removeUnusedLocalDictationModels(): Promise<LocalModelCleanupResult> {
+  return tauriInvoke<LocalModelCleanupResult>("remove_unused_local_dictation_models");
+}
+
+export async function deleteAllLocalSpeechModels(): Promise<LocalModelCleanupResult> {
+  return tauriInvoke<LocalModelCleanupResult>("delete_all_local_speech_models");
 }
 
 /** Prompt macOS Automation consent for running browsers (upfront, on Enable).

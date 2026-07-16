@@ -26,8 +26,8 @@ use crate::{
         edit_diff, promotion_gate,
     },
     store::{
-        corrections, email_memory, history, prefs::get_prefs, stt_replacements, tier2_edit_policy,
-        users, vectors, vocabulary,
+        edit_review_sessions, email_memory, history, prefs::get_prefs, stt_replacements,
+        tier2_edit_policy, users, vectors, vocabulary,
     },
 };
 
@@ -36,11 +36,9 @@ pub struct ClassifyBody {
     pub recording_id: String,
     pub ai_output: String,
     pub user_kept: String,
-    /// How the desktop captured the edit text.  Drives auto-promotion gating:
-    ///   "ax" | "keystroke_verified" → high confidence, may auto-promote
-    ///   "clipboard"                 → medium, may auto-promote with strict gates
-    ///   "keystroke_only"            → LOW, store as pending only
-    /// Missing/unknown values are treated as `"ax"` for backward compatibility.
+    /// How the desktop captured the edit text. Only atomic, field-owned capture
+    /// methods (`ax` and `keystroke_verified`) may reach learning. Missing
+    /// values default to `ax` for backward compatibility; unknown values fail closed.
     #[serde(default = "default_capture_method")]
     pub capture_method: String,
     /// Milliseconds elapsed between paste-completed and the captured edit.
@@ -200,6 +198,10 @@ fn post_runtime_client_event(
 /// so this must stay wider than the desktop watcher's hard cap.
 const CAPTURE_STALE_MS: u64 = 180_000;
 
+fn capture_is_stale(time_since_paste_ms: u64) -> bool {
+    time_since_paste_ms > CAPTURE_STALE_MS
+}
+
 /// Stricter subset: captures whose source is an *atomic* read of a specific
 /// text element. An AX read returning a value means it came from the targeted
 /// element at that moment; a focus change after the read doesn't invalidate it.
@@ -207,11 +209,26 @@ fn is_high_confidence_capture(capture_method: &str) -> bool {
     matches!(capture_method, "ax" | "keystroke_verified")
 }
 
+fn is_surrounding_continuation(ai_output: &str, user_kept: &str) -> bool {
+    let output = ai_output.trim();
+    let kept = user_kept.trim();
+    if output.is_empty() || kept == output || kept.len() <= output.len() {
+        return false;
+    }
+    let Some(offset) = kept.find(output) else {
+        return false;
+    };
+    let end = offset + output.len();
+    !kept[..offset].trim().is_empty() || !kept[end..].trim().is_empty()
+}
+
 #[derive(Serialize)]
 pub struct ClassifyResponse {
     pub class: String,
     pub reason: String,
     pub pending_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_session_id: Option<String>,
     pub learned: bool,
     pub notify: bool,
     pub promoted_count: usize,
@@ -265,6 +282,22 @@ pub struct QueuedTerm {
     pub term: String,
     pub sighting_count: i64,
     pub k: i64,
+}
+
+/// A common spoken word must never become a permanent alias for a vocab term.
+/// When the user explicitly corrects one to an existing protected term, though,
+/// its sentence is still valuable semantic evidence. Offer that as a separate
+/// confirmation path: it updates the card's meaning but never creates a rule
+/// such as `Impact -> EMIAC`.
+fn should_offer_context_only_review(
+    has_existing_target: bool,
+    original: &str,
+    context: Option<&str>,
+) -> bool {
+    has_existing_target
+        && original.split_whitespace().count() == 1
+        && !original.trim().is_empty()
+        && context.is_some_and(|context| !context.trim().is_empty())
 }
 
 pub async fn classify(
@@ -350,18 +383,34 @@ async fn classify_inner(
             )),
         );
     }
+    if !is_high_confidence_capture(&body.capture_method) {
+        info!(
+            "[classify] capture_error: untrusted capture method {:?} for {}",
+            body.capture_method, body.recording_id,
+        );
+        return (
+            StatusCode::OK,
+            Json(empty_response(
+                "no_edit",
+                "capture_error: capture source cannot prove field ownership",
+            )),
+        );
+    }
 
     // ── Step 2: Branch — no edit / full deletion / stale ─────────────────────
 
-    // Stale capture: > 30s after paste
-    if body.time_since_paste_ms > CAPTURE_STALE_MS {
+    // Stale capture: outside the trusted desktop watcher lifecycle.
+    if capture_is_stale(body.time_since_paste_ms) {
         info!(
             "[classify] stale capture ({}ms after paste) for {}",
             body.time_since_paste_ms, body.recording_id,
         );
         return (
             StatusCode::OK,
-            Json(empty_response("stale", "edit arrived > 30 s after paste")),
+            Json(empty_response(
+                "stale",
+                "edit arrived after the trusted capture window",
+            )),
         );
     }
 
@@ -395,12 +444,16 @@ async fn classify_inner(
     // No edit: polished output kept verbatim
     if body.ai_output.trim() == body.user_kept.trim() {
         // Positive reinforcement: bump weight of known vocab terms used in output
-        let rewarded = vocabulary::reward_active_terms(
-            &state.pool,
-            &state.default_user_id,
-            &body.ai_output,
-            0.1,
-        );
+        let rewarded = if audit_only {
+            0
+        } else {
+            vocabulary::reward_active_terms(
+                &state.pool,
+                &state.default_user_id,
+                &body.ai_output,
+                0.1,
+            )
+        };
         if rewarded > 0 {
             info!(
                 "[classify] no-edit reward: bumped {rewarded} active vocab term(s) for {}",
@@ -413,93 +466,20 @@ async fn classify_inner(
         );
     }
 
-    history::apply_edit_feedback(&state.pool, &body.recording_id, &body.user_kept);
-    let edit_event_id = vectors::insert_edit_event(
-        &state.pool,
-        &rec.user_id,
-        Some(&rec.id),
-        &transcript,
-        &body.ai_output,
-        &body.user_kept,
-        rec.target_app.as_deref(),
-    );
-    if let Some(ref id) = edit_event_id {
+    if is_surrounding_continuation(&body.ai_output, &body.user_kept) {
         info!(
-            "[classify] edit_event {} created for recording {}",
-            id, rec.id
-        );
-    } else {
-        warn!(
-            "[classify] failed to insert edit_event for {}",
-            body.recording_id
-        );
-    }
-    let mut learned_emails = email_memory::upsert_many_from_text(
-        &state.pool,
-        &state.default_user_id,
-        &body.user_kept,
-        Some(&body.user_kept),
-    );
-    if !learned_emails.is_empty() {
-        info!(
-            "[classify] learned {} local email memory item(s) for {}",
-            learned_emails.len(),
+            "[classify] continuation excluded for {} — original output survived verbatim",
             body.recording_id,
+        );
+        return (
+            StatusCode::OK,
+            Json(empty_response(
+                "no_edit",
+                "continuation: text was added around the dictated output",
+            )),
         );
     }
 
-    // ── Step 3: Revert wrong aliases (unconditional on every edit) ────────────
-    // Detects vocab terms in the polish output that the user replaced with a
-    // different word. Deletes only the offending STT alias — the vocab entry
-    // itself is kept because the term is valid.
-    let reverted = run_alias_revert_pass(&state, &body.ai_output, &body.user_kept);
-    let mut negative_terms: Vec<NegativeTerm> = Vec::new();
-    if !reverted.is_empty() {
-        info!(
-            "[classify] reverted {} wrong alias(es) on this edit",
-            reverted.len()
-        );
-        for r in &reverted {
-            negative_terms.push(NegativeTerm {
-                term: r.replaced_with.clone(),
-                wrong_replacement: r.term.clone(),
-                correction_count: 1,
-            });
-        }
-    }
-    let policy_feedback = tier2_edit_policy::mark_removed_feedback(
-        &state.pool,
-        &state.default_user_id,
-        &body.recording_id,
-        &body.ai_output,
-        &body.user_kept,
-    );
-    // Surface cluster-fuzzy / ONNX reverts as negative_terms so the desktop
-    // shows the "wrong correction fixed" pill and retrain fires.
-    for (replaced_with, term) in &policy_feedback.penalized_pairs {
-        if negative_terms
-            .iter()
-            .any(|n| n.term == *term && n.wrong_replacement == *replaced_with)
-        {
-            continue;
-        }
-        info!(
-            "[classify] policy-revert: {:?} → {:?} blocked from future corrections",
-            replaced_with, term,
-        );
-        negative_terms.push(NegativeTerm {
-            term: term.clone(),
-            wrong_replacement: replaced_with.clone(),
-            correction_count: 1,
-        });
-    }
-    let policy_touched = policy_feedback.marked_kept > 0 || policy_feedback.penalized > 0;
-    if policy_touched {
-        info!(
-            "[classify] tier2 edit-policy feedback: kept_marked={} penalized={} for {}",
-            policy_feedback.marked_kept, policy_feedback.penalized, body.recording_id,
-        );
-    }
     let edit_hunks = edit_diff::diff(&transcript, &body.ai_output, &body.user_kept);
 
     // ── Step 4: Deterministic classification ──────────────────────────────────
@@ -633,6 +613,169 @@ async fn classify_inner(
         changes: analyzer_changes,
         overall_class,
     };
+
+    // One fail-closed decision owns every mutation below. A changed string is
+    // not enough: it must come from an owned capture and produce a verified
+    // deterministic change. Destructive alias/policy feedback additionally
+    // requires explicit correction evidence, not a style rewrite.
+    let is_correlated_edit = !edit_hunks.is_empty() && !analyzer_output.changes.is_empty();
+    if !is_correlated_edit {
+        info!(
+            "[classify] uncorrelated edit excluded for {} — hunks={} changes={}",
+            body.recording_id,
+            edit_hunks.len(),
+            analyzer_output.changes.len(),
+        );
+        return (
+            StatusCode::OK,
+            Json(empty_response(
+                "no_edit",
+                "correlation_error: no verified owned change",
+            )),
+        );
+    }
+    if audit_only {
+        info!(
+            "[classify] audit-only: {} verified change(s), all mutations skipped for {}",
+            analyzer_output.changes.len(),
+            body.recording_id,
+        );
+        let mut response = empty_response(
+            &analyzer_output.overall_class,
+            "learning disabled: verified changes were not persisted",
+        );
+        response.changes = analyzer_output.changes;
+        return (StatusCode::OK, Json(response));
+    }
+    let has_correction_evidence = analyzer_output.changes.iter().any(|change| {
+        change.should_learn
+            && matches!(
+                change.reason,
+                ChangeReason::SttError | ChangeReason::PolishError | ChangeReason::FormatPreference
+            )
+    });
+    let correction_pairs: std::collections::HashSet<(String, String)> = analyzer_output
+        .changes
+        .iter()
+        .filter(|change| {
+            change.should_learn
+                && matches!(
+                    change.reason,
+                    ChangeReason::SttError
+                        | ChangeReason::PolishError
+                        | ChangeReason::FormatPreference
+                )
+        })
+        .map(|change| {
+            (
+                tier2_edit_policy::normalize_token(&change.original),
+                tier2_edit_policy::normalize_token(&change.corrected),
+            )
+        })
+        .collect();
+    let all_changes_are_corrections = !analyzer_output.changes.is_empty()
+        && analyzer_output.changes.iter().all(|change| {
+            change.should_learn
+                && matches!(
+                    change.reason,
+                    ChangeReason::SttError
+                        | ChangeReason::PolishError
+                        | ChangeReason::FormatPreference
+                )
+        });
+
+    let mut learned_emails = Vec::new();
+    let mut negative_terms: Vec<NegativeTerm> = Vec::new();
+    let mut policy_touched = false;
+
+    history::apply_edit_feedback(&state.pool, &body.recording_id, &body.user_kept);
+
+    if has_correction_evidence {
+        let edit_event_id = vectors::insert_edit_event(
+            &state.pool,
+            &rec.user_id,
+            Some(&rec.id),
+            &transcript,
+            &body.ai_output,
+            &body.user_kept,
+            rec.target_app.as_deref(),
+        );
+        if let Some(ref id) = edit_event_id {
+            info!(
+                "[classify] correlated edit_event {} created for recording {}",
+                id, rec.id
+            );
+        } else {
+            warn!(
+                "[classify] failed to insert correlated edit_event for {}",
+                body.recording_id
+            );
+        }
+
+        learned_emails = email_memory::upsert_many_from_text(
+            &state.pool,
+            &state.default_user_id,
+            &body.user_kept,
+            Some(&body.user_kept),
+        );
+        if !learned_emails.is_empty() {
+            info!(
+                "[classify] learned {} local email memory item(s) for {}",
+                learned_emails.len(),
+                body.recording_id,
+            );
+        }
+
+        let reverted =
+            run_alias_revert_pass(&state, &body.ai_output, &body.user_kept, &correction_pairs);
+        if !reverted.is_empty() {
+            info!(
+                "[classify] reverted {} wrong alias(es) after correlated correction",
+                reverted.len()
+            );
+            for reverted_alias in &reverted {
+                negative_terms.push(NegativeTerm {
+                    term: reverted_alias.replaced_with.clone(),
+                    wrong_replacement: reverted_alias.term.clone(),
+                    correction_count: 1,
+                });
+            }
+        }
+
+        if all_changes_are_corrections {
+            let policy_feedback = tier2_edit_policy::mark_removed_feedback(
+                &state.pool,
+                &state.default_user_id,
+                &body.recording_id,
+                &body.ai_output,
+                &body.user_kept,
+            );
+            for (replaced_with, term) in &policy_feedback.penalized_pairs {
+                if negative_terms.iter().any(|negative| {
+                    negative.term == *term && negative.wrong_replacement == *replaced_with
+                }) {
+                    continue;
+                }
+                info!(
+                    "[classify] policy-revert: {:?} -> {:?} blocked from future corrections",
+                    replaced_with, term,
+                );
+                negative_terms.push(NegativeTerm {
+                    term: term.clone(),
+                    wrong_replacement: replaced_with.clone(),
+                    correction_count: 1,
+                });
+            }
+            policy_touched = policy_feedback.marked_kept > 0 || policy_feedback.penalized > 0;
+            if policy_touched {
+                info!(
+                    "[classify] tier2 edit-policy feedback: kept_marked={} penalized={} for {}",
+                    policy_feedback.marked_kept, policy_feedback.penalized, body.recording_id,
+                );
+            }
+        }
+    }
+
     // ── Step 5: Prepare learnable candidates ────────────────────────────────
     // STT learning is human-in-the-loop: classify proposes candidates, and
     // `/v1/confirm-batch` is the only path that writes approved aliases/terms.
@@ -642,9 +785,9 @@ async fn classify_inner(
         .filter(|c| matches!(c.reason, ChangeReason::SttError) && c.should_learn)
         .count();
 
-    let mut promoted_count = 0_usize;
-    let mut promoted_terms: Vec<String> = Vec::new();
-    let mut queued_terms: Vec<QueuedTerm> = Vec::new();
+    let promoted_count = 0_usize;
+    let promoted_terms: Vec<String> = Vec::new();
+    let queued_terms: Vec<QueuedTerm> = Vec::new();
     let mut review_candidates: Vec<ReviewCandidate> = Vec::new();
     let mut safety_blocked_aliases: std::collections::HashSet<(String, String)> =
         std::collections::HashSet::new();
@@ -710,31 +853,10 @@ async fn classify_inner(
             continue;
         }
 
-        // If analyzer says don't learn but provides a refined meaning,
-        // update the existing entry's meaning (deepening, not duplicating).
-        // STT corrections to an already protected local term still flow
-        // through, because the analyzer is allowed to say "not a new vocab
-        // term" but it is not allowed to block a concrete edit-policy pair.
+        // A non-learnable analyzer result must never mutate vocabulary. STT
+        // corrections to an already protected term still flow through the
+        // explicit review path below.
         if !change.should_learn && !matches!(change.reason, ChangeReason::SttError) {
-            if let Some(ref meaning) = change.meaning {
-                if !meaning.trim().is_empty() {
-                    // Case-insensitive lookup for existing term
-                    if let Some(existing) =
-                        vocabulary::find_by_term_ci(&state.pool, &state.default_user_id, corrected)
-                    {
-                        vocabulary::update_meaning(
-                            &state.pool,
-                            &state.default_user_id,
-                            &existing.term,
-                            meaning,
-                        );
-                        tracing::info!(
-                            "[classify] deepened meaning for existing term {:?}",
-                            existing.term
-                        );
-                    }
-                }
-            }
             continue;
         }
         if !change.should_learn
@@ -913,6 +1035,31 @@ async fn classify_inner(
                     )
                     .await;
                     if !safety.allows_learning() {
+                        let context = change.context_example.clone().or_else(|| {
+                            surrounding_sentence(&body.user_kept, canonical_for_policy)
+                        });
+                        if should_offer_context_only_review(
+                            existing_term.is_some(),
+                            original,
+                            context.as_deref(),
+                        ) {
+                            push_unique_review_candidate(
+                                &mut review_candidates,
+                                ReviewCandidate {
+                                    original: original.to_string(),
+                                    corrected: canonical_for_policy.to_string(),
+                                    term_type: term_type.to_string(),
+                                    learnable: true,
+                                    tag: "meaning_context".to_string(),
+                                    context,
+                                },
+                            );
+                            info!(
+                                "[classify] common source kept as context-only review: {:?} -> {:?}",
+                                original, canonical_for_policy
+                            );
+                            continue;
+                        }
                         let original_norm = tier2_edit_policy::normalize_token(original);
                         let corrected_norm =
                             tier2_edit_policy::normalize_token(canonical_for_policy);
@@ -966,7 +1113,6 @@ async fn classify_inner(
             }
 
             ChangeReason::PolishError => {
-                // Store as a correction rule: wrong → right
                 let wrong = original.to_ascii_lowercase();
                 if !wrong.is_empty()
                     && wrong != corrected.to_ascii_lowercase()
@@ -977,20 +1123,24 @@ async fn classify_inner(
                         corrected,
                     )
                 {
-                    corrections::upsert(
-                        &state.pool,
-                        &state.default_user_id,
-                        &[(wrong, corrected.to_ascii_lowercase())],
+                    push_unique_review_candidate(
+                        &mut review_candidates,
+                        ReviewCandidate {
+                            original: wrong,
+                            corrected: corrected.to_ascii_lowercase(),
+                            term_type: "writing_preference".to_string(),
+                            learnable: true,
+                            tag: "polish_error".to_string(),
+                            context: change
+                                .context_example
+                                .clone()
+                                .or_else(|| surrounding_sentence(&body.user_kept, corrected)),
+                        },
                     );
-                    learned = true;
-                    promoted_count += 1;
-                    promoted_terms.push(corrected.to_string());
                 }
             }
 
             ChangeReason::FormatPreference => {
-                // Store as a correction rule so the polish prompt picks it up.
-                // e.g. "8am" → "8:00 AM"
                 let wrong = original.to_ascii_lowercase();
                 if !wrong.is_empty()
                     && wrong != corrected.to_ascii_lowercase()
@@ -1001,14 +1151,20 @@ async fn classify_inner(
                         corrected,
                     )
                 {
-                    corrections::upsert(
-                        &state.pool,
-                        &state.default_user_id,
-                        &[(wrong, corrected.to_lowercase())],
+                    push_unique_review_candidate(
+                        &mut review_candidates,
+                        ReviewCandidate {
+                            original: wrong,
+                            corrected: corrected.to_string(),
+                            term_type: "format_preference".to_string(),
+                            learnable: true,
+                            tag: "format_preference".to_string(),
+                            context: change
+                                .context_example
+                                .clone()
+                                .or_else(|| surrounding_sentence(&body.user_kept, corrected)),
+                        },
                     );
-                    learned = true;
-                    promoted_count += 1;
-                    promoted_terms.push(corrected.to_string());
                 }
             }
 
@@ -1054,9 +1210,7 @@ async fn classify_inner(
                     pair.1 == *blocked_corrected
                         && !pair.0.is_empty()
                         && !blocked_original.is_empty()
-                        && (pair.0 == *blocked_original
-                            || pair.0.contains(blocked_original)
-                            || blocked_original.contains(&pair.0))
+                        && safety_block_should_suppress_candidate(&pair.0, blocked_original)
                 });
         if safety_blocked {
             info!(
@@ -1117,15 +1271,14 @@ async fn classify_inner(
 
     // Only retrain if something was actually committed (not pending review).
     // When review candidates exist, retrain happens after confirm-batch.
-    if (learned || has_negatives) && !has_review && !audit_only {
+    if (learned || has_negatives) && !has_review {
         schedule_onnx_retrain(state.clone());
     }
 
     if !learned_emails.is_empty() {
         learned = true;
     }
-    let mut notify =
-        (learned && (promoted_count > 0 || policy_touched)) || !learned_emails.is_empty();
+    let notify = (learned && (promoted_count > 0 || policy_touched)) || !learned_emails.is_empty();
 
     let change_count = analyzer_output.changes.len();
     info!(
@@ -1140,8 +1293,7 @@ async fn classify_inner(
         review_candidates.len(),
     );
 
-    if !audit_only && (learned || notify || has_negatives || has_review || !queued_terms.is_empty())
-    {
+    if learned || notify || has_negatives || has_review || !queued_terms.is_empty() {
         post_runtime_client_event(
             state.clone(),
             "classify_edit_result",
@@ -1168,31 +1320,38 @@ async fn classify_inner(
         );
     }
     if promoted_count > 0 || policy_touched {
-        if !audit_only {
-            post_runtime_memory_dirty(state.clone());
-        }
-    }
-
-    if audit_only {
-        info!(
-            "[classify] audit-only: {} change(s) classified, legacy writes skipped for {}",
-            change_count, body.recording_id,
-        );
-        learned = false;
-        notify = false;
-        promoted_count = 0;
-        promoted_terms.clear();
-        learned_emails.clear();
-        queued_terms.clear();
-        ambiguous_terms.clear();
-        negative_terms.clear();
-        review_candidates.clear();
+        post_runtime_memory_dirty(state.clone());
     }
 
     let review_json: Vec<serde_json::Value> = review_candidates
         .iter()
         .filter_map(|r| serde_json::to_value(r).ok())
         .collect();
+    let changes_json: Vec<serde_json::Value> = analyzer_output
+        .changes
+        .iter()
+        .filter_map(|change| serde_json::to_value(change).ok())
+        .collect();
+    let review_session_id = if review_candidates.is_empty() {
+        None
+    } else {
+        let id = edit_review_sessions::insert(
+            &state.pool,
+            &state.default_user_id,
+            &body.recording_id,
+            &body.ai_output,
+            &body.user_kept,
+            &review_json,
+            &changes_json,
+        );
+        if id.is_none() {
+            warn!(
+                "[classify] failed to persist review session for {}",
+                body.recording_id
+            );
+        }
+        id
+    };
     crate::observability::schedule_classify_observability(
         &state,
         crate::observability::ClassifyObservabilityInput {
@@ -1214,6 +1373,7 @@ async fn classify_inner(
             class: analyzer_output.overall_class,
             reason: format!("analyzer identified {} change(s)", change_count),
             pending_id: None,
+            review_session_id,
             learned,
             notify,
             promoted_count,
@@ -1240,7 +1400,12 @@ struct RevertedAlias {
 /// Detect vocab terms in polish that the user replaced with a different word.
 /// Only deletes the offending STT alias — the vocabulary entry itself stays
 /// intact because the term is valid, just the alias was wrong.
-fn run_alias_revert_pass(state: &AppState, polish: &str, user_kept: &str) -> Vec<RevertedAlias> {
+fn run_alias_revert_pass(
+    state: &AppState,
+    polish: &str,
+    user_kept: &str,
+    allowed_pairs: &std::collections::HashSet<(String, String)>,
+) -> Vec<RevertedAlias> {
     let polish_lower = polish.to_ascii_lowercase();
     let kept_lower = user_kept.to_ascii_lowercase();
     let vocab = vocabulary::top_terms(&state.pool, &state.default_user_id, 1000);
@@ -1256,6 +1421,17 @@ fn run_alias_revert_pass(state: &AppState, polish: &str, user_kept: &str) -> Vec
             find_replacement_at_position(polish, user_kept, &v.term).unwrap_or_default();
 
         if replaced_with.is_empty() {
+            continue;
+        }
+        let pair = (
+            tier2_edit_policy::normalize_token(&v.term),
+            tier2_edit_policy::normalize_token(&replaced_with),
+        );
+        if !allowed_pairs.contains(&pair) {
+            info!(
+                "[revert] skipped uncorrelated alias removal {:?} -> {:?}",
+                replaced_with, v.term,
+            );
             continue;
         }
 
@@ -2102,6 +2278,35 @@ fn weak_single_token_alias_source(source: &str) -> bool {
         || lowercase_plain_fragment(source, token)
 }
 
+fn safety_block_should_suppress_candidate(
+    candidate_original_norm: &str,
+    blocked_original_norm: &str,
+) -> bool {
+    let candidate = candidate_original_norm.trim();
+    let blocked = blocked_original_norm.trim();
+    if candidate.is_empty() || blocked.is_empty() {
+        return false;
+    }
+    if candidate == blocked {
+        return true;
+    }
+
+    let candidate_tokens: Vec<&str> = candidate.split_whitespace().collect();
+    let blocked_tokens: Vec<&str> = blocked.split_whitespace().collect();
+    if candidate_tokens.is_empty() || blocked_tokens.is_empty() {
+        return false;
+    }
+
+    if candidate_tokens.len() <= blocked_tokens.len() {
+        return contains_token_sequence(&blocked_tokens, &candidate_tokens)
+            || blocked_tokens.join("").contains(&candidate_tokens.join(""));
+    }
+
+    blocked_tokens.len() > 1
+        && (contains_token_sequence(&candidate_tokens, &blocked_tokens)
+            || candidate_tokens.join("").contains(&blocked_tokens.join("")))
+}
+
 fn lowercase_plain_fragment(raw: &str, norm_token: &str) -> bool {
     if norm_token.len() < 3 || norm_token.chars().any(|c| c.is_ascii_digit()) {
         return false;
@@ -2660,64 +2865,6 @@ fn infer_format_rule(polish: &str, kept: &str) -> String {
     }
 }
 
-/// Generate a meaning for a term using Groq (simple prompt, no classification).
-async fn generate_meaning_for_term(
-    http: &reqwest::Client,
-    groq_key: &str,
-    term: &str,
-    context: &str,
-) -> Option<String> {
-    use serde_json::json;
-
-    let prompt = format!(
-        "Given this sentence: \"{context}\"\n\
-         The term \"{term}\" is a proper noun, technical term, or brand name.\n\
-         Draft a concise 1-sentence meaning for \"{term}\" based on the context.\n\
-         Return ONLY the meaning text, nothing else."
-    );
-
-    let body = json!({
-        "model": "llama-3.1-8b-instant",
-        "temperature": 0.1,
-        "max_tokens": 100,
-        "messages": [
-            { "role": "user", "content": prompt }
-        ]
-    });
-
-    let resp = http
-        .post("https://api.groq.com/openai/v1/chat/completions")
-        .header("Authorization", format!("Bearer {groq_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let json: serde_json::Value = resp.json().await.ok()?;
-    let meaning = json
-        .get("choices")?
-        .get(0)?
-        .get("message")?
-        .get("content")?
-        .as_str()?
-        .trim()
-        .trim_matches('"')
-        .to_string();
-
-    if meaning.is_empty() {
-        None
-    } else {
-        info!("[classify-det] groq meaning for {term:?}: {meaning:?}");
-        Some(meaning)
-    }
-}
-
 // ── Deterministic edit pair extraction (used by Step 5) ─────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3174,6 +3321,7 @@ fn empty_response(class: &str, reason: &str) -> ClassifyResponse {
         class: class.to_string(),
         reason: reason.to_string(),
         pending_id: None,
+        review_session_id: None,
         learned: false,
         notify: false,
         promoted_count: 0,
@@ -3219,6 +3367,13 @@ mod tests {
         )
         .unwrap();
         pool
+    }
+
+    #[test]
+    fn capture_stale_window_covers_the_desktop_edit_watcher() {
+        assert!(!capture_is_stale(120_000));
+        assert!(!capture_is_stale(CAPTURE_STALE_MS));
+        assert!(capture_is_stale(CAPTURE_STALE_MS + 1));
     }
 
     #[test]
@@ -3444,6 +3599,26 @@ mod tests {
     }
 
     #[test]
+    fn surrounding_additions_are_continuations_not_corrections() {
+        assert!(is_surrounding_continuation(
+            "Please review the proposal.",
+            "Please review the proposal. I will send the link next.",
+        ));
+        assert!(is_surrounding_continuation(
+            "Please review the proposal.",
+            "Context: Please review the proposal.",
+        ));
+        assert!(!is_surrounding_continuation(
+            "Please review the CQLite proposal.",
+            "Please review the SQLite proposal.",
+        ));
+        assert!(!is_surrounding_continuation(
+            "Please review the proposal.",
+            "Please carefully review the proposal.",
+        ));
+    }
+
+    #[test]
     fn server_candidate_trims_context_wrapped_brand_edit() {
         let candidate = ReviewCandidate {
             original: "please kaafka".to_string(),
@@ -3503,6 +3678,55 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].original, "Post grass");
         assert_eq!(candidates[0].corrected, "Postgres");
+    }
+
+    #[test]
+    fn safety_blocked_single_token_does_not_poison_phrase_review_candidate() {
+        assert!(safety_block_should_suppress_candidate("cop", "cop"));
+        assert!(safety_block_should_suppress_candidate("cop", "main cop"));
+        assert!(safety_block_should_suppress_candidate(
+            "main cop app",
+            "main cop"
+        ));
+        assert!(!safety_block_should_suppress_candidate("main cop", "cop"));
+    }
+
+    #[test]
+    fn local_review_candidate_keeps_main_cop_to_existing_macobs() {
+        let pool = mem_pool();
+        assert!(vocabulary::upsert(&pool, "u1", "Macobs", 1.0, "manual"));
+        let candidates = local_review_candidates_from_analyzer(
+            &[stt_change("main cop", "Macobs")],
+            &pool,
+            "u1",
+            "Macobs onboarding flow is broken",
+            "english",
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].original, "main cop");
+        assert_eq!(candidates[0].corrected, "Macobs");
+        assert_eq!(candidates[0].tag, "local_token_collapse");
+    }
+
+    #[test]
+    fn common_source_can_only_be_reviewed_as_context_for_an_existing_term() {
+        assert!(should_offer_context_only_review(
+            true,
+            "Impact",
+            Some("Emiac Technologies company ka profit")
+        ));
+        assert!(!should_offer_context_only_review(
+            false,
+            "Impact",
+            Some("Emiac Technologies company ka profit")
+        ));
+        assert!(!should_offer_context_only_review(
+            true,
+            "two words",
+            Some("context")
+        ));
+        assert!(!should_offer_context_only_review(true, "Impact", None));
     }
 
     #[test]
