@@ -18,6 +18,17 @@ pub const DEEPSEEK_V4_FLASH_OUTPUT_USD_PER_MILLION: f64 = 0.28;
 pub const DEEPSEEK_V4_FLASH_RATE_SOURCE: &str =
     "rate:deepseek_v4_flash_0.14_in_0.0028_cache_0.28_out@2026-07-16";
 
+// DeepSeek V4-Pro public USD rate card captured by the control plane. Meeting
+// usage stores these values as a per-row JSON snapshot so a later price change
+// cannot rewrite historical spend.
+pub const DEEPSEEK_V4_PRO_CACHE_HIT_USD_PER_MILLION: f64 = 0.003625;
+pub const DEEPSEEK_V4_PRO_CACHE_MISS_USD_PER_MILLION: f64 = 0.435;
+pub const DEEPSEEK_V4_PRO_OUTPUT_USD_PER_MILLION: f64 = 0.87;
+pub const DEEPSEEK_V4_PRO_RATE_VERSION: &str = "deepseek-v4-pro-usd@2026-07-17";
+pub const DEEPSEEK_V4_PRO_RATE_SOURCE: &str =
+    "rate:deepseek_v4_pro_0.003625_cache_hit_0.435_cache_miss_0.87_output@2026-07-17";
+pub const DEEPSEEK_V4_PRO_PRICING_URL: &str = "https://api-docs.deepseek.com/quick_start/pricing";
+
 pub fn together_nemotron_cost(audio_seconds: f64) -> Option<f64> {
     (audio_seconds.is_finite() && audio_seconds >= 0.0)
         .then_some(audio_seconds * TOGETHER_NEMOTRON_USD_PER_HOUR / 3600.0)
@@ -50,9 +61,30 @@ pub fn deepseek_v4_flash_cost(
     )
 }
 
+/// DeepSeek V4-Pro cost using the provider's explicit cache-hit/cache-miss
+/// counters. `completion_tokens` already includes reasoning tokens, so the
+/// optional reasoning detail must not be charged a second time.
+pub fn deepseek_v4_pro_cost(
+    cache_hit_tokens: i32,
+    cache_miss_tokens: i32,
+    completion_tokens: i32,
+) -> Option<f64> {
+    if cache_hit_tokens < 0 || cache_miss_tokens < 0 || completion_tokens < 0 {
+        return None;
+    }
+    Some(
+        (f64::from(cache_hit_tokens) * DEEPSEEK_V4_PRO_CACHE_HIT_USD_PER_MILLION
+            + f64::from(cache_miss_tokens) * DEEPSEEK_V4_PRO_CACHE_MISS_USD_PER_MILLION
+            + f64::from(completion_tokens) * DEEPSEEK_V4_PRO_OUTPUT_USD_PER_MILLION)
+            / 1_000_000.0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{deepseek_v4_flash_cost, gemma_token_cost, together_nemotron_cost};
+    use super::{
+        deepseek_v4_flash_cost, deepseek_v4_pro_cost, gemma_token_cost, together_nemotron_cost,
+    };
 
     #[test]
     fn prices_supplied_rate_card_examples() {
@@ -73,5 +105,17 @@ mod tests {
             Some(0.0028)
         );
         assert_eq!(deepseek_v4_flash_cost(-1, 0, 0), None);
+    }
+
+    #[test]
+    fn prices_deepseek_v4_pro_cache_aware_examples() {
+        assert_eq!(deepseek_v4_pro_cost(1_000_000, 0, 0), Some(0.003625));
+        assert_eq!(deepseek_v4_pro_cost(0, 1_000_000, 0), Some(0.435));
+        assert_eq!(deepseek_v4_pro_cost(0, 0, 1_000_000), Some(0.87));
+        assert_eq!(
+            deepseek_v4_pro_cost(1_000_000, 1_000_000, 1_000_000),
+            Some(1.308625)
+        );
+        assert_eq!(deepseek_v4_pro_cost(0, -1, 0), None);
     }
 }

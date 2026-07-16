@@ -2108,3 +2108,204 @@ async fn s_multi_org_idor_blocks_cross_workspace_clients() {
         std::env::remove_var("MULTI_ORG_ENABLED");
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Local meeting telemetry: auth attribution + idempotent provider spend
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
+    let srv = TestServer::start().await;
+    let suffix = Uuid::new_v4().to_string();
+    let (account_id, token) = srv.create_account(&suffix).await;
+    let org_a = srv
+        .create_org(
+            token,
+            account_id,
+            &format!("{suffix}-telemetry-a"),
+            "MEMBER",
+        )
+        .await;
+    let org_b = srv
+        .create_org(
+            token,
+            account_id,
+            &format!("{suffix}-telemetry-b"),
+            "MEMBER",
+        )
+        .await;
+
+    let client_session_id = format!("meeting-{suffix}");
+    let session_payload = json!({
+        "client_session_id": client_session_id,
+        "status": "completed",
+        "started_at_ms": 1_700_000_000_000_i64,
+        "ended_at_ms": 1_700_000_060_000_i64,
+        "duration_seconds": 60.0,
+        "transcript_word_count": 140,
+        "transcription_provider": "local_whisper",
+        "transcription_model": "ggml-large-v3-turbo",
+        "transcription_latency_ms": 2_500,
+        "device_id": "test-device",
+        "platform": "macos",
+        "app_version": "3.0.0"
+    });
+
+    let attempted_spoof = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .json(&json!({
+            "account_id": Uuid::new_v4(),
+            "org_id": org_b,
+            "client_session_id": format!("spoof-{suffix}"),
+            "status": "completed",
+            "started_at_ms": 1_700_000_000_000_i64,
+            "ended_at_ms": 1_700_000_001_000_i64,
+            "duration_seconds": 1.0,
+            "transcript_word_count": 1
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        attempted_spoof.status(),
+        422,
+        "request attribution fields must be rejected"
+    );
+
+    let created = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .json(&session_payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created_body: Value = created.json().await.unwrap();
+    assert_eq!(created_body["created"], true);
+
+    let replay = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .json(&session_payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), 200);
+    let replay_body: Value = replay.json().await.unwrap();
+    assert_eq!(replay_body["created"], false);
+    assert_eq!(replay_body["session_id"], created_body["session_id"]);
+
+    let cross_workspace_replay = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_b.to_string())
+        .json(&session_payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_workspace_replay.status(), 409);
+
+    let idempotency_key = format!("provider-call-{suffix}");
+    let usage_payload = json!({
+        "client_session_id": client_session_id,
+        "idempotency_key": idempotency_key,
+        "credential_scope": "airnote_bundled",
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro",
+        "feature_stage": "summary",
+        "prompt_tokens": 1_000,
+        "cache_hit_tokens": 400,
+        "cache_miss_tokens": 600,
+        "completion_tokens": 200,
+        "latency_ms": 1_500,
+        "result_status": "success",
+        "occurred_at_ms": 1_700_000_061_000_i64
+    });
+
+    let usage_created = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting/provider-usage"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .json(&usage_payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(usage_created.status(), 201);
+    let usage_created_body: Value = usage_created.json().await.unwrap();
+    assert_eq!(usage_created_body["created"], true);
+    let cost = usage_created_body["estimated_cost_usd"].as_f64().unwrap();
+    assert!((cost - 0.000_436_45).abs() < 1e-12);
+
+    let usage_replay = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting/provider-usage"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .json(&usage_payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(usage_replay.status(), 200);
+    let usage_replay_body: Value = usage_replay.json().await.unwrap();
+    assert_eq!(usage_replay_body["created"], false);
+    assert_eq!(
+        usage_replay_body["usage_id"],
+        usage_created_body["usage_id"]
+    );
+    assert_eq!(
+        usage_replay_body["rate_card_version"],
+        "deepseek-v4-pro-usd@2026-07-17"
+    );
+
+    let mut mutated_usage = usage_payload.clone();
+    mutated_usage["completion_tokens"] = json!(201);
+    let mutation = srv
+        .client
+        .post(srv.url("/v1/runtime/observability/meeting/provider-usage"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-AirNote-Org-Id", org_a.to_string())
+        .json(&mutated_usage)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mutation.status(), 409);
+
+    let session_scope: (Uuid, Uuid, i64) = sqlx::query_as(
+        "SELECT org_id, account_id, COUNT(*) OVER ()::bigint
+           FROM local_meeting_sessions
+          WHERE account_id = $1 AND client_session_id = $2",
+    )
+    .bind(account_id)
+    .bind(&client_session_id)
+    .fetch_one(&srv.db)
+    .await
+    .unwrap();
+    assert_eq!(session_scope, (org_a, account_id, 1));
+
+    let usage_stored: (i64, String, String) = sqlx::query_as(
+        "SELECT COUNT(*) OVER ()::bigint, rate_card_version,
+                rate_card_snapshot ->> 'source_url'
+           FROM local_meeting_provider_usage
+          WHERE account_id = $1 AND idempotency_key = $2",
+    )
+    .bind(account_id)
+    .bind(&idempotency_key)
+    .fetch_one(&srv.db)
+    .await
+    .unwrap();
+    assert_eq!(usage_stored.0, 1);
+    assert_eq!(usage_stored.1, "deepseek-v4-pro-usd@2026-07-17");
+    assert_eq!(
+        usage_stored.2,
+        "https://api-docs.deepseek.com/quick_start/pricing"
+    );
+}

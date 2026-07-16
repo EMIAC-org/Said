@@ -8,6 +8,7 @@ pub mod health;
 pub mod lark_auth;
 pub mod lark_sync;
 pub mod license;
+pub mod meeting_telemetry;
 pub mod meetings;
 pub mod metering;
 pub mod observability;

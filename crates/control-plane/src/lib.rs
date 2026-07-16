@@ -385,6 +385,14 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/runtime/observability/aliases",
             post(routes::observability::ingest_aliases),
         )
+        .route(
+            "/v1/runtime/observability/meeting",
+            post(routes::meeting_telemetry::ingest_session),
+        )
+        .route(
+            "/v1/runtime/observability/meeting/provider-usage",
+            post(routes::meeting_telemetry::ingest_provider_usage),
+        )
         // Enterprise — Desktop clients
         .route("/v1/clients/register", post(routes::clients::register))
         .route("/v1/clients/heartbeat", post(routes::clients::heartbeat))
