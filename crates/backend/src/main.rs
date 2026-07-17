@@ -249,6 +249,11 @@ async fn async_main() {
             user_id.clone(),
             state.http_client.clone(),
         );
+        said_backend::observability::meeting_scanner::spawn_scanner(
+            pool.clone(),
+            user_id.clone(),
+            state.http_client.clone(),
+        );
     }
 
     // ── Background alias review lane ────────────────────────────────────────

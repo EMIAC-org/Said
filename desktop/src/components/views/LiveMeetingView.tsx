@@ -1045,6 +1045,7 @@ export function LiveMeetingView({ meetingId, onBack, onEnded }: LiveMeetingViewP
       <div className="min-h-0 flex-1">
         <MeetingAiChat
           resetKey={meetingId}
+          chatArgs={{ meetingId }}
           summary={meetingAiSummary || null}
           transcriptOverride={ended ? null : liveChatTranscript}
           notes={notes || null}

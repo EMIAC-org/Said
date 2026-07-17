@@ -52,6 +52,9 @@ export type PersonRow = TelemetryUserRow & {
   app_version?: string | null
   meeting_cost_usd?: number
   meetings_hosted?: number
+  meeting_count?: number
+  meeting_duration_seconds?: number
+  meeting_transcript_words?: number
 }
 
 export interface PeopleResponse {
@@ -66,27 +69,49 @@ export interface PeopleResponse {
 export type PersonDetail = TelemetryUserProfile & {
   meeting_cost_usd?: number
   meetings_hosted?: number
+  meeting_count?: number
+  meeting_duration_seconds?: number
+  meeting_transcript_words?: number
+  recent_meetings?: PersonMeetingRow[]
   member: TelemetryUserProfile['member'] & { platform?: string | null; app_version?: string | null }
 }
 
 /* ── Meetings cost ──────────────────────────────────────────────── */
 export interface MeetingCostRow {
   id: string
+  source: 'legacy' | 'local'
   title: string
   status: string
+  started_at: string
   created_at: string
+  ended_at?: string | null
+  duration_seconds: number
+  transcript_word_count: number
   host_account_id: string
   host_name: string
   host_email: string
   participant_count: number
+  provider?: string | null
+  model?: string | null
+  usage_count: number
   input_tokens: number
   cached_input_tokens: number
+  cache_miss_tokens: number
   output_tokens: number
+  reasoning_tokens: number
   cost_usd: number
 }
 
+export type PersonMeetingRow = Pick<
+  MeetingCostRow,
+  'id' | 'source' | 'title' | 'status' | 'started_at' | 'duration_seconds' | 'transcript_word_count' | 'provider' | 'model' | 'usage_count' | 'input_tokens' | 'output_tokens' | 'cost_usd'
+>
+
 export interface OrgMeetingCosts {
   window_days: number | null
+  meeting_count: number
+  total_recording_seconds: number
+  total_transcript_words: number
   total_cost_usd: number
   total_tokens: number
   meetings: MeetingCostRow[]
@@ -94,11 +119,37 @@ export interface OrgMeetingCosts {
 
 export interface MeetingCostDetail {
   meeting_id: string
-  model: string
+  source: 'legacy' | 'local'
+  title: string
+  status: string
+  started_at: string
+  ended_at?: string | null
+  duration_seconds: number
+  transcript_word_count: number
+  host_account_id: string
+  host_name: string
+  host_email: string
+  model?: string | null
+  provider?: string | null
+  input_tokens?: number
+  cached_input_tokens?: number
+  output_tokens?: number
+  cost_usd?: number
+  by_stage: MeetingUsageStage[]
+}
+
+export interface MeetingUsageStage {
+  stage: string
+  slot_index?: number | null
   provider: string
+  model: string
+  result_status: string
+  call_count: number
   input_tokens: number
   cached_input_tokens: number
+  cache_miss_tokens: number
   output_tokens: number
+  reasoning_tokens: number
+  average_latency_ms?: number
   cost_usd: number
-  by_slot: { slot_index: number | null; input_tokens: number; output_tokens: number; cost_usd: number }[]
 }

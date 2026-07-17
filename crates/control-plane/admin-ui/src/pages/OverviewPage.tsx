@@ -5,7 +5,6 @@ import { useAuth } from '../hooks/useAuth'
 import { useWindowRange, WIN_LABEL, winDays } from '../lib/window'
 import { usd, usd2, num, osLabel, osGlyph, firstName } from '../lib/format'
 import { StatTile, Sparkline, SplitBar, Avatar, Loading, ErrorBox } from '../components/ui'
-import { MEET_MODEL, MEET_PROVIDER, MEET_IN_PER_M, MEET_OUT_PER_M } from '../lib/rates'
 import type { AdminOverview } from '../lib/adminTypes'
 
 export function OverviewPage() {
@@ -74,7 +73,7 @@ export function OverviewPage() {
               <div className="li"><span className="sw" style={{ background: 'var(--tl-done)' }} /> Meetings {usd2(spend.meeting_usd)}</div>
             </div>
             <div className="hint" style={{ marginTop: 16 }}>
-              Meetings run on paid <b>{MEET_PROVIDER} {MEET_MODEL}</b> — est. ${MEET_IN_PER_M}/M in · ${MEET_OUT_PER_M}/M out. Dictation STT + polish are near-zero per run.
+              Meeting spend comes only from recorded provider usage and its stored historical rate snapshot. Meetings without provider usage add zero spend.
             </div>
           </div>
         </div>

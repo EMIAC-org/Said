@@ -1208,9 +1208,9 @@ fn lark_error_response(context: &str, e: &str) -> (StatusCode, Json<Value>) {
 }
 
 // ── GET /v1/orgs/:org_id/meetings/costs ────────────────────────────────────────
-// Org-wide meeting AI cost rollup. Aggregates meeting_provider_usage per meeting
-// (DeepSeek V4 Flash rate card), joined to the meeting + host + participant count.
-// Meetings with no usage rows still appear with zeros. Role: org viewer.
+// Unified Admin meeting feed. Historical cloud meetings and metadata-only local
+// desktop sessions intentionally share this response so a migration does not
+// make an organisation's earlier meeting history disappear. Role: org viewer.
 
 #[derive(Deserialize)]
 pub struct MeetingCostsQuery {
@@ -1221,16 +1221,25 @@ pub struct MeetingCostsQuery {
 #[derive(sqlx::FromRow)]
 struct MeetingCostRow {
     id: Uuid,
+    source: String,
     title: String,
     status: String,
-    created_at: DateTime<Utc>,
+    started_at: DateTime<Utc>,
+    ended_at: Option<DateTime<Utc>>,
+    duration_seconds: f64,
+    transcript_word_count: i64,
     host_account_id: Uuid,
     host_name: Option<String>,
     host_email: Option<String>,
     participant_count: i64,
+    provider: Option<String>,
+    model: Option<String>,
+    usage_count: i64,
     input_tokens: i64,
     cached_input_tokens: i64,
+    cache_miss_tokens: i64,
     output_tokens: i64,
+    reasoning_tokens: i64,
     cost_usd: f64,
 }
 
@@ -1249,33 +1258,98 @@ pub async fn org_meeting_costs(
     let (days, since) = crate::routes::telemetry::window_bounds(q.days.as_deref());
 
     let rows: Vec<MeetingCostRow> = sqlx::query_as(
-        "SELECT m.id, m.title, m.status, m.created_at,
-                m.created_by AS host_account_id,
-                COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1)) AS host_name,
-                a.email AS host_email,
-                COALESCE(pc.participant_count, 0)::bigint AS participant_count,
-                COALESCE(u.input_tokens, 0)::bigint AS input_tokens,
-                COALESCE(u.cached_input_tokens, 0)::bigint AS cached_input_tokens,
-                COALESCE(u.output_tokens, 0)::bigint AS output_tokens,
-                COALESCE(u.cost_usd, 0)::float8 AS cost_usd
-           FROM meetings m
-           LEFT JOIN accounts a ON a.id = m.created_by
-           LEFT JOIN org_members om ON om.account_id = m.created_by AND om.org_id = m.org_id
-           LEFT JOIN LATERAL (
-              SELECT SUM(mpu.input_tokens) AS input_tokens,
-                     SUM(mpu.cached_input_tokens) AS cached_input_tokens,
-                     SUM(mpu.output_tokens) AS output_tokens,
-                     SUM(mpu.estimated_cost_usd) AS cost_usd
-                FROM meeting_provider_usage mpu
-               WHERE mpu.meeting_id = m.id
-           ) u ON true
-           LEFT JOIN LATERAL (
-              SELECT COUNT(*)::bigint AS participant_count
-                FROM meeting_participants mp
-               WHERE mp.meeting_id = m.id
-           ) pc ON true
-          WHERE m.org_id = $1 AND ($2::timestamptz IS NULL OR m.created_at >= $2)
-          ORDER BY COALESCE(u.cost_usd, 0) DESC, m.created_at DESC",
+        "SELECT * FROM (
+            SELECT m.id,
+                   'legacy'::text AS source,
+                   m.title,
+                   m.status,
+                   COALESCE(m.started_at, m.created_at) AS started_at,
+                   m.ended_at,
+                   GREATEST(COALESCE(EXTRACT(EPOCH FROM (m.ended_at - m.started_at)), 0), 0)::float8 AS duration_seconds,
+                   COALESCE(ms.transcript_word_count, 0)::bigint AS transcript_word_count,
+                   m.created_by AS host_account_id,
+                   COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1)) AS host_name,
+                   a.email AS host_email,
+                   COALESCE(pc.participant_count, 0)::bigint AS participant_count,
+                   u.provider,
+                   u.model,
+                   COALESCE(u.usage_count, 0)::bigint AS usage_count,
+                   COALESCE(u.input_tokens, 0)::bigint AS input_tokens,
+                   COALESCE(u.cached_input_tokens, 0)::bigint AS cached_input_tokens,
+                   GREATEST(COALESCE(u.input_tokens, 0) - COALESCE(u.cached_input_tokens, 0), 0)::bigint AS cache_miss_tokens,
+                   COALESCE(u.output_tokens, 0)::bigint AS output_tokens,
+                   0::bigint AS reasoning_tokens,
+                   COALESCE(u.cost_usd, 0)::float8 AS cost_usd
+              FROM meetings m
+              LEFT JOIN accounts a ON a.id = m.created_by
+              LEFT JOIN org_members om ON om.account_id = m.created_by AND om.org_id = m.org_id
+              LEFT JOIN LATERAL (
+                 SELECT MAX(mpu.provider) AS provider,
+                        MAX(mpu.model) AS model,
+                        COUNT(*)::bigint AS usage_count,
+                        SUM(mpu.input_tokens)::bigint AS input_tokens,
+                        SUM(mpu.cached_input_tokens)::bigint AS cached_input_tokens,
+                        SUM(mpu.output_tokens)::bigint AS output_tokens,
+                        SUM(mpu.estimated_cost_usd)::float8 AS cost_usd
+                   FROM meeting_provider_usage mpu
+                  WHERE mpu.meeting_id = m.id
+              ) u ON true
+              LEFT JOIN LATERAL (
+                 SELECT COUNT(*)::bigint AS participant_count
+                   FROM meeting_participants mp
+                  WHERE mp.meeting_id = m.id
+              ) pc ON true
+              LEFT JOIN LATERAL (
+                 SELECT SUM(slot.word_count)::bigint AS transcript_word_count
+                   FROM meeting_slots slot
+                  WHERE slot.meeting_id = m.id
+              ) ms ON true
+             WHERE m.org_id = $1
+               AND ($2::timestamptz IS NULL OR COALESCE(m.started_at, m.created_at) >= $2)
+
+            UNION ALL
+
+            SELECT lms.id,
+                   'local'::text AS source,
+                   lms.title,
+                   lms.status,
+                   lms.started_at,
+                   lms.ended_at,
+                   lms.duration_seconds::float8,
+                   lms.transcript_word_count::bigint,
+                   lms.account_id AS host_account_id,
+                   COALESCE(NULLIF(om.lark_name, ''), split_part(a.email, '@', 1)) AS host_name,
+                   a.email AS host_email,
+                   1::bigint AS participant_count,
+                   u.provider,
+                   u.model,
+                   COALESCE(u.usage_count, 0)::bigint AS usage_count,
+                   COALESCE(u.prompt_tokens, 0)::bigint AS input_tokens,
+                   COALESCE(u.cache_hit_tokens, 0)::bigint AS cached_input_tokens,
+                   COALESCE(u.cache_miss_tokens, 0)::bigint AS cache_miss_tokens,
+                   COALESCE(u.completion_tokens, 0)::bigint AS output_tokens,
+                   COALESCE(u.reasoning_tokens, 0)::bigint AS reasoning_tokens,
+                   COALESCE(u.cost_usd, 0)::float8 AS cost_usd
+              FROM local_meeting_sessions lms
+              LEFT JOIN accounts a ON a.id = lms.account_id
+              LEFT JOIN org_members om ON om.account_id = lms.account_id AND om.org_id = lms.org_id
+              LEFT JOIN LATERAL (
+                 SELECT MAX(lmpu.provider) AS provider,
+                        MAX(lmpu.model) AS model,
+                        COUNT(*)::bigint AS usage_count,
+                        SUM(lmpu.prompt_tokens)::bigint AS prompt_tokens,
+                        SUM(lmpu.cache_hit_tokens)::bigint AS cache_hit_tokens,
+                        SUM(lmpu.cache_miss_tokens)::bigint AS cache_miss_tokens,
+                        SUM(lmpu.completion_tokens)::bigint AS completion_tokens,
+                        SUM(COALESCE(lmpu.reasoning_tokens, 0))::bigint AS reasoning_tokens,
+                        SUM(lmpu.estimated_cost_usd)::float8 AS cost_usd
+                   FROM local_meeting_provider_usage lmpu
+                  WHERE lmpu.local_meeting_session_id = lms.id
+              ) u ON true
+             WHERE lms.org_id = $1
+               AND ($2::timestamptz IS NULL OR lms.started_at >= $2)
+        ) unified
+        ORDER BY started_at DESC, cost_usd DESC",
     )
     .bind(org_id)
     .bind(since)
@@ -1285,23 +1359,37 @@ pub async fn org_meeting_costs(
 
     let mut total_cost_usd = 0.0f64;
     let mut total_tokens: i64 = 0;
+    let mut total_recording_seconds = 0.0f64;
+    let mut total_transcript_words = 0i64;
     let meetings: Vec<Value> = rows
         .into_iter()
         .map(|r| {
             total_cost_usd += r.cost_usd;
             total_tokens += r.input_tokens + r.output_tokens;
+            total_recording_seconds += r.duration_seconds;
+            total_transcript_words += r.transcript_word_count;
             json!({
                 "id": r.id,
+                "source": r.source,
                 "title": r.title,
                 "status": r.status,
-                "created_at": r.created_at,
+                "started_at": r.started_at,
+                "created_at": r.started_at,
+                "ended_at": r.ended_at,
+                "duration_seconds": r.duration_seconds,
+                "transcript_word_count": r.transcript_word_count,
                 "host_account_id": r.host_account_id,
                 "host_name": r.host_name,
                 "host_email": r.host_email,
                 "participant_count": r.participant_count,
+                "provider": r.provider,
+                "model": r.model,
+                "usage_count": r.usage_count,
                 "input_tokens": r.input_tokens,
                 "cached_input_tokens": r.cached_input_tokens,
+                "cache_miss_tokens": r.cache_miss_tokens,
                 "output_tokens": r.output_tokens,
+                "reasoning_tokens": r.reasoning_tokens,
                 "cost_usd": r.cost_usd,
             })
         })
@@ -1309,6 +1397,9 @@ pub async fn org_meeting_costs(
 
     Ok(Json(json!({
         "window_days": days,
+        "meeting_count": meetings.len(),
+        "total_recording_seconds": total_recording_seconds,
+        "total_transcript_words": total_transcript_words,
         "total_cost_usd": total_cost_usd,
         "total_tokens": total_tokens,
         "meetings": meetings,
@@ -1316,7 +1407,7 @@ pub async fn org_meeting_costs(
 }
 
 // ── GET /v1/orgs/:org_id/meetings/:meeting_id/cost ─────────────────────────────
-// Per-meeting AI cost detail with a per-slot breakdown. Role: org viewer.
+// Unified metadata and per-stage AI usage detail. Role: org viewer.
 
 pub async fn meeting_cost_detail(
     State(state): State<AppState>,
@@ -1329,17 +1420,136 @@ pub async fn meeting_cost_detail(
         .map_err(|_| StatusCode::FORBIDDEN)?;
     crate::routes::telemetry::require_org_viewer(&role)?;
 
-    // Scope check: the meeting must belong to this org.
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM meetings WHERE id = $1 AND org_id = $2)")
-            .bind(meeting_id)
-            .bind(org_id)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !exists {
-        return Err(StatusCode::NOT_FOUND);
+    let local: Option<(String, String, DateTime<Utc>, DateTime<Utc>, f64, i32, Uuid)> =
+        sqlx::query_as(
+            "SELECT title, status, started_at, ended_at, duration_seconds,
+                    transcript_word_count, account_id
+               FROM local_meeting_sessions
+              WHERE id = $1 AND org_id = $2",
+        )
+        .bind(meeting_id)
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if let Some((title, status, started_at, ended_at, duration_seconds, words, owner_id)) = local {
+        let owner: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT a.email, om.lark_name
+               FROM accounts a
+               LEFT JOIN org_members om ON om.account_id = a.id AND om.org_id = $2
+              WHERE a.id = $1",
+        )
+        .bind(owner_id)
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let stages: Vec<(
+            String,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            f64,
+            f64,
+        )> = sqlx::query_as(
+            "SELECT feature_stage, provider, model, result_status,
+                        COUNT(*)::bigint,
+                        SUM(prompt_tokens)::bigint,
+                        SUM(cache_hit_tokens)::bigint,
+                        SUM(cache_miss_tokens)::bigint,
+                        SUM(completion_tokens)::bigint,
+                        SUM(COALESCE(reasoning_tokens, 0))::bigint,
+                        AVG(latency_ms)::float8,
+                        SUM(estimated_cost_usd)::float8
+                   FROM local_meeting_provider_usage
+                  WHERE local_meeting_session_id = $1 AND org_id = $2
+                  GROUP BY feature_stage, provider, model, result_status
+                  ORDER BY MIN(occurred_at), feature_stage",
+        )
+        .bind(meeting_id)
+        .bind(org_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let by_stage: Vec<Value> = stages
+            .into_iter()
+            .map(
+                |(
+                    stage,
+                    provider,
+                    model,
+                    result_status,
+                    call_count,
+                    input,
+                    cache_hit,
+                    cache_miss,
+                    output,
+                    reasoning,
+                    latency,
+                    cost,
+                )| {
+                    json!({
+                        "stage": stage,
+                        "provider": provider,
+                        "model": model,
+                        "result_status": result_status,
+                        "call_count": call_count,
+                        "input_tokens": input,
+                        "cached_input_tokens": cache_hit,
+                        "cache_hit_tokens": cache_hit,
+                        "cache_miss_tokens": cache_miss,
+                        "output_tokens": output,
+                        "reasoning_tokens": reasoning,
+                        "average_latency_ms": latency,
+                        "cost_usd": cost,
+                    })
+                },
+            )
+            .collect();
+        let (email, lark_name) = owner.unwrap_or_default();
+        return Ok(Json(json!({
+            "meeting_id": meeting_id,
+            "source": "local",
+            "title": title,
+            "status": status,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": duration_seconds,
+            "transcript_word_count": words,
+            "host_account_id": owner_id,
+            "host_name": lark_name.unwrap_or_else(|| email.split('@').next().unwrap_or(&email).to_string()),
+            "host_email": email,
+            "by_stage": by_stage,
+        })));
     }
+
+    let legacy: Option<(String, String, DateTime<Utc>, Option<DateTime<Utc>>, f64, i64, Uuid)> =
+        sqlx::query_as(
+            "SELECT m.title, m.status, COALESCE(m.started_at, m.created_at), m.ended_at,
+                    GREATEST(COALESCE(EXTRACT(EPOCH FROM (m.ended_at - m.started_at)), 0), 0)::float8,
+                    COALESCE((SELECT SUM(ms.word_count)::bigint FROM meeting_slots ms WHERE ms.meeting_id = m.id), 0)::bigint,
+                    m.created_by
+               FROM meetings m
+              WHERE m.id = $1 AND m.org_id = $2",
+        )
+        .bind(meeting_id)
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some((title, status, started_at, ended_at, duration_seconds, words, owner_id)) = legacy
+    else {
+        return Err(StatusCode::NOT_FOUND);
+    };
 
     let totals: (i64, i64, i64, f64, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT COALESCE(SUM(input_tokens), 0)::bigint,
@@ -1355,9 +1565,12 @@ pub async fn meeting_cost_detail(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let slots: Vec<(Option<i32>, i64, i64, f64)> = sqlx::query_as(
+    let slots: Vec<(Option<i32>, String, String, i64, i64, i64, i64, f64)> = sqlx::query_as(
         "SELECT slot_index,
+                MAX(provider), MAX(model),
+                COUNT(*)::bigint,
                 COALESCE(SUM(input_tokens), 0)::bigint,
+                COALESCE(SUM(cached_input_tokens), 0)::bigint,
                 COALESCE(SUM(output_tokens), 0)::bigint,
                 COALESCE(SUM(estimated_cost_usd), 0)::float8
            FROM meeting_provider_usage
@@ -1372,25 +1585,58 @@ pub async fn meeting_cost_detail(
 
     let by_slot: Vec<Value> = slots
         .into_iter()
-        .map(|(slot_index, input_tokens, output_tokens, cost_usd)| {
+        .map(|(slot_index, provider, model, call_count, input_tokens, cached_input_tokens, output_tokens, cost_usd)| {
             json!({
+                "stage": slot_index.map(|index| format!("summary slot {index}")).unwrap_or_else(|| "summary".to_string()),
                 "slot_index": slot_index,
+                "provider": provider,
+                "model": model,
+                "result_status": "success",
+                "call_count": call_count,
                 "input_tokens": input_tokens,
+                "cached_input_tokens": cached_input_tokens,
+                "cache_hit_tokens": cached_input_tokens,
+                "cache_miss_tokens": (input_tokens - cached_input_tokens).max(0),
                 "output_tokens": output_tokens,
+                "reasoning_tokens": 0,
                 "cost_usd": cost_usd,
             })
         })
         .collect();
 
+    let owner: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT a.email, om.lark_name
+           FROM accounts a
+           LEFT JOIN org_members om ON om.account_id = a.id AND om.org_id = $2
+          WHERE a.id = $1",
+    )
+    .bind(owner_id)
+    .bind(org_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (email, lark_name) = owner.unwrap_or_default();
+
     Ok(Json(json!({
         "meeting_id": meeting_id,
+        "source": "legacy",
+        "title": title,
+        "status": status,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_seconds": duration_seconds,
+        "transcript_word_count": words,
+        "host_account_id": owner_id,
+        "host_name": lark_name.unwrap_or_else(|| email.split('@').next().unwrap_or(&email).to_string()),
+        "host_email": email,
         "model": totals.5,
         "provider": totals.4,
         "input_tokens": totals.0,
         "cached_input_tokens": totals.1,
         "output_tokens": totals.2,
         "cost_usd": totals.3,
-        "by_slot": by_slot,
+        "by_slot": by_slot.clone(),
+        "by_stage": by_slot,
     })))
 }
 

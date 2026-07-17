@@ -1293,6 +1293,7 @@ pub async fn get_enterprise_status(ep: &BackendEndpoint) -> Result<EnterpriseSta
     Client::new()
         .get(&url)
         .header("Authorization", ep.bearer())
+        .timeout(std::time::Duration::from_secs(2))
         .send()
         .await
         .map_err(|e| format!("enterprise status failed: {e}"))?

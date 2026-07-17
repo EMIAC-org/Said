@@ -395,6 +395,10 @@ pub fn router_with_state(state: AppState) -> Router {
             "/v1/observability/dictation/:recording_id/trace",
             post(routes::telemetry::patch_dictation_trace),
         )
+        .route(
+            "/v1/observability/meetings/scan",
+            post(routes::meeting_telemetry::scan),
+        )
         // Cloud auth bridge — store/clear cloud token, query cloud status
         .route(
             "/v1/cloud/token",

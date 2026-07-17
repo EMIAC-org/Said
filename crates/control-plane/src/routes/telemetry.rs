@@ -675,6 +675,64 @@ pub(crate) fn require_org_viewer(role: &str) -> Result<(), StatusCode> {
     }
 }
 
+#[derive(Clone, Copy, Default, sqlx::FromRow)]
+struct MeetingUserTotals {
+    account_id: Uuid,
+    meeting_cost_usd: f64,
+    meeting_count: i64,
+    meeting_duration_seconds: f64,
+    meeting_transcript_words: i64,
+}
+
+/// Aggregate historical cloud meetings and modern local desktop sessions by
+/// owner. The time window is applied to the meeting itself, then all provider
+/// usage belonging to that in-window meeting is included. This keeps list,
+/// person, and overview totals aligned with the Meetings page.
+async fn fetch_meeting_totals_by_user(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+    account_id: Option<Uuid>,
+    since: Option<DateTime<Utc>>,
+) -> Result<HashMap<Uuid, MeetingUserTotals>, sqlx::Error> {
+    let rows: Vec<MeetingUserTotals> = sqlx::query_as(
+        "WITH unified_meetings AS (
+            SELECT m.created_by AS account_id,
+                   COALESCE(m.started_at, m.created_at) AS meeting_at,
+                   GREATEST(COALESCE(EXTRACT(EPOCH FROM (m.ended_at - m.started_at)), 0), 0)::float8 AS duration_seconds,
+                   COALESCE((SELECT SUM(ms.word_count)::bigint FROM meeting_slots ms WHERE ms.meeting_id = m.id), 0)::bigint AS transcript_words,
+                   COALESCE((SELECT SUM(mpu.estimated_cost_usd)::float8 FROM meeting_provider_usage mpu WHERE mpu.meeting_id = m.id), 0)::float8 AS cost_usd
+              FROM meetings m
+             WHERE m.org_id = $1
+
+            UNION ALL
+
+            SELECT lms.account_id,
+                   lms.started_at AS meeting_at,
+                   lms.duration_seconds::float8,
+                   lms.transcript_word_count::bigint,
+                   COALESCE((SELECT SUM(lmpu.estimated_cost_usd)::float8 FROM local_meeting_provider_usage lmpu WHERE lmpu.local_meeting_session_id = lms.id), 0)::float8 AS cost_usd
+              FROM local_meeting_sessions lms
+             WHERE lms.org_id = $1
+        )
+        SELECT account_id,
+               COALESCE(SUM(cost_usd), 0)::float8 AS meeting_cost_usd,
+               COUNT(*)::bigint AS meeting_count,
+               COALESCE(SUM(duration_seconds), 0)::float8 AS meeting_duration_seconds,
+               COALESCE(SUM(transcript_words), 0)::bigint AS meeting_transcript_words
+          FROM unified_meetings
+         WHERE ($2::timestamptz IS NULL OR meeting_at >= $2)
+           AND ($3::uuid IS NULL OR account_id = $3)
+         GROUP BY account_id",
+    )
+    .bind(org_id)
+    .bind(since)
+    .bind(account_id)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows.into_iter().map(|row| (row.account_id, row)).collect())
+}
+
 pub async fn org_analytics(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1130,8 +1188,6 @@ pub async fn list_users(
         desktop_active: bool,
         primary_speech_model: Option<String>,
         primary_speech_count: Option<i64>,
-        meeting_cost_usd: f64,
-        meetings_hosted: i64,
         platform: Option<String>,
         app_version: Option<String>,
     }
@@ -1161,8 +1217,6 @@ pub async fn list_users(
                 speech_top.speech_model AS primary_speech_model,
                 speech_top.cnt AS primary_speech_count,
                 COALESCE(agg.word_count, 0)::bigint AS word_count,
-                COALESCE(mtgu.meeting_cost_usd, 0)::float8 AS meeting_cost_usd,
-                COALESCE(mtgu.meetings_hosted, 0)::bigint AS meetings_hosted,
                 dcp.platform AS platform,
                 dcp.app_version AS app_version
              FROM org_members om
@@ -1202,14 +1256,6 @@ pub async fn list_users(
                  ORDER BY cnt DESC
                  LIMIT 1
              ) speech_top ON true
-             LEFT JOIN LATERAL (
-                SELECT COALESCE(SUM(mpu.estimated_cost_usd), 0)::float8 AS meeting_cost_usd,
-                       COUNT(DISTINCT mpu.meeting_id)::bigint AS meetings_hosted
-                  FROM meeting_provider_usage mpu
-                  JOIN meetings mtg ON mtg.id = mpu.meeting_id
-                 WHERE mtg.created_by = om.account_id AND mpu.org_id = $1
-                   AND ($2::timestamptz IS NULL OR mpu.created_at >= $2)
-             ) mtgu ON true
              LEFT JOIN LATERAL (
                 SELECT dcp.platform, dcp.app_version
                   FROM desktop_clients dcp
@@ -1255,8 +1301,6 @@ pub async fn list_users(
                 speech_top.speech_model AS primary_speech_model,
                 speech_top.cnt AS primary_speech_count,
                 COALESCE(agg.word_count, 0)::bigint AS word_count,
-                COALESCE(mtgu.meeting_cost_usd, 0)::float8 AS meeting_cost_usd,
-                COALESCE(mtgu.meetings_hosted, 0)::bigint AS meetings_hosted,
                 dcp.platform AS platform,
                 dcp.app_version AS app_version
              FROM org_members om
@@ -1297,14 +1341,6 @@ pub async fn list_users(
                  LIMIT 1
              ) speech_top ON true
              LEFT JOIN LATERAL (
-                SELECT COALESCE(SUM(mpu.estimated_cost_usd), 0)::float8 AS meeting_cost_usd,
-                       COUNT(DISTINCT mpu.meeting_id)::bigint AS meetings_hosted
-                  FROM meeting_provider_usage mpu
-                  JOIN meetings mtg ON mtg.id = mpu.meeting_id
-                 WHERE mtg.created_by = om.account_id AND mpu.org_id = $1
-                   AND ($2::timestamptz IS NULL OR mpu.created_at >= $2)
-             ) mtgu ON true
-             LEFT JOIN LATERAL (
                 SELECT dcp.platform, dcp.app_version
                   FROM desktop_clients dcp
                  WHERE dcp.org_id = $1 AND dcp.account_id = om.account_id
@@ -1327,11 +1363,18 @@ pub async fn list_users(
     let costs_by_user = fetch_cost_summaries(&state.db, org_id, None, since)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let meetings_by_user = fetch_meeting_totals_by_user(&state.db, org_id, None, since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let users: Vec<Value> = rows
         .into_iter()
         .map(|row| {
             let costs = costs_by_user
+                .get(&row.account_id)
+                .copied()
+                .unwrap_or_default();
+            let meeting = meetings_by_user
                 .get(&row.account_id)
                 .copied()
                 .unwrap_or_default();
@@ -1352,8 +1395,11 @@ pub async fn list_users(
                 "last_active_at": row.last_active_at,
                 "desktop_active": row.desktop_active,
                 "costs": costs,
-                "meeting_cost_usd": row.meeting_cost_usd,
-                "meetings_hosted": row.meetings_hosted,
+                "meeting_cost_usd": meeting.meeting_cost_usd,
+                "meetings_hosted": meeting.meeting_count,
+                "meeting_count": meeting.meeting_count,
+                "meeting_duration_seconds": meeting.meeting_duration_seconds,
+                "meeting_transcript_words": meeting.meeting_transcript_words,
                 "platform": row.platform,
                 "app_version": row.app_version,
                 "primary_speech": match (
@@ -1519,21 +1565,88 @@ pub async fn user_detail(
     .await
     .unwrap_or((0, 0, 0, 0, 0, 0, 0, 0));
 
-    // Per-user meeting AI rollup (host = meetings.created_by) within the window.
-    let (meeting_cost_usd, meetings_hosted): (f64, i64) = sqlx::query_as(
-        "SELECT COALESCE(SUM(mpu.estimated_cost_usd), 0)::float8,
-                COUNT(DISTINCT mpu.meeting_id)::bigint
-           FROM meeting_provider_usage mpu
-           JOIN meetings mtg ON mtg.id = mpu.meeting_id
-          WHERE mtg.created_by = $1 AND mpu.org_id = $2
-            AND ($3::timestamptz IS NULL OR mpu.created_at >= $3)",
+    let meeting_totals = fetch_meeting_totals_by_user(&state.db, org_id, Some(account_id), since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .remove(&account_id)
+        .unwrap_or_default();
+
+    #[derive(sqlx::FromRow)]
+    struct RecentMeetingRow {
+        id: Uuid,
+        source: String,
+        title: String,
+        status: String,
+        started_at: DateTime<Utc>,
+        duration_seconds: f64,
+        transcript_word_count: i64,
+        provider: Option<String>,
+        model: Option<String>,
+        usage_count: i64,
+        input_tokens: i64,
+        output_tokens: i64,
+        cost_usd: f64,
+    }
+    let recent_meeting_rows: Vec<RecentMeetingRow> = sqlx::query_as(
+        "SELECT * FROM (
+            SELECT m.id, 'legacy'::text AS source, m.title, m.status,
+                   COALESCE(m.started_at, m.created_at) AS started_at,
+                   GREATEST(COALESCE(EXTRACT(EPOCH FROM (m.ended_at - m.started_at)), 0), 0)::float8 AS duration_seconds,
+                   COALESCE((SELECT SUM(ms.word_count)::bigint FROM meeting_slots ms WHERE ms.meeting_id = m.id), 0)::bigint AS transcript_word_count,
+                   (SELECT MAX(mpu.provider) FROM meeting_provider_usage mpu WHERE mpu.meeting_id = m.id) AS provider,
+                   (SELECT MAX(mpu.model) FROM meeting_provider_usage mpu WHERE mpu.meeting_id = m.id) AS model,
+                   (SELECT COUNT(*)::bigint FROM meeting_provider_usage mpu WHERE mpu.meeting_id = m.id) AS usage_count,
+                   COALESCE((SELECT SUM(mpu.input_tokens)::bigint FROM meeting_provider_usage mpu WHERE mpu.meeting_id = m.id), 0)::bigint AS input_tokens,
+                   COALESCE((SELECT SUM(mpu.output_tokens)::bigint FROM meeting_provider_usage mpu WHERE mpu.meeting_id = m.id), 0)::bigint AS output_tokens,
+                   COALESCE((SELECT SUM(mpu.estimated_cost_usd)::float8 FROM meeting_provider_usage mpu WHERE mpu.meeting_id = m.id), 0)::float8 AS cost_usd
+              FROM meetings m
+             WHERE m.org_id = $1 AND m.created_by = $2
+               AND ($3::timestamptz IS NULL OR COALESCE(m.started_at, m.created_at) >= $3)
+
+            UNION ALL
+
+            SELECT lms.id, 'local'::text AS source, lms.title, lms.status,
+                   lms.started_at, lms.duration_seconds::float8,
+                   lms.transcript_word_count::bigint,
+                   (SELECT MAX(lmpu.provider) FROM local_meeting_provider_usage lmpu WHERE lmpu.local_meeting_session_id = lms.id) AS provider,
+                   (SELECT MAX(lmpu.model) FROM local_meeting_provider_usage lmpu WHERE lmpu.local_meeting_session_id = lms.id) AS model,
+                   (SELECT COUNT(*)::bigint FROM local_meeting_provider_usage lmpu WHERE lmpu.local_meeting_session_id = lms.id) AS usage_count,
+                   COALESCE((SELECT SUM(lmpu.prompt_tokens)::bigint FROM local_meeting_provider_usage lmpu WHERE lmpu.local_meeting_session_id = lms.id), 0)::bigint AS input_tokens,
+                   COALESCE((SELECT SUM(lmpu.completion_tokens)::bigint FROM local_meeting_provider_usage lmpu WHERE lmpu.local_meeting_session_id = lms.id), 0)::bigint AS output_tokens,
+                   COALESCE((SELECT SUM(lmpu.estimated_cost_usd)::float8 FROM local_meeting_provider_usage lmpu WHERE lmpu.local_meeting_session_id = lms.id), 0)::float8 AS cost_usd
+              FROM local_meeting_sessions lms
+             WHERE lms.org_id = $1 AND lms.account_id = $2
+               AND ($3::timestamptz IS NULL OR lms.started_at >= $3)
+        ) recent_meetings
+        ORDER BY started_at DESC
+        LIMIT 6",
     )
-    .bind(account_id)
     .bind(org_id)
+    .bind(account_id)
     .bind(since)
-    .fetch_one(&state.db)
+    .fetch_all(&state.db)
     .await
-    .unwrap_or((0.0, 0));
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let recent_meetings: Vec<Value> = recent_meeting_rows
+        .into_iter()
+        .map(|meeting| {
+            json!({
+                "id": meeting.id,
+                "source": meeting.source,
+                "title": meeting.title,
+                "status": meeting.status,
+                "started_at": meeting.started_at,
+                "duration_seconds": meeting.duration_seconds,
+                "transcript_word_count": meeting.transcript_word_count,
+                "provider": meeting.provider,
+                "model": meeting.model,
+                "usage_count": meeting.usage_count,
+                "input_tokens": meeting.input_tokens,
+                "output_tokens": meeting.output_tokens,
+                "cost_usd": meeting.cost_usd,
+            })
+        })
+        .collect();
 
     let daily_rollups: Vec<(
         NaiveDate,
@@ -1609,8 +1722,12 @@ pub async fn user_detail(
             "word_count": totals.word_count,
             "char_count": totals.char_count,
         },
-        "meeting_cost_usd": meeting_cost_usd,
-        "meetings_hosted": meetings_hosted,
+        "meeting_cost_usd": meeting_totals.meeting_cost_usd,
+        "meetings_hosted": meeting_totals.meeting_count,
+        "meeting_count": meeting_totals.meeting_count,
+        "meeting_duration_seconds": meeting_totals.meeting_duration_seconds,
+        "meeting_transcript_words": meeting_totals.meeting_transcript_words,
+        "recent_meetings": recent_meetings,
         "quality": quality_json(&totals),
         "quality_counts": {
             "accepted_as_is": totals.accepted,
@@ -2296,16 +2413,13 @@ pub async fn admin_overview(
         polish_usd += c.polish_usd;
     }
 
-    let meeting_usd: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(estimated_cost_usd), 0)::float8
-           FROM meeting_provider_usage
-          WHERE org_id = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)",
-    )
-    .bind(org_id)
-    .bind(since)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0.0);
+    let meeting_by_user = fetch_meeting_totals_by_user(&state.db, org_id, None, since)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let meeting_usd: f64 = meeting_by_user
+        .values()
+        .map(|meeting| meeting.meeting_cost_usd)
+        .sum();
 
     let totals = fetch_run_totals(&state.db, org_id, None, since)
         .await
@@ -2345,35 +2459,21 @@ pub async fn admin_overview(
         .map(|(d, runs)| json!({ "event_date": d.to_string(), "runs": runs }))
         .collect();
 
-    // Meeting spend per host account within the window.
-    let meeting_by_user: HashMap<Uuid, f64> = sqlx::query_as::<_, (Uuid, f64)>(
-        "SELECT mtg.created_by,
-                COALESCE(SUM(mpu.estimated_cost_usd), 0)::float8
-           FROM meeting_provider_usage mpu
-           JOIN meetings mtg ON mtg.id = mpu.meeting_id
-          WHERE mpu.org_id = $1 AND ($2::timestamptz IS NULL OR mpu.created_at >= $2)
-          GROUP BY mtg.created_by",
-    )
-    .bind(org_id)
-    .bind(since)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .collect();
-
     // Combine per-person spend, take the top 5 by total_usd.
     let mut people: Vec<(Uuid, f64, f64, i64)> = Vec::new();
     let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
     for (aid, c) in &costs_by_user {
         let dictation = c.stt_usd + c.polish_usd;
-        let meeting = meeting_by_user.get(aid).copied().unwrap_or(0.0);
+        let meeting = meeting_by_user
+            .get(aid)
+            .map(|totals| totals.meeting_cost_usd)
+            .unwrap_or(0.0);
         people.push((*aid, dictation, meeting, c.runs));
         seen.insert(*aid);
     }
     for (aid, meeting) in &meeting_by_user {
         if !seen.contains(aid) {
-            people.push((*aid, 0.0, *meeting, 0));
+            people.push((*aid, 0.0, meeting.meeting_cost_usd, 0));
         }
     }
     people.sort_by(|a, b| {
