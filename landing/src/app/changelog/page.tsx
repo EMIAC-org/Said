@@ -32,7 +32,7 @@ const latest = {
   date: "Jul 16, 2026",
   title: "Better UI. More accurate dictation.",
   intro:
-    "AirNote 2.4.4 is the current stable macOS release, with a clearer desktop experience, more accurate dictation, and a complete meeting workflow from live capture to summaries and tasks. The current Windows release remains 2.4.1.",
+    "AirNote 2.4.4 is the current stable macOS release, with a clearer desktop experience, more accurate dictation, and a complete meeting workflow from live capture to summaries and tasks. The current Windows release is 2.4.3.",
   sections: [
     {
       id: "interface",
@@ -123,8 +123,8 @@ const releaseDownloads = [
     ],
   },
   {
-    version: "2.4.1",
-    date: "Jun 27, 2026",
+    version: "2.4.3",
+    date: "Jul 17, 2026",
     title: "Current stable for Windows",
     downloads: [
       { platform: "Windows", label: "Windows setup", href: downloads.windows.latestSetup },
