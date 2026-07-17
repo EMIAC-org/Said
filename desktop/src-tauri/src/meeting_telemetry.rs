@@ -64,6 +64,11 @@ struct SessionDraft {
 struct TelemetryArtifact {
     schema_version: u8,
     draft: SessionDraft,
+    /// Immutable workspace captured when recording starts. It is deliberately
+    /// artifact metadata rather than a server request field: the local backend
+    /// uses it only to select the authenticated delivery context on retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin_org_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<SessionPayload>,
     #[serde(default)]
@@ -173,6 +178,25 @@ pub fn begin_session(
     started_at_ms: u64,
     ended_at_ms: u64,
 ) {
+    begin_session_with_origin(
+        artifact_dir,
+        client_session_id,
+        started_at_ms,
+        ended_at_ms,
+        None,
+    );
+}
+
+/// Start the durable telemetry artifact with the workspace that was active when
+/// recording began. The value is write-once: updating the end timestamp or
+/// recovering a recording must never reattribute it after a workspace switch.
+pub fn begin_session_with_origin(
+    artifact_dir: &Path,
+    client_session_id: &str,
+    started_at_ms: u64,
+    ended_at_ms: u64,
+    origin_org_id: Option<&str>,
+) {
     if !artifact_dir.is_dir() {
         return;
     }
@@ -186,6 +210,7 @@ pub fn begin_session(
             started_at_ms: clamp_ms(started_at_ms),
             ended_at_ms: clamp_ms(ended_at_ms.max(started_at_ms)),
         },
+        origin_org_id: clean_origin_org_id(origin_org_id),
         session: None,
         provider_usage: Vec::new(),
     });
@@ -197,6 +222,13 @@ pub fn begin_session(
     if let Err(error) = write_artifact(artifact_dir, &artifact) {
         tracing::warn!(error = %error, dir = %artifact_dir.display(), "[meeting_telemetry] failed to start artifact");
     }
+}
+
+fn clean_origin_org_id(origin_org_id: Option<&str>) -> Option<String> {
+    origin_org_id
+        .map(str::trim)
+        .filter(|org_id| !org_id.is_empty() && org_id.len() <= 128)
+        .map(str::to_string)
 }
 
 pub fn finalize_session(artifact_dir: &Path, status: &str) {
@@ -398,6 +430,22 @@ mod tests {
                 "unexpected content field: {forbidden}"
             );
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn origin_workspace_is_write_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-meeting-telemetry-origin-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        begin_session_with_origin(&dir, "local-origin", 1_000, 1_000, Some("org-a"));
+        begin_session_with_origin(&dir, "local-origin", 1_000, 2_000, Some("org-b"));
+
+        let artifact = read_artifact(&dir).unwrap();
+        assert_eq!(artifact.origin_org_id.as_deref(), Some("org-a"));
+        assert_eq!(artifact.draft.ended_at_ms, 2_000);
         let _ = fs::remove_dir_all(dir);
     }
 

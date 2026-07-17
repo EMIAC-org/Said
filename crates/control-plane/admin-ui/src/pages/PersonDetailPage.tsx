@@ -26,16 +26,32 @@ export function PersonDetailPage() {
   const orgId = org?.org?.id
 
   useEffect(() => {
-    if (!orgId || !id) { setLoading(false); return }
+    if (!orgId || !id) {
+      setData(null)
+      setRuns([])
+      setError('')
+      setLoading(false)
+      return
+    }
+    let active = true
     setLoading(true)
+    setError('')
     const days = winDays(win)
     Promise.all([
       apiJson<PersonDetail>(`/v1/orgs/${orgId}/telemetry/users/${id}?days=${days}`),
       apiJson<{ runs: TelemetryRun[] }>(`/v1/orgs/${orgId}/telemetry/users/${id}/runs?days=${days}&limit=6`).catch(() => ({ runs: [] })),
     ])
-      .then(([detail, runsRes]) => { setData(detail); setRuns(runsRes.runs || []) })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+      .then(([detail, runsRes]) => {
+        if (active) {
+          setData(detail)
+          setRuns(runsRes.runs || [])
+        }
+      })
+      .catch(error => {
+        if (active) setError(error instanceof Error ? error.message : 'Unable to load person.')
+      })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
   }, [orgId, id, win])
 
   if (loading) return <Loading />

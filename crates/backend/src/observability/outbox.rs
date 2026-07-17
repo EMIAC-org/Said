@@ -217,6 +217,7 @@ fn insert_row(
         payload,
         active_org_id.as_deref(),
     )
+    .map(|_| ())
 }
 
 fn insert_row_with_org(
@@ -226,7 +227,7 @@ fn insert_row_with_org(
     recording_id: Option<&str>,
     payload: &impl Serialize,
     active_org_id: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let payload_json =
         serde_json::to_string(payload).map_err(|e| format!("serialize outbox payload: {e}"))?;
     let conn = pool.get().map_err(|e| e.to_string())?;
@@ -236,8 +237,8 @@ fn insert_row_with_org(
          VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6)",
         params![user_id, op, recording_id, payload_json, now_ms(), active_org_id],
     )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    .map(|changed| changed > 0)
+    .map_err(|e| e.to_string())
 }
 
 pub fn enqueue_dictation_upsert(
@@ -296,17 +297,51 @@ pub fn enqueue_meeting_session(
     )
 }
 
+/// Queue a meeting session in the workspace that was active when recording
+/// started. Unlike the generic enqueue path, this must never look up the user's
+/// current workspace: an offline meeting can be scanned after a workspace switch.
+pub fn enqueue_meeting_session_for_org(
+    pool: &DbPool,
+    user_id: &str,
+    payload: MeetingSessionPayload,
+    origin_org_id: &str,
+) -> Result<bool, String> {
+    let origin_org_id = origin_org_id.trim();
+    if origin_org_id.is_empty() || origin_org_id.len() > 128 {
+        return Err("meeting session origin workspace is empty".to_string());
+    }
+    let event_key = payload.client_session_id.clone();
+    insert_row_with_org(
+        pool,
+        user_id,
+        "upsert_meeting_session",
+        Some(&event_key),
+        &payload,
+        Some(origin_org_id),
+    )
+}
+
 pub fn enqueue_meeting_provider_usage(
     pool: &DbPool,
     user_id: &str,
     payload: MeetingProviderUsagePayload,
 ) -> Result<(), String> {
+    enqueue_meeting_provider_usage_with_outcome(pool, user_id, payload).map(|_| ())
+}
+
+/// Queue provider usage and report whether scanning added work that still needs
+/// uploading. The usage inherits the parent session's immutable workspace.
+pub fn enqueue_meeting_provider_usage_with_outcome(
+    pool: &DbPool,
+    user_id: &str,
+    payload: MeetingProviderUsagePayload,
+) -> Result<bool, String> {
     let event_key = payload.idempotency_key.clone();
     let parent_org =
         meeting_session_org(pool, user_id, &payload.client_session_id)?.ok_or_else(|| {
             "meeting usage has no parent session outbox row with an active org".to_string()
         })?;
-    insert_row_with_org(
+    let inserted = insert_row_with_org(
         pool,
         user_id,
         "upsert_meeting_provider_usage",
@@ -319,15 +354,17 @@ pub fn enqueue_meeting_provider_usage(
     // INSERT OR IGNORE preserves event idempotency, while this update restores
     // the immutable org ownership inherited from the parent meeting session.
     let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE observability_outbox
+    let repaired = conn
+        .execute(
+            "UPDATE observability_outbox
             SET active_org_id = ?3
           WHERE user_id = ?1 AND op = 'upsert_meeting_provider_usage'
             AND recording_id = ?2 AND status != 'done' AND active_org_id IS NOT ?3",
-        params![user_id, event_key, parent_org],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+            params![user_id, event_key, parent_org],
+        )
+        .map_err(|e| e.to_string())?
+        > 0;
+    Ok(inserted || repaired)
 }
 
 pub fn list_pending(pool: &DbPool, user_id: &str, limit: i64) -> Result<Vec<OutboxRow>, String> {

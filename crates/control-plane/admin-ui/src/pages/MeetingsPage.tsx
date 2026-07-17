@@ -28,12 +28,22 @@ export function MeetingsPage() {
   const orgId = org?.org?.id
 
   useEffect(() => {
-    if (!orgId) { setLoading(false); return }
+    if (!orgId) {
+      setData(null)
+      setError('')
+      setLoading(false)
+      return
+    }
+    let active = true
     setLoading(true)
+    setError('')
     apiJson<OrgMeetingCosts>(`/v1/orgs/${orgId}/meetings/costs?days=${winDays(win)}`)
-      .then(setData)
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+      .then(result => { if (active) setData(result) })
+      .catch(error => {
+        if (active) setError(error instanceof Error ? error.message : 'Unable to load meetings.')
+      })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
   }, [orgId, win])
 
   function openMeeting(row: MeetingCostRow) {

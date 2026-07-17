@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use said_recorder::{CHANNELS, SAMPLE_RATE, resample_to_16k};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 trait LockRecoverExt<T> {
     fn lock_recover(&self) -> std::sync::MutexGuard<'_, T>;
@@ -1342,12 +1342,17 @@ impl MeetingEngineState {
         }
     }
 
-    fn start(&self, meeting_id: Option<String>, app: Option<AppHandle>) -> MeetingEngineStatus {
-        self.start_session_with_app(true, meeting_id, app)
+    fn start(
+        &self,
+        meeting_id: Option<String>,
+        app: Option<AppHandle>,
+        origin_org_id: Option<String>,
+    ) -> MeetingEngineStatus {
+        self.start_session_with_app(true, meeting_id, app, origin_org_id)
     }
 
     fn start_session(&self, enable_mic_capture: bool) -> MeetingEngineStatus {
-        self.start_session_with_app(enable_mic_capture, None, None)
+        self.start_session_with_app(enable_mic_capture, None, None, None)
     }
 
     fn start_session_with_app(
@@ -1355,6 +1360,7 @@ impl MeetingEngineState {
         enable_mic_capture: bool,
         meeting_id: Option<String>,
         app: Option<AppHandle>,
+        origin_org_id: Option<String>,
     ) -> MeetingEngineStatus {
         self.muted.store(false, Ordering::SeqCst);
 
@@ -1415,11 +1421,12 @@ impl MeetingEngineState {
                 mic_wav_path,
                 system_wav_path,
             });
-            crate::meeting_telemetry::begin_session(
+            crate::meeting_telemetry::begin_session_with_origin(
                 &artifact_dir,
                 &session_id,
                 started_at_ms,
                 started_at_ms,
+                origin_org_id.as_deref(),
             );
             *self.last_mic_summary.lock_recover() = None;
             *self.last_system_summary.lock_recover() = None;
@@ -3127,9 +3134,29 @@ pub async fn meeting_engine_start_session(
     }
     ensure_meeting_local_transcription_ready()?;
     tracing::info!(meeting_id = ?meeting_id, "[meeting_engine] start session");
-    let status = state.start(meeting_id, Some(app.clone()));
+    let origin_org_id = active_workspace_at_recording_start(&app).await;
+    let status = state.start(meeting_id, Some(app.clone()), origin_org_id);
     emit_main(&app, STATUS_EVENT, status.clone());
     Ok(status)
+}
+
+/// Read the local backend's active workspace before recording begins. The
+/// metadata artifact stores this once, so a later workspace switch cannot
+/// reattribute an offline meeting when the backend scanner eventually uploads it.
+async fn active_workspace_at_recording_start(app: &AppHandle) -> Option<String> {
+    let endpoint = app
+        .try_state::<crate::BackendState>()
+        .and_then(|state| state.0.lock().ok().and_then(|endpoint| endpoint.clone()));
+    let endpoint = endpoint?;
+    match crate::api::get_enterprise_status(&endpoint).await {
+        Ok(status) => status
+            .active_org_id
+            .filter(|org_id| !org_id.trim().is_empty()),
+        Err(error) => {
+            tracing::debug!(error = %error, "[meeting_engine] no active workspace to bind to meeting telemetry");
+            None
+        }
+    }
 }
 
 /// The session id doubles as the on-disk artifact directory name, so a
