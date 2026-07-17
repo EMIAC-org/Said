@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { useWindowRange, winDays } from '../lib/window'
-import { usd, timeAgo, firstName, personName } from '../lib/format'
-import { Avatar, Loading, ErrorBox, Empty } from '../components/ui'
+import { usd, timeAgo, firstName, personName, shortId } from '../lib/format'
+import { Avatar, Loading, ErrorBox, Empty, TruncatedChip } from '../components/ui'
 import { useDrawer } from '../components/Drawer'
 import { RunDrawerHead, RunDrawerBody } from '../components/RunDrawer'
 import type { OrgRun, OrgRunsResponse } from '../lib/adminTypes'
@@ -55,7 +55,19 @@ export function RunsPage() {
           {!data || data.runs.length === 0 ? (
             <Empty title="No runs in this window" message="Try a wider time range." />
           ) : (
-            <table>
+            <table className="table-fixed runs-table">
+              <colgroup>
+                <col className="col-run" />
+                <col className="col-person" />
+                {platformAdmin && <col className="col-workspace" />}
+                <col className="col-app" />
+                <col className="col-model" />
+                <col className="col-model" />
+                <col className="col-latency" />
+                <col className="col-words" />
+                <col className="col-cost" />
+                <col className="col-arrow" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Run</th><th>Person</th>{platformAdmin && <th>Workspace</th>}<th>App</th><th>STT model</th><th>Polish model</th>
@@ -66,14 +78,14 @@ export function RunsPage() {
                 {data.runs.map(r => (
                   <tr key={`${r.org_id ?? orgId}:${r.run_id}`} className="clickable" onClick={() => openRun(r)}>
                     <td>
-                      <div className="cell-strong mono" style={{ fontSize: 11.5 }}>{r.run_id}</div>
+                      <div className="cell-strong mono truncate" style={{ fontSize: 11.5 }} title={r.run_id}>{shortId(r.run_id)}</div>
                       <div style={{ fontSize: 11, color: 'var(--muted)' }}>{timeAgo(r.event_at)}</div>
                     </td>
                     <td><div className="person-cell"><Avatar name={personName(r.lark_name, r.email)} size={24} /><span className="nm" style={{ fontSize: 12.5 }}>{firstName(r.name || personName(r.lark_name, r.email))}</span></div></td>
-                    {platformAdmin && <td><span className="chip">{r.org_name || r.org_slug || 'Unknown'}</span></td>}
-                    <td><span className="chip">{r.target_app || 'Unknown'}</span></td>
-                    <td><span className="chip mono">{r.speech_model || 'local'}</span></td>
-                    <td><span className="chip mono">{r.polish_attempts?.[0]?.model || '—'}</span></td>
+                    {platformAdmin && <td><TruncatedChip value={r.org_name || r.org_slug || 'Unknown'} /></td>}
+                    <td><TruncatedChip value={r.target_app || 'Unknown'} /></td>
+                    <td><TruncatedChip value={r.speech_model || 'local'} mono /></td>
+                    <td><TruncatedChip value={r.polish_attempts?.[0]?.model || '—'} mono /></td>
                     <td className="r mono" style={{ fontSize: 11.5, color: 'var(--body)' }}>{r.total_ms ?? '—'}ms</td>
                     <td className="r tnum">{r.word_count ?? 0}</td>
                     <td className="r">

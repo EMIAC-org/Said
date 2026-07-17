@@ -9,9 +9,15 @@ default:
 # ── Day-to-day ───────────────────────────────────────────────────────────────
 
 # Build the airnote-backend, sync it to the Tauri sidecar slot, then launch
-# the desktop app in dev mode (Vite + Tauri).
+# raw Tauri dev mode (Vite + Rust logs attached to this terminal).
 dev:
     ./dev.sh
+
+# Launch dev through a temporary macOS .app wrapper. Use this only when testing
+# packaged-app activation or permission behaviour; LaunchServices may detach
+# stdout/stderr when the calling shell has no TTY.
+dev-app:
+    AIRNOTE_DEV_APP_BUNDLE=1 ./dev.sh
 
 # Enterprise admin stack: rebuild control-plane, start API (:3100) + admin UI (:5174).
 # Vite proxies /v1 to the API — always use this instead of starting binaries manually.

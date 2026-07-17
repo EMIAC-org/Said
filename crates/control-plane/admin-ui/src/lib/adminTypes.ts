@@ -120,7 +120,15 @@ export interface OrgMeetingCosts {
   total_transcript_words: number
   total_cost_usd: number
   total_tokens: number
+  rate_cards: MeetingRateCard[]
   meetings: MeetingCostRow[]
+}
+
+export interface MeetingRateCard {
+  model: string
+  cache_hit_usd_per_million: number
+  cache_miss_usd_per_million: number
+  output_usd_per_million: number
 }
 
 export interface MeetingCostDetail {

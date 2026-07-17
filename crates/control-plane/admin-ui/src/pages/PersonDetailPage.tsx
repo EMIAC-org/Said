@@ -3,9 +3,9 @@ import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { useWindowRange, WIN_LABEL, winDays } from '../lib/window'
-import { usd, usd2, num } from '../lib/format'
+import { usd, usd2, num, shortId } from '../lib/format'
 import { osLabel, osGlyph } from '../lib/format'
-import { StatTile, Sparkline, SplitBar, Avatar, Loading, ErrorBox } from '../components/ui'
+import { StatTile, Sparkline, SplitBar, Avatar, Loading, ErrorBox, TruncatedChip } from '../components/ui'
 import { useDrawer } from '../components/Drawer'
 import { RunDrawerHead, RunDrawerBody } from '../components/RunDrawer'
 import { MeetingDrawerHead, MeetingDrawerBody } from '../components/MeetingDrawer'
@@ -180,8 +180,8 @@ export function PersonDetailPage() {
                   <td className="cell-strong">{meeting.title}<div className="em">{meeting.source === 'local' ? 'Local desktop' : 'Historical cloud'}</div></td>
                   <td className="r tnum">{Math.round(meeting.duration_seconds / 60)}m</td>
                   <td className="r tnum">{num(meeting.transcript_word_count)}</td>
-                  <td><span className="chip mono">{meeting.usage_count === 0 ? 'No AI usage' : meeting.model || 'Unknown model'}</span></td>
-                  <td className="r"><span className="cost">{usd2(meeting.cost_usd)}</span></td>
+                  <td><span className="chip mono">{meeting.usage_count === 0 ? 'AI not run' : meeting.model || 'Unknown model'}</span></td>
+                  <td className="r"><span className="cost">{meeting.usage_count === 0 ? '—' : usd2(meeting.cost_usd)}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -194,14 +194,15 @@ export function PersonDetailPage() {
         {runs.length === 0 ? (
           <div className="card-pad" style={{ color: 'var(--muted)', fontSize: 13 }}>No runs in this window.</div>
         ) : (
-          <table>
+          <table className="table-fixed person-runs-table">
+            <colgroup><col className="col-run" /><col /><col className="col-model" /><col className="col-words" /><col className="col-cost" /></colgroup>
             <thead><tr><th>Run</th><th>App</th><th>Model</th><th className="r">Words</th><th className="r">Cost</th></tr></thead>
             <tbody>
               {runs.map(r => (
                 <tr key={r.run_id} className="clickable" onClick={() => openRun(r)}>
-                  <td className="mono cell-strong" style={{ fontSize: 11.5 }}>{r.run_id}</td>
-                  <td><span className="chip">{r.target_app || 'Unknown'}</span></td>
-                  <td><span className="chip mono">{r.speech_model || 'local'}</span></td>
+                  <td className="mono cell-strong" style={{ fontSize: 11.5 }} title={r.run_id}>{shortId(r.run_id)}</td>
+                  <td><TruncatedChip value={r.target_app || 'Unknown'} /></td>
+                  <td><TruncatedChip value={r.speech_model || 'local'} mono /></td>
                   <td className="r tnum">{r.word_count ?? 0}</td>
                   <td className="r"><span className="cost">{usd(r.total_cost_usd)}</span></td>
                 </tr>

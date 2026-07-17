@@ -36,6 +36,14 @@ cp "target/$HOST_TARGET/release/whisper-cli" \
    "desktop/src-tauri/binaries/whisper-cli-$HOST_TARGET"
 
 echo "▶ launching tauri dev..."
-RUNNER="$(pwd)/scripts/tauri-dev-runner.sh"
+export AIRNOTE_DEV_STDERR=1
+export RUST_LOG="${RUST_LOG:-info,said_desktop=debug,said_backend=debug,said_hotkey=debug,said_paster=debug}"
 cd desktop
-npm run tauri:dev -- --runner "$RUNNER"
+if [ "${AIRNOTE_DEV_APP_BUNDLE:-0}" = "1" ]; then
+  RUNNER="$(cd .. && pwd)/scripts/tauri-dev-runner.sh"
+  echo "▶ using macOS .app wrapper (logs may also be written to said.log/backend.log)"
+  npm run tauri:dev -- --runner "$RUNNER"
+else
+  echo "▶ terminal logging enabled (RUST_LOG=$RUST_LOG)"
+  npm run tauri:dev
+fi

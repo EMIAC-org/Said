@@ -59,6 +59,12 @@ export function firstName(name?: string | null): string {
   return (name || '').trim().split(/\s+/)[0] || '—'
 }
 
+/** Compact identifiers in dense tables; the full value remains available in a title. */
+export function shortId(value: string, head = 8, tail = 4): string {
+  if (value.length <= head + tail + 1) return value
+  return `${value.slice(0, head)}…${value.slice(-tail)}`
+}
+
 /** Display name for a person from their lark_name / email. */
 export function personName(larkName?: string | null, email?: string | null): string {
   return larkName || email?.split('@')[0] || 'Unknown'

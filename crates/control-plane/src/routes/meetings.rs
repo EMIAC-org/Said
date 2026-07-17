@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
-use crate::{AppState, auth::AuthUser, tenant};
+use crate::{AppState, auth::AuthUser, costs, tenant};
 
 // ── Request / response types ────────────────────────────────────────────────
 
@@ -1400,6 +1400,20 @@ pub async fn org_meeting_costs(
         "total_transcript_words": total_transcript_words,
         "total_cost_usd": total_cost_usd,
         "total_tokens": total_tokens,
+        "rate_cards": [
+            {
+                "model": "deepseek-v4-flash",
+                "cache_hit_usd_per_million": costs::DEEPSEEK_V4_FLASH_CACHE_HIT_USD_PER_MILLION,
+                "cache_miss_usd_per_million": costs::DEEPSEEK_V4_FLASH_INPUT_USD_PER_MILLION,
+                "output_usd_per_million": costs::DEEPSEEK_V4_FLASH_OUTPUT_USD_PER_MILLION,
+            },
+            {
+                "model": "deepseek-v4-pro",
+                "cache_hit_usd_per_million": costs::DEEPSEEK_V4_PRO_CACHE_HIT_USD_PER_MILLION,
+                "cache_miss_usd_per_million": costs::DEEPSEEK_V4_PRO_CACHE_MISS_USD_PER_MILLION,
+                "output_usd_per_million": costs::DEEPSEEK_V4_PRO_OUTPUT_USD_PER_MILLION,
+            }
+        ],
         "meetings": meetings,
     })))
 }
