@@ -73,7 +73,9 @@ check: fmt-check clippy test typecheck
 bump VERSION:
     ./scripts/bump-version.sh {{VERSION}}
 
-# Build a signed AirNote.app + DMG for the given target.
+# Build a signed, notarized, updater-signed AirNote.app + DMG for the given
+# target. Credentials are preflighted from the local macOS Keychain and
+# ~/.tauri/said-updater.key; no manual exports are required.
 # Default target is the host arch on Apple Silicon.
 #   just dmg                       # aarch64
 #   just dmg x86_64-apple-darwin   # Intel

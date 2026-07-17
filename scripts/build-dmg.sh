@@ -55,6 +55,18 @@ fail()  { echo -e "\n  ${red}✗ $*${nc}\n"; exit 1; }
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
+# A normal `just dmg` is a distributable build: its updater archive must be
+# signed and the resulting DMG must be notarized. Load both credentials from
+# their dedicated local Keychain/key-file sources before compiling, so a
+# missing credential fails immediately instead of after a long Tauri build.
+# `just local-dmg` deliberately disables updater artifacts and only needs the
+# notarization credentials.
+source "$REPO_ROOT/scripts/release-credentials.sh"
+airnote_load_notarization_credentials || exit 1
+if [ "${AIRNOTE_LOCAL_TEST_DMG:-0}" != "1" ]; then
+  airnote_load_updater_signing_credentials || exit 1
+fi
+
 # whisper-rs/ggml compiles Metal Objective-C objects with Apple clang. Those
 # objects can reference clang runtime helpers such as __isPlatformVersionAtLeast.
 # rustc drives the final link with -nodefaultlibs, so the clang runtime archive is
@@ -318,21 +330,21 @@ APPLE_ASP="${APPLE_APP_SPECIFIC_PASSWORD:-${APPLE_PASSWORD:-}}"
 APPLE_NOTARY_PROFILE="${APPLE_KEYCHAIN_PROFILE:-}"
 REQUIRE_NOTARIZATION="${AIRNOTE_REQUIRE_NOTARIZATION:-0}"
 
-if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
+if [ -n "$APPLE_NOTARY_PROFILE" ]; then
+  step "Notarize DMG with Apple keychain profile: $APPLE_NOTARY_PROFILE"
+  NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-25m}"
+  xcrun notarytool submit "$DMG_OUT" \
+    --keychain-profile "$APPLE_NOTARY_PROFILE" \
+    --timeout "$NOTARY_TIMEOUT" \
+    --wait 2>&1 | sed 's/^/  /'
+  ok "notarization submitted"
+elif [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
   step "Notarize DMG with Apple"
   NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-25m}"
   xcrun notarytool submit "$DMG_OUT" \
     --apple-id "$APPLE_ID_EMAIL" \
     --team-id "$TEAM_ID" \
     --password "$APPLE_ASP" \
-    --timeout "$NOTARY_TIMEOUT" \
-    --wait 2>&1 | sed 's/^/  /'
-  ok "notarization submitted"
-elif [ -n "$APPLE_NOTARY_PROFILE" ]; then
-  step "Notarize DMG with Apple keychain profile: $APPLE_NOTARY_PROFILE"
-  NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-25m}"
-  xcrun notarytool submit "$DMG_OUT" \
-    --keychain-profile "$APPLE_NOTARY_PROFILE" \
     --timeout "$NOTARY_TIMEOUT" \
     --wait 2>&1 | sed 's/^/  /'
   ok "notarization submitted"
@@ -343,7 +355,7 @@ else
   warn "DMG is signed but NOT notarized (users will see 'identified developer' warning)"
 fi
 
-if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ] || [ -n "$APPLE_NOTARY_PROFILE" ]; then
+if [ -n "$APPLE_NOTARY_PROFILE" ] || { [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; }; then
   step "Staple notarization ticket"
   xcrun stapler staple "$DMG_OUT" 2>&1 | sed 's/^/  /'
   ok "stapled"
