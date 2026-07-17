@@ -1,5 +1,5 @@
-//! Eval harness for the keyboard-shortcut text helpers (⌥1 Polish My Message,
-//! ⌥2 Convert to English). Runs a curated corpus through the EXACT server
+//! Eval harness for the keyboard-shortcut text helpers (⌥1–⌥5). Runs a curated
+//! corpus through the exact Gemma 4 server prompt and provider adapter the shortcuts
 //! prompt + model the shortcuts use, and checks deterministic invariants so we
 //! can prove the persona-leak bug ("tum kon ho" -> the model introduces itself)
 //! is gone and stays gone.
@@ -10,12 +10,13 @@
 //! breaking on baseline and holding on the fix.
 //!
 //! Usage (from crates/control-plane):
-//!   DEEPSEEK_API_KEY=... cargo run --bin eval_message_helpers
-//!   DEEPSEEK_API_KEY=... cargo run --bin eval_message_helpers -- --repeats 3
+//!   DEEPINFRA_API_KEY=... cargo run --bin eval_message_helpers
+//!   DEEPINFRA_API_KEY=... cargo run --bin eval_message_helpers -- --repeats 3
 //!
 //! Flags:
 //!   --repeats N                 run each case N times (catch nondeterminism; default 1)
-//!   --mode polish|to_english|both   which NEW-prompt modes to test (default both)
+//!   --mode polish|to_english|casual|concise|hinglish|all
+//!                              which prompt modes to test (default all)
 //!   --no-baseline               skip the OLD-prompt column
 //!   --only <substr>             only cases whose id/category contains <substr>
 
@@ -450,69 +451,22 @@ fn corpus() -> Vec<Case> {
 
 // ── Model calls (exact server params) ────────────────────────────────────────
 
-async fn call_model(client: &reqwest::Client, system: &str, user: &str) -> Result<String, String> {
-    let est_in = user.len() / 4;
-    let base = std::env::var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| "https://api.deepseek.com".to_string())
-        .trim_end_matches('/')
-        .to_string();
-    let model = std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
-        .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
-    let max_tokens = (est_in * 2 + 256).min(4096);
-    let body = serde_json::json!({
-        "model": model,
-        "temperature": 0.0,
-        "top_p": 0.9,
-        "max_tokens": max_tokens,
-        "stream": false,
-        "thinking": { "type": "disabled" },
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ]
-    });
-    let key = std::env::var("DEEPSEEK_API_KEY").unwrap_or_default();
-    let url = format!("{base}/v1/chat/completions");
+async fn call_model(system: &str, user: &str) -> Result<String, String> {
+    let key = std::env::var("DEEPINFRA_API_KEY").unwrap_or_default();
     if key.trim().is_empty() {
-        return Err("API key env var is empty".to_string());
+        return Err("DEEPINFRA_API_KEY is empty".to_string());
     }
 
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let preview = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "HTTP {status}: {}",
-            preview.chars().take(200).collect::<String>()
-        ));
-    }
-    let value: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse failed: {e}"))?;
-    let content = value["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    Ok(strip_reasoning(&content))
-}
-
-/// Defensive: some gpt-oss responses prepend a hidden reasoning block.
-fn strip_reasoning(s: &str) -> String {
-    let s = s.trim();
-    if let Some(end) = s.find("</think>") {
-        return s[end + "</think>".len()..].trim().to_string();
-    }
-    s.to_string()
+    said_control_plane::deepinfra::call_deepinfra(
+        &key,
+        said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
+        system,
+        user,
+        None,
+    )
+    .await
+    .map(|completion| completion.text)
+    .map_err(|(_, payload)| payload.0.to_string())
 }
 
 // ── Runner ───────────────────────────────────────────────────────────────────
@@ -526,7 +480,16 @@ struct Args {
 
 fn parse_args() -> Args {
     let mut repeats = 1usize;
-    let mut modes = vec![HelperMode::Polish, HelperMode::ToEnglish];
+    let all_modes = || {
+        vec![
+            HelperMode::Polish,
+            HelperMode::ToEnglish,
+            HelperMode::Casual,
+            HelperMode::Concise,
+            HelperMode::Hinglish,
+        ]
+    };
+    let mut modes = all_modes();
     let mut baseline = true;
     let mut only = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -542,7 +505,10 @@ fn parse_args() -> Args {
                 modes = match argv.get(i).map(String::as_str) {
                     Some("polish") => vec![HelperMode::Polish],
                     Some("to_english") => vec![HelperMode::ToEnglish],
-                    _ => vec![HelperMode::Polish, HelperMode::ToEnglish],
+                    Some("casual") => vec![HelperMode::Casual],
+                    Some("concise") => vec![HelperMode::Concise],
+                    Some("hinglish") => vec![HelperMode::Hinglish],
+                    _ => all_modes(),
                 };
             }
             "--no-baseline" => baseline = false,
@@ -573,12 +539,10 @@ fn run_gates(gates: &[Gate], output: &str) -> Vec<String> {
 #[tokio::main]
 async fn main() {
     let args = parse_args();
-    let client = reqwest::Client::new();
     let cases = corpus();
 
     println!(
-        "\n=== eval_message_helpers · model={} · repeats={} · modes={} ===",
-        "deepseek",
+        "\n=== eval_message_helpers · model=gemma-4-26b-a4b · repeats={} · modes={} ===",
         args.repeats,
         args.modes
             .iter()
@@ -607,7 +571,7 @@ async fn main() {
             let mut fails: Vec<String> = Vec::new();
             let mut last_out = String::new();
             for _ in 0..args.repeats {
-                match call_model(&client, &sys, &usr).await {
+                match call_model(&sys, &usr).await {
                     Ok(out) => {
                         last_out = out.clone();
                         fails = run_gates(&case.gates, &out);
@@ -649,7 +613,7 @@ async fn main() {
             let mut fails: Vec<String> = Vec::new();
             let mut last_out = String::new();
             for _ in 0..args.repeats {
-                match call_model(&client, &sys, &usr).await {
+                match call_model(&sys, &usr).await {
                     Ok(out) => {
                         last_out = out.clone();
                         fails = run_gates(&case.gates, &out);
@@ -687,7 +651,7 @@ async fn main() {
         }
     }
 
-    println!("\n──────────── SUMMARY ({}) ────────────", "deepseek");
+    println!("\n──────────── SUMMARY (gemma-4-26b-a4b) ────────────");
     if args.baseline {
         println!(
             "BASELINE (old prompt):  {}/{} passed  ({:.0}%)",

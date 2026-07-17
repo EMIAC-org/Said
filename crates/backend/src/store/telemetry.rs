@@ -660,7 +660,7 @@ mod tests {
     use r2d2::Pool;
     use r2d2_sqlite::SqliteConnectionManager;
 
-    use super::{RunSummaryPatch, load_run, patch_run};
+    use super::{RunSummaryPatch, load_run, patch_run, should_upload};
 
     #[test]
     fn round_trips_actual_speech_provider() {
@@ -696,6 +696,37 @@ mod tests {
         let row = load_run(&pool, "user-1", "run-1").unwrap();
         assert_eq!(row.speech_provider.as_deref(), Some("deepinfra"));
         assert_eq!(row.speech_path.as_deref(), Some("http_batch"));
+    }
+
+    #[test]
+    fn immediate_upload_threshold_stays_at_ten_completed_runs() {
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch(&format!(
+                "{}\n{}\n{}",
+                include_str!("migrations/041_telemetry.sql"),
+                include_str!("migrations/042_telemetry_stt.sql"),
+                include_str!("migrations/064_telemetry_speech_provider.sql"),
+            ))
+            .unwrap();
+
+        for index in 1..=10 {
+            patch_run(
+                &pool,
+                "user-1",
+                &format!("run-{index}"),
+                &RunSummaryPatch {
+                    finalize: true,
+                    ..RunSummaryPatch::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(should_upload(&pool, "user-1"), index == 10);
+        }
     }
 }
 

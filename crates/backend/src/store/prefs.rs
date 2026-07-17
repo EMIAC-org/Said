@@ -87,7 +87,8 @@ pub fn validate_polish_model_key(raw: &str) -> String {
     said_core::polish::model::validate_polish_model_key(raw)
 }
 
-/// Server polish runtime is always enabled — polish routes through control-plane.
+/// Server polish runtime is always enabled for interactive dictation so the
+/// desktop never diverges from the production Gemma route.
 pub fn server_runtime_forced() -> bool {
     true
 }

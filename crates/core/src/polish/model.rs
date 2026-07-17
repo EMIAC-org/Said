@@ -13,7 +13,7 @@ pub const GROQ_POLISH_MODEL_SMART_DEFAULT: &str = "llama-3.3-70b-versatile";
 /// Paid Gemma 4 26B A4B via DeepInfra's direct OpenAI-compatible API.
 pub const DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B: &str = "google/gemma-4-26B-A4B-it";
 
-/// The only selectable production polish model.
+/// The only selectable production dictation-polish model.
 pub const DEFAULT_POLISH_MODEL_KEY: &str = "deepinfra-gemma-4-26b-a4b";
 
 /// One selectable polish model in the catalog.
@@ -29,7 +29,8 @@ pub struct PolishModelSpec {
     pub beta_only: bool,
 }
 
-/// Curated catalog. The product exposes only what the runtime actually uses.
+/// Curated catalog. Interactive dictation deliberately exposes one route so
+/// every voice/text helper uses the same quality model.
 pub const POLISH_MODEL_CATALOG: &[PolishModelSpec] = &[PolishModelSpec {
     key: DEFAULT_POLISH_MODEL_KEY,
     label: "Gemma 4 26B A4B (DeepInfra)",
@@ -76,7 +77,8 @@ pub fn normalize_selected_model(raw: &str) -> String {
     validate_polish_model_key(raw)
 }
 
-/// Production polish is hard-pinned to paid Gemma 4 26B A4B via DeepInfra.
+/// Interactive dictation is hard-pinned to paid Gemma 4 via DeepInfra. Stored
+/// legacy selections cannot route a user to a different polish provider.
 pub fn resolve_polish_route(_selected_model: &str) -> PolishRoute {
     let spec = catalog_spec(DEFAULT_POLISH_MODEL_KEY).expect("default polish catalog entry");
     PolishRoute {
@@ -108,7 +110,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn any_legacy_selection_normalizes_to_deepinfra_gemma() {
+    fn legacy_selection_normalizes_to_gemma() {
         assert_eq!(validate_polish_model_key("smart"), DEFAULT_POLISH_MODEL_KEY);
         assert_eq!(
             validate_polish_model_key("anything-old"),

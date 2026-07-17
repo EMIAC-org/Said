@@ -89,10 +89,12 @@ pub struct AppState {
     /// (None when the key is unconfigured). Avoids re-running the SHA-256 KDF +
     /// AES key schedule on every credential decrypt.
     pub runtime_cipher: Option<aes_gcm::Aes256Gcm>,
-    /// DeepSeek config read once at startup (message polish / Option+1).
+    /// DeepSeek config read once at startup for background learning/profile jobs.
     pub deepseek_api_key: String,
     pub deepseek_base_url: String,
-    pub deepseek_message_polish_model: String,
+    /// Workspace whose COMPANY_ADMIN members may use the read-only platform
+    /// observability endpoints. Empty disables cross-workspace access.
+    pub platform_admin_org_slug: String,
     /// In-memory per-account caches that collapse the per-dictation setup
     /// round-trips (active-org/role resolution and runtime learning memory).
     /// ~200 accounts → a plain map with a short TTL + invalidate-on-write is
@@ -324,6 +326,11 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/runtime/telemetry/batch",
             post(routes::telemetry::batch_ingest),
         )
+        .route(
+            "/v1/platform/telemetry/users",
+            get(routes::telemetry::platform_list_users),
+        )
+        .route("/v1/platform/runs", get(routes::telemetry::platform_runs))
         .route(
             "/v1/orgs/:org_id/telemetry",
             get(routes::telemetry::org_analytics),

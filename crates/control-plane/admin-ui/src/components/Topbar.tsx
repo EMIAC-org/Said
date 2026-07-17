@@ -2,6 +2,7 @@ import { useLocation } from 'react-router'
 import { useTheme } from '../hooks/useTheme'
 import { useWindowRange, type Win } from '../lib/window'
 import { useSearch } from './Search'
+import { useAuth } from '../hooks/useAuth'
 
 const SECTION: { match: (p: string) => boolean; label: string }[] = [
   { match: p => p === '/', label: 'Overview' },
@@ -22,12 +23,25 @@ export function Topbar() {
   const { theme, toggle } = useTheme()
   const { win, setWin } = useWindowRange()
   const search = useSearch()
+  const { platformAdmin, adminOrgs, adminScopeOrgId, setAdminScopeOrgId } = useAuth()
   const section = SECTION.find(s => s.match(pathname))?.label ?? 'Overview'
+  const showsPlatformScope = platformAdmin && (section === 'People' || section === 'Runs')
 
   return (
     <div className="topbar">
       <div className="crumb"><b>{section}</b></div>
       <div className="spacer" />
+      {showsPlatformScope && (
+        <select
+          className="workspace-select"
+          aria-label="Workspace filter"
+          value={adminScopeOrgId ?? ''}
+          onChange={event => setAdminScopeOrgId(event.target.value || null)}
+        >
+          <option value="">All workspaces</option>
+          {adminOrgs.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
+        </select>
+      )}
       <div className="search" onClick={search.open}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
         <span>Search runs, people…</span>

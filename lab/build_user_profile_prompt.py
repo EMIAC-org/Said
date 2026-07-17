@@ -326,7 +326,7 @@ def call_deepseek_profile(history_text: str, max_tokens: int) -> dict[str, Any]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         raise SystemExit("DEEPSEEK_API_KEY is not set in .env or environment.")
-    model = os.getenv("DEEPSEEK_MESSAGE_POLISH_MODEL", "").strip() or "deepseek-v4-flash"
+    model = os.getenv("DEEPSEEK_PROFILE_UPDATE_MODEL", "").strip() or "deepseek-v4-flash"
     base = os.getenv("DEEPSEEK_BASE_URL", "").strip() or "https://api.deepseek.com"
     url = f"{base.rstrip('/')}/v1/chat/completions"
 

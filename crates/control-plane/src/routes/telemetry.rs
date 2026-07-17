@@ -406,6 +406,26 @@ pub struct OrgRunsQuery {
     pub offset: Option<i32>,
 }
 
+#[derive(Deserialize)]
+pub struct PlatformUsersQuery {
+    pub org_id: Option<Uuid>,
+    pub days: Option<String>,
+    pub q: Option<String>,
+    pub limit: Option<i32>,
+    pub offset: Option<i32>,
+}
+
+#[derive(Deserialize)]
+pub struct PlatformRunsQuery {
+    pub org_id: Option<Uuid>,
+    pub days: Option<String>,
+    pub mode: Option<String>,
+    pub app: Option<String>,
+    pub edited: Option<bool>,
+    pub limit: Option<i32>,
+    pub offset: Option<i32>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RunTotals {
     run_count: i64,
@@ -687,6 +707,25 @@ pub(crate) fn require_org_viewer(role: &str) -> Result<(), StatusCode> {
     } else {
         Err(StatusCode::FORBIDDEN)
     }
+}
+
+pub(crate) async fn require_platform_or_org_viewer(
+    state: &AppState,
+    user: &AuthUser,
+    headers: &HeaderMap,
+    org_id: Uuid,
+) -> Result<(), StatusCode> {
+    if crate::auth::is_platform_admin(state, user)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        return Ok(());
+    }
+
+    let (_, role) = tenant::ensure_path_org_active(state, user, headers, org_id)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    require_org_viewer(&role)
 }
 
 #[derive(Clone, Copy, Default, sqlx::FromRow)]
@@ -1140,6 +1179,267 @@ async fn ensure_org_account_member(
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct PlatformTelemetryUserRow {
+    org_id: Uuid,
+    org_name: String,
+    org_slug: String,
+    account_id: Uuid,
+    email: String,
+    lark_name: Option<String>,
+    role: String,
+    auth_source: String,
+    runs: i64,
+    audio_seconds: f64,
+    accepted: i64,
+    edits: i64,
+    heavy_edits: i64,
+    fallbacks: i64,
+    learning_candidates: i64,
+    learning_saved: i64,
+    word_count: i64,
+    last_active_at: Option<DateTime<Utc>>,
+    desktop_active: bool,
+    primary_speech_model: Option<String>,
+    primary_speech_count: Option<i64>,
+    platform: Option<String>,
+    app_version: Option<String>,
+    stt_usd: f64,
+    polish_usd: f64,
+    stt_costed_runs: i64,
+    polish_costed_runs: i64,
+    meeting_cost_usd: f64,
+    meeting_count: i64,
+    meeting_duration_seconds: f64,
+    meeting_transcript_words: i64,
+}
+
+/// Read-only, cross-workspace People feed for explicitly authorized platform
+/// operators. Ordinary organization endpoints remain tenant-scoped.
+pub async fn platform_list_users(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<PlatformUsersQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    crate::auth::require_platform_admin(&state, &user).await?;
+
+    let (days, since) = window_bounds(q.days.as_deref());
+    let limit = q.limit.unwrap_or(200).clamp(1, 500) as i64;
+    let offset = q.offset.unwrap_or(0).max(0) as i64;
+    let search =
+        q.q.as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("%{value}%"));
+
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint
+           FROM org_members om
+           JOIN accounts a ON a.id = om.account_id
+          WHERE ($1::uuid IS NULL OR om.org_id = $1)
+            AND ($2::text IS NULL OR a.email ILIKE $2 OR om.lark_name ILIKE $2)",
+    )
+    .bind(q.org_id)
+    .bind(search.as_deref())
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let rows: Vec<PlatformTelemetryUserRow> = sqlx::query_as(
+        "WITH polish_by_run AS (
+            SELECT rs.org_id, rs.account_id, rs.client_run_id,
+                   COALESCE(SUM(pu.estimated_cost_usd), 0)::float8 AS polish_usd,
+                   bool_or(pu.estimated_cost_usd IS NOT NULL) AS has_cost
+              FROM runtime_sessions rs
+              JOIN runtime_provider_usage pu ON pu.run_id = rs.id
+             WHERE rs.client_run_id IS NOT NULL
+             GROUP BY rs.org_id, rs.account_id, rs.client_run_id
+         ),
+         run_agg AS (
+            SELECT r.org_id, r.account_id,
+                   COUNT(*)::bigint AS runs,
+                   COALESCE(SUM(r.audio_seconds), 0)::float8 AS audio_seconds,
+                   COALESCE(SUM(CASE
+                       WHEN r.accepted_as_is THEN 1
+                       WHEN r.edit_detected THEN 0
+                       WHEN r.success AND r.edit_bucket = 'none' AND NOT r.deleted_entire_output THEN 1
+                       ELSE 0 END), 0)::bigint AS accepted,
+                   COUNT(*) FILTER (WHERE r.edit_detected)::bigint AS edits,
+                   COUNT(*) FILTER (WHERE r.edit_bucket IN ('medium','heavy','full_replace'))::bigint AS heavy_edits,
+                   COUNT(*) FILTER (WHERE r.used_clipboard_fallback)::bigint AS fallbacks,
+                   COUNT(*) FILTER (WHERE r.learning_candidate)::bigint AS learning_candidates,
+                   COUNT(*) FILTER (WHERE r.server_learning_saved)::bigint AS learning_saved,
+                   COALESCE(SUM(r.word_count), 0)::bigint AS word_count,
+                   MAX(r.event_at) AS last_active_at,
+                   COALESCE(SUM(r.speech_cost_usd), 0)::float8 AS stt_usd,
+                   COALESCE(SUM(COALESCE(p.polish_usd, 0)), 0)::float8 AS polish_usd,
+                   COUNT(*) FILTER (WHERE r.speech_cost_usd IS NOT NULL)::bigint AS stt_costed_runs,
+                   COUNT(*) FILTER (WHERE COALESCE(p.has_cost, false))::bigint AS polish_costed_runs
+              FROM runtime_telemetry_runs r
+              LEFT JOIN polish_by_run p
+                ON p.org_id = r.org_id AND p.account_id = r.account_id
+               AND p.client_run_id = r.run_id
+             WHERE ($1::uuid IS NULL OR r.org_id = $1)
+               AND ($2::timestamptz IS NULL OR r.event_at >= $2)
+             GROUP BY r.org_id, r.account_id
+         ),
+         unified_meetings AS (
+            SELECT m.org_id, m.created_by AS account_id,
+                   COALESCE(m.started_at, m.created_at) AS meeting_at,
+                   GREATEST(COALESCE(EXTRACT(EPOCH FROM (m.ended_at - m.started_at)), 0), 0)::float8 AS duration_seconds,
+                   COALESCE((SELECT SUM(ms.word_count)::bigint FROM meeting_slots ms WHERE ms.meeting_id = m.id), 0)::bigint AS transcript_words,
+                   COALESCE((SELECT SUM(mpu.estimated_cost_usd)::float8 FROM meeting_provider_usage mpu WHERE mpu.meeting_id = m.id), 0)::float8 AS cost_usd
+              FROM meetings m
+             WHERE ($1::uuid IS NULL OR m.org_id = $1)
+            UNION ALL
+            SELECT lms.org_id, lms.account_id, lms.started_at,
+                   lms.duration_seconds::float8, lms.transcript_word_count::bigint,
+                   COALESCE((SELECT SUM(lmpu.estimated_cost_usd)::float8 FROM local_meeting_provider_usage lmpu WHERE lmpu.local_meeting_session_id = lms.id), 0)::float8
+              FROM local_meeting_sessions lms
+             WHERE ($1::uuid IS NULL OR lms.org_id = $1)
+         ),
+         meeting_agg AS (
+            SELECT org_id, account_id,
+                   COALESCE(SUM(cost_usd), 0)::float8 AS meeting_cost_usd,
+                   COUNT(*)::bigint AS meeting_count,
+                   COALESCE(SUM(duration_seconds), 0)::float8 AS meeting_duration_seconds,
+                   COALESCE(SUM(transcript_words), 0)::bigint AS meeting_transcript_words
+              FROM unified_meetings
+             WHERE ($2::timestamptz IS NULL OR meeting_at >= $2)
+             GROUP BY org_id, account_id
+         )
+         SELECT om.org_id, o.name AS org_name, o.slug AS org_slug,
+                om.account_id, a.email, om.lark_name, om.role,
+                CASE WHEN om.lark_user_id IS NOT NULL THEN 'lark'
+                     WHEN om.auth_source IS NOT NULL THEN om.auth_source
+                     ELSE 'email' END AS auth_source,
+                COALESCE(ra.runs, 0)::bigint AS runs,
+                COALESCE(ra.audio_seconds, 0)::float8 AS audio_seconds,
+                COALESCE(ra.accepted, 0)::bigint AS accepted,
+                COALESCE(ra.edits, 0)::bigint AS edits,
+                COALESCE(ra.heavy_edits, 0)::bigint AS heavy_edits,
+                COALESCE(ra.fallbacks, 0)::bigint AS fallbacks,
+                COALESCE(ra.learning_candidates, 0)::bigint AS learning_candidates,
+                COALESCE(ra.learning_saved, 0)::bigint AS learning_saved,
+                COALESCE(ra.word_count, 0)::bigint AS word_count,
+                ra.last_active_at,
+                COALESCE(dc.desktop_active, false) AS desktop_active,
+                speech_top.speech_model AS primary_speech_model,
+                speech_top.cnt AS primary_speech_count,
+                dcp.platform, dcp.app_version,
+                COALESCE(ra.stt_usd, 0)::float8 AS stt_usd,
+                COALESCE(ra.polish_usd, 0)::float8 AS polish_usd,
+                COALESCE(ra.stt_costed_runs, 0)::bigint AS stt_costed_runs,
+                COALESCE(ra.polish_costed_runs, 0)::bigint AS polish_costed_runs,
+                COALESCE(ma.meeting_cost_usd, 0)::float8 AS meeting_cost_usd,
+                COALESCE(ma.meeting_count, 0)::bigint AS meeting_count,
+                COALESCE(ma.meeting_duration_seconds, 0)::float8 AS meeting_duration_seconds,
+                COALESCE(ma.meeting_transcript_words, 0)::bigint AS meeting_transcript_words
+           FROM org_members om
+           JOIN orgs o ON o.id = om.org_id
+           JOIN accounts a ON a.id = om.account_id
+           LEFT JOIN run_agg ra ON ra.org_id = om.org_id AND ra.account_id = om.account_id
+           LEFT JOIN meeting_agg ma ON ma.org_id = om.org_id AND ma.account_id = om.account_id
+           LEFT JOIN LATERAL (
+                SELECT bool_or(dc.last_seen_at > now() - INTERVAL '15 minutes') AS desktop_active
+                  FROM desktop_clients dc
+                 WHERE dc.org_id = om.org_id AND dc.account_id = om.account_id
+           ) dc ON true
+           LEFT JOIN LATERAL (
+                SELECT r.speech_model, COUNT(*)::bigint AS cnt
+                  FROM runtime_telemetry_runs r
+                 WHERE r.org_id = om.org_id AND r.account_id = om.account_id
+                   AND ($2::timestamptz IS NULL OR r.event_at >= $2)
+                   AND r.speech_model IS NOT NULL
+                 GROUP BY r.speech_model ORDER BY cnt DESC LIMIT 1
+           ) speech_top ON true
+           LEFT JOIN LATERAL (
+                SELECT latest.platform, latest.app_version
+                  FROM desktop_clients latest
+                 WHERE latest.org_id = om.org_id AND latest.account_id = om.account_id
+                 ORDER BY latest.last_seen_at DESC LIMIT 1
+           ) dcp ON true
+          WHERE ($1::uuid IS NULL OR om.org_id = $1)
+            AND ($3::text IS NULL OR a.email ILIKE $3 OR om.lark_name ILIKE $3)
+          ORDER BY COALESCE(ra.runs, 0) DESC, ra.last_active_at DESC NULLS LAST, om.joined_at ASC
+          LIMIT $4 OFFSET $5",
+    )
+    .bind(q.org_id)
+    .bind(since)
+    .bind(search.as_deref())
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, "platform people query failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let users = rows
+        .into_iter()
+        .map(|row| {
+            let total_components = row.runs.saturating_mul(2);
+            json!({
+                "org_id": row.org_id,
+                "org_name": row.org_name,
+                "org_slug": row.org_slug,
+                "account_id": row.account_id,
+                "email": row.email,
+                "lark_name": row.lark_name,
+                "role": row.role,
+                "auth_source": row.auth_source,
+                "runs": row.runs,
+                "word_count": row.word_count,
+                "audio_minutes": (row.audio_seconds / 60.0 * 10.0).round() / 10.0,
+                "acceptance_rate": telemetry_rate(row.accepted, row.runs),
+                "edit_rate": telemetry_rate(row.edits, row.runs),
+                "heavy_edit_rate": telemetry_rate(row.heavy_edits, row.runs),
+                "fallback_rate": telemetry_rate(row.fallbacks, row.runs),
+                "learning_success_rate": telemetry_rate(row.learning_saved, row.learning_candidates),
+                "last_active_at": row.last_active_at,
+                "desktop_active": row.desktop_active,
+                "costs": {
+                    "stt_usd": row.stt_usd,
+                    "polish_usd": row.polish_usd,
+                    "total_usd": row.stt_usd + row.polish_usd,
+                    "runs": row.runs,
+                    "stt_costed_runs": row.stt_costed_runs,
+                    "polish_costed_runs": row.polish_costed_runs,
+                    "coverage_rate": telemetry_rate(
+                        row.stt_costed_runs + row.polish_costed_runs,
+                        total_components,
+                    ),
+                },
+                "meeting_cost_usd": row.meeting_cost_usd,
+                "meetings_hosted": row.meeting_count,
+                "meeting_count": row.meeting_count,
+                "meeting_duration_seconds": row.meeting_duration_seconds,
+                "meeting_transcript_words": row.meeting_transcript_words,
+                "platform": row.platform,
+                "app_version": row.app_version,
+                "primary_speech": match (
+                    row.primary_speech_model.as_deref(),
+                    row.primary_speech_count,
+                    row.runs,
+                ) {
+                    (Some(model), Some(count), runs) if runs > 0 =>
+                        Some(primary_speech_label(model, count as f64 * 100.0 / runs as f64)),
+                    _ => None,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(json!({
+        "window_days": days,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "users": users,
+    })))
+}
+
 pub async fn list_users(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1446,10 +1746,7 @@ pub async fn user_detail(
     Path((org_id, account_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<AnalyticsQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
-        .await
-        .map_err(|_| StatusCode::FORBIDDEN)?;
-    require_org_viewer(&role)?;
+    require_platform_or_org_viewer(&state, &user, &headers, org_id).await?;
     ensure_org_account_member(&state.db, org_id, account_id).await?;
 
     let (days, since) = window_bounds(q.days.as_deref());
@@ -1822,10 +2119,7 @@ pub async fn user_runs(
     Path((org_id, account_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<UserRunsQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
-        .await
-        .map_err(|_| StatusCode::FORBIDDEN)?;
-    require_org_viewer(&role)?;
+    require_platform_or_org_viewer(&state, &user, &headers, org_id).await?;
     ensure_org_account_member(&state.db, org_id, account_id).await?;
 
     let (days, since) = window_bounds(q.days.as_deref());
@@ -2274,6 +2568,134 @@ async fn fetch_polish_usage_for_org_runs(
             });
     }
     Ok(by_run)
+}
+
+#[derive(sqlx::FromRow)]
+struct PlatformRunRow {
+    #[sqlx(flatten)]
+    run: TelemetryRunRow,
+    account_id: Uuid,
+    email: String,
+    lark_name: Option<String>,
+    org_id: Uuid,
+    org_name: String,
+    org_slug: String,
+}
+
+/// Read-only, cross-workspace run feed for platform operators. The optional
+/// org_id is a presentation filter; authorization is always platform-wide.
+pub async fn platform_runs(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<PlatformRunsQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    crate::auth::require_platform_admin(&state, &user).await?;
+
+    let (days, since) = window_bounds(q.days.as_deref());
+    let limit = q.limit.unwrap_or(100).clamp(1, 200) as i64;
+    let offset = q.offset.unwrap_or(0).max(0) as i64;
+    let mode_filter = q
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all");
+    let app_filter = q
+        .app
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint
+           FROM runtime_telemetry_runs r
+          WHERE ($1::uuid IS NULL OR r.org_id = $1)
+            AND ($2::timestamptz IS NULL OR r.event_at >= $2)
+            AND ($3::text IS NULL OR r.mode = $3)
+            AND ($4::text IS NULL OR r.target_app = $4)
+            AND ($5::bool IS NULL OR r.edit_detected = $5)",
+    )
+    .bind(q.org_id)
+    .bind(since)
+    .bind(mode_filter)
+    .bind(app_filter)
+    .bind(q.edited)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let rows: Vec<PlatformRunRow> = sqlx::query_as(
+        "SELECT r.run_id, r.recording_id, r.device_id, r.mode, r.target_app, r.platform,
+                r.app_version, r.machine_class, r.audio_seconds, r.word_count, r.char_count,
+                r.transcribe_ms, r.embed_ms, r.polish_ms, r.total_ms, r.paste_ms, r.success,
+                r.error_code, r.used_clipboard_fallback, r.speech_provider, r.speech_model,
+                r.speech_path, r.speech_cost_usd, r.speech_cost_source, r.edit_detected,
+                r.edit_bucket, r.edit_distance_chars, r.edit_distance_words, r.accepted_as_is,
+                r.deleted_entire_output, r.re_recorded_quickly, r.learning_candidate,
+                r.learning_modal_shown, r.learning_confirmed, r.learning_dismissed,
+                r.server_learning_saved, r.server_learning_blocked, r.has_numbers, r.has_currency,
+                r.has_percent, r.has_email, r.has_url, r.has_code_like_terms, r.mixed_language,
+                r.protected_term_hit, r.client_version, r.event_at, r.received_at,
+                r.account_id, a.email, om.lark_name, r.org_id,
+                o.name AS org_name, o.slug AS org_slug
+           FROM runtime_telemetry_runs r
+           JOIN accounts a ON a.id = r.account_id
+           JOIN orgs o ON o.id = r.org_id
+           LEFT JOIN org_members om ON om.account_id = r.account_id AND om.org_id = r.org_id
+          WHERE ($1::uuid IS NULL OR r.org_id = $1)
+            AND ($2::timestamptz IS NULL OR r.event_at >= $2)
+            AND ($3::text IS NULL OR r.mode = $3)
+            AND ($4::text IS NULL OR r.target_app = $4)
+            AND ($5::bool IS NULL OR r.edit_detected = $5)
+          ORDER BY r.event_at DESC
+          LIMIT $6 OFFSET $7",
+    )
+    .bind(q.org_id)
+    .bind(since)
+    .bind(mode_filter)
+    .bind(app_filter)
+    .bind(q.edited)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, "platform runs query failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let run_ids = rows
+        .iter()
+        .map(|row| row.run.run_id.clone())
+        .collect::<Vec<_>>();
+    let mut usage_by_run = fetch_polish_usage_for_org_runs(&state.db, &run_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let runs = rows
+        .into_iter()
+        .map(|row| {
+            let usage = usage_by_run
+                .remove(&(row.account_id, row.run.run_id.clone()))
+                .unwrap_or_default();
+            let mut value = run_row_to_json(row.run, usage);
+            if let Some(object) = value.as_object_mut() {
+                object.insert("account_id".into(), json!(row.account_id));
+                object.insert("email".into(), json!(row.email));
+                object.insert("lark_name".into(), json!(row.lark_name));
+                object.insert("org_id".into(), json!(row.org_id));
+                object.insert("org_name".into(), json!(row.org_name));
+                object.insert("org_slug".into(), json!(row.org_slug));
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(json!({
+        "window_days": days,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "runs": runs,
+    })))
 }
 
 pub async fn org_runs(

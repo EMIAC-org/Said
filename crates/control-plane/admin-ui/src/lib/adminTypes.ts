@@ -32,6 +32,9 @@ export interface AdminOverview {
 /* ── Org-wide runs feed (per-run shape + who ran it) ────────────── */
 export type OrgRun = TelemetryRun & {
   account_id: string
+  org_id?: string
+  org_name?: string
+  org_slug?: string
   name?: string | null
   email?: string | null
   lark_name?: string | null
@@ -47,6 +50,9 @@ export interface OrgRunsResponse {
 
 /* ── People (list rows + windowed cost) ─────────────────────────── */
 export type PersonRow = TelemetryUserRow & {
+  org_id?: string
+  org_name?: string
+  org_slug?: string
   word_count?: number
   platform?: string | null
   app_version?: string | null

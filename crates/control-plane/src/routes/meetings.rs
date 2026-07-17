@@ -1250,10 +1250,8 @@ pub async fn org_meeting_costs(
     Path(org_id): Path<Uuid>,
     Query(q): Query<MeetingCostsQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
-        .await
-        .map_err(|_| StatusCode::FORBIDDEN)?;
-    crate::routes::telemetry::require_org_viewer(&role)?;
+    crate::routes::telemetry::require_platform_or_org_viewer(&state, &user, &headers, org_id)
+        .await?;
 
     let (days, since) = crate::routes::telemetry::window_bounds(q.days.as_deref());
 

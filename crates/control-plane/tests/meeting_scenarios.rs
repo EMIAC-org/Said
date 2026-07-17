@@ -56,7 +56,7 @@ impl TestServer {
             runtime_cipher: None,
             deepseek_api_key: String::new(),
             deepseek_base_url: String::new(),
-            deepseek_message_polish_model: String::new(),
+            platform_admin_org_slug: "scenario".into(),
             tenant_cache: setup_caches.tenant_cache,
             runtime_memory_cache: setup_caches.runtime_memory_cache,
             profile_cache: setup_caches.profile_cache,
@@ -2602,4 +2602,123 @@ async fn t_local_meeting_telemetry_is_scoped_idempotent_and_server_priced() {
         .await
         .unwrap();
     assert_eq!(cross_org_detail.status(), 404);
+}
+
+#[tokio::test]
+async fn t_platform_admin_can_filter_cross_workspace_people_and_runs() {
+    let srv = TestServer::start().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (admin_id, admin_token) = srv
+        .create_account(&format!("platform-admin-{suffix}"))
+        .await;
+    let platform_org_id: Uuid = sqlx::query_scalar("SELECT id FROM orgs WHERE slug = 'scenario'")
+        .fetch_one(&srv.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE org_members SET role = 'COMPANY_ADMIN'
+          WHERE org_id = $1 AND account_id = $2",
+    )
+    .bind(platform_org_id)
+    .bind(admin_id)
+    .execute(&srv.db)
+    .await
+    .unwrap();
+
+    let (target_id, target_token) = srv.create_account(&format!("target-{suffix}")).await;
+    let target_org_id = srv
+        .create_org(
+            target_token,
+            target_id,
+            &format!("platform-target-{suffix}"),
+            "MEMBER",
+        )
+        .await;
+    let run_id = format!("platform-run-{suffix}");
+    sqlx::query(
+        "INSERT INTO runtime_telemetry_runs
+            (account_id, org_id, run_id, mode, success, accepted_as_is,
+             audio_seconds, word_count, event_at)
+         VALUES ($1, $2, $3, 'normal_voice', true, true, 8.0, 5, now())",
+    )
+    .bind(target_id)
+    .bind(target_org_id)
+    .bind(&run_id)
+    .execute(&srv.db)
+    .await
+    .unwrap();
+
+    let me = srv
+        .client
+        .get(srv.url("/v1/auth/me"))
+        .header("Authorization", format!("Bearer {admin_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200);
+    let me_body: Value = me.json().await.unwrap();
+    assert_eq!(me_body["platform_admin"], true);
+    assert!(
+        me_body["admin_orgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|org| org["id"] == target_org_id.to_string())
+    );
+
+    let people = srv
+        .client
+        .get(srv.url(&format!(
+            "/v1/platform/telemetry/users?days=all&org_id={target_org_id}"
+        )))
+        .header("Authorization", format!("Bearer {admin_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(people.status(), 200);
+    let people_body: Value = people.json().await.unwrap();
+    assert!(people_body["users"].as_array().unwrap().iter().any(|row| {
+        row["account_id"] == target_id.to_string()
+            && row["org_id"] == target_org_id.to_string()
+            && row["runs"] == 1
+    }));
+
+    let runs = srv
+        .client
+        .get(srv.url(&format!(
+            "/v1/platform/runs?days=all&org_id={target_org_id}"
+        )))
+        .header("Authorization", format!("Bearer {admin_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(runs.status(), 200);
+    let runs_body: Value = runs.json().await.unwrap();
+    let run = runs_body["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["run_id"] == run_id)
+        .unwrap();
+    assert_eq!(run["org_id"], target_org_id.to_string());
+
+    let cross_workspace_detail = srv
+        .client
+        .get(srv.url(&format!(
+            "/v1/orgs/{target_org_id}/telemetry/users/{target_id}?days=all"
+        )))
+        .header("Authorization", format!("Bearer {admin_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_workspace_detail.status(), 200);
+
+    let ordinary_user = srv
+        .client
+        .get(srv.url("/v1/platform/telemetry/users?days=all"))
+        .header("Authorization", format!("Bearer {target_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ordinary_user.status(), 403);
 }

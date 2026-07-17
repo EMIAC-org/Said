@@ -51,7 +51,6 @@ use crate::voice_polish_standalone::{
 use crate::{AppState, auth::AuthUser, memory_hygiene, tenant};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
 const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
 const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
 const DEEPINFRA_VALIDATE_ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/models";
@@ -232,8 +231,8 @@ pub struct MessagePolishRequest {
     pub text: String,
     #[serde(default)]
     pub client_run_id: Option<String>,
-    /// Which helper is asking: "polish" (⌥1, default) or "to_english" (⌥2).
-    /// Both run on DeepSeek; the mode only swaps the prompt directive.
+    /// Gemma helper mode: polish, to_english, casual, concise, or hinglish.
+    /// The mode changes only the hardened rewrite directive, never the provider.
     #[serde(default)]
     pub mode: Option<String>,
 }
@@ -1920,11 +1919,8 @@ async fn update_runtime_session_result(
     Ok(())
 }
 
-// DeepSeek base-url + model are read once at startup into AppState
-// (deepseek_base_url / deepseek_message_polish_model).
-
 // The message-polish prompt now lives in `crate::message_helpers` (single
-// source of truth, shared by ⌥1/⌥2 and the voice "Polish mode"). These thin
+// source of truth, shared by ⌥1–⌥5 and the voice "Polish mode"). These thin
 // wrappers keep the voice path on `Polish` mode.
 fn build_message_polish_system_prompt() -> String {
     crate::message_helpers::build_system_prompt(crate::message_helpers::HelperMode::Polish)
@@ -2041,95 +2037,23 @@ fn scrub_problem_solve_output(output: &str) -> String {
     trimmed.to_string()
 }
 
-fn deepseek_message_polish_model(state: &AppState) -> String {
-    let configured = state.deepseek_message_polish_model.trim();
-    if configured.is_empty() {
-        DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL.to_string()
-    } else {
-        configured.to_string()
-    }
-}
-
-async fn call_deepseek_message_polish(
-    state: &AppState,
+async fn call_gemma_message_polish(
     api_key: &str,
     system_prompt: &str,
     user_message: &str,
 ) -> Result<String, (StatusCode, Json<Value>)> {
-    let model = deepseek_message_polish_model(state);
-    let url = format!("{}/v1/chat/completions", state.deepseek_base_url);
-    let estimated_input_tokens = user_message.len() / 4;
-    let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
-    let body = json!({
-        "model": model,
-        "temperature": 0.0,
-        "top_p": 0.9,
-        "max_tokens": max_tokens,
-        "stream": false,
-        "thinking": { "type": "disabled" },
-        "messages": [
-            { "role": "system", "content": system_prompt },
-            { "role": "user", "content": user_message }
-        ]
-    });
-
-    let client = &*crate::HTTP_CLIENT;
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(|e| {
-            json_error(
-                StatusCode::BAD_GATEWAY,
-                &format!("DeepSeek message polish request failed: {e}"),
-            )
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let preview = resp.text().await.unwrap_or_default();
-        tracing::warn!(
-            "[runtime] DeepSeek HTTP {status}: {}",
-            said_core::text::truncate_utf8(&preview, 300)
-        );
-        return Err(json_error(
-            StatusCode::BAD_GATEWAY,
-            &format!("DeepSeek returned {status}"),
-        ));
-    }
-
-    let value: Value = resp.json().await.map_err(|e| {
-        json_error(
-            StatusCode::BAD_GATEWAY,
-            &format!("DeepSeek response parse failed: {e}"),
-        )
-    })?;
-
-    let output = value
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    if output.is_empty() {
-        return Err(json_error(
-            StatusCode::BAD_GATEWAY,
-            "DeepSeek returned empty output",
-        ));
-    }
-
-    Ok(output)
+    crate::deepinfra::call_deepinfra(
+        api_key,
+        said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
+        system_prompt,
+        user_message,
+        None,
+    )
+    .await
+    .map(|completion| completion.text)
 }
 
-// ── Message polish (DeepSeek) ───────────────────────────────────────────────
+// ── Message polish (Gemma 4) ───────────────────────────────────────────────
 
 pub async fn message_polish(
     State(state): State<AppState>,
@@ -2144,10 +2068,10 @@ pub async fn message_polish(
         return Err(json_error(StatusCode::BAD_REQUEST, "text is required"));
     }
 
-    if state.deepseek_api_key.trim().is_empty() {
+    if state.deepinfra_api_key.trim().is_empty() {
         return Err(json_error(
             StatusCode::SERVICE_UNAVAILABLE,
-            "DEEPSEEK_API_KEY is not configured on the server",
+            "DEEPINFRA_API_KEY is not configured on the server",
         ));
     }
 
@@ -2174,15 +2098,10 @@ pub async fn message_polish(
     let user_message = crate::message_helpers::build_user_message(mode, text);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
-    let model = deepseek_message_polish_model(&state);
+    let model = said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B.to_string();
     let model_start = Instant::now();
-    let raw_output = call_deepseek_message_polish(
-        &state,
-        &state.deepseek_api_key,
-        &system_prompt,
-        &user_message,
-    )
-    .await?;
+    let raw_output =
+        call_gemma_message_polish(&state.deepinfra_api_key, &system_prompt, &user_message).await?;
     let output = scrub_message_polish_output(&raw_output);
     let model_ms = model_start.elapsed().as_millis() as i64;
     let total_ms = total_start.elapsed().as_millis() as i64;
@@ -2226,7 +2145,7 @@ pub async fn message_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model,
-        prompt_version: format!("message-helper-{}-deepseek-2026-06-27", mode.as_str()),
+        prompt_version: format!("message-helper-{}-gemma4-2026-07-18", mode.as_str()),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -4330,8 +4249,7 @@ mod tidy_casing_tests {
     }
 }
 
-/// Send every server-side polish request through the one production route.
-/// The model registry is hard-pinned to DeepInfra Gemma 4 26B A4B.
+/// Send every interactive dictation polish request through Gemma 4 on DeepInfra.
 async fn polish_llm(
     state: &AppState,
     polish_provider: &str,
@@ -6614,7 +6532,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_polish_model_resolves_deepinfra_gemma_for_legacy_names() {
+    fn selected_polish_model_code_routes_legacy_names_to_gemma() {
         use said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B;
         assert_eq!(
             selected_polish_model("fast"),

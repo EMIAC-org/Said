@@ -12,7 +12,7 @@ function displayName(p: PersonRow): string {
 }
 
 export function PeoplePage() {
-  const { org } = useAuth()
+  const { org, platformAdmin, adminScopeOrgId } = useAuth()
   const { win } = useWindowRange()
   const navigate = useNavigate()
   const [data, setData] = useState<PeopleResponse | null>(null)
@@ -24,11 +24,15 @@ export function PeoplePage() {
   useEffect(() => {
     if (!orgId) { setLoading(false); return }
     setLoading(true)
-    apiJson<PeopleResponse>(`/v1/orgs/${orgId}/telemetry/users?days=${winDays(win)}&limit=200`)
+    setError('')
+    const path = platformAdmin
+      ? `/v1/platform/telemetry/users?days=${winDays(win)}&limit=500${adminScopeOrgId ? `&org_id=${adminScopeOrgId}` : ''}`
+      : `/v1/orgs/${orgId}/telemetry/users?days=${winDays(win)}&limit=200`
+    apiJson<PeopleResponse>(path)
       .then(setData)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [orgId, win])
+  }, [orgId, platformAdmin, adminScopeOrgId, win])
 
   const rows = data?.users ?? []
 
@@ -52,7 +56,7 @@ export function PeoplePage() {
               <table>
                 <thead>
                   <tr>
-                    <th>Person</th><th>Device</th><th>Status</th>
+                    <th>Person</th>{platformAdmin && <th>Workspace</th>}<th>Device</th><th>Status</th>
                     <th className="r">Runs</th><th className="r">Words</th><th className="r">Audio</th>
                     <th className="r">Dictation</th><th className="r">Meetings</th><th className="r">Total cost</th>
                   </tr>
@@ -62,13 +66,18 @@ export function PeoplePage() {
                     const d = p.costs?.total_usd ?? 0
                     const m = p.meeting_cost_usd ?? 0
                     return (
-                      <tr key={p.account_id} className="clickable" onClick={() => navigate(`/people/${p.account_id}`)}>
+                      <tr
+                        key={`${p.org_id ?? orgId}:${p.account_id}`}
+                        className="clickable"
+                        onClick={() => navigate(`/people/${p.account_id}?org=${p.org_id ?? orgId}`)}
+                      >
                         <td>
                           <div className="person-cell">
                             <Avatar name={displayName(p)} size={30} />
                             <div><div className="nm">{displayName(p)}</div><div className="em">{p.email}</div></div>
                           </div>
                         </td>
+                        {platformAdmin && <td><span className="chip">{p.org_name || p.org_slug || 'Unknown'}</span></td>}
                         <td>
                           <span className="os">
                             <span className="glyph">{osGlyph(p.platform)}</span>{osLabel(p.platform)}

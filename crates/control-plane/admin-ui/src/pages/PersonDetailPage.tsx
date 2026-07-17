@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { useWindowRange, WIN_LABEL, winDays } from '../lib/window'
@@ -14,6 +14,7 @@ import type { TelemetryRun } from '../types'
 
 export function PersonDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
   const { org } = useAuth()
   const { win } = useWindowRange()
   const navigate = useNavigate()
@@ -23,7 +24,7 @@ export function PersonDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const orgId = org?.org?.id
+  const orgId = searchParams.get('org') || org?.org?.id
 
   useEffect(() => {
     if (!orgId || !id) {
