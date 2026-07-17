@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
   Build a release Windows installer of AirNote, baking the DeepSeek meeting-
-  summary key into the binary. The Windows counterpart of scripts/build-dmg.sh.
+  summary and DeepInfra dictation keys into the binary. The Windows counterpart
+  of scripts/build-dmg.sh.
 
 .DESCRIPTION
-  DeepSeek is the bundled meeting-AI provider; its key is baked in at compile
-  time via option_env!("DEEPSEEK_API_KEY") in meeting_engine.rs (end-users
-  cannot change it). option_env! is captured once at compile time, so this
+  DeepSeek and DeepInfra keys are baked in at compile time via option_env! in
+  meeting_engine.rs and dictation_stt.rs (end-users cannot change them).
+  option_env! is captured once at compile time, so this
   script:
     1. verifies the toolchain (cargo/rustc/rustup/node/npm + the Rust target),
     2. builds the airnote-backend sidecar (release) and syncs it to the Tauri
@@ -15,8 +16,8 @@
        (scripts/build-whisper-cli-windows.ps1) if missing, tolerating a
        Vulkan/CMake failure unless -RequireWhisper,
     4. verifies the Silero VAD model (auto-bundled via tauri.conf resources),
-    5. pulls DEEPSEEK_API_KEY from the environment or repo-root .env, then
-       touches meeting_engine.rs so option_env! re-captures it,
+    5. pulls both keys from the environment or repo-root .env, then touches
+       their Rust modules so option_env! re-captures them,
     6. runs `tauri build` and asserts the NSIS installer was produced,
     7. optionally Authenticode-signs the installer.
 
@@ -206,7 +207,7 @@ if ($Clean) {
 # ---- Bundle build-time keys (option_env!) -----------------------------------
 # said-desktop bakes two keys via option_env! so users never enter them:
 #   DEEPSEEK_API_KEY  — meeting summaries (meeting_engine.rs)
-#   TOGETHER_API_KEY  — Together AI live Nemotron Windows dictation STT
+#   DEEPINFRA_API_KEY — DeepInfra Whisper Windows dictation STT
 # Keys must be set BEFORE the backend build (said-core compiles there) and stay
 # set through the tauri build; the crates' build.rs rerun-if-env-changed
 # directives re-bake on change. Loaded from repo-root .env, then unset after the
@@ -216,7 +217,7 @@ $EnvFile = Join-Path $RepoRoot '.env'
 $ScriptSetKeys = @()
 $BundledKeys = @(
   @{ name = 'DEEPSEEK_API_KEY';  purpose = 'meeting summaries' }
-  @{ name = 'TOGETHER_API_KEY';  purpose = 'Together AI dictation STT (cloud choices will be unavailable)' }
+  @{ name = 'DEEPINFRA_API_KEY'; purpose = 'DeepInfra dictation STT (cloud choices will be unavailable)' }
 )
 foreach ($k in $BundledKeys) {
   $n = $k.name
@@ -229,7 +230,7 @@ foreach ($k in $BundledKeys) {
   else { Warn "$n not set (env or .env) - $($k.purpose) will FAIL in the build until it is added to .env." }
 }
 # Belt-and-suspenders re-bake of the said-desktop option_env! sites (DeepSeek in
-# meeting_engine.rs, Together AI in dictation_stt.rs); said-core's keys re-bake via
+# meeting_engine.rs, DeepInfra in dictation_stt.rs); said-core's keys re-bake via
 # crates/core/build.rs rerun-if-env-changed.
 Touch $MeetingRs
 Touch $DictationStt

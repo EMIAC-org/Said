@@ -2,9 +2,9 @@ fn main() {
     // Re-link the crate whenever a baked option_env! key changes, so a cached
     // object file never ships a stale or missing key. Mirrors crates/backend/build.rs.
     //   DEEPSEEK_API_KEY  — meeting summaries (meeting_engine.rs)
-    //   TOGETHER_API_KEY  — Together AI Windows dictation STT (dictation_stt.rs)
+    //   DEEPINFRA_API_KEY — DeepInfra cloud dictation STT (dictation_stt.rs)
     println!("cargo:rerun-if-env-changed=DEEPSEEK_API_KEY");
-    println!("cargo:rerun-if-env-changed=TOGETHER_API_KEY");
+    println!("cargo:rerun-if-env-changed=DEEPINFRA_API_KEY");
 
     #[cfg(target_os = "macos")]
     {

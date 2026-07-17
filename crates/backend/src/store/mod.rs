@@ -1180,7 +1180,7 @@ mod tests {
                  );
                  INSERT INTO telemetry_run_summaries
                     (run_id, stt_provider, stt_model, stt_path)
-                 VALUES ('run-1', 'together', 'together:nvidia/nemotron', 'websocket_live');
+                 VALUES ('run-1', 'deepinfra', 'deepinfra:openai/whisper-large-v3-turbo', 'http_batch');
                  PRAGMA user_version = 63;",
             )
             .unwrap();
@@ -1201,9 +1201,9 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(identity.0, "together");
-        assert_eq!(identity.1, "together:nvidia/nemotron");
-        assert_eq!(identity.2, "websocket_live");
+        assert_eq!(identity.0, "deepinfra");
+        assert_eq!(identity.1, "deepinfra:openai/whisper-large-v3-turbo");
+        assert_eq!(identity.2, "http_batch");
     }
 
     #[test]

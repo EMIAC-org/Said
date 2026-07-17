@@ -1,4 +1,4 @@
-//! Audio conditioning for the speech paths — batch and realtime.
+//! Audio conditioning for batch and realtime speech paths.
 //!
 //! Pipeline order (matches the design note):
 //!   1. anti-aliased resample to 16 kHz — band-limited, no fold-back hiss
@@ -14,8 +14,7 @@
 //!   [`resample_16k_hq`].
 //! * [`StreamConditioner`] — **realtime** (per-chunk): steps 2 and 3 only, with
 //!   every filter's state persisted across chunks so nothing clicks at a chunk
-//!   boundary. Feeds the live cloud (Together Nemotron) socket on macOS and
-//!   Windows alike.
+//!   boundary. Available to any future streaming consumer.
 //!
 //! The realtime variant deliberately omits step 4: loudness normalization
 //! derives one gain from the whole utterance, so applying it per-chunk would

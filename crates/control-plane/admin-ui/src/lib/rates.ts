@@ -1,8 +1,8 @@
 /* Display-only rate-card mirrors of the backend costs.rs constants.
    Actual per-run cost always comes from the API; these only annotate the UI. */
 
-// Dictation STT — Together Nemotron
-export const STT_PER_HOUR = 0.09
+// Dictation STT — DeepInfra Whisper Large V3 Turbo ($0.00020/minute)
+export const STT_PER_HOUR = 0.012
 
 // Dictation polish — Gemma
 export const POLISH_IN_PER_M = 0.105

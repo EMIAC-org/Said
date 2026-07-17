@@ -41,8 +41,6 @@ pub struct Preferences {
     #[serde(default)]
     pub groq_api_key: Option<String>,
     #[serde(default)]
-    pub together_api_key: Option<String>,
-    #[serde(default)]
     pub deepinfra_api_key: Option<String>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     #[serde(default = "default_llm_provider")]
@@ -90,8 +88,6 @@ pub struct PrefsUpdate {
     pub gemini_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groq_api_key: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub together_api_key: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deepinfra_api_key: Option<Option<String>>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
@@ -247,7 +243,6 @@ fn redact_pref_key_fields(raw: &str) -> String {
         "gateway_api_key",
         "gemini_api_key",
         "groq_api_key",
-        "together_api_key",
         "deepinfra_api_key",
     ] {
         if let Some(slot) = value.get_mut(field) {

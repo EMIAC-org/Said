@@ -2,9 +2,15 @@
 //! an authoritative per-request cost. Keep pricing in one place so ingestion,
 //! admin reporting, and tests cannot drift.
 
-pub const RATE_EFFECTIVE_FROM: &str = "2026-07-15";
-pub const TOGETHER_NEMOTRON_USD_PER_HOUR: f64 = 0.09;
-pub const TOGETHER_NEMOTRON_RATE_SOURCE: &str = "rate:together_nemotron_0.09_per_hour@2026-07-15";
+pub const RATE_EFFECTIVE_FROM: &str = "2026-07-17";
+pub const DEEPINFRA_WHISPER_USD_PER_HOUR: f64 = 0.012;
+pub const DEEPINFRA_WHISPER_RATE_SOURCE: &str =
+    "rate:deepinfra_whisper_large_v3_turbo_0.00020_per_minute@2026-07-17";
+// Historical rate card for telemetry uploaded by desktop builds released
+// before the DeepInfra migration. It is not an active provider route.
+pub const LEGACY_TOGETHER_NEMOTRON_USD_PER_HOUR: f64 = 0.09;
+pub const LEGACY_TOGETHER_NEMOTRON_RATE_SOURCE: &str =
+    "rate:together_nemotron_0.09_per_hour@2026-07-15";
 pub const GEMMA_INPUT_USD_PER_MILLION: f64 = 0.105;
 pub const GEMMA_OUTPUT_USD_PER_MILLION: f64 = 0.51;
 pub const GEMMA_RATE_SOURCE: &str =
@@ -29,9 +35,14 @@ pub const DEEPSEEK_V4_PRO_RATE_SOURCE: &str =
     "rate:deepseek_v4_pro_0.003625_cache_hit_0.435_cache_miss_0.87_output@2026-07-17";
 pub const DEEPSEEK_V4_PRO_PRICING_URL: &str = "https://api-docs.deepseek.com/quick_start/pricing";
 
-pub fn together_nemotron_cost(audio_seconds: f64) -> Option<f64> {
+pub fn deepinfra_whisper_cost(audio_seconds: f64) -> Option<f64> {
     (audio_seconds.is_finite() && audio_seconds >= 0.0)
-        .then_some(audio_seconds * TOGETHER_NEMOTRON_USD_PER_HOUR / 3600.0)
+        .then_some(audio_seconds * DEEPINFRA_WHISPER_USD_PER_HOUR / 3600.0)
+}
+
+pub fn legacy_together_nemotron_cost(audio_seconds: f64) -> Option<f64> {
+    (audio_seconds.is_finite() && audio_seconds >= 0.0)
+        .then_some(audio_seconds * LEGACY_TOGETHER_NEMOTRON_USD_PER_HOUR / 3600.0)
 }
 
 pub fn gemma_token_cost(input_tokens: i32, output_tokens: i32) -> Option<f64> {
@@ -83,12 +94,12 @@ pub fn deepseek_v4_pro_cost(
 #[cfg(test)]
 mod tests {
     use super::{
-        deepseek_v4_flash_cost, deepseek_v4_pro_cost, gemma_token_cost, together_nemotron_cost,
+        deepinfra_whisper_cost, deepseek_v4_flash_cost, deepseek_v4_pro_cost, gemma_token_cost,
     };
 
     #[test]
     fn prices_supplied_rate_card_examples() {
-        assert_eq!(together_nemotron_cost(3600.0), Some(0.09));
+        assert_eq!(deepinfra_whisper_cost(3600.0), Some(0.012));
         assert_eq!(gemma_token_cost(1_000_000, 1_000_000), Some(0.615));
     }
 

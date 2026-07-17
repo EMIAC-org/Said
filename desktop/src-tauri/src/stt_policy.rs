@@ -12,7 +12,8 @@ use sysinfo::System;
 
 use said_core::prefs::DesktopPrefs;
 
-pub const CLOUD_NEMOTRON_PREF: &str = "cloud-nemotron-3.5";
+pub const CLOUD_DEEPINFRA_PREF: &str = "cloud-deepinfra-whisper-v3-turbo";
+const LEGACY_CLOUD_NEMOTRON_PREF: &str = "cloud-nemotron-3.5";
 pub const LOCAL_PREF: &str = "local";
 pub const ORISERVE_PREF: &str = "oriserve";
 pub const NEMOTRON_Q4_PREF: &str = "nemotron-q4";
@@ -23,7 +24,7 @@ const EIGHT_GIB: u64 = 8 * 1024 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupKind {
-    /// Windows and Intel Macs always use the live Together Nemotron service.
+    /// Windows and Intel Macs always use hosted DeepInfra Whisper.
     CloudLocked,
     /// Apple Silicon Macs receive a required local model during setup.
     LocalRequired,
@@ -65,23 +66,25 @@ pub fn current() -> &'static SttSetupPolicy {
 
 /// Normalize a preference record to the policy without changing an explicit
 /// Apple-Silicon cloud choice. Cloud-locked devices are always forced back to
-/// live Nemotron; an old `auto`, local, or Whisper selection cannot revive a
-/// retired route.
+/// DeepInfra Whisper. The previous Together preference migrates in place so
+/// released clients keep their cloud selection after updating.
 pub fn normalize_prefs(prefs: DesktopPrefs) -> DesktopPrefs {
     normalize_prefs_for(prefs, current())
 }
 
 fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> DesktopPrefs {
     if policy.is_cloud_locked() {
-        prefs.dictation_stt = CLOUD_NEMOTRON_PREF.to_string();
+        prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
         prefs.local_stt_compat_override = None;
         return prefs;
     }
 
     // Apple Silicon offers exactly one user decision in Settings: local or
-    // cloud Nemotron. Every legacy value, including cloud Whisper, becomes the
-    // cost-safe local default.
-    if prefs.dictation_stt != CLOUD_NEMOTRON_PREF {
+    // hosted DeepInfra Whisper. Preserve the previous Together cloud choice
+    // during migration; every other legacy value becomes the local default.
+    if prefs.dictation_stt == LEGACY_CLOUD_NEMOTRON_PREF {
+        prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
+    } else if prefs.dictation_stt != CLOUD_DEEPINFRA_PREF {
         prefs.dictation_stt = LOCAL_PREF.to_string();
     }
     let compatibility_override = valid_compatibility_override(
@@ -233,14 +236,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_is_always_live_nemotron() {
+    fn windows_is_always_hosted_deepinfra() {
         let policy = policy_for("windows", "x86_64", false, 64 * EIGHT_GIB);
         assert!(policy.is_cloud_locked());
         assert_eq!(policy.local_model, None);
     }
 
     #[test]
-    fn intel_mac_is_always_live_nemotron() {
+    fn intel_mac_is_always_hosted_deepinfra() {
         let policy = policy_for("macos", "x86_64", false, 64 * EIGHT_GIB);
         assert!(policy.is_cloud_locked());
         assert_eq!(policy.cpu_family, "intel");
@@ -276,11 +279,11 @@ mod tests {
             },
             &policy,
         );
-        assert_eq!(normalized.dictation_stt, CLOUD_NEMOTRON_PREF);
+        assert_eq!(normalized.dictation_stt, CLOUD_DEEPINFRA_PREF);
     }
 
     #[test]
-    fn apple_silicon_keeps_only_an_explicit_cloud_nemotron_choice() {
+    fn apple_silicon_keeps_explicit_deepinfra_and_migrates_together() {
         let policy = policy_for("macos", "arm64", false, EIGHT_GIB + 1);
         let local = normalize_prefs_for(DesktopPrefs::default(), &policy);
         assert_eq!(local.dictation_stt, LOCAL_PREF);
@@ -288,13 +291,22 @@ mod tests {
 
         let cloud = normalize_prefs_for(
             DesktopPrefs {
-                dictation_stt: CLOUD_NEMOTRON_PREF.into(),
+                dictation_stt: CLOUD_DEEPINFRA_PREF.into(),
                 ..DesktopPrefs::default()
             },
             &policy,
         );
-        assert_eq!(cloud.dictation_stt, CLOUD_NEMOTRON_PREF);
+        assert_eq!(cloud.dictation_stt, CLOUD_DEEPINFRA_PREF);
         assert_eq!(cloud.local_stt_model, NEMOTRON_Q4_PREF);
+
+        let migrated = normalize_prefs_for(
+            DesktopPrefs {
+                dictation_stt: LEGACY_CLOUD_NEMOTRON_PREF.into(),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(migrated.dictation_stt, CLOUD_DEEPINFRA_PREF);
     }
 
     #[test]
@@ -341,7 +353,7 @@ mod tests {
             },
             &policy,
         );
-        assert_eq!(normalized.dictation_stt, CLOUD_NEMOTRON_PREF);
+        assert_eq!(normalized.dictation_stt, CLOUD_DEEPINFRA_PREF);
         assert_eq!(normalized.local_stt_compat_override, None);
     }
 }

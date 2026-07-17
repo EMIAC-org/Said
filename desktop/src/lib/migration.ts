@@ -14,7 +14,7 @@
 //   v4 → re-shows the model step after the update-gate cleanup fix.
 //   v5 → re-shows the model step and silently removes unsupported old STT models.
 //   v6 → applies the device-specific dictation contract: Windows and Intel
-//        Macs are fixed to live Nemotron; Apple Silicon must install its
+//        Macs are fixed to cloud speech recognition; Apple Silicon must install its
 //        hardware-assigned local model before continuing.
 //   v7 → inventories already-downloaded models before changing selection,
 //        offers existing users Continue or Upgrade, and protects the Oriserve

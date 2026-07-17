@@ -61,7 +61,7 @@ export interface SttRuntimeInfo {
   dictation_provider: string;
   /** Dictation can transcribe right now (model present / key baked). */
   dictation_ready: boolean;
-  /** Effective persisted route: local or live Cloud Nemotron. */
+  /** Effective persisted route: local or hosted DeepInfra Whisper. */
   dictation_stt_pref: string;
   /** Policy-default route for diagnostic/status UI. */
   dictation_auto_provider: string;
@@ -94,7 +94,6 @@ export interface Preferences {
   gateway_api_key:    string | null;
   gemini_api_key:     string | null;
   groq_api_key:       string | null;
-  together_api_key:   string | null;
   deepinfra_api_key:  string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider:       string;
@@ -117,7 +116,6 @@ export interface PrefsUpdate {
   gateway_api_key?:    string | null;
   gemini_api_key?:     string | null;
   groq_api_key?:       string | null;
-  together_api_key?:   string | null;
   deepinfra_api_key?:  string | null;
   /** LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex" */
   llm_provider?:       string;

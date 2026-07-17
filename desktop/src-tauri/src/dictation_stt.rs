@@ -2,12 +2,12 @@
 //!
 //! | platform | provider |
 //! |----------|----------|
-//! | Windows / Intel Mac | live Together Nemotron (fixed) |
-//! | Apple Silicon Mac | mandated local model, with an optional Cloud Nemotron switch in Settings |
+//! | Windows / Intel Mac | DeepInfra Whisper batch (fixed) |
+//! | Apple Silicon Mac | mandated local model, with an optional Cloud Whisper switch in Settings |
 //!
 //! The platform policy in `stt_policy` is authoritative. A stale preference
 //! cannot route Windows or Intel Macs to local ASR, and Apple Silicon has only
-//! a deliberate local ↔ Cloud Nemotron choice.
+//! a deliberate local ↔ Cloud Whisper choice.
 //!
 //! There is deliberately no mid-clip provider fallback: a clip runs on exactly
 //! one provider and fails loudly with an actionable message. (Within the
@@ -31,7 +31,7 @@ pub struct PreTranscript {
 
 /// Stable identifier of the provider the next dictation will use (status UI,
 /// logs): `"on-device/whisper"`, `"on-device/nemotron"`, or
-/// `"together/nemotron-realtime"`.
+/// `"deepinfra/whisper-large-v3-turbo"`.
 pub fn provider_name() -> &'static str {
     provider::name()
 }
@@ -143,28 +143,11 @@ pub async fn transcribe_meeting_wav_bytes(
 }
 
 /// Warm this platform's provider at startup so the first utterance doesn't
-/// pay setup costs: on-device pre-loads its model; live Nemotron resolves the
+/// pay setup costs: on-device pre-loads its model; DeepInfra resolves the
 /// API key and logs loudly if the build shipped without one, so a broken build
 /// is visible before the first dictation.
 pub fn prewarm() {
     provider::prewarm();
-}
-
-/// True only for the cloud provider that has a live WebSocket transcription
-/// contract. This is captured at recording start so changing Settings halfway
-/// through a hold cannot switch transport beneath an active session.
-pub fn uses_live_nemotron() -> bool {
-    provider::uses_live_nemotron()
-}
-
-/// Run an already-open live Nemotron recording. The recorder owns audio
-/// capture; this module owns provider credentials and converts the completed
-/// Together response into the app's provider-neutral transcript contract.
-pub async fn transcribe_live_nemotron(
-    input: asr_cloud::LiveTranscriptionInput,
-    event_tx: tokio::sync::mpsc::UnboundedSender<asr_cloud::LiveTranscriptEvent>,
-) -> Result<PreTranscript, String> {
-    provider::transcribe_live_nemotron(input, event_tx).await
 }
 
 // ── On-device engine (asr-core) — dictation on macOS; meetings everywhere ──
@@ -293,32 +276,32 @@ mod on_device {
     }
 }
 
-// ── Enforced local / live Together Nemotron STT ─────────────────────────────
+// ── Enforced local / DeepInfra batch STT ────────────────────────────────────
 mod provider {
     use std::sync::OnceLock;
 
-    use asr_cloud::{TogetherRealtimeClient, together};
+    use asr_cloud::{API_KEY_ENV, DeepInfraClient};
     use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
 
     use super::PreTranscript;
 
-    const TOGETHER_NEMOTRON_NAME: &str = "together/nemotron-realtime";
+    const DEEPINFRA_WHISPER_NAME: &str = "deepinfra/whisper-large-v3-turbo";
 
     #[derive(Clone, Copy, PartialEq)]
     enum Selected {
         OnDevice,
-        TogetherNemotron,
+        DeepInfraWhisper,
     }
 
     /// Resolve the next clip from the central device policy. Only Apple
-    /// Silicon permits a user-selected Cloud Nemotron route.
+    /// Silicon permits a user-selected cloud route.
     fn selection() -> Selected {
         let policy = crate::stt_policy::current();
         if policy.is_cloud_locked() {
-            return Selected::TogetherNemotron;
+            return Selected::DeepInfraWhisper;
         }
-        if said_core::prefs::load().dictation_stt == crate::stt_policy::CLOUD_NEMOTRON_PREF {
-            Selected::TogetherNemotron
+        if said_core::prefs::load().dictation_stt == crate::stt_policy::CLOUD_DEEPINFRA_PREF {
+            Selected::DeepInfraWhisper
         } else {
             Selected::OnDevice
         }
@@ -327,7 +310,7 @@ mod provider {
     fn name_of(s: Selected) -> &'static str {
         match s {
             Selected::OnDevice => super::on_device::name(),
-            Selected::TogetherNemotron => TOGETHER_NEMOTRON_NAME,
+            Selected::DeepInfraWhisper => DEEPINFRA_WHISPER_NAME,
         }
     }
 
@@ -335,13 +318,9 @@ mod provider {
         name_of(selection())
     }
 
-    pub(super) fn uses_live_nemotron() -> bool {
-        selection() == Selected::TogetherNemotron
-    }
-
     pub(super) fn auto_name() -> &'static str {
         if crate::stt_policy::current().is_cloud_locked() {
-            TOGETHER_NEMOTRON_NAME
+            DEEPINFRA_WHISPER_NAME
         } else {
             super::on_device::name()
         }
@@ -350,33 +329,33 @@ mod provider {
     pub(super) fn ready() -> bool {
         match selection() {
             Selected::OnDevice => super::on_device::ready(),
-            Selected::TogetherNemotron => api_key().is_some(),
+            Selected::DeepInfraWhisper => api_key().is_some(),
         }
     }
 
     pub(super) fn prewarm() {
         match selection() {
             Selected::OnDevice => super::on_device::prewarm(),
-            Selected::TogetherNemotron => match nemotron_realtime_client() {
+            Selected::DeepInfraWhisper => match deepinfra_client() {
                 Ok(client) => tracing::info!(
                     model = client.model(),
-                    transport = "websocket",
-                    "[dictation_stt] Together Nemotron provider ready"
+                    transport = "http-batch",
+                    "[dictation_stt] DeepInfra Whisper provider ready"
                 ),
                 Err(e) => {
-                    tracing::error!("[dictation_stt] Together Nemotron provider NOT ready: {e}")
+                    tracing::error!("[dictation_stt] DeepInfra Whisper provider NOT ready: {e}")
                 }
             },
         }
     }
 
-    /// Together AI key baked into the build at compile time — same scheme as
-    /// `DEEPSEEK_API_KEY` for meeting summaries: set `TOGETHER_API_KEY` in
+    /// DeepInfra key baked into the build at compile time — same scheme as
+    /// `DEEPSEEK_API_KEY` for meeting summaries: set `DEEPINFRA_API_KEY` in
     /// the build environment (scripts/build-windows.ps1 loads it from the
     /// repo-root .env) and it ships inside the binary; users never enter it.
     /// Dev builds without the bake fall back to a runtime env var.
     fn bundled_api_key() -> Option<String> {
-        option_env!("TOGETHER_API_KEY")
+        option_env!("DEEPINFRA_API_KEY")
             .map(str::trim)
             .filter(|key| !key.is_empty())
             .map(str::to_string)
@@ -384,27 +363,24 @@ mod provider {
 
     fn api_key() -> Option<String> {
         bundled_api_key().or_else(|| {
-            std::env::var(together::API_KEY_ENV)
+            std::env::var(API_KEY_ENV)
                 .ok()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
         })
     }
 
-    /// Nemotron's selected model is realtime-only in AirNote: it never shares
-    /// the multipart Whisper client, so an accidental HTTP fallback is impossible.
-    fn nemotron_realtime_client() -> Result<&'static TogetherRealtimeClient, String> {
-        static CLIENT: OnceLock<TogetherRealtimeClient> = OnceLock::new();
+    fn deepinfra_client() -> Result<&'static DeepInfraClient, String> {
+        static CLIENT: OnceLock<DeepInfraClient> = OnceLock::new();
         if let Some(client) = CLIENT.get() {
             return Ok(client);
         }
         let key = api_key().ok_or_else(|| {
             format!(
-                "Speech service unavailable — no Together AI key in this build (bake {} at build time, or set it as an env var).",
-                together::API_KEY_ENV
+                "Speech service unavailable — no DeepInfra key in this build (bake {API_KEY_ENV} at build time, or set it as an env var)."
             )
         })?;
-        let client = TogetherRealtimeClient::nemotron(key).map_err(|e| e.to_string())?;
+        let client = DeepInfraClient::new(key).map_err(|e| e.to_string())?;
         Ok(CLIENT.get_or_init(|| client))
     }
 
@@ -414,11 +390,8 @@ mod provider {
             return super::on_device::transcribe(wav, language).await;
         }
         let transcription = match selected {
-            Selected::TogetherNemotron => {
-                // Only historical WAV retry/reprocess paths reach here. A
-                // newly recorded dictation opens `transcribe_live_nemotron`
-                // at key-down and never replays its completed WAV.
-                let transcription = nemotron_realtime_client()?
+            Selected::DeepInfraWhisper => {
+                let transcription = deepinfra_client()?
                     .transcribe_wav(wav)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -432,9 +405,10 @@ mod provider {
             audio_secs = transcription.audio_secs.unwrap_or(0.0),
             detected_language = transcription.language.as_deref().unwrap_or("unreported"),
             requested_language = language,
-            transport = "websocket",
+            forced_language = asr_cloud::LANGUAGE,
+            transport = "http-batch",
             model = %transcription.model,
-            "[dictation_stt] Together transcription complete"
+            "[dictation_stt] DeepInfra transcription complete"
         );
 
         // An empty transcript is a terminal "nothing to type" outcome — fail
@@ -454,54 +428,9 @@ mod provider {
                 low_confidence_count: 0,
                 word_count,
                 languages: transcription.language.into_iter().collect(),
-                model: format!("together:{}", transcription.model),
-                provider: "together".to_string(),
-                path: "websocket_batch".to_string(),
-                duration_ms: transcription.latency_ms,
-                origin: TranscriptOrigin::DictationHosted,
-                ..TranscriptMeta::default()
-            },
-        })
-    }
-
-    /// Finish a session that was opened at key-down and received PCM while the
-    /// user spoke. This deliberately does not consult `selection()` again:
-    /// the selection was captured when the session started, and a settings
-    /// change during a recording must not reroute its final audio.
-    pub(super) async fn transcribe_live_nemotron(
-        input: asr_cloud::LiveTranscriptionInput,
-        event_tx: tokio::sync::mpsc::UnboundedSender<asr_cloud::LiveTranscriptEvent>,
-    ) -> Result<PreTranscript, String> {
-        let transcription = nemotron_realtime_client()?
-            .transcribe_live(input, event_tx)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        tracing::info!(
-            latency_ms = transcription.latency_ms,
-            audio_secs = transcription.audio_secs.unwrap_or(0.0),
-            model = %transcription.model,
-            transport = "websocket-live",
-            "[dictation_stt] Together Nemotron live transcription complete"
-        );
-
-        if transcription.text.is_empty() {
-            return Err("No speech detected — try speaking again.".to_string());
-        }
-
-        let word_count = transcription.text.split_whitespace().count();
-        Ok(PreTranscript {
-            transcript: transcription.text.clone(),
-            meta: TranscriptMeta {
-                enriched_transcript: transcription.text,
-                confidence: 1.0,
-                mean_word_confidence: 1.0,
-                low_confidence_count: 0,
-                word_count,
-                languages: transcription.language.into_iter().collect(),
-                model: format!("together:{}", transcription.model),
-                provider: "together".to_string(),
-                path: "websocket_live".to_string(),
+                model: format!("deepinfra:{}", transcription.model),
+                provider: "deepinfra".to_string(),
+                path: "http_batch".to_string(),
                 duration_ms: transcription.latency_ms,
                 origin: TranscriptOrigin::DictationHosted,
                 ..TranscriptMeta::default()

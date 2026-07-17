@@ -107,7 +107,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
     return () => { void unlisten.then((stop) => stop()); };
   }, [inventory?.recommended_model, inventory?.setup_kind, refresh]);
 
-  const selectRoute = useCallback(async (route: "local" | "cloud-nemotron-3.5") => {
+  const selectRoute = useCallback(async (route: "local" | "cloud-deepinfra-whisper-v3-turbo") => {
     if (!desktopPrefs || desktopPrefs.dictation_stt === route) return;
     setError("");
     setNotice("");
@@ -203,7 +203,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
 
   if (!policy || !inventory || !desktopPrefs) return null;
 
-  const localSelected = desktopPrefs.dictation_stt !== "cloud-nemotron-3.5";
+  const localSelected = desktopPrefs.dictation_stt !== "cloud-deepinfra-whisper-v3-turbo";
   const recommended = inventory.models.find((model) => model.key === inventory.recommended_model);
   const active = inventory.models.find((model) => model.active_for_dictation);
   const installed = inventory.models.filter((model) => model.installed);
@@ -217,7 +217,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
           {policy.setup_kind === "cloud_locked"
-            ? "Live Nemotron is fixed for dictation on this device. Local files are used only by Meetings."
+            ? "Cloud Whisper is fixed for dictation on this device. Local files are used only by Meetings."
             : `This Mac recommends ${policy.local_model_name ?? "local speech recognition"}.`}
         </p>
       </div>
@@ -233,10 +233,10 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
                 description: `${active?.name ?? recommended?.name ?? "Recommended local model"} · private and no per-use speech cost`,
               },
               {
-                id: "cloud-nemotron-3.5" as const,
+                id: "cloud-deepinfra-whisper-v3-turbo" as const,
                 icon: <Cloud size={14} />,
-                label: "Cloud Nemotron",
-                description: "Live multilingual speech recognition. Internet required.",
+                label: "Cloud Whisper",
+                description: "DeepInfra Whisper Large V3 Turbo. Internet required.",
               },
             ].map((option, index) => {
               const selected = option.id === "local" ? localSelected : !localSelected;
@@ -262,15 +262,15 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
         ) : (
           <div className="rounded-xl border px-4 py-3 flex items-center justify-between gap-3" style={{ borderColor: "hsl(var(--surface-3))" }}>
             <div>
-              <p className="text-[13px] font-medium text-foreground flex items-center gap-1.5"><Cloud size={14} /> Cloud Nemotron</p>
-              <p className="text-[11px] text-muted-foreground mt-1">Selected and enforced for live dictation.</p>
+              <p className="text-[13px] font-medium text-foreground flex items-center gap-1.5"><Cloud size={14} /> Cloud Whisper</p>
+              <p className="text-[11px] text-muted-foreground mt-1">Selected and enforced for cloud dictation.</p>
             </div>
             <span className="text-[11px] inline-flex items-center gap-1 text-primary"><Check size={13} /> Ready</span>
           </div>
         )}
 
         {/* Keep the recommended model recoverable even when the user is
-            temporarily on Cloud Nemotron. Deleting a local model must not
+            temporarily on Cloud Whisper. Deleting a local model must not
             hide the one download action that restores this Mac's onboarding
             recommendation. */}
         {policy.setup_kind === "local_required" && recommended && (localSelected || !recommended.installed) && (
@@ -325,7 +325,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
             {confirmDeleteAll ? (
               <div role="alertdialog" aria-labelledby="delete-models-title">
                 <p id="delete-models-title" className="text-[12px] font-medium text-foreground">Delete every local speech model?</p>
-                <p className="text-[11px] text-muted-foreground mt-1">Dictation will switch to Cloud Nemotron. Local Meetings will require Oriserve to be downloaded again.</p>
+                <p className="text-[11px] text-muted-foreground mt-1">Dictation will switch to Cloud Whisper. Local Meetings will require Oriserve to be downloaded again.</p>
                 <div className="flex justify-end gap-2 mt-3">
                   <button type="button" autoFocus className="btn-ghost" disabled={busy} onClick={() => setConfirmDeleteAll(false)}>Cancel</button>
                   <button type="button" className="btn-ghost text-destructive" disabled={busy} onClick={() => void deleteAll()}>

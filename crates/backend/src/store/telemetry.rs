@@ -683,9 +683,9 @@ mod tests {
             "user-1",
             "run-1",
             &RunSummaryPatch {
-                speech_provider: Some("together".into()),
-                speech_model: Some("together:nvidia/nemotron".into()),
-                speech_path: Some("websocket_live".into()),
+                speech_provider: Some("deepinfra".into()),
+                speech_model: Some("deepinfra:openai/whisper-large-v3-turbo".into()),
+                speech_path: Some("http_batch".into()),
                 audio_seconds: Some(60.0),
                 finalize: true,
                 ..RunSummaryPatch::default()
@@ -694,8 +694,8 @@ mod tests {
         .unwrap();
 
         let row = load_run(&pool, "user-1", "run-1").unwrap();
-        assert_eq!(row.speech_provider.as_deref(), Some("together"));
-        assert_eq!(row.speech_path.as_deref(), Some("websocket_live"));
+        assert_eq!(row.speech_provider.as_deref(), Some("deepinfra"));
+        assert_eq!(row.speech_path.as_deref(), Some("http_batch"));
     }
 }
 

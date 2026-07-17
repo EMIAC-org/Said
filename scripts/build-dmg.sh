@@ -144,18 +144,17 @@ else
   warn "DEEPSEEK_API_KEY not set — meeting summaries will fail until a key is bundled"
 fi
 
-# Together live Nemotron is required on Intel Macs and is the optional cloud
-# route on Apple Silicon. The build owns this credential; users never enter a
-# speech-provider key.
-if [ -z "${TOGETHER_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
-  TOGETHER_API_KEY="$(grep -E '^TOGETHER_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"')"
+# DeepInfra Whisper is required on Intel Macs and is the optional cloud route
+# on Apple Silicon. The build owns this credential; users never enter it.
+if [ -z "${DEEPINFRA_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  DEEPINFRA_API_KEY="$(grep -E '^DEEPINFRA_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"')"
 fi
-if [ -n "${TOGETHER_API_KEY:-}" ]; then
-  export TOGETHER_API_KEY
+if [ -n "${DEEPINFRA_API_KEY:-}" ]; then
+  export DEEPINFRA_API_KEY
   touch "$TAURI_DIR/src/dictation_stt.rs"
-  ok "Together cloud-dictation key will be bundled into the build"
+  ok "DeepInfra cloud-dictation key will be bundled into the build"
 else
-  warn "TOGETHER_API_KEY not set — live Nemotron dictation will be unavailable"
+  warn "DEEPINFRA_API_KEY not set — Cloud Whisper dictation will be unavailable"
 fi
 
 # ── Tauri build ──────────────────────────────────────────────────────────────
@@ -196,7 +195,7 @@ TEAM_ID="${APPLE_TEAM_ID:-96ZQGP7L3B}"
 
 # Do not embed local .env secrets in packaged app builds.
 rm -f "$APP_PATH/Contents/MacOS/.env"
-ok "no .env embedded; packaged app will use API keys from preferences DB"
+ok "no .env embedded; required desktop keys were baked at compile time"
 
 # Strip quarantine for local testing.
 xattr -cr "$APP_PATH" 2>/dev/null || true

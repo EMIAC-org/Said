@@ -140,7 +140,10 @@ fn speech_cost_attribution(
     let provider = clean_optional(provider).map(str::to_string).or_else(|| {
         let model = model.unwrap_or_default().to_ascii_lowercase();
         let path = path.unwrap_or_default().to_ascii_lowercase();
-        if model.starts_with("together:") || path.starts_with("websocket") {
+        if model.starts_with("deepinfra:") || path == "http_batch" {
+            Some("deepinfra".to_string())
+        } else if model.starts_with("together:") || path.starts_with("websocket") {
+            // Accept telemetry from pre-migration desktop builds during rollout.
             Some("together".to_string())
         } else if model.starts_with("local:") && model.contains("nemotron") {
             Some("local_nemotron".to_string())
@@ -159,15 +162,26 @@ fn speech_cost_attribution(
         return (provider, Some(0.0), Some("local_zero"));
     }
 
-    let is_together_nemotron = normalized == "together"
-        && (model.is_some_and(|value| value.to_ascii_lowercase().contains("nemotron"))
-            || path.is_some_and(|value| value.to_ascii_lowercase().contains("websocket")));
-    if is_together_nemotron {
-        let cost = audio_seconds.and_then(costs::together_nemotron_cost);
+    let is_deepinfra_whisper = normalized == "deepinfra"
+        && model.is_some_and(|value| value.to_ascii_lowercase().contains("whisper"));
+    if is_deepinfra_whisper {
+        let cost = audio_seconds.and_then(costs::deepinfra_whisper_cost);
         return (
             provider,
             cost,
-            cost.map(|_| costs::TOGETHER_NEMOTRON_RATE_SOURCE),
+            cost.map(|_| costs::DEEPINFRA_WHISPER_RATE_SOURCE),
+        );
+    }
+
+    let is_legacy_together_nemotron = normalized == "together"
+        && (model.is_some_and(|value| value.to_ascii_lowercase().contains("nemotron"))
+            || path.is_some_and(|value| value.to_ascii_lowercase().contains("websocket")));
+    if is_legacy_together_nemotron {
+        let cost = audio_seconds.and_then(costs::legacy_together_nemotron_cost);
+        return (
+            provider,
+            cost,
+            cost.map(|_| costs::LEGACY_TOGETHER_NEMOTRON_RATE_SOURCE),
         );
     }
 
@@ -486,7 +500,7 @@ async fn fetch_cost_summaries(
                 COUNT(*)::bigint AS runs,
                 COALESCE(SUM(r.speech_cost_usd), 0)::float8 AS stt_usd,
                 COALESCE(SUM(COALESCE(p.polish_usd, 0)), 0)::float8 AS polish_usd,
-                COALESCE(SUM(CASE WHEN r.speech_provider = 'together'
+                COALESCE(SUM(CASE WHEN r.speech_provider IN ('deepinfra', 'together')
                                   THEN COALESCE(r.audio_seconds, 0) ELSE 0 END), 0)::float8
                     AS cloud_stt_seconds,
                 COUNT(*) FILTER (WHERE r.speech_cost_usd IS NOT NULL)::bigint AS stt_costed_runs,
@@ -1753,7 +1767,7 @@ pub async fn user_detail(
             "by_model": cost_by_model,
             "rate_card": {
                 "currency": "USD",
-                "together_nemotron_per_hour": costs::TOGETHER_NEMOTRON_USD_PER_HOUR,
+                "deepinfra_whisper_per_hour": costs::DEEPINFRA_WHISPER_USD_PER_HOUR,
                 "gemma_input_per_million_tokens": costs::GEMMA_INPUT_USD_PER_MILLION,
                 "gemma_output_per_million_tokens": costs::GEMMA_OUTPUT_USD_PER_MILLION,
                 "effective_from": costs::RATE_EFFECTIVE_FROM,
@@ -2813,21 +2827,33 @@ mod tests {
     }
 
     #[test]
-    fn prices_one_hour_of_together_nemotron() {
+    fn prices_one_hour_of_deepinfra_whisper() {
         let (provider, cost, source) = speech_cost_attribution(
-            Some("together"),
-            Some("together:nvidia/nemotron-3.5-asr-streaming-0.6b"),
-            Some("websocket_live"),
+            Some("deepinfra"),
+            Some("deepinfra:openai/whisper-large-v3-turbo"),
+            Some("http_batch"),
             Some(3600.0),
         );
-        assert_eq!(provider.as_deref(), Some("together"));
-        assert!((cost.unwrap_or_default() - 0.09).abs() < f64::EPSILON);
-        assert!(source.is_some_and(|value| value.contains("0.09_per_hour")));
+        assert_eq!(provider.as_deref(), Some("deepinfra"));
+        assert!((cost.unwrap_or_default() - 0.012).abs() < f64::EPSILON);
+        assert!(source.is_some_and(|value| value.contains("0.00020_per_minute")));
     }
 
     #[test]
-    fn infers_together_for_legacy_nemotron_payload() {
+    fn infers_deepinfra_for_hosted_whisper_payload() {
         let (provider, cost, _) = speech_cost_attribution(
+            None,
+            Some("deepinfra:openai/whisper-large-v3-turbo"),
+            Some("http_batch"),
+            Some(60.0),
+        );
+        assert_eq!(provider.as_deref(), Some("deepinfra"));
+        assert!((cost.unwrap_or_default() - 0.0002).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn accepts_legacy_together_telemetry_during_client_rollout() {
+        let (provider, cost, source) = speech_cost_attribution(
             None,
             Some("together:nvidia/nemotron-3.5-asr-streaming-0.6b/realtime"),
             Some("websocket_live"),
@@ -2835,6 +2861,7 @@ mod tests {
         );
         assert_eq!(provider.as_deref(), Some("together"));
         assert!((cost.unwrap_or_default() - 0.0015).abs() < f64::EPSILON);
+        assert!(source.is_some_and(|value| value.contains("together_nemotron")));
     }
 
     #[test]
