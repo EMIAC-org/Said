@@ -5289,8 +5289,16 @@ fn emit_problem_context_event(
     );
 }
 
-/// Async SSE consumer: previews backend tokens, inserts the final result once,
-/// and stores it for paste-latest re-paste.
+#[derive(Default)]
+struct LiveDictationInsert {
+    typed_text: String,
+    failed: bool,
+    invalidated: bool,
+}
+
+/// Async SSE consumer: inserts backend tokens into the focused app as they
+/// arrive, reconciles only when the provider's final text differs, and stores
+/// the final result for paste-latest re-paste.
 /// Opt-in browser-context capture. If `target_app` is a browser and the
 /// `browser_context_enabled` pref is set, read the active tab's site (host only)
 /// and record it to the LOCAL backend. Fully fire-and-forget and on-device — the
@@ -5359,9 +5367,7 @@ async fn run_voice_polish_sse(
         .unwrap_or(0);
     let message_polish_mode = !suppress_local
         && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
-    tracing::debug!(
-        "[pipeline] target typing waits for final server output; stream tokens are preview-only"
-    );
+    tracing::debug!("[pipeline] target typing follows the server token stream");
     let initial_field_read_t0 = std::time::Instant::now();
     let initial_field_text = if suppress_local {
         None
@@ -5381,6 +5387,8 @@ async fn run_voice_polish_sse(
     let event_client_run_id = client_run_id.clone();
     let error_already_emitted = Arc::new(AtomicBool::new(false));
     let error_already_emitted_for_events = Arc::clone(&error_already_emitted);
+    let live_insert = Arc::new(Mutex::new(LiveDictationInsert::default()));
+    let live_insert_for_events = Arc::clone(&live_insert);
 
     let pre_transcript_chars = pre_transcript
         .as_ref()
@@ -5448,11 +5456,39 @@ async fn run_voice_polish_sse(
                 {
                     return;
                 }
-                // The backend uses this internal marker to invalidate an unsafe
-                // partial stream. It is never user-visible and final insertion
-                // does not need reconciliation.
-                if token != STREAM_RESET_SENTINEL {
-                    let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                if token == STREAM_RESET_SENTINEL {
+                    if let Ok(mut live) = live_insert_for_events.lock() {
+                        live.invalidated = true;
+                    }
+                    return;
+                }
+
+                let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                if suppress_local || token.is_empty() {
+                    return;
+                }
+
+                let Ok(mut live) = live_insert_for_events.lock() else {
+                    tracing::warn!("[pipeline] live insert state lock poisoned");
+                    return;
+                };
+                if live.failed || live.invalidated {
+                    return;
+                }
+                match paster::type_text(token) {
+                    Ok(true) => live.typed_text.push_str(token),
+                    Ok(false) => {
+                        live.failed = true;
+                        tracing::warn!(
+                            "[pipeline] direct live typing unavailable; final output will reconcile"
+                        );
+                    }
+                    Err(err) => {
+                        live.failed = true;
+                        tracing::warn!(
+                            "[pipeline] direct live typing failed ({err}); final output will reconcile"
+                        );
+                    }
                 }
             }
             api::PolishEvent::Status { phase, transcript } => {
@@ -5669,6 +5705,11 @@ async fn run_voice_polish_sse(
         }
     };
 
+    let live_state = live_insert
+        .lock()
+        .map(|state| (state.typed_text.clone(), state.failed, state.invalidated))
+        .unwrap_or_default();
+    let (live_typed_text, live_typing_failed, live_stream_invalidated) = live_state;
     let mut output_pasted = false;
     let mut used_clipboard_fallback = false;
     // If a newer recording superseded this one, never paste the abandoned take.
@@ -5683,11 +5724,35 @@ async fn run_voice_polish_sse(
         );
     } else if suppress_local {
         tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
+    } else if !live_typed_text.is_empty() {
+        if live_typed_text == done.polished {
+            tracing::info!(
+                "[main] live stream already inserted final server result ({} chars)",
+                live_typed_text.chars().count()
+            );
+            output_pasted = true;
+        } else {
+            tracing::info!(
+                "[main] reconciling live stream chars={} final_chars={} failed={} invalidated={}",
+                live_typed_text.chars().count(),
+                done.polished.chars().count(),
+                live_typing_failed,
+                live_stream_invalidated,
+            );
+            match paster::reconcile_current_recording(
+                initial_field_text.as_deref(),
+                &live_typed_text,
+                &done.polished,
+            ) {
+                Ok(_) => output_pasted = true,
+                Err(err) => {
+                    tracing::warn!("[main] live stream reconciliation failed: {err}");
+                }
+            }
+        }
     } else {
-        // Insert only the final server result so the focused field never needs
-        // a second reconciliation mutation.
         tracing::info!(
-            "[main] direct insert final server result ({} chars)",
+            "[main] stream produced no insertable tokens; inserting final server result ({} chars)",
             done.polished.len()
         );
         if !done.polished.is_empty() {
