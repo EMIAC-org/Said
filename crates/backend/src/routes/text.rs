@@ -61,6 +61,17 @@ pub struct TextRefineBody {
     pub tone: Option<String>,
 }
 
+fn server_helper_mode(tone_override: Option<&str>) -> Option<&'static str> {
+    match tone_override {
+        Some("message_polish") => Some("polish"),
+        Some("professional") => Some("to_english"),
+        Some("casual") => Some("casual"),
+        Some("concise") => Some("concise"),
+        Some("hinglish") => Some("hinglish"),
+        _ => None,
+    }
+}
+
 fn invalidate_openai_session_on_auth_error(
     pool: &crate::store::DbPool,
     user_id: &str,
@@ -95,15 +106,10 @@ pub async fn polish(
         return axum::http::StatusCode::BAD_REQUEST.into_response();
     }
 
-    // ⌥1 "Polish My Message" and ⌥2 "Convert to English" both run on the server
-    // via DeepSeek (one hardened prompt, two modes). Anything else stays on the
-    // local polish path.
-    let server_helper_mode = match body.tone_override.as_deref() {
-        Some("message_polish") => Some("polish"),
-        Some("professional") => Some("to_english"),
-        _ => None,
-    };
-    if let Some(mode) = server_helper_mode {
+    // Every Option+digit text helper runs on the server through Gemma 4. Keep
+    // the shortcut-to-mode mapping here so no helper silently falls back to a
+    // different desktop provider.
+    if let Some(mode) = server_helper_mode(body.tone_override.as_deref()) {
         if !crate::store::users::has_enterprise_auth(&state.pool, &state.default_user_id) {
             return (
                 StatusCode::FORBIDDEN,
@@ -732,6 +738,7 @@ pub async fn refine_last(
 
 #[cfg(test)]
 mod tests {
+    use super::server_helper_mode;
     use crate::llm::vocab_retrieval::{VocabRetrievalRequest, retrieve_after_transcription};
     use crate::store::vocab_embeddings::upsert_embedding;
     use crate::store::{DbPool, now_ms, vocab_fts};
@@ -870,5 +877,16 @@ mod tests {
             chosen.is_empty(),
             "text polish should not inject unrelated top-weight vocab"
         );
+    }
+
+    #[test]
+    fn every_option_digit_helper_routes_to_the_server() {
+        assert_eq!(server_helper_mode(Some("message_polish")), Some("polish"));
+        assert_eq!(server_helper_mode(Some("professional")), Some("to_english"));
+        assert_eq!(server_helper_mode(Some("casual")), Some("casual"));
+        assert_eq!(server_helper_mode(Some("concise")), Some("concise"));
+        assert_eq!(server_helper_mode(Some("hinglish")), Some("hinglish"));
+        assert_eq!(server_helper_mode(Some("format")), None);
+        assert_eq!(server_helper_mode(None), None);
     }
 }

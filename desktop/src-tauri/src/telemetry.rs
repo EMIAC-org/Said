@@ -112,8 +112,8 @@ pub fn speech_identity(meta: &TranscriptMeta) -> SpeechTelemetryIdentity {
     };
     let provider = if !meta.provider.trim().is_empty() {
         meta.provider.clone()
-    } else if model.starts_with("together:") || meta.origin == TranscriptOrigin::DictationHosted {
-        "together".to_string()
+    } else if model.starts_with("deepinfra:") || meta.origin == TranscriptOrigin::DictationHosted {
+        "deepinfra".to_string()
     } else if model.starts_with("local:") && model.to_ascii_lowercase().contains("nemotron") {
         "local_nemotron".to_string()
     } else if meta.origin == TranscriptOrigin::DictationLocal {
@@ -123,8 +123,8 @@ pub fn speech_identity(meta: &TranscriptMeta) -> SpeechTelemetryIdentity {
     };
     let path = if !meta.path.trim().is_empty() {
         meta.path.clone()
-    } else if provider == "together" {
-        "websocket".to_string()
+    } else if provider == "deepinfra" {
+        "http_batch".to_string()
     } else if provider.starts_with("local_") {
         "local_batch".to_string()
     } else {
@@ -352,26 +352,26 @@ mod tests {
     use super::speech_identity;
 
     #[test]
-    fn preserves_explicit_together_live_identity() {
+    fn preserves_explicit_deepinfra_batch_identity() {
         let identity = speech_identity(&TranscriptMeta {
-            model: "together:nvidia/nemotron-3.5-asr-streaming-0.6b".into(),
-            provider: "together".into(),
-            path: "websocket_live".into(),
+            model: "deepinfra:openai/whisper-large-v3-turbo".into(),
+            provider: "deepinfra".into(),
+            path: "http_batch".into(),
             origin: TranscriptOrigin::DictationHosted,
             ..TranscriptMeta::default()
         });
-        assert_eq!(identity.provider, "together");
-        assert_eq!(identity.path, "websocket_live");
+        assert_eq!(identity.provider, "deepinfra");
+        assert_eq!(identity.path, "http_batch");
     }
 
     #[test]
     fn legacy_hosted_metadata_never_falls_back_to_selected_local_model() {
         let identity = speech_identity(&TranscriptMeta {
-            model: "together:nvidia/nemotron".into(),
+            model: "deepinfra:openai/whisper-large-v3-turbo".into(),
             origin: TranscriptOrigin::DictationHosted,
             ..TranscriptMeta::default()
         });
-        assert_eq!(identity.provider, "together");
-        assert_eq!(identity.path, "websocket");
+        assert_eq!(identity.provider, "deepinfra");
+        assert_eq!(identity.path, "http_batch");
     }
 }

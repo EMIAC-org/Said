@@ -273,7 +273,7 @@ pub fn delete_all_local_speech_models() -> Result<LocalModelCleanupResult, Strin
     let previous = said_core::prefs::load();
     let policy = stt_policy::current();
     let mut cloud = previous.clone();
-    cloud.dictation_stt = stt_policy::CLOUD_NEMOTRON_PREF.into();
+    cloud.dictation_stt = stt_policy::CLOUD_DEEPINFRA_PREF.into();
     cloud.local_stt_compat_override = None;
     if let Some(recommended) = policy.local_pref() {
         cloud.local_stt_model = recommended.into();
@@ -282,9 +282,7 @@ pub fn delete_all_local_speech_models() -> Result<LocalModelCleanupResult, Strin
     said_core::prefs::save(&cloud)?;
     if !dictation_stt::dictation_ready() {
         said_core::prefs::save(&previous)?;
-        return Err(
-            "Cloud Nemotron is not ready, so AirNote kept your local speech models.".into(),
-        );
+        return Err("Cloud Whisper is not ready, so AirNote kept your local speech models.".into());
     }
 
     let inventory = local_model_inventory()?;
@@ -409,7 +407,7 @@ mod tests {
     fn cloud_locked_devices_can_reclaim_nemotron_but_not_meetings_model() {
         let policy = stt_policy::policy_for("windows", "x86_64", false, 16 * 1024 * 1024 * 1024);
         let prefs = DesktopPrefs {
-            dictation_stt: stt_policy::CLOUD_NEMOTRON_PREF.into(),
+            dictation_stt: stt_policy::CLOUD_DEEPINFRA_PREF.into(),
             local_stt_model: stt_policy::NEMOTRON_Q4_PREF.into(),
             ..DesktopPrefs::default()
         };

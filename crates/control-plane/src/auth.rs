@@ -29,6 +29,44 @@ pub struct AuthUser {
     pub session_token: Option<Uuid>,
 }
 
+/// Whether this account may use read-only platform observability endpoints.
+///
+/// Platform access is deliberately separate from ordinary organization roles:
+/// the first email signup in any workspace can become COMPANY_ADMIN, so that
+/// role is only trusted when it belongs to the configured internal workspace.
+pub async fn is_platform_admin(state: &AppState, user: &AuthUser) -> Result<bool, sqlx::Error> {
+    let slug = state.platform_admin_org_slug.trim();
+    if slug.is_empty() {
+        return Ok(false);
+    }
+
+    sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1
+              FROM org_members om
+              JOIN orgs o ON o.id = om.org_id
+             WHERE om.account_id = $1
+               AND o.slug = $2
+               AND UPPER(om.role) = 'COMPANY_ADMIN'
+        )",
+    )
+    .bind(user.account_id)
+    .bind(slug)
+    .fetch_one(&state.db)
+    .await
+}
+
+pub async fn require_platform_admin(state: &AppState, user: &AuthUser) -> Result<(), StatusCode> {
+    match is_platform_admin(state, user).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(StatusCode::FORBIDDEN),
+        Err(error) => {
+            tracing::error!(%error, "platform admin authorization lookup failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct JwtClaims {
     sub: String,

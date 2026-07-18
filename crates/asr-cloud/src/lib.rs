@@ -1,16 +1,11 @@
-//! Together AI live Nemotron speech-to-text transport.
+//! Hosted batch speech-to-text transport.
 //!
-//! AirNote uses the realtime WebSocket API exclusively for cloud dictation.
 //! This crate knows nothing about platform selection, recorder lifecycle, or
-//! API-key ownership.
+//! build-time API-key ownership.
 
-mod realtime;
-pub mod together;
+mod deepinfra;
 
-pub use realtime::{
-    LiveTranscriptEvent, LiveTranscriptionController, LiveTranscriptionInput,
-    TogetherRealtimeClient, live_transcription_input,
-};
+pub use deepinfra::{API_KEY_ENV, DeepInfraClient, ENDPOINT, LANGUAGE, MODEL};
 
 /// A completed cloud transcription.
 #[derive(Debug, Clone)]
@@ -127,8 +122,8 @@ mod tests {
     fn errors_render_as_actionable_sentences() {
         let cases: Vec<CloudSttError> = vec![
             CloudSttError::MissingApiKey {
-                provider: "Together AI".into(),
-                env_var: "TOGETHER_API_KEY".into(),
+                provider: "DeepInfra".into(),
+                env_var: "DEEPINFRA_API_KEY".into(),
             },
             CloudSttError::Offline,
             CloudSttError::Timeout { budget_secs: 75 },

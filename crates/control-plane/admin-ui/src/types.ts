@@ -415,7 +415,7 @@ export interface TelemetryUserProfile {
     by_model: TelemetryCostModelBreakdown
     rate_card: {
       currency: string
-      together_nemotron_per_hour: number
+      deepinfra_whisper_per_hour: number
       gemma_input_per_million_tokens: number
       gemma_output_per_million_tokens: number
       effective_from: string

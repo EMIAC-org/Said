@@ -39,6 +39,17 @@ export function StatTile({
   )
 }
 
+/* ── Dense table text ───────────────────────────────────────────── */
+export function TruncatedChip({
+  value,
+  mono = false,
+}: {
+  value: string
+  mono?: boolean
+}) {
+  return <span className={`chip truncate${mono ? ' mono' : ''}`} title={value}>{value}</span>
+}
+
 /* ── Sparkline (area + line) ───────────────────────────────────── */
 export function Sparkline({ values, height = 120 }: { values: number[]; height?: number }) {
   const w = 560

@@ -58,8 +58,7 @@ asr-core      = { path = "../../crates/asr-core" }
 said-hotkey   = { path = "../../crates/hotkey" }
 said-paster   = { path = "../../crates/paster" }
 said-recorder = { path = "../../crates/recorder" }
-# Cloud STT owns both explicit Together transports: HTTP Whisper and realtime
-# WebSocket Nemotron. It is shared by macOS and Windows.
+# Cloud STT owns the DeepInfra Whisper batch transport shared by macOS and Windows.
 asr-cloud     = { path = "../../crates/asr-cloud" }
 
 # Recording (still needed; cpal uses its own thread model)

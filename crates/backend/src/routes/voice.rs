@@ -6,7 +6,7 @@
 //!   pre_transcript — local ASR transcript from the desktop  (required)
 //!
 //! Pipeline: auth → load prefs → local transcript → evidence collection → dynamic prompt →
-//!           LLM stream → post-LLM passes → SSE.
+//!           LLM stream → SSE.
 
 use axum::{
     Json,
@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -46,10 +46,6 @@ fn chaos_voice_fail_after_save_enabled() -> bool {
     enabled("AIRNOTE_CHAOS") && enabled("AIRNOTE_CHAOS_VOICE_FAIL_AFTER_SAVE")
 }
 
-const LIVE_TOKEN_MIN_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
-const LIVE_TOKEN_MIN_CHARS: usize = 18;
-const LIVE_TOKEN_MAX_CHARS: usize = 64;
-const LIVE_TOKEN_HARD_MAX_CHARS: usize = 96;
 const BACKEND_AI_PAYLOAD_LOG_ENV: &str = "AIRNOTE_BACKEND_AI_PAYLOAD_LOG";
 const BACKEND_AI_PAYLOAD_LOG_PATH_ENV: &str = "AIRNOTE_BACKEND_AI_PAYLOAD_LOG_PATH";
 
@@ -298,102 +294,6 @@ fn voice_run_failed_event(
     Event::default().event("error").data(payload.to_string())
 }
 
-struct LiveTokenCoalescer {
-    buffer: String,
-    last_flush: Instant,
-}
-
-impl LiveTokenCoalescer {
-    fn new() -> Self {
-        Self {
-            buffer: String::new(),
-            last_flush: Instant::now(),
-        }
-    }
-
-    fn push(&mut self, token: String) -> Vec<String> {
-        if token == STREAM_RESET_SENTINEL {
-            self.buffer.clear();
-            self.last_flush = Instant::now();
-            return vec![token];
-        }
-
-        self.buffer.push_str(&token);
-        self.drain_ready(false)
-    }
-
-    fn flush(&mut self) -> Vec<String> {
-        if self.buffer.is_empty() {
-            return Vec::new();
-        }
-        self.last_flush = Instant::now();
-        vec![std::mem::take(&mut self.buffer)]
-    }
-
-    fn drain_ready(&mut self, final_flush: bool) -> Vec<String> {
-        if self.buffer.is_empty() {
-            return Vec::new();
-        }
-
-        let now = Instant::now();
-        let force = final_flush
-            || self.buffer.len() >= LIVE_TOKEN_MAX_CHARS
-            || self.buffer.contains('\n')
-            || ends_with_live_token_boundary(&self.buffer);
-        let timed = self.buffer.len() >= LIVE_TOKEN_MIN_CHARS
-            && now.duration_since(self.last_flush) >= LIVE_TOKEN_MIN_FLUSH_INTERVAL;
-
-        if !force && !timed {
-            return Vec::new();
-        }
-
-        let Some(split_at) = live_token_safe_split(&self.buffer, force) else {
-            return Vec::new();
-        };
-        if split_at == 0 {
-            return Vec::new();
-        }
-
-        let release = self.buffer[..split_at].to_string();
-        self.buffer = self.buffer[split_at..].to_string();
-        self.last_flush = now;
-        vec![release]
-    }
-}
-
-fn live_token_safe_split(buffer: &str, force: bool) -> Option<usize> {
-    if buffer.is_empty() {
-        return None;
-    }
-    if buffer.chars().last().is_some_and(is_live_token_boundary) {
-        return Some(buffer.len());
-    }
-
-    let mut last_boundary = None;
-    for (idx, ch) in buffer.char_indices() {
-        if ch.is_whitespace() {
-            last_boundary = Some(idx + ch.len_utf8());
-        }
-    }
-    if last_boundary.is_some() {
-        return last_boundary;
-    }
-
-    if force && buffer.len() >= LIVE_TOKEN_HARD_MAX_CHARS {
-        return Some(buffer.len());
-    }
-
-    None
-}
-
-fn ends_with_live_token_boundary(buffer: &str) -> bool {
-    buffer.chars().last().is_some_and(is_live_token_boundary)
-}
-
-fn is_live_token_boundary(ch: char) -> bool {
-    ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | ':' | ';' | ')' | ']' | '}')
-}
-
 // ── Audio file helpers ────────────────────────────────────────────────────────
 
 /// Extract actual speech duration from WAV header (byte_rate at offset 28, data size at offset 40).
@@ -486,9 +386,7 @@ use crate::{
             render_voice_system_prompt_template_with_profile_and_recent,
         },
         script,
-        stream_safety::{
-            STREAM_RESET_SENTINEL, StreamProvider, StreamSafetyFilter, scrub_polished_output,
-        },
+        stream_safety::scrub_polished_output,
         vocab_retrieval::{self, VocabRetrievalRequest},
     },
     store::{
@@ -533,8 +431,8 @@ struct ServerRuntimeVoiceRequest {
     screen_context: Option<String>,
     safe_vocab_terms: Vec<String>,
     /// Rich, evidence-backed cards selected by the local retriever. The control
-    /// plane treats them as soft evidence; the term list below remains only for
-    /// literal-token restoration and older control-plane versions.
+    /// plane treats them as soft evidence; the term list remains for prompt
+    /// compatibility with older control-plane versions.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     vocab_cards: Vec<ServerRuntimeVocabCard>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2444,10 +2342,8 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         // ── STEP 5: LLM polish ───────────────────────────────────────────────────
         let enforce_roman_hinglish = prefs.output_language == "hinglish";
-        let groq_key_for_recovery = groq_key.clone();
         let llm_start = Instant::now();
-        let mut saw_script_rewrite = false;
-        let (mut llm_result, actual_model_used, stream_filter, server_runtime_trace) = if crate::store::prefs::server_runtime_forced() {
+        let (llm_result, actual_model_used, server_runtime_trace) = if crate::store::prefs::server_runtime_forced() {
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "server_polishing", "transcript": &resolved_transcript}).to_string()));
             info!("[timing] LLM start — provider=server_runtime selected_model={:?}", prefs.selected_model);
@@ -2467,42 +2363,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 token_tx,
             ));
 
-            let server_route = crate::llm::polish_dispatch::voice_polish_route(&prefs.selected_model);
-            let mut stream_filter = StreamSafetyFilter::new(
-                StreamProvider::from_llm_provider(server_route.provider),
-                &resolved_transcript,
-            );
-            let mut token_coalescer = LiveTokenCoalescer::new();
-
             while let Some(raw_token) = token_rx.recv().await {
-                let filtered = stream_filter.push_token(raw_token);
-                if filtered.unsafe_detected {
-                    warn!("[voice] stream safety disabled live typing for provider=server_runtime");
-                }
-                for token in filtered.tokens {
-                    let token = if enforce_roman_hinglish && token != STREAM_RESET_SENTINEL {
-                        let mut t = token;
-                        if script::contains_devanagari(&t) {
-                            if !saw_script_rewrite {
-                                saw_script_rewrite = true;
-                                yield Ok(Event::default().event("token")
-                                    .data(json!({"token": STREAM_RESET_SENTINEL}).to_string()));
-                            }
-                            t = script::enforce_roman_hinglish(&t);
-                        }
-                        script::strip_non_latin_scripts(&t)
-                    } else {
-                        token
-                    };
-                    for chunk in token_coalescer.push(token) {
-                        yield Ok(Event::default().event("token")
-                            .data(json!({"token": chunk}).to_string()));
-                    }
-                }
-            }
-            for chunk in token_coalescer.flush() {
                 yield Ok(Event::default().event("token")
-                    .data(json!({"token": chunk}).to_string()));
+                    .data(json!({"token": raw_token}).to_string()));
             }
 
             match runtime_task.await {
@@ -2511,7 +2374,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         "[voice] server runtime stream returned {} chars using {model}",
                         result.polished.len()
                     );
-                    (result, model, stream_filter, Some(trace_meta))
+                    (result, model, Some(trace_meta))
                 }
                 Ok(Err(e)) => {
                     warn!("[voice] server runtime stream failed; falling back to local polish: {e}");
@@ -2541,10 +2404,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             (
                                 result,
                                 format!("server-runtime-fallback:{model}"),
-                                StreamSafetyFilter::new(
-                                    StreamProvider::from_llm_provider(&fallback_provider),
-                                    &resolved_transcript,
-                                ),
                                 None,
                             )
                         }
@@ -2596,10 +2455,6 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                             (
                                 result,
                                 format!("server-runtime-fallback:{model}"),
-                                StreamSafetyFilter::new(
-                                    StreamProvider::from_llm_provider(&fallback_provider),
-                                    &resolved_transcript,
-                                ),
                                 None,
                             )
                         }
@@ -2669,36 +2524,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 .await
             });
 
-            let mut stream_filter =
-                StreamSafetyFilter::new(StreamProvider::from_llm_provider(&llm_provider), &resolved_transcript);
-
-            // Yield each token as an SSE event. For Hinglish we defensively
-            // romanize any Devanagari before it reaches the desktop's live typing
-            // path; otherwise a bad model token can already be pasted before the
-            // final result is scrubbed.
             while let Some(raw_token) = token_rx.recv().await {
-                let filtered = stream_filter.push_token(raw_token);
-                if filtered.unsafe_detected {
-                    warn!("[voice] stream safety disabled live typing for provider={llm_provider}");
-                }
-                for token in filtered.tokens {
-                    let token = if enforce_roman_hinglish && token != STREAM_RESET_SENTINEL {
-                        let mut t = token;
-                        if script::contains_devanagari(&t) {
-                            if !saw_script_rewrite {
-                                saw_script_rewrite = true;
-                                yield Ok(Event::default().event("token")
-                                    .data(json!({"token": STREAM_RESET_SENTINEL}).to_string()));
-                            }
-                            t = script::enforce_roman_hinglish(&t);
-                        }
-                        script::strip_non_latin_scripts(&t)
-                    } else {
-                        token
-                    };
-                    yield Ok(Event::default().event("token")
-                        .data(json!({"token": token}).to_string()));
-                }
+                yield Ok(Event::default().event("token")
+                    .data(json!({"token": raw_token}).to_string()));
             }
 
             let llm_result = match llm_task.await {
@@ -2797,7 +2625,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     return;
                 }
             };
-            (llm_result, actual_model_used, stream_filter, None)
+            (llm_result, actual_model_used, None)
         };
 
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
@@ -2807,12 +2635,10 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             input: Some(&resolved_transcript),
             output: Some(&llm_result.polished),
             duration_ms: Some(llm_result.polish_ms as i64),
-            reason: Some("raw model output before deterministic post-processing"),
+            reason: Some("model output streamed directly to the desktop"),
             risk: Some("model_output"),
             metadata: json!({
                 "model": actual_model_used.as_str(),
-                "stream_safety_live_disabled": stream_filter.live_disabled(),
-                "stream_safety_unsafe": stream_filter.saw_unsafe_content(),
                 "server_runtime": server_runtime_trace.as_ref().map(|m| json!({
                     "roundtrip_ms": m.roundtrip_ms,
                     "server_total_ms": m.server_total_ms,
@@ -2824,186 +2650,16 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             }),
         });
 
-        // Defensive scrub: the LLM is told NOT to emit [word?XX%] confidence
-        // markers, but occasionally leaks them anyway (sometimes malformed,
-        // e.g. "[main60%]" with no '?'). Strip any survivors before this
-        // text reaches the user, the paste path, or the DB.
-        let before_confidence_strip = llm_result.polished.clone();
-        let confidence_strip_t0 = Instant::now();
-        let scrubbed = strip_confidence_markers(&llm_result.polished);
-        if scrubbed != llm_result.polished {
-            warn!(
-                "[voice] LLM leaked confidence markers — scrubbed {} → {} chars",
-                llm_result.polished.len(), scrubbed.len(),
-            );
-            llm_result.polished = scrubbed;
-        }
-        let confidence_strip_ms = confidence_strip_t0.elapsed().as_millis() as i64;
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.strip_confidence_markers",
-            component: "backend",
-            function: "routes::voice::strip_confidence_markers",
-            input: Some(&before_confidence_strip),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(confidence_strip_ms),
-            reason: Some("remove leaked confidence markers"),
-            risk: Some("post_model_mutation"),
-            metadata: json!({}),
-            ..Default::default()
-        });
-
-        let before_stream_scrub = llm_result.polished.clone();
-        let stream_scrub_t0 = Instant::now();
-        let scrubbed = scrub_polished_output(
-            &llm_result.polished,
-            &resolved_transcript,
-            stream_filter.saw_unsafe_content(),
-        );
-        if scrubbed != llm_result.polished {
-            warn!(
-                "[voice] scrubbed prompt/transcript leakage from final output {} → {} chars",
-                llm_result.polished.len(),
-                scrubbed.len(),
-            );
-            llm_result.polished = scrubbed;
-        }
-        let stream_scrub_ms = stream_scrub_t0.elapsed().as_millis() as i64;
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.scrub_polished_output",
-            component: "backend",
-            function: "stream_safety::scrub_polished_output",
-            input: Some(&before_stream_scrub),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(stream_scrub_ms),
-            reason: Some("remove prompt/transcript leakage"),
-            risk: Some("post_model_mutation"),
-            metadata: json!({
-                "saw_unsafe_content": stream_filter.saw_unsafe_content(),
-            }),
-            ..Default::default()
-        });
-
-        let before_devanagari_recovery = llm_result.polished.clone();
-        let devanagari_recovery_t0 = Instant::now();
-        if enforce_roman_hinglish && script::contains_devanagari(&llm_result.polished) {
-            let romanized = match crate::llm::devanagari_recovery::recover(
-                &http_client, &groq_key_for_recovery, &llm_result.polished,
-            ).await {
-                Ok(recovered) => {
-                    info!(
-                        "[voice] Devanagari LLM recovery succeeded — {} → {} chars",
-                        llm_result.polished.len(), recovered.len(),
-                    );
-                    recovered
-                }
-                Err(e) => {
-                    warn!(
-                        "[voice] Devanagari LLM recovery failed ({e}) — falling back to mechanical romanization",
-                    );
-                    script::enforce_roman_hinglish(&llm_result.polished)
-                }
-            };
-            warn!(
-                "[voice] Devanagari detected in output — recovered {} → {} chars",
-                llm_result.polished.len(),
-                romanized.len(),
-            );
-            llm_result.polished = romanized;
-            if !stream_filter.live_disabled() {
-                if !saw_script_rewrite {
-                    yield Ok(Event::default().event("token")
-                        .data(json!({"token": STREAM_RESET_SENTINEL}).to_string()));
-                }
-            }
-        };
-        let devanagari_recovery_ms = devanagari_recovery_t0.elapsed().as_millis() as i64;
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.devanagari_recovery",
-            component: "backend",
-            function: "devanagari_recovery::recover",
-            input: Some(&before_devanagari_recovery),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(devanagari_recovery_ms),
-            reason: Some("preserve roman Hinglish output mode"),
-            risk: Some("post_model_mutation"),
-            metadata: json!({
-                "enforce_roman_hinglish": enforce_roman_hinglish,
-            }),
-            ..Default::default()
-        });
-
-        // Defense: strip any non-Latin script hallucinations (katakana, CJK, etc)
-        let before_non_latin_strip = llm_result.polished.clone();
-        let non_latin_strip_t0 = Instant::now();
-        if enforce_roman_hinglish {
-            let stripped = script::strip_non_latin_scripts(&llm_result.polished);
-            if stripped != llm_result.polished {
-                warn!(
-                    "[voice] stripped non-Latin hallucination: {} → {} chars",
-                    llm_result.polished.len(),
-                    stripped.len(),
-                );
-                llm_result.polished = stripped;
-            }
-        }
-        let non_latin_strip_ms = non_latin_strip_t0.elapsed().as_millis() as i64;
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.strip_non_latin",
-            component: "backend",
-            function: "script::strip_non_latin_scripts",
-            input: Some(&before_non_latin_strip),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(non_latin_strip_ms),
-            reason: Some("remove non-Latin script hallucinations"),
-            risk: Some("post_model_mutation"),
-            metadata: json!({ "enforce_roman_hinglish": enforce_roman_hinglish }),
-            ..Default::default()
-        });
-
         let llm_ms   = llm_start.elapsed().as_millis() as i64;
         let total_ms = total_start.elapsed().as_millis() as i64;
-
-        // Content guard used to fall back to the transcript when the model
-        // output had fewer than half the source words. That breaks structured
-        // dictation: correct emails, URLs, numbered lists, and cleanup often
-        // compress many spoken tokens. Keep this stage as trace-only so beta
-        // monitoring can still flag short outputs without mutating them.
-        let transcript_wc = resolved_transcript.split_whitespace().count();
-        let polished_wc = llm_result.polished.split_whitespace().count();
-        let before_content_guard = llm_result.polished.clone();
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "post_llm.content_drop_guard",
-            component: "backend",
-            function: "routes::voice::content_drop_guard",
-            input: Some(&before_content_guard),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(0),
-            reason: Some("trace-only: short model output is monitored, not overwritten"),
-            risk: Some("post_model_observer"),
-            metadata: json!({
-                "disabled": true,
-                "transcript_words": transcript_wc,
-                "polished_words_before": polished_wc,
-                "would_have_triggered": transcript_wc > 4 && polished_wc < transcript_wc / 2,
-            }),
-            ..Default::default()
-        });
 
         let word_count = llm_result.polished.split_whitespace().count() as i64;
         info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms vocab={}ms llm={}ms",
             llm_ms, total_ms, transcribe_ms, embed_ms, vocab_ms, llm_ms);
 
         let recording_id = Uuid::new_v4().to_string();
-        let post_llm_mutations = dictation_trace
-            .stages
-            .iter()
-            .filter(|stage| {
-                stage.changed && stage.risk.as_deref() == Some("post_model_mutation")
-            })
-            .count();
         dictation_trace.set_summary_field("model", json!(actual_model_used.as_str()));
         dictation_trace.set_summary_field("recording_id", json!(recording_id.as_str()));
-        dictation_trace.set_summary_field("post_llm_mutation_count", json!(post_llm_mutations));
         dictation_trace.set_summary_field("final_output_chars", json!(llm_result.polished.chars().count()));
         let trace_json_string = serde_json::to_string(&dictation_trace).ok();
 
@@ -3581,52 +3237,6 @@ mod server_vocab_card_tests {
         assert_eq!(card.aliases, ["main cops"]);
         assert_eq!(card.evidence, ["phonetic(main cops)"]);
         assert_eq!(card.do_not_use_when.as_deref(), Some("makeup products"));
-    }
-}
-
-#[cfg(test)]
-mod live_token_tests {
-    use super::{LIVE_TOKEN_MAX_CHARS, LiveTokenCoalescer};
-    use crate::llm::stream_safety::STREAM_RESET_SENTINEL;
-
-    #[test]
-    fn coalescer_does_not_flush_partial_words() {
-        let mut c = LiveTokenCoalescer::new();
-        assert!(c.push("Hel".to_string()).is_empty());
-        assert!(c.push("lo wor".to_string()).is_empty());
-
-        let out = c.push("ld ".to_string());
-        assert_eq!(out, vec!["Hello world ".to_string()]);
-    }
-
-    #[test]
-    fn coalescer_flushes_remainder_at_end() {
-        let mut c = LiveTokenCoalescer::new();
-        assert!(c.push("Hello wor".to_string()).is_empty());
-        assert_eq!(c.flush(), vec!["Hello wor".to_string()]);
-        assert!(c.flush().is_empty());
-    }
-
-    #[test]
-    fn coalescer_splits_at_last_space_when_buffer_gets_large() {
-        let mut c = LiveTokenCoalescer::new();
-        let input = format!("{} partial", "word ".repeat((LIVE_TOKEN_MAX_CHARS / 5) + 2));
-        let out = c.push(input);
-        assert_eq!(out.len(), 1);
-        assert!(out[0].ends_with(' '));
-        assert!(!out[0].ends_with("partial"));
-        assert_eq!(c.flush(), vec!["partial".to_string()]);
-    }
-
-    #[test]
-    fn coalescer_reset_clears_buffer_and_passes_sentinel() {
-        let mut c = LiveTokenCoalescer::new();
-        assert!(c.push("Hello wor".to_string()).is_empty());
-        assert_eq!(
-            c.push(STREAM_RESET_SENTINEL.to_string()),
-            vec![STREAM_RESET_SENTINEL]
-        );
-        assert!(c.flush().is_empty());
     }
 }
 

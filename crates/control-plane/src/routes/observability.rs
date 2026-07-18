@@ -150,10 +150,15 @@ pub async fn list_org_dictation(
     Path(org_id): Path<Uuid>,
     Query(q): Query<DictationListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+    let platform_admin = crate::auth::is_platform_admin(&state, &user)
         .await
-        .map_err(|_| json_err(StatusCode::FORBIDDEN, "forbidden"))?;
-    require_org_admin(&role).map_err(|_| json_err(StatusCode::FORBIDDEN, "admin required"))?;
+        .map_err(|_| json_err(StatusCode::INTERNAL_SERVER_ERROR, "authorization failed"))?;
+    if !platform_admin {
+        let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+            .await
+            .map_err(|_| json_err(StatusCode::FORBIDDEN, "forbidden"))?;
+        require_org_admin(&role).map_err(|_| json_err(StatusCode::FORBIDDEN, "admin required"))?;
+    }
 
     if let Some(account_id) = q.account_id {
         ensure_org_account_member(&state.db, org_id, account_id)
@@ -237,10 +242,15 @@ pub async fn get_org_dictation_detail(
     Path((org_id, lookup_key)): Path<(Uuid, String)>,
     Query(q): Query<DictationListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+    let platform_admin = crate::auth::is_platform_admin(&state, &user)
         .await
-        .map_err(|_| json_err(StatusCode::FORBIDDEN, "forbidden"))?;
-    require_org_admin(&role).map_err(|_| json_err(StatusCode::FORBIDDEN, "admin required"))?;
+        .map_err(|_| json_err(StatusCode::INTERNAL_SERVER_ERROR, "authorization failed"))?;
+    if !platform_admin {
+        let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
+            .await
+            .map_err(|_| json_err(StatusCode::FORBIDDEN, "forbidden"))?;
+        require_org_admin(&role).map_err(|_| json_err(StatusCode::FORBIDDEN, "admin required"))?;
+    }
 
     let lookup_key = lookup_key.trim();
     if lookup_key.is_empty() {

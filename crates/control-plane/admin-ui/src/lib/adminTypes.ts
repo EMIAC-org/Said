@@ -32,6 +32,9 @@ export interface AdminOverview {
 /* ── Org-wide runs feed (per-run shape + who ran it) ────────────── */
 export type OrgRun = TelemetryRun & {
   account_id: string
+  org_id?: string
+  org_name?: string
+  org_slug?: string
   name?: string | null
   email?: string | null
   lark_name?: string | null
@@ -47,6 +50,9 @@ export interface OrgRunsResponse {
 
 /* ── People (list rows + windowed cost) ─────────────────────────── */
 export type PersonRow = TelemetryUserRow & {
+  org_id?: string
+  org_name?: string
+  org_slug?: string
   word_count?: number
   platform?: string | null
   app_version?: string | null
@@ -114,7 +120,15 @@ export interface OrgMeetingCosts {
   total_transcript_words: number
   total_cost_usd: number
   total_tokens: number
+  rate_cards: MeetingRateCard[]
   meetings: MeetingCostRow[]
+}
+
+export interface MeetingRateCard {
+  model: string
+  cache_hit_usd_per_million: number
+  cache_miss_usd_per_million: number
+  output_usd_per_million: number
 }
 
 export interface MeetingCostDetail {

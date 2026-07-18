@@ -204,6 +204,22 @@ pub async fn me(
     let features = license_features(&tier);
     let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers).await?;
     let orgs = tenant::list_memberships(&state, user.account_id).await?;
+    let platform_admin = crate::auth::is_platform_admin(&state, &user)
+        .await
+        .map_err(db_err)?;
+    let admin_orgs: Vec<Value> = if platform_admin {
+        sqlx::query_as::<_, (Uuid, String, String)>(
+            "SELECT id, name, slug FROM orgs ORDER BY name ASC",
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_err)?
+        .into_iter()
+        .map(|(id, name, slug)| json!({ "id": id, "name": name, "slug": slug }))
+        .collect()
+    } else {
+        Vec::new()
+    };
 
     Ok(Json(json!({
         "account": {
@@ -219,6 +235,8 @@ pub async fn me(
         "active_org_id": tenant_ctx.active_org_id,
         "personal_mode": tenant_ctx.personal_mode,
         "org_role": tenant_ctx.org_role,
+        "platform_admin": platform_admin,
+        "admin_orgs": admin_orgs,
     })))
 }
 

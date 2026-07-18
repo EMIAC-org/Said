@@ -55,6 +55,18 @@ fail()  { echo -e "\n  ${red}✗ $*${nc}\n"; exit 1; }
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
+# A normal `just dmg` is a distributable build: its updater archive must be
+# signed and the resulting DMG must be notarized. Load both credentials from
+# their dedicated local Keychain/key-file sources before compiling, so a
+# missing credential fails immediately instead of after a long Tauri build.
+# `just local-dmg` deliberately disables updater artifacts and only needs the
+# notarization credentials.
+source "$REPO_ROOT/scripts/release-credentials.sh"
+airnote_load_notarization_credentials || exit 1
+if [ "${AIRNOTE_LOCAL_TEST_DMG:-0}" != "1" ]; then
+  airnote_load_updater_signing_credentials || exit 1
+fi
+
 # whisper-rs/ggml compiles Metal Objective-C objects with Apple clang. Those
 # objects can reference clang runtime helpers such as __isPlatformVersionAtLeast.
 # rustc drives the final link with -nodefaultlibs, so the clang runtime archive is
@@ -144,18 +156,17 @@ else
   warn "DEEPSEEK_API_KEY not set — meeting summaries will fail until a key is bundled"
 fi
 
-# Together live Nemotron is required on Intel Macs and is the optional cloud
-# route on Apple Silicon. The build owns this credential; users never enter a
-# speech-provider key.
-if [ -z "${TOGETHER_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
-  TOGETHER_API_KEY="$(grep -E '^TOGETHER_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"')"
+# DeepInfra Whisper is required on Intel Macs and is the optional cloud route
+# on Apple Silicon. The build owns this credential; users never enter it.
+if [ -z "${DEEPINFRA_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  DEEPINFRA_API_KEY="$(grep -E '^DEEPINFRA_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"')"
 fi
-if [ -n "${TOGETHER_API_KEY:-}" ]; then
-  export TOGETHER_API_KEY
+if [ -n "${DEEPINFRA_API_KEY:-}" ]; then
+  export DEEPINFRA_API_KEY
   touch "$TAURI_DIR/src/dictation_stt.rs"
-  ok "Together cloud-dictation key will be bundled into the build"
+  ok "DeepInfra cloud-dictation key will be bundled into the build"
 else
-  warn "TOGETHER_API_KEY not set — live Nemotron dictation will be unavailable"
+  warn "DEEPINFRA_API_KEY not set — Cloud Whisper dictation will be unavailable"
 fi
 
 # ── Tauri build ──────────────────────────────────────────────────────────────
@@ -196,7 +207,7 @@ TEAM_ID="${APPLE_TEAM_ID:-96ZQGP7L3B}"
 
 # Do not embed local .env secrets in packaged app builds.
 rm -f "$APP_PATH/Contents/MacOS/.env"
-ok "no .env embedded; packaged app will use API keys from preferences DB"
+ok "no .env embedded; required desktop keys were baked at compile time"
 
 # Strip quarantine for local testing.
 xattr -cr "$APP_PATH" 2>/dev/null || true
@@ -319,21 +330,21 @@ APPLE_ASP="${APPLE_APP_SPECIFIC_PASSWORD:-${APPLE_PASSWORD:-}}"
 APPLE_NOTARY_PROFILE="${APPLE_KEYCHAIN_PROFILE:-}"
 REQUIRE_NOTARIZATION="${AIRNOTE_REQUIRE_NOTARIZATION:-0}"
 
-if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
+if [ -n "$APPLE_NOTARY_PROFILE" ]; then
+  step "Notarize DMG with Apple keychain profile: $APPLE_NOTARY_PROFILE"
+  NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-25m}"
+  xcrun notarytool submit "$DMG_OUT" \
+    --keychain-profile "$APPLE_NOTARY_PROFILE" \
+    --timeout "$NOTARY_TIMEOUT" \
+    --wait 2>&1 | sed 's/^/  /'
+  ok "notarization submitted"
+elif [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; then
   step "Notarize DMG with Apple"
   NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-25m}"
   xcrun notarytool submit "$DMG_OUT" \
     --apple-id "$APPLE_ID_EMAIL" \
     --team-id "$TEAM_ID" \
     --password "$APPLE_ASP" \
-    --timeout "$NOTARY_TIMEOUT" \
-    --wait 2>&1 | sed 's/^/  /'
-  ok "notarization submitted"
-elif [ -n "$APPLE_NOTARY_PROFILE" ]; then
-  step "Notarize DMG with Apple keychain profile: $APPLE_NOTARY_PROFILE"
-  NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-25m}"
-  xcrun notarytool submit "$DMG_OUT" \
-    --keychain-profile "$APPLE_NOTARY_PROFILE" \
     --timeout "$NOTARY_TIMEOUT" \
     --wait 2>&1 | sed 's/^/  /'
   ok "notarization submitted"
@@ -344,7 +355,7 @@ else
   warn "DMG is signed but NOT notarized (users will see 'identified developer' warning)"
 fi
 
-if [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ] || [ -n "$APPLE_NOTARY_PROFILE" ]; then
+if [ -n "$APPLE_NOTARY_PROFILE" ] || { [ -n "$APPLE_ID_EMAIL" ] && [ -n "$APPLE_ASP" ]; }; then
   step "Staple notarization ticket"
   xcrun stapler staple "$DMG_OUT" 2>&1 | sed 's/^/  /'
   ok "stapled"

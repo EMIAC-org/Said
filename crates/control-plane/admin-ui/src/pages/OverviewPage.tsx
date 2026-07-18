@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router'
 import { apiJson } from '../api'
 import { useAuth } from '../hooks/useAuth'
 import { useWindowRange, WIN_LABEL, winDays } from '../lib/window'
-import { usd, usd2, num, osLabel, osGlyph, firstName } from '../lib/format'
-import { StatTile, Sparkline, SplitBar, Avatar, Loading, ErrorBox } from '../components/ui'
+import { usd, usd2, num, osLabel, osGlyph, firstName, shortId } from '../lib/format'
+import { StatTile, Sparkline, SplitBar, Avatar, Loading, ErrorBox, TruncatedChip } from '../components/ui'
 import type { AdminOverview } from '../lib/adminTypes'
 
 export function OverviewPage() {
@@ -107,16 +107,17 @@ export function OverviewPage() {
             <div className="card-title">Recent runs</div>
             <div className="chip click" onClick={() => navigate('/runs')}>View all →</div>
           </div>
-          <table>
+          <table className="table-fixed overview-runs-table">
+            <colgroup><col className="col-run" /><col /><col className="col-cost" /></colgroup>
             <thead><tr><th>Run</th><th>App</th><th className="r">Cost</th></tr></thead>
             <tbody>
               {data.recent_runs.map(r => (
                 <tr key={r.run_id} className="clickable" onClick={() => navigate('/runs')}>
                   <td>
-                    <div className="cell-strong mono" style={{ fontSize: 11.5 }}>{r.run_id}</div>
+                    <div className="cell-strong mono truncate" style={{ fontSize: 11.5 }} title={r.run_id}>{shortId(r.run_id)}</div>
                     <div style={{ fontSize: 11, color: 'var(--muted)' }}>{firstName(r.name)} · {r.word_count ?? 0}w</div>
                   </td>
-                  <td><span className="chip">{r.target_app || 'Unknown'}</span></td>
+                  <td><TruncatedChip value={r.target_app || 'Unknown'} /></td>
                   <td className="r"><span className="cost">{usd(r.total_cost_usd)}</span></td>
                 </tr>
               ))}

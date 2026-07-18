@@ -69,8 +69,11 @@ if [ "${SKIP_GATEKEEPER_VERIFY:-0}" != "1" ]; then
   spctl --assess --type open --context context:primary-signature -v "$DMG_PATH"
 fi
 
-: "${TAURI_SIGNING_PRIVATE_KEY:?set TAURI_SIGNING_PRIVATE_KEY to sign the updater archive}"
-: "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:?set TAURI_SIGNING_PRIVATE_KEY_PASSWORD to sign the updater archive}"
+# Use exactly the same secure local updater-key source as `just dmg`; no
+# release command needs a manual secret export or a plaintext documentation
+# fallback.
+source "$REPO_ROOT/scripts/release-credentials.sh"
+airnote_load_updater_signing_credentials || exit 1
 
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$ARTIFACT_DIR"

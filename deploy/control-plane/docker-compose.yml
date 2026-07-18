@@ -38,16 +38,14 @@ services:
       GATEWAY_API_KEY: ${GATEWAY_API_KEY:-}
       RUNTIME_CREDENTIALS_KEY: ${RUNTIME_CREDENTIALS_KEY:-}
       AIRNOTE_LEARNING_JUDGE_MODEL: ${AIRNOTE_LEARNING_JUDGE_MODEL:-}
-      # Message polish (Option+1) runs server-side via DeepSeek. Without the key
-      # the /v1/runtime/message-polish endpoint returns 503 and the feature dies.
+      # DeepSeek remains available only to background learning/profile jobs.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
-      DEEPSEEK_MESSAGE_POLISH_MODEL: ${DEEPSEEK_MESSAGE_POLISH_MODEL:-deepseek-v4-flash}
-      # Reserved for the Together-hosted STT paths. Current desktop cloud STT
-      # receives this credential locally, but keeping it in the dev service
-      # makes the deployment contract explicit for server-side callers.
-      TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
+      # Interactive dictation and every Option helper use Gemma 4 through this key.
       DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      # Read-only cross-workspace Admin visibility for COMPANY_ADMIN members of
+      # the internal platform workspace. Empty disables the global view.
+      PLATFORM_ADMIN_ORG_SLUG: ${PLATFORM_ADMIN_ORG_SLUG:-emiactech}
     ports:
       - "${CONTROL_PLANE_BIND:-127.0.0.1}:${CONTROL_PLANE_PORT:-3100}:8080"
     healthcheck:

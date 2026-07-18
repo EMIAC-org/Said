@@ -13,7 +13,11 @@ interface AuthMeResponse extends User {
     role: string
     is_active?: boolean
   }>
+  platform_admin?: boolean
+  admin_orgs?: AdminOrg[]
 }
+
+export interface AdminOrg { id: string; name: string; slug: string }
 
 interface AuthTokenResponse {
   token: string
@@ -28,6 +32,10 @@ interface AuthCtx {
   login: (email: string, password: string, signup?: boolean) => Promise<void>
   logout: () => void
   refreshOrg: () => Promise<void>
+  platformAdmin: boolean
+  adminOrgs: AdminOrg[]
+  adminScopeOrgId: string | null
+  setAdminScopeOrgId: (orgId: string | null) => void
 }
 
 const Ctx = createContext<AuthCtx>(null!)
@@ -38,6 +46,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [orgMissing, setOrgMissing] = useState(false)
   const [token, setHasToken] = useState(isAuthenticated)
   const [loading, setLoading] = useState(true)
+  const [platformAdmin, setPlatformAdmin] = useState(false)
+  const [adminOrgs, setAdminOrgs] = useState<AdminOrg[]>([])
+  const [adminScopeOrgId, setAdminScopeOrgId] = useState<string | null>(null)
 
   const fetchOrgFromMe = useCallback(async (me: AuthMeResponse) => {
     const memberships = me.orgs ?? []
@@ -69,12 +80,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setOrg(null)
       setOrgMissing(false)
       setActiveOrgId(null)
+      setPlatformAdmin(false)
+      setAdminOrgs([])
+      setAdminScopeOrgId(null)
       setLoading(false)
       return
     }
     try {
       const me = await apiJson<AuthMeResponse>('/v1/auth/me')
       setUser(me)
+      setPlatformAdmin(Boolean(me.platform_admin))
+      setAdminOrgs(me.platform_admin ? (me.admin_orgs ?? []) : [])
+      if (!me.platform_admin) setAdminScopeOrgId(null)
       await fetchOrgFromMe(me)
     } catch {
       clearToken()
@@ -83,6 +100,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setOrg(null)
       setOrgMissing(false)
       setActiveOrgId(null)
+      setPlatformAdmin(false)
+      setAdminOrgs([])
+      setAdminScopeOrgId(null)
     }
     setLoading(false)
   }, [fetchOrgFromMe])
@@ -109,16 +129,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
     setOrg(null)
     setOrgMissing(false)
+    setPlatformAdmin(false)
+    setAdminOrgs([])
+    setAdminScopeOrgId(null)
   }, [])
 
   const refreshOrg = useCallback(async () => {
     if (!isAuthenticated()) return
     const me = await apiJson<AuthMeResponse>('/v1/auth/me')
+    setPlatformAdmin(Boolean(me.platform_admin))
+    setAdminOrgs(me.platform_admin ? (me.admin_orgs ?? []) : [])
+    if (!me.platform_admin) setAdminScopeOrgId(null)
     await fetchOrgFromMe(me)
   }, [fetchOrgFromMe])
 
   return (
-    <Ctx.Provider value={{ user, org, orgMissing, token, loading, login, logout, refreshOrg }}>
+    <Ctx.Provider value={{
+      user, org, orgMissing, token, loading, login, logout, refreshOrg,
+      platformAdmin, adminOrgs, adminScopeOrgId, setAdminScopeOrgId,
+    }}>
       {children}
     </Ctx.Provider>
   )

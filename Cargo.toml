@@ -21,7 +21,7 @@ resolver = "2"
 # Bump `version` here (or via scripts/bump-version.sh) and every workspace crate
 # moves with it. control-plane is excluded — keep its version in sync manually.
 [workspace.package]
-version      = "2.4.4"
+version      = "2.4.5"
 edition      = "2024"
 rust-version = "1.85"
 authors      = ["EMIAC <https://github.com/EMIAC-org>"]

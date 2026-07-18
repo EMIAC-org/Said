@@ -272,11 +272,15 @@ pub fn spawn_uploader(
         upload_pending(&pool, &user_id, &http, &client_version, &device_id).await;
 
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+        // The first interval tick is immediate; consume it because startup just
+        // performed an unconditional recovery flush above.
+        interval.tick().await;
         loop {
             interval.tick().await;
-            if telemetry::should_upload(&pool, &user_id) {
-                upload_pending(&pool, &user_id, &http, &client_version, &device_id).await;
-            }
+            // Periodic delivery must not require the ten-run immediate-upload
+            // threshold. Sparse users otherwise remain invisible in Admin until
+            // they restart the app or eventually complete ten dictations.
+            upload_pending(&pool, &user_id, &http, &client_version, &device_id).await;
         }
     });
 }

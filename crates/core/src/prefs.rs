@@ -66,8 +66,9 @@ pub struct DesktopPrefs {
     pub browser_context_enabled: bool,
 
     /// Dictation STT route. The desktop device policy owns valid values:
-    /// Apple Silicon can use `"local"` or `"cloud-nemotron-3.5"`; Windows
-    /// and Intel Macs are locked to the live Nemotron route.
+    /// Apple Silicon can use `"local"` or
+    /// `"cloud-deepinfra-whisper-v3-turbo"`; Windows and Intel Macs are
+    /// locked to the hosted DeepInfra Whisper route.
     #[serde(default = "default_dictation_stt")]
     pub dictation_stt: String,
 
@@ -127,7 +128,9 @@ pub fn load() -> DesktopPrefs {
     let mut prefs: DesktopPrefs = serde_json::from_str(&text).unwrap_or_default();
     // The desktop policy resolves all legacy values on startup. Keep the
     // JSON reader tolerant so an old preferences file can always be opened.
-    if prefs.dictation_stt == "hosted" || prefs.dictation_stt == "cloud-whisper-large-v3" {
+    if prefs.dictation_stt == "cloud-nemotron-3.5" {
+        prefs.dictation_stt = "cloud-deepinfra-whisper-v3-turbo".into();
+    } else if prefs.dictation_stt == "hosted" || prefs.dictation_stt == "cloud-whisper-large-v3" {
         prefs.dictation_stt = "local".into();
     }
     prefs
@@ -198,7 +201,7 @@ mod tests {
             launch_at_login: true,
             beta_mode: true,
             browser_context_enabled: true,
-            dictation_stt: "cloud-nemotron-3.5".into(),
+            dictation_stt: "cloud-deepinfra-whisper-v3-turbo".into(),
             local_stt_model: "nemotron".into(),
             local_stt_compat_override: Some("nemotron-q8".into()),
         };
@@ -210,7 +213,7 @@ mod tests {
         assert!(back.launch_at_login);
         assert!(back.beta_mode);
         assert!(back.browser_context_enabled);
-        assert_eq!(back.dictation_stt, "cloud-nemotron-3.5");
+        assert_eq!(back.dictation_stt, "cloud-deepinfra-whisper-v3-turbo");
         assert_eq!(back.local_stt_model, "nemotron");
         assert_eq!(
             back.local_stt_compat_override.as_deref(),

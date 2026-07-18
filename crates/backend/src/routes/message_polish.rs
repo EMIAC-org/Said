@@ -13,7 +13,7 @@ pub const MESSAGE_POLISH_SIGNIN_ERROR: &str = "Polish My Message requires AirNot
 struct ServerMessagePolishRequest {
     text: String,
     client_run_id: Option<String>,
-    /// "polish" (⌥1) or "to_english" (⌥2). The server swaps the prompt directive.
+    /// Gemma helper mode: polish, to_english, casual, concise, or hinglish.
     mode: String,
 }
 

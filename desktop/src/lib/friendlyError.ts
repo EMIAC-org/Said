@@ -72,9 +72,9 @@ export function classifyError(raw: unknown, fallback = "Something went wrong. Pl
   }
 
   // Transient failures — a retry is the right fix.
-  if (/together.*(rate.?limit|429)|together_rate_limit|x-ratelimit/.test(e)) {
+  if (/deepinfra.*(rate.?limit|429)|x-ratelimit/.test(e)) {
     return {
-      message: "Together AI rate limit hit — wait a moment and try again.",
+      message: "DeepInfra rate limit hit — wait a moment and try again.",
       action: { label: "Try again", kind: "retry" },
     };
   }

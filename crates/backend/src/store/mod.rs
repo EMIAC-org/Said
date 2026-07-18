@@ -1005,8 +1005,8 @@ pub fn ensure_default_user(pool: &DbPool) -> String {
     conn.execute(
         "INSERT INTO preferences (user_id, selected_model, tone_preset, language,
          auto_paste, edit_capture, polish_text_hotkey, record_hotkey, server_runtime_enabled, updated_at)
-         VALUES (?1, 'deepinfra-gemma-4-26b-a4b', 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?2)",
-        params![id, now_ms],
+         VALUES (?1, ?2, 'neutral', 'auto', 1, 1, 'cmd+shift+p', 'caps_lock', 0, ?3)",
+        params![id, said_core::polish::model::DEFAULT_POLISH_MODEL_KEY, now_ms],
     )
     .expect("failed to create default preferences");
 
@@ -1180,7 +1180,7 @@ mod tests {
                  );
                  INSERT INTO telemetry_run_summaries
                     (run_id, stt_provider, stt_model, stt_path)
-                 VALUES ('run-1', 'together', 'together:nvidia/nemotron', 'websocket_live');
+                 VALUES ('run-1', 'deepinfra', 'deepinfra:openai/whisper-large-v3-turbo', 'http_batch');
                  PRAGMA user_version = 63;",
             )
             .unwrap();
@@ -1201,9 +1201,9 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(identity.0, "together");
-        assert_eq!(identity.1, "together:nvidia/nemotron");
-        assert_eq!(identity.2, "websocket_live");
+        assert_eq!(identity.0, "deepinfra");
+        assert_eq!(identity.1, "deepinfra:openai/whisper-large-v3-turbo");
+        assert_eq!(identity.2, "http_batch");
     }
 
     #[test]

@@ -1030,11 +1030,11 @@ export function OnboardingFlow({
         <OnboardingShell
           step={stepIndex}
           totalSteps={totalSteps}
-          eyebrow="Live speech recognition"
-          title="Live Nemotron is ready."
-          subtitle="AirNote uses live multilingual speech recognition on this device. No local speech model download is needed."
-          brandTagline="Speak naturally. AirNote streams the transcript as you talk."
-          brandKicker="Live Nemotron"
+          eyebrow="Cloud speech recognition"
+          title="Cloud Whisper is ready."
+          subtitle="AirNote uses DeepInfra Whisper speech recognition on this device. No local speech model download is needed."
+          brandTagline="Speak naturally. AirNote transcribes when you release the key."
+          brandKicker="Cloud Whisper"
           brandQuote={intelMac ? "This Intel Mac uses the cloud speech engine for a reliable experience." : "This PC uses the cloud speech engine for a reliable experience."}
           topRight={<span>{stepLabel(step)}</span>}
           onBack={goBack}
@@ -1044,10 +1044,10 @@ export function OnboardingFlow({
             <div className="rounded-xl p-4" style={{ border: "1px solid hsl(var(--primary) / 0.45)", background: "hsl(var(--primary) / 0.06)" }}>
               <div className="flex items-center gap-2">
                 <span className="w-[22px] h-[22px] rounded-[7px] grid place-items-center" style={{ background: "hsl(var(--primary))", color: "white" }}><Wifi size={13} /></span>
-                <p className="text-[13.5px] font-semibold text-foreground">Nemotron Streaming 3.5</p>
+                <p className="text-[13.5px] font-semibold text-foreground">Whisper Large V3 Turbo</p>
               </div>
               <p className="text-[11.5px] text-muted-foreground leading-relaxed mt-3">
-                AirNote opens a live secure connection when you start dictating and finalizes your transcript when you release the key. An internet connection is required.
+                AirNote securely sends the finished recording to DeepInfra when you release the key. An internet connection is required.
               </p>
             </div>
             <button onClick={() => advanceToNextUndone(completedThroughCurrentStep())} className="btn-primary btn-lg w-full">

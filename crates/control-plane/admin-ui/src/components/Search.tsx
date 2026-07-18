@@ -24,7 +24,7 @@ function displayName(p: PersonRow) { return p.lark_name || p.email?.split('@')[0
 
 export function SearchProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
-  const { org } = useAuth()
+  const { org, platformAdmin, adminScopeOrgId } = useAuth()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [people, setPeople] = useState<PersonRow[]>([])
@@ -49,13 +49,16 @@ export function SearchProvider({ children }: { children: ReactNode }) {
 
   // Lazy-load people the first time it opens
   useEffect(() => {
-    if (open && orgId && people.length === 0) {
-      apiJson<PeopleResponse>(`/v1/orgs/${orgId}/telemetry/users?days=all&limit=500`)
+    if (open && orgId) {
+      const path = platformAdmin
+        ? `/v1/platform/telemetry/users?days=all&limit=500${adminScopeOrgId ? `&org_id=${adminScopeOrgId}` : ''}`
+        : `/v1/orgs/${orgId}/telemetry/users?days=all&limit=500`
+      apiJson<PeopleResponse>(path)
         .then(r => setPeople(r.users || []))
         .catch(() => {})
     }
     if (open) { setActive(0); setTimeout(() => inputRef.current?.focus(), 0) }
-  }, [open, orgId, people.length])
+  }, [open, orgId, platformAdmin, adminScopeOrgId])
 
   const q = query.trim().toLowerCase()
   const pageHits = PAGES.filter(p => !q || p.label.toLowerCase().includes(q) || p.kw.includes(q))
@@ -65,7 +68,12 @@ export function SearchProvider({ children }: { children: ReactNode }) {
 
   const flat: { kind: 'page' | 'person'; to: string; person?: PersonRow; label: string }[] = [
     ...pageHits.map(p => ({ kind: 'page' as const, to: p.to, label: p.label })),
-    ...peopleHits.map(p => ({ kind: 'person' as const, to: `/people/${p.account_id}`, person: p, label: displayName(p) })),
+    ...peopleHits.map(p => ({
+      kind: 'person' as const,
+      to: `/people/${p.account_id}?org=${p.org_id ?? orgId}`,
+      person: p,
+      label: displayName(p),
+    })),
   ]
 
   useEffect(() => { setActive(a => Math.min(a, Math.max(0, flat.length - 1))) }, [flat.length])
@@ -127,7 +135,7 @@ export function SearchProvider({ children }: { children: ReactNode }) {
                         onMouseEnter={() => setActive(idx)} onClick={() => select(idx)}>
                         <Avatar name={displayName(p)} size={22} />
                         <span className="t">{displayName(p)}</span>
-                        <span className="s">{p.email}</span>
+                        <span className="s">{p.email}{p.org_name ? ` · ${p.org_name}` : ''}</span>
                         <span className="go">↵</span>
                       </div>
                     )

@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AirNote Usage Economics — July 2026</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+  <style>
+    :root {
+      --font-display:'Space Grotesk',system-ui,sans-serif; --font-body:'Plus Jakarta Sans',system-ui,sans-serif; --font-mono:'JetBrains Mono',ui-monospace,monospace;
+      --fs-xs:.75rem; --fs-sm:.875rem; --fs-base:1rem; --fs-lg:1.125rem; --fs-xl:1.375rem; --fs-2xl:1.75rem; --fs-3xl:2.25rem; --fs-4xl:3rem; --fs-5xl:4.25rem;
+      --lh-tight:1.15; --lh-snug:1.35; --lh-normal:1.55; --lh-relaxed:1.75; --fw-regular:400; --fw-medium:500; --fw-semibold:600; --fw-bold:700;
+      --bg-primary:#0a0a0f; --bg-secondary:#11111a; --bg-card:#16161f; --bg-elevated:#1d1d28;
+      --text-primary:#f4f4f8; --text-secondary:#b4b4c2; --text-muted:#6f6f80;
+      --accent-primary:#7c5cff; --accent-secondary:#22d3ee; --accent-success:#34d399; --accent-warning:#fbbf24; --accent-danger:#f87171;
+      --border-subtle:rgba(255,255,255,.06); --border-soft:rgba(255,255,255,.10); --border-strong:rgba(255,255,255,.18);
+      --space-xs:.25rem; --space-sm:.5rem; --space-md:1rem; --space-lg:1.5rem; --space-xl:2.5rem; --space-2xl:4rem; --space-3xl:6rem;
+      --radius-sm:6px; --radius-md:12px; --radius-lg:20px; --radius-xl:28px; --radius-full:9999px;
+      --shadow-sm:0 1px 2px rgba(0,0,0,.4); --shadow-md:0 8px 24px rgba(0,0,0,.35); --shadow-lg:0 24px 60px rgba(0,0,0,.5); --shadow-glow:0 0 32px rgba(124,92,255,.45);
+      --ease-default:cubic-bezier(.4,0,.2,1); --ease-smooth:cubic-bezier(.16,1,.3,1); --dur-fast:150ms; --dur-normal:300ms; --dur-slow:600ms;
+      --container-lg:1120px;
+    }
+    *{box-sizing:border-box} html{scroll-behavior:smooth} body{margin:0;background:var(--bg-primary);color:var(--text-primary);font-family:var(--font-body);font-size:var(--fs-base);line-height:var(--lh-normal);-webkit-font-smoothing:antialiased}
+    h1,h2,h3{font-family:var(--font-display);line-height:var(--lh-tight);letter-spacing:-.02em} a{color:inherit}.mono{font-family:var(--font-mono)}
+    .nav{position:sticky;top:0;z-index:20;background:rgba(10,10,15,.82);backdrop-filter:blur(16px);border-bottom:1px solid var(--border-subtle)}
+    .nav-inner{max-width:var(--container-lg);margin:auto;padding:.8rem 1.25rem;display:flex;justify-content:space-between;align-items:center}.nav-links{display:flex;gap:1rem}.nav a{text-decoration:none;color:var(--text-muted);font-size:var(--fs-sm)}.nav a:hover{color:var(--text-primary)}
+    main{max-width:var(--container-lg);margin:auto;padding:0 1.25rem 5rem}.hero{padding:6rem 0 3rem;position:relative}.hero:before{content:"";position:absolute;width:420px;height:420px;right:-100px;top:0;background:radial-gradient(circle,rgba(124,92,255,.2),transparent 65%);pointer-events:none}
+    .kicker{font-family:var(--font-mono);font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.12em;color:var(--accent-secondary)}h1{font-size:clamp(2.7rem,7vw,var(--fs-5xl));max-width:900px;margin:.8rem 0 1rem}.lede{font-size:var(--fs-xl);color:var(--text-secondary);max-width:800px}.stamp{margin-top:1.5rem;color:var(--text-muted);font-size:var(--fs-sm)}
+    .copy-btn{margin-top:1.4rem;padding:.7rem 1rem;border:1px solid var(--border-soft);border-radius:var(--radius-full);background:var(--bg-elevated);color:var(--text-primary);font:600 var(--fs-sm)/1 var(--font-body);cursor:pointer;transition:border-color var(--dur-fast),transform var(--dur-fast)}.copy-btn:hover{border-color:var(--accent-secondary);transform:translateY(-1px)}
+    section{scroll-margin-top:72px;margin:4rem 0}.section-head{display:flex;align-items:end;justify-content:space-between;gap:2rem;margin-bottom:1.5rem}.section-head h2{font-size:var(--fs-3xl);margin:0}.section-head p{max-width:560px;color:var(--text-muted);margin:0}
+    .grid{display:grid;gap:1rem}.grid.four{grid-template-columns:repeat(4,1fr)}.grid.three{grid-template-columns:repeat(3,1fr)}.grid.two{grid-template-columns:repeat(2,1fr)}
+    .card{background:linear-gradient(145deg,rgba(255,255,255,.025),transparent),var(--bg-card);border:1px solid var(--border-soft);border-radius:var(--radius-lg);padding:1.35rem;box-shadow:var(--shadow-sm)}.card .label{font-size:var(--fs-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted)}.metric{font-family:var(--font-display);font-weight:700;font-size:clamp(1.8rem,4vw,2.7rem);margin:.25rem 0}.card p{color:var(--text-secondary);margin:.4rem 0 0}.small{font-size:var(--fs-sm);color:var(--text-muted)}
+    .accent{color:var(--accent-secondary)}.success{color:var(--accent-success)}.warning{color:var(--accent-warning)}
+    .bars{display:grid;grid-template-columns:repeat(7,1fr);gap:.7rem;align-items:end;height:220px;padding-top:1rem}.bar-wrap{height:100%;display:flex;flex-direction:column;justify-content:end;align-items:center;gap:.55rem}.bar{width:100%;max-width:60px;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,var(--accent-primary),rgba(124,92,255,.38));min-height:4px}.bar-label{font-family:var(--font-mono);font-size:.68rem;color:var(--text-muted)}.bar-value{font-size:.72rem;color:var(--text-secondary)}
+    .stack{display:grid;gap:.75rem}.app-row{display:grid;grid-template-columns:210px 1fr 55px;gap:.75rem;align-items:center}.track{height:9px;background:var(--bg-elevated);border-radius:99px;overflow:hidden}.fill{height:100%;background:linear-gradient(90deg,var(--accent-secondary),var(--accent-primary));border-radius:99px}.app-name,.pct{font-size:var(--fs-sm)}.pct{text-align:right;color:var(--text-muted)}
+    .tier{position:relative;overflow:hidden}.tier:after{content:"";position:absolute;width:110px;height:110px;border-radius:50%;right:-40px;top:-50px;background:var(--glow,rgba(124,92,255,.15))}.tier .cost{font-size:2.3rem;font-family:var(--font-display);font-weight:700;margin:.6rem 0}.pill{display:inline-flex;padding:.28rem .65rem;border-radius:99px;background:var(--bg-elevated);border:1px solid var(--border-soft);font-size:var(--fs-xs);color:var(--text-secondary)}
+    .formula{padding:1rem 1.2rem;border-left:3px solid var(--accent-secondary);background:var(--bg-secondary);border-radius:0 12px 12px 0;color:var(--text-secondary);font-family:var(--font-mono);font-size:var(--fs-sm)}
+    .calculator{background:linear-gradient(135deg,rgba(124,92,255,.12),rgba(34,211,238,.04)),var(--bg-card);border:1px solid var(--border-strong);border-radius:var(--radius-xl);padding:clamp(1.3rem,4vw,2.5rem)}.controls{display:grid;grid-template-columns:1fr 1fr;gap:2rem}.control label{display:flex;justify-content:space-between;margin-bottom:.8rem}.control output{font-family:var(--font-mono);color:var(--accent-secondary)}input[type=range]{width:100%;accent-color:var(--accent-primary)}.calc-result{margin-top:2rem;display:grid;grid-template-columns:repeat(4,1fr);gap:1rem}.calc-result>div{padding:1rem;background:rgba(0,0,0,.18);border-radius:12px}.calc-result strong{display:block;font-size:1.5rem;font-family:var(--font-display)}
+    .note{padding:1rem 1.2rem;background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.2);border-radius:var(--radius-md);color:var(--text-secondary)}
+    .insight{margin:2.5rem 0;padding:2rem;background:var(--bg-card);border:1px solid var(--border-soft);border-radius:16px;position:relative;overflow:hidden}.insight:before{content:"";position:absolute;top:0;left:0;width:3px;height:100%;background:var(--insight-color,var(--accent-primary))}.insight[data-kind=why]{--insight-color:var(--accent-primary)}.insight[data-kind=risk]{--insight-color:var(--accent-danger)}.insight[data-kind=trojan]{--insight-color:var(--accent-success)}.insight__kicker{font-family:var(--font-display);font-size:var(--fs-xs);font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--insight-color);margin-bottom:.75rem}.insight__title{font-family:var(--font-display);font-size:var(--fs-2xl);margin:0 0 1rem}.insight[data-kind=trojan] .insight__title{font-size:clamp(1.8rem,4vw,3rem)}.insight__body{color:var(--text-secondary)}
+    .cdot{display:inline-block;width:.55rem;height:.55rem;border-radius:99px;margin-left:.35rem;vertical-align:.1em;cursor:help}.cdot-high{background:var(--accent-success)}.cdot-medium{background:var(--accent-warning)}.cdot-low{background:var(--text-muted)}
+    .sources-footer{margin-top:6rem;padding:2rem 0 3rem;border-top:1px solid var(--border-soft);font-size:var(--fs-sm);color:var(--text-muted)}.sources-footer__title{font-family:var(--font-display);font-size:var(--fs-sm);text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary)}.sources-footer__list{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) max-content;gap:.5rem 1.5rem}.sources-footer__row{display:contents}.sources-footer__url{color:var(--text-secondary);text-decoration:none;border-bottom:1px dotted var(--border-soft);overflow-wrap:anywhere}.sources-footer__date{font-family:var(--font-mono);font-size:var(--fs-xs)}
+    .reveal{opacity:0;transform:translateY(18px);transition:opacity 400ms var(--ease-smooth),transform 400ms var(--ease-smooth)}.reveal.in{opacity:1;transform:none}#topBtn{position:fixed;right:1.2rem;bottom:1.2rem;border:1px solid var(--border-soft);background:var(--bg-elevated);color:var(--text-primary);padding:.7rem .9rem;border-radius:99px;opacity:0;pointer-events:none;transition:.2s}#topBtn.show{opacity:1;pointer-events:auto}
+    @media(max-width:850px){.grid.four,.grid.three{grid-template-columns:repeat(2,1fr)}.controls,.calc-result{grid-template-columns:1fr 1fr}.app-row{grid-template-columns:130px 1fr 45px}.nav-links{display:none}}
+    @media(max-width:600px){.grid.four,.grid.three,.grid.two,.controls,.calc-result{grid-template-columns:1fr}.hero{padding-top:4rem}.section-head{display:block}.section-head p{margin-top:.7rem}.sources-footer__list{grid-template-columns:1fr}.sources-footer__row{display:grid;padding:.5rem 0}.bars{gap:.3rem}.bar-value{display:none}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.reveal{opacity:1;transform:none;transition:none}}
+    @media print{.nav,#topBtn,.calculator input{display:none}.reveal{opacity:1;transform:none}body{background:#fff;color:#111}.card,.insight,.calculator{background:#fff;border-color:#ccc;box-shadow:none}.small,.card p,.section-head p,.insight__body{color:#444}}
+  </style>
+</head>
+<body>
+  <nav class="nav"><div class="nav-inner"><strong>AirNote Economics</strong><div class="nav-links"><a href="#usage">Your usage</a><a href="#market">Wispr benchmark</a><a href="#costs">Costs</a><a href="#calculator">Calculator</a></div></div></nav>
+  <main>
+    <header class="hero reveal">
+      <div class="kicker">Provider economics · read-only production analysis</div>
+      <h1>Budget <span class="accent">$0.30 per spoken hour</span> and you have room to breathe.</h1>
+      <p class="lede">GPT‑4o mini Transcribe plus DeepSeek V4 Flash should cost about <strong>$1.20–$1.80/month for an average paid user</strong>, about <strong>$3–$3.70 for a heavy user</strong>, and under <strong>$7.50 for an extreme 25-hour user</strong>—including a 15% variance buffer.</p>
+      <button class="copy-btn" id="copyTakeaways" type="button">Copy key takeaways</button>
+      <div class="stamp">Generated July 18, 2026 · All production queries were read-only · USD provider cost only</div>
+    </header>
+
+    <section id="usage" class="reveal">
+      <div class="section-head"><h2>Your last seven days</h2><p>Server history is the primary source because telemetry uploads covered only part of the week.</p></div>
+      <div class="grid four">
+        <article class="card"><div class="label">Dictations</div><div class="metric">340</div><p>Across all seven days.</p></article>
+        <article class="card"><div class="label">Spoken audio</div><div class="metric">41.5m</div><p>0.69 hours this week.</p></article>
+        <article class="card"><div class="label">Words</div><div class="metric">5,984</div><p>Measured at 144.2 spoken WPM.</p></article>
+        <article class="card"><div class="label">Projected month</div><div class="metric success">3.0h</div><p>1,478 dictations if this week repeats.</p></article>
+      </div>
+      <div class="grid two" style="margin-top:1rem">
+        <article class="card">
+          <div class="label">Daily spoken minutes</div>
+          <div class="bars">
+            <div class="bar-wrap"><div class="bar-value">0.6m</div><div class="bar" style="height:3.4%"></div><div class="bar-label">12</div></div>
+            <div class="bar-wrap"><div class="bar-value">18.8m</div><div class="bar" style="height:100%"></div><div class="bar-label">13</div></div>
+            <div class="bar-wrap"><div class="bar-value">8.9m</div><div class="bar" style="height:47.5%"></div><div class="bar-label">14</div></div>
+            <div class="bar-wrap"><div class="bar-value">5.1m</div><div class="bar" style="height:27.4%"></div><div class="bar-label">15</div></div>
+            <div class="bar-wrap"><div class="bar-value">0.3m</div><div class="bar" style="height:1.6%"></div><div class="bar-label">16</div></div>
+            <div class="bar-wrap"><div class="bar-value">6.2m</div><div class="bar" style="height:33%"></div><div class="bar-label">17</div></div>
+            <div class="bar-wrap"><div class="bar-value">1.6m</div><div class="bar" style="height:8.4%"></div><div class="bar-label">18</div></div>
+          </div>
+          <p class="small">Two high-use days produced 66.6% of the week’s speech. This is bursty knowledge-work usage, not evenly distributed narration.</p>
+        </article>
+        <article class="card">
+          <div class="label">Where you dictated</div>
+          <div class="stack" style="margin-top:1rem">
+            <div class="app-row"><span class="app-name">Codex</span><div class="track"><div class="fill" style="width:47.2%"></div></div><span class="pct">47.2%</span></div>
+            <div class="app-row"><span class="app-name">Claude</span><div class="track"><div class="fill" style="width:23.2%"></div></div><span class="pct">23.2%</span></div>
+            <div class="app-row"><span class="app-name">Traycer</span><div class="track"><div class="fill" style="width:9.2%"></div></div><span class="pct">9.2%</span></div>
+            <div class="app-row"><span class="app-name">Lark</span><div class="track"><div class="fill" style="width:9.1%"></div></div><span class="pct">9.1%</span></div>
+            <div class="app-row"><span class="app-name">Other</span><div class="track"><div class="fill" style="width:11.3%"></div></div><span class="pct">11.3%</span></div>
+          </div>
+          <p class="small">About 79.6% of your audio went into the top three AI/developer tools. Your strongest use case is prompting and development work.</p>
+        </article>
+      </div>
+      <div class="note" style="margin-top:1rem"><strong>Important cost pattern:</strong> your median dictation is only 4.26 seconds (average 7.33s; p95 22.02s). STT cost follows audio time, but polish cost follows request count—so your fragmented usage is a conservative stress case for DeepSeek.</div>
+    </section>
+
+    <section id="market" class="reveal">
+      <div class="section-head"><h2>What a Wispr Flow user speaks</h2><p>Wispr Flow does not publish a global average, so the only honest answer is a planning range built from an official free-tier boundary and clearly biased public user reports.</p></div>
+      <h3>Usable Reddit datapoints</h3>
+      <div class="grid three">
+        <article class="card tier"><span class="pill">Engaged user</span><div class="metric">3.54h/mo</div><p><a href="https://www.reddit.com/r/WisprFlow/comments/1usg4bb/6_days_with_wispr_flow_5222_words_dictated_at_123/" target="_blank" rel="noopener">5,222 words in six days at 123 WPM</a>, projected to 26,110 words per month.<span class="cdot cdot-low" title="Low confidence — one recent self-report"></span></p></article>
+        <article class="card tier"><span class="pill">Strong new adopter</span><div class="metric accent">6.7–8.3h/mo</div><p><a href="https://www.reddit.com/r/WisprFlow/comments/1tb04ty/wisprflow_best_product_ive_ever_used/" target="_blank" rel="noopener">4,000 words in two days</a>, projected to 60,000 monthly words at an assumed 120–150 WPM.<span class="cdot cdot-low" title="Low confidence — self-report, projected from two days"></span></p></article>
+        <article class="card tier"><span class="pill">Power user</span><div class="metric warning">10–12.5h/mo</div><p><a href="https://www.reddit.com/r/WisprFlow/comments/1shn4am/wispr_flow_week_1_review/" target="_blank" rel="noopener">3,000 words per day after one week</a>, or 90,000 monthly words at an assumed 120–150 WPM.<span class="cdot cdot-low" title="Low confidence — one self-selected power user"></span></p></article>
+      </div>
+      <p class="small">A separate commenter reported 330,000 lifetime words after using Flow for “months,” but the missing account age makes it unusable for monthly normalization. Two of the threads also include skepticism about promotional or astroturfed posts, so none of these samples should be treated as a population average.</p>
+      <h3 style="margin-top:2rem">Planning tiers</h3>
+      <div class="grid four">
+        <article class="card tier"><span class="pill">Light boundary</span><div class="metric">~1.2h</div><p>2,000 words/week at 123 WPM. This is the official desktop free-tier soft cap.<span class="cdot cdot-high" title="High confidence — official documentation"></span></p></article>
+        <article class="card tier"><span class="pill">Average paid plan</span><div class="metric accent">4–6h</div><p>A prudent blended assumption between your measured 3.0h baseline and Reddit's enthusiastic 3.5–8.3h examples.<span class="cdot cdot-medium" title="Medium confidence — measured user data triangulated with self-reports"></span></p></article>
+        <article class="card tier"><span class="pill">Heavy</span><div class="metric warning">10–12.5h</div><p>The 3,000-word/day Reddit example and public 74k–92.9k monthly reports converge here.<span class="cdot cdot-low" title="Low confidence — self-selected public power users"></span></p></article>
+        <article class="card tier"><span class="pill">Extreme</span><div class="metric">24–25h</div><p>A documented 243,554 words in 39 days at 129 WPM converts to ~24.2h/month.<span class="cdot cdot-low" title="Low confidence — one extreme public report"></span></p></article>
+      </div>
+      <div class="insight" data-kind="risk"><div class="insight__kicker">Evidence limit</div><h3 class="insight__title">Do not call 4–6 hours the “Wispr global average.”</h3><div class="insight__body">It is an AirNote business-planning assumption, not a measured market statistic. Reddit posts are self-selected toward enthusiastic users and several attracted astroturfing concerns; they establish plausible usage bands, not population prevalence.</div></div>
+    </section>
+
+    <section id="costs" class="reveal">
+      <div class="section-head"><h2>Monthly provider cost</h2><p>Conservative case: all DeepSeek prompt input billed as cache-miss and AirNote’s observed short-clip fragmentation retained.</p></div>
+      <div class="grid four">
+        <article class="card tier"><span class="pill">Light · 1.2h</span><div class="cost">$0.31</div><p>$0.35 with 15% buffer</p></article>
+        <article class="card tier"><span class="pill">Average · 5h</span><div class="cost accent">$1.29</div><p><strong>$1.48</strong> with 15% buffer</p></article>
+        <article class="card tier"><span class="pill">Heavy · 12h</span><div class="cost warning">$3.08</div><p><strong>$3.55</strong> with 15% buffer</p></article>
+        <article class="card tier"><span class="pill">Extreme · 25h</span><div class="cost">$6.43</div><p><strong>$7.39</strong> with 15% buffer</p></article>
+      </div>
+      <div class="grid two" style="margin-top:1rem">
+        <article class="card"><div class="label">GPT‑4o mini Transcribe</div><div class="metric">$0.18/h</div><p>OpenAI lists $0.003/minute; $1.25/M input and $5/M output tokens.<span class="cdot cdot-high" title="High confidence — official OpenAI pricing"></span></p></article>
+        <article class="card"><div class="label">DeepSeek V4 Flash polish</div><div class="metric">$0.03–$0.08/h</div><p>Range depends mainly on dictation length and prompt cache hits. Official rates: $0.14/M cache-miss input, $0.0028/M cache-hit input, $0.28/M output.<span class="cdot cdot-high" title="High confidence — official DeepSeek pricing"></span></p></article>
+      </div>
+      <div class="formula" style="margin-top:1rem">your projected month = 3.008 audio hours × $0.18 + 1,478 calls × $0.0001568 ≈ $0.77 base → $0.89 with 15% buffer</div>
+      <p class="small">The DeepSeek per-call estimate uses 71 recent production samples: 1,083.2 average prompt tokens and 18.4 output tokens. Tokenization will differ slightly on DeepSeek, so this is a directional, intentionally conservative transfer from the same AirNote prompt shape.<span class="cdot cdot-medium" title="Medium confidence — real AirNote calls, different model tokenizer"></span></p>
+    </section>
+
+    <section id="calculator" class="reveal">
+      <div class="section-head"><h2>Change the assumptions</h2><p>The clip-length control exposes why short push-to-talk bursts cost more to polish than long dictations with the same total audio.</p></div>
+      <div class="calculator">
+        <div class="controls">
+          <div class="control"><label for="hours">Speaking hours / month <output id="hoursOut">5.0h</output></label><input id="hours" type="range" min="0.5" max="40" step="0.5" value="5"></div>
+          <div class="control"><label for="clip">Average dictation length <output id="clipOut">7.3s</output></label><input id="clip" type="range" min="4" max="60" step="1" value="7.33"></div>
+        </div>
+        <div class="calc-result">
+          <div><span class="small">STT</span><strong id="sttCost">$0.90</strong></div>
+          <div><span class="small">DeepSeek</span><strong id="dsCost">$0.39</strong></div>
+          <div><span class="small">Base total</span><strong id="baseCost">$1.29</strong></div>
+          <div><span class="small">+15% buffer</span><strong class="success" id="bufferCost">$1.48</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <div class="insight" data-kind="why"><div class="insight__kicker">Decision under review</div><h3 class="insight__title">Can AirNote afford cloud STT plus DeepSeek polish for normal users?</h3><div class="insight__body"><strong>Yes—confidence 91%.</strong> At a $15/month subscription, provider gross margin remains very large even for a 12-hour heavy user. The real risks are quality, retries, latency, and per-request minimum behavior—not nominal token cost.</div></div>
+      <div class="insight" data-kind="trojan"><div class="insight__kicker">Recommended planning rule</div><h3 class="insight__title">Use $0.30 per spoken hour as the provider COGS ceiling.</h3><div class="insight__body">Forecast average paid users at 4–6 hours/month (~$1.20–$1.80), heavy users at 10–12.5 hours (~$3–$3.70), and reserve an extreme bucket at 25 hours (~$7.40). Recalculate monthly from actual OpenAI usage tokens and DeepSeek cache-hit data.</div></div>
+      <div class="note"><strong>Excluded:</strong> your VM/database/egress, observability, taxes, failed requests that bill after processing, support, payment fees, and meeting transcription. Those belong in total COGS but are not model-provider costs.</div>
+    </section>
+
+    <section class="sources-footer" aria-label="Sources">
+      <h2 class="sources-footer__title">Sources</h2>
+      <div class="sources-footer__list">
+        <div class="sources-footer__row"><span class="sources-footer__url">AirNote production PostgreSQL (read-only)</span><span>7-day usage, app mix, provider-token samples</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noopener">OpenAI API pricing</a><span>Transcription token and per-minute cost</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://developers.openai.com/api/docs/models/gpt-4o-mini-transcribe" target="_blank" rel="noopener">GPT‑4o mini Transcribe model</a><span>Model pricing and limits</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://api-docs.deepseek.com/quick_start/pricing/" target="_blank" rel="noopener">DeepSeek official pricing</a><span>V4 Flash rates and concurrency</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.wisprflow.ai/articles/4760791189-free-tier-weekly-word-cap-and-bonus-words-remove-desktop-trial-experiment" target="_blank" rel="noopener">Wispr Flow free-tier cap</a><span>Light-usage boundary</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.reddit.com/r/WisprFlow/comments/1usg4bb/6_days_with_wispr_flow_5222_words_dictated_at_123/" target="_blank" rel="noopener">5,222 words / 6 days</a><span>Recent engaged-user sample</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.reddit.com/r/WisprFlow/comments/1tb04ty/wisprflow_best_product_ive_ever_used/" target="_blank" rel="noopener">4,000 words / 2 days</a><span>Strong-adopter sample and evidentiary caveat</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.reddit.com/r/WisprFlow/comments/1shn4am/wispr_flow_week_1_review/" target="_blank" rel="noopener">3,000 words/day report</a><span>Heavy-user sample</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.linkedin.com/posts/johnanthonyjones_about-a-month-ago-i-started-using-a-tool-activity-7468046412765675520-2M7j" target="_blank" rel="noopener">74,000 words/month report</a><span>Heavy-user sample</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.linkedin.com/posts/valerihlukhova_92891-words-dictated-in-a-month-thats-activity-7465886770182799361-B7rF" target="_blank" rel="noopener">92,891 words/month report</a><span>Heavy-user sample</span><time class="sources-footer__date">2026-07-18</time></div>
+        <div class="sources-footer__row"><a class="sources-footer__url" href="https://modulovalue.com/blog/voxtral-transcribe-and-wispr-flow/" target="_blank" rel="noopener">243,554 words / 39 days</a><span>Extreme-user tail</span><time class="sources-footer__date">2026-07-18</time></div>
+      </div>
+      <p>Confidence: <span class="cdot cdot-high"></span> primary/verified · <span class="cdot cdot-medium"></span> triangulated · <span class="cdot cdot-low"></span> inferred or self-reported.</p>
+    </section>
+  </main>
+  <button id="topBtn" aria-label="Back to top">↑ Top</button>
+  <script>
+    const hours=document.querySelector('#hours'),clip=document.querySelector('#clip');
+    const hoursOut=document.querySelector('#hoursOut'),clipOut=document.querySelector('#clipOut');
+    const sttCost=document.querySelector('#sttCost'),dsCost=document.querySelector('#dsCost');
+    const baseCost=document.querySelector('#baseCost'),bufferCost=document.querySelector('#bufferCost');
+    const money=n=>'$'+n.toFixed(2);
+    function calculate(){
+      const h=Number(hours.value),s=Number(clip.value),calls=h*3600/s;
+      const stt=h*.18, ds=calls*((1083.2*.14+18.4*.28)/1e6), base=stt+ds;
+      hoursOut.textContent=h.toFixed(1)+'h'; clipOut.textContent=s.toFixed(1)+'s';
+      sttCost.textContent=money(stt); dsCost.textContent=money(ds); baseCost.textContent=money(base); bufferCost.textContent=money(base*1.15);
+    }
+    hours.addEventListener('input',calculate);clip.addEventListener('input',calculate);calculate();
+    const copyTakeaways=document.querySelector('#copyTakeaways');
+    copyTakeaways.addEventListener('click',async()=>{
+      const summary='AirNote usage economics: 41.5 minutes spoken in the last 7 days, projecting to 3.0 hours/month. Reddit examples span roughly 3.5 to 12.5 speaking hours per month but are self-selected. Budget $0.30 per spoken hour for GPT-4o mini Transcribe plus DeepSeek V4 Flash. Planning costs including a 15% buffer: about $1.20–$1.80/month for an average paid user at 4–6 hours, $3–$3.70 for a heavy user at 10–12.5 hours, and $7.39 for 25 hours. Wispr Flow does not publish a trustworthy global average.';
+      try{
+        if(navigator.clipboard) await navigator.clipboard.writeText(summary);
+        else throw new Error('Clipboard API unavailable');
+        copyTakeaways.textContent='Copied';
+      }catch{
+        const area=document.createElement('textarea');area.value=summary;document.body.appendChild(area);area.select();document.execCommand('copy');area.remove();copyTakeaways.textContent='Copied';
+      }
+      setTimeout(()=>{copyTakeaways.textContent='Copy key takeaways'},1600);
+    });
+    const observer=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)e.target.classList.add('in')}),{threshold:.08});document.querySelectorAll('.reveal').forEach(e=>observer.observe(e));
+    const topBtn=document.querySelector('#topBtn');addEventListener('scroll',()=>topBtn.classList.toggle('show',scrollY>600));topBtn.addEventListener('click',()=>scrollTo({top:0,behavior:'smooth'}));
+  </script>
+</body>
+</html>

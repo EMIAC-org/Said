@@ -53,16 +53,32 @@ async fn async_main() {
             .parse()
             .unwrap_or_else(|_| tracing_subscriber::filter::LevelFilter::DEBUG.into()),
     );
+    let stderr_logging = std::env::var("AIRNOTE_DEV_STDERR")
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"));
     if let Some(log_file) = log_file {
         let file_layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_writer(std::sync::Mutex::new(log_file));
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(file_layer)
-            .with(said_core::telemetry::tracing_layer())
-            .with(said_core::reporter::tracing_layer())
-            .init();
+        if stderr_logging {
+            let stderr_layer = tracing_subscriber::fmt::layer()
+                .with_ansi(true)
+                .with_writer(std::io::stderr);
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(file_layer)
+                .with(stderr_layer)
+                .with(said_core::telemetry::tracing_layer())
+                .with(said_core::reporter::tracing_layer())
+                .init();
+        } else {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(file_layer)
+                .with(said_core::telemetry::tracing_layer())
+                .with(said_core::reporter::tracing_layer())
+                .init();
+        }
     } else {
         tracing_subscriber::registry()
             .with(filter)

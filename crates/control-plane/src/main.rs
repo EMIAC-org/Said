@@ -82,6 +82,11 @@ struct Cli {
     /// Secret used to encrypt runtime/BYOK provider credentials at rest.
     #[arg(long, env = "RUNTIME_CREDENTIALS_KEY", default_value = "")]
     runtime_credentials_key: String,
+
+    /// Internal workspace whose COMPANY_ADMIN members can view platform-wide
+    /// observability. Empty disables platform-wide access.
+    #[arg(long, env = "PLATFORM_ADMIN_ORG_SLUG", default_value = "")]
+    platform_admin_org_slug: String,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -151,8 +156,6 @@ async fn main() {
         .trim()
         .trim_end_matches('/')
         .to_string();
-    let deepseek_message_polish_model = std::env::var("DEEPSEEK_MESSAGE_POLISH_MODEL")
-        .unwrap_or_else(|_| "deepseek-v4-flash".to_string());
 
     let setup_caches = said_control_plane::new_setup_caches();
 
@@ -171,7 +174,7 @@ async fn main() {
         runtime_cipher,
         deepseek_api_key,
         deepseek_base_url,
-        deepseek_message_polish_model,
+        platform_admin_org_slug: cli.platform_admin_org_slug,
         tenant_cache: setup_caches.tenant_cache,
         runtime_memory_cache: setup_caches.runtime_memory_cache,
         profile_cache: setup_caches.profile_cache,

@@ -71,7 +71,6 @@ fn prefs(output_language: &str, custom_prompt: Option<&str>) -> Preferences {
         gateway_api_key: None,
         groq_api_key: None,
         llm_provider: "groq".into(),
-        together_api_key: None,
         deepinfra_api_key: None,
         updated_at: 0,
     }

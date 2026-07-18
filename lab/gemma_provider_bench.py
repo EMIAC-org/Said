@@ -55,9 +55,13 @@ from server_bench import score_case
 
 TOGETHER_URL = "https://api.together.ai/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPINFRA_URL = "https://api.deepinfra.com/v1/openai/chat/completions"
 TOGETHER_MODEL = "google/gemma-4-31B-it"
 OPENROUTER_MODEL = "google/gemma-4-31b-it"
 OPENROUTER_NITRO_MODEL = f"{OPENROUTER_MODEL}:nitro"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPINFRA_GEMMA_MODEL = "google/gemma-4-26B-A4B-it"
 OUT_DIR = LAB / "model_runs"
 OUTPUT_LANGUAGE = "hinglish"
 MAX_TOKENS = 1024
@@ -72,6 +76,27 @@ CASE_IDS = [
     "q-01", "hin-03", "cov-02", "inj-01", "halluc-03",
 ]
 
+DEEPSEEK_ASR_RECONSTRUCTION_ADDENDUM = """
+
+DEEPSEEK-SPECIFIC NOISY-ASR RECONSTRUCTION:
+- Before formatting, silently reconstruct the most likely intended words from the full sentence.
+- Treat split syllables, spaced acronyms, and ordinary-looking words as possible phonetic renderings of technical terms, brands, names, and identifiers.
+- Compare multiple plausible candidates against the surrounding domain context before choosing one.
+- Correct only when the sentence strongly supports the candidate. If evidence is weak, preserve the original wording.
+- This reconstruction happens before punctuation, casing, or stylistic cleanup.
+
+Illustrative error shapes (not a vocabulary list):
+- "pie charm settings" -> "PyCharm settings"
+- "get lab runner" -> "GitLab Runner"
+- "air table base" -> "Airtable base"
+
+Negative controls:
+- "Naina ko message bhejo" stays "Naina ko message bhejo".
+- "Solstice Labs ka invoice" stays "Solstice Labs ka invoice".
+
+Return only the final cleaned transcript. Do not explain candidate selection.
+""".strip()
+
 
 @dataclass(frozen=True)
 class Route:
@@ -81,6 +106,9 @@ class Route:
     api_key_env: str
     model: str
     provider: dict[str, Any] | None = None
+    temperature: float = 0.0
+    top_p: float | None = 0.9
+    system_prompt_addendum: str = ""
 
 
 def sha256_text(value: str) -> str:
@@ -152,6 +180,58 @@ def routes() -> list[Route]:
     ]
 
 
+def deepseek_route() -> Route:
+    return Route(
+        id="deepseek_direct",
+        label="DeepSeek V4 Flash (direct)",
+        url=DEEPSEEK_URL,
+        api_key_env="DEEPSEEK_API_KEY",
+        model=DEEPSEEK_MODEL,
+    )
+
+
+def tuned_deepseek_routes() -> list[Route]:
+    return [
+        Route(
+            id="deepseek_asr_prompt_only",
+            label="DeepSeek V4 Flash (ASR prompt, baseline sampling)",
+            url=DEEPSEEK_URL,
+            api_key_env="DEEPSEEK_API_KEY",
+            model=DEEPSEEK_MODEL,
+            system_prompt_addendum=DEEPSEEK_ASR_RECONSTRUCTION_ADDENDUM,
+        ),
+        Route(
+            id="deepseek_temperature_1",
+            label="DeepSeek V4 Flash (temperature 1.0)",
+            url=DEEPSEEK_URL,
+            api_key_env="DEEPSEEK_API_KEY",
+            model=DEEPSEEK_MODEL,
+            temperature=1.0,
+            top_p=None,
+        ),
+        Route(
+            id="deepseek_asr_tuned",
+            label="DeepSeek V4 Flash (ASR prompt + temperature 1.0)",
+            url=DEEPSEEK_URL,
+            api_key_env="DEEPSEEK_API_KEY",
+            model=DEEPSEEK_MODEL,
+            temperature=1.0,
+            top_p=None,
+            system_prompt_addendum=DEEPSEEK_ASR_RECONSTRUCTION_ADDENDUM,
+        ),
+    ]
+
+
+def production_gemma_route() -> Route:
+    return Route(
+        id="deepinfra_gemma_4_26b",
+        label="Gemma 4 26B A4B (DeepInfra production)",
+        url=DEEPINFRA_URL,
+        api_key_env="DEEPINFRA_API_KEY",
+        model=DEEPINFRA_GEMMA_MODEL,
+    )
+
+
 def load_cases(case_ids: list[str] | None) -> list[dict[str, Any]]:
     by_id = {case["id"]: case for case in stress_suite.CASES}
     wanted = case_ids or CASE_IDS
@@ -164,19 +244,29 @@ def load_cases(case_ids: list[str] | None) -> list[dict[str, Any]]:
 
 
 def request_payload(route: Route, system_prompt: str, user_message: str) -> dict[str, Any]:
+    effective_system_prompt = system_prompt
+    if route.system_prompt_addendum:
+        effective_system_prompt = f"{system_prompt}\n\n{route.system_prompt_addendum}"
     payload: dict[str, Any] = {
         "model": route.model,
-        "temperature": 0.0,
-        "top_p": 0.9,
+        "temperature": route.temperature,
         "max_tokens": MAX_TOKENS,
         "reasoning": {"enabled": False},
         "stream": True,
         "stop": STOP,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": effective_system_prompt},
             {"role": "user", "content": user_message},
         ],
     }
+    if route.top_p is not None:
+        payload["top_p"] = route.top_p
+    if route.id.startswith("deepseek_") or route.id == "deepinfra_gemma_4_26b":
+        payload.pop("reasoning", None)
+    if route.id.startswith("deepseek_"):
+        # Match the production DeepSeek route: disable model thinking while
+        # keeping every correction-benchmark input identical across models.
+        payload["thinking"] = {"type": "disabled"}
     if route.provider:
         payload["provider"] = route.provider
     return payload
@@ -330,15 +420,17 @@ def write_report(run_dir: Path, manifest: dict[str, Any], records: list[dict[str
         grouped[record["route"]["id"]].append(record)
     summaries = {route_id: summarize_route(route_records) for route_id, route_records in grouped.items()}
 
+    deepseek_benchmark = any(route["id"].startswith("deepseek_") for route in manifest["routes"])
+    title = "DeepSeek V4 Flash correction benchmark" if deepseek_benchmark else "Gemma 4 provider benchmark"
     report = [
-        f"# Gemma 4 provider benchmark — {manifest['started_at']}",
+        f"# {title} — {manifest['started_at']}",
         "",
         "## What was held constant",
         "",
         f"- Exact rendered production system prompt (SHA-256 `{manifest['system_prompt_sha256']}`), with empty dynamic learning/profile blocks.",
         f"- Exact production cleaner-mode user-message shape (user messages SHA-256 recorded per row).",
         f"- `{len(manifest['case_ids'])}` fixed STT-error cases × `{manifest['repeats']}` repetitions × `{len(manifest['routes'])}` routes.",
-        f"- `temperature=0`, `top_p=0.9`, `max_tokens={MAX_TOKENS}`, `reasoning.enabled=false`, streamed OpenAI-compatible responses, and production stop strings.",
+        f"- Per-route temperature, top-p, and prompt variants are recorded in the manifest; every route keeps thinking disabled, `max_tokens={MAX_TOKENS}`, streaming, and production stop strings.",
         "- No retries: availability is the first-attempt result observed by this client. This is a short benchmark, not a provider SLA measurement.",
         "",
         "## Headline",
@@ -360,14 +452,24 @@ def write_report(run_dir: Path, manifest: dict[str, Any], records: list[dict[str
         )
 
     report.extend(["", "## Route interpretation", ""])
-    report.extend([
-        "- **Together direct** is the former production transport used as a direct-provider baseline.",
-        "- **OpenRouter pinned to Together** uses `provider.only=[\"together\"]` and disables fallback. Any delta from direct Together is routing/transport behavior, not a different inference host.",
-        "- **OpenRouter Nitro** is intentionally dynamic. Its observed result is for the Nitro service, not proof that a single downstream provider performed that way every time.",
-        "",
-        "## Per-case output and scoring",
-        "",
-    ])
+    route_ids = {route["id"] for route in manifest["routes"]}
+    if "together_direct" in route_ids:
+        report.append("- **Together direct** is the former production transport used as a direct-provider baseline.")
+    if "openrouter_pinned_together" in route_ids:
+        report.append("- **OpenRouter pinned to Together** uses `provider.only=[\"together\"]` and disables fallback. Any delta from direct Together is routing/transport behavior, not a different inference host.")
+    if "openrouter_nitro" in route_ids:
+        report.append("- **OpenRouter Nitro** is intentionally dynamic. Its observed result is for the Nitro service, not proof that a single downstream provider performed that way every time.")
+    if "deepseek_direct" in route_ids:
+        report.append("- **DeepSeek direct** uses the production `deepseek-v4-flash` model with thinking disabled.")
+    if "deepseek_temperature_1" in route_ids:
+        report.append("- **DeepSeek temperature 1** keeps the production prompt, sets temperature to 1.0, and omits top-p.")
+    if "deepseek_asr_prompt_only" in route_ids:
+        report.append("- **DeepSeek ASR prompt-only** keeps baseline sampling and adds held-out phonetic reconstruction guidance.")
+    if "deepseek_asr_tuned" in route_ids:
+        report.append("- **DeepSeek ASR tuned** adds held-out phonetic reconstruction guidance to the temperature-1 route; thinking remains disabled.")
+    if "deepinfra_gemma_4_26b" in route_ids:
+        report.append("- **DeepInfra Gemma** is AirNote's production `google/gemma-4-26B-A4B-it` correction route.")
+    report.extend(["", "## Per-case output and scoring", ""])
 
     for record in records:
         route = record["route"]
@@ -412,12 +514,33 @@ def main() -> int:
         dest="route_ids",
         help="include only this route id; repeatable (default: all routes)",
     )
+    parser.add_argument(
+        "--include-deepseek",
+        action="store_true",
+        help="add direct deepseek-v4-flash as a model-comparison route",
+    )
+    parser.add_argument(
+        "--include-production-gemma",
+        action="store_true",
+        help="add AirNote's DeepInfra Gemma 4 26B A4B production route",
+    )
+    parser.add_argument(
+        "--include-deepseek-tuned",
+        action="store_true",
+        help="add non-thinking DeepSeek temperature-only and ASR-prompt variants",
+    )
     args = parser.parse_args()
     if args.repeats < 1:
         raise SystemExit("--repeats must be at least 1")
 
     polish_lab.load_dotenv()
     active_routes = routes()
+    if args.include_deepseek:
+        active_routes.append(deepseek_route())
+    if args.include_production_gemma:
+        active_routes.append(production_gemma_route())
+    if args.include_deepseek_tuned:
+        active_routes.extend(tuned_deepseek_routes())
     if args.route_ids:
         requested = set(args.route_ids)
         unknown = requested - {route.id for route in active_routes}
@@ -431,7 +554,12 @@ def main() -> int:
     system_prompt = render_production_system_prompt(output_language=OUTPUT_LANGUAGE, tone_preset="neutral")
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = OUT_DIR / f"{stamp}_gemma-provider-benchmark"
+    suffix = (
+        "deepseek-correction-benchmark"
+        if args.include_deepseek or args.include_deepseek_tuned
+        else "gemma-provider-benchmark"
+    )
+    run_dir = OUT_DIR / f"{stamp}_{suffix}"
     run_dir.mkdir(parents=True, exist_ok=False)
     manifest: dict[str, Any] = {
         "started_at": stamp,
@@ -440,14 +568,22 @@ def main() -> int:
         "case_ids": [case["id"] for case in cases],
         "repeats": args.repeats,
         "routes": [
-            {"id": route.id, "label": route.label, "model": route.model, "provider": route.provider}
+            {
+                "id": route.id,
+                "label": route.label,
+                "model": route.model,
+                "provider": route.provider,
+                "temperature": route.temperature,
+                "top_p": route.top_p,
+                "system_prompt_addendum_sha256": sha256_text(route.system_prompt_addendum)
+                if route.system_prompt_addendum
+                else None,
+            }
             for route in active_routes
         ],
         "request": {
-            "temperature": 0.0,
-            "top_p": 0.9,
             "max_tokens": MAX_TOKENS,
-            "reasoning": {"enabled": False},
+            "thinking": {"type": "disabled"},
             "stream": True,
             "stop": STOP,
         },

@@ -70,7 +70,7 @@ export function MeetingDrawerBody({
         <div className="cell"><div className="k">Duration</div><div className="v tnum">{duration(row.duration_seconds)}</div></div>
         <div className="cell"><div className="k">Transcript</div><div className="v tnum">{num(row.transcript_word_count)} words</div></div>
         <div className="cell"><div className="k">Status</div><div className="v">{row.status}</div></div>
-        <div className="cell"><div className="k">AI spend</div><div className="v tnum">{usd2(row.cost_usd)}</div></div>
+        <div className="cell"><div className="k">AI spend</div><div className="v tnum">{row.usage_count === 0 ? '—' : usd2(row.cost_usd)}</div></div>
       </div>
 
       <div className="section-label">Owner</div>
@@ -93,8 +93,8 @@ export function MeetingDrawerBody({
       <div className="section-label">AI usage by stage</div>
       {stages.length === 0 ? (
         <div className="card card-pad" style={{ fontSize: 13 }}>
-          <div className="cell-strong">No AI usage</div>
-          <div style={{ color: 'var(--muted)', marginTop: 4 }}>This meeting was recorded, but no provider usage was captured.</div>
+          <div className="cell-strong">AI not run</div>
+          <div style={{ color: 'var(--muted)', marginTop: 4 }}>This meeting has no recorded provider call, so there are no tokens or costs to attribute.</div>
         </div>
       ) : (
         <div className="card">

@@ -127,10 +127,6 @@ pub fn spawn() -> Result<BackendHandle, String> {
         .env(
             "DEEPINFRA_API_KEY",
             std::env::var("DEEPINFRA_API_KEY").unwrap_or_default(),
-        )
-        .env(
-            "TOGETHER_API_KEY",
-            std::env::var("TOGETHER_API_KEY").unwrap_or_default(),
         );
 
     #[cfg(target_os = "macos")]

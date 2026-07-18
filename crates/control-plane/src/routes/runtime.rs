@@ -51,7 +51,6 @@ use crate::voice_polish_standalone::{
 use crate::{AppState, auth::AuthUser, memory_hygiene, tenant};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL: &str = "deepseek-v4-flash";
 const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
 const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
 const DEEPINFRA_VALIDATE_ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/models";
@@ -232,8 +231,8 @@ pub struct MessagePolishRequest {
     pub text: String,
     #[serde(default)]
     pub client_run_id: Option<String>,
-    /// Which helper is asking: "polish" (⌥1, default) or "to_english" (⌥2).
-    /// Both run on DeepSeek; the mode only swaps the prompt directive.
+    /// Gemma helper mode: polish, to_english, casual, concise, or hinglish.
+    /// The mode changes only the hardened rewrite directive, never the provider.
     #[serde(default)]
     pub mode: Option<String>,
 }
@@ -1781,7 +1780,7 @@ async fn polish_runtime_transcript(
                 )
                 .await?;
             }
-            let raw_output = completion.text;
+            let output = completion.text;
             insert_stage_event(
                 state,
                 run_id,
@@ -1792,77 +1791,6 @@ async fn polish_runtime_transcript(
                 json!({"model": model, "provider": provider_label}),
             )
             .await?;
-            let output =
-                crate::voice_polish_standalone::enforce_output_script(&raw_output, output_language);
-            let restored = restore_literal_tokens(&formatted_transcript, &output, safe_vocab_terms);
-            let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
-            if restored != output {
-                insert_stage_event(
-                    state,
-                    run_id,
-                    "protected_resolver",
-                    "ok",
-                    None,
-                    None,
-                    json!({
-                        "safe_vocab_terms": safe_vocab_terms.len(),
-                        "changed": true
-                    }),
-                )
-                .await?;
-            }
-            let formatted_output = crate::number_format::apply(&restored);
-            let formatted_output =
-                restore_numeric_literal_tokens(&formatted_transcript, &formatted_output);
-            if formatted_output != restored {
-                insert_stage_event(
-                    state,
-                    run_id,
-                    "formatter_post",
-                    "ok",
-                    None,
-                    None,
-                    json!({
-                        "input_chars": restored.chars().count(),
-                        "output_chars": formatted_output.chars().count()
-                    }),
-                )
-                .await?;
-            }
-            let email_output = crate::format_recover::recover_emails(&formatted_output);
-            if email_output != formatted_output {
-                insert_stage_event(
-                    state,
-                    run_id,
-                    "email_recover_post",
-                    "ok",
-                    None,
-                    None,
-                    json!({
-                        "input_chars": formatted_output.chars().count(),
-                        "output_chars": email_output.chars().count()
-                    }),
-                )
-                .await?;
-            }
-            let output = tidy_casing(&email_output);
-            let (output, guard_reason) =
-                guard_voice_polish_output(&output, &formatted_transcript, output_language);
-            if let Some(reason) = guard_reason {
-                insert_stage_event(
-                    state,
-                    run_id,
-                    "output_guard",
-                    "ok",
-                    None,
-                    None,
-                    json!({
-                        "reason": reason,
-                        "fallback_chars": output.chars().count(),
-                    }),
-                )
-                .await?;
-            }
             Ok(output)
         }
         Err(err) => {
@@ -1920,11 +1848,8 @@ async fn update_runtime_session_result(
     Ok(())
 }
 
-// DeepSeek base-url + model are read once at startup into AppState
-// (deepseek_base_url / deepseek_message_polish_model).
-
 // The message-polish prompt now lives in `crate::message_helpers` (single
-// source of truth, shared by ⌥1/⌥2 and the voice "Polish mode"). These thin
+// source of truth, shared by ⌥1–⌥5 and the voice "Polish mode"). These thin
 // wrappers keep the voice path on `Polish` mode.
 fn build_message_polish_system_prompt() -> String {
     crate::message_helpers::build_system_prompt(crate::message_helpers::HelperMode::Polish)
@@ -2041,95 +1966,23 @@ fn scrub_problem_solve_output(output: &str) -> String {
     trimmed.to_string()
 }
 
-fn deepseek_message_polish_model(state: &AppState) -> String {
-    let configured = state.deepseek_message_polish_model.trim();
-    if configured.is_empty() {
-        DEFAULT_DEEPSEEK_MESSAGE_POLISH_MODEL.to_string()
-    } else {
-        configured.to_string()
-    }
-}
-
-async fn call_deepseek_message_polish(
-    state: &AppState,
+async fn call_gemma_message_polish(
     api_key: &str,
     system_prompt: &str,
     user_message: &str,
 ) -> Result<String, (StatusCode, Json<Value>)> {
-    let model = deepseek_message_polish_model(state);
-    let url = format!("{}/v1/chat/completions", state.deepseek_base_url);
-    let estimated_input_tokens = user_message.len() / 4;
-    let max_tokens = (estimated_input_tokens * 2 + 256).min(4096);
-    let body = json!({
-        "model": model,
-        "temperature": 0.0,
-        "top_p": 0.9,
-        "max_tokens": max_tokens,
-        "stream": false,
-        "thinking": { "type": "disabled" },
-        "messages": [
-            { "role": "system", "content": system_prompt },
-            { "role": "user", "content": user_message }
-        ]
-    });
-
-    let client = &*crate::HTTP_CLIENT;
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(|e| {
-            json_error(
-                StatusCode::BAD_GATEWAY,
-                &format!("DeepSeek message polish request failed: {e}"),
-            )
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let preview = resp.text().await.unwrap_or_default();
-        tracing::warn!(
-            "[runtime] DeepSeek HTTP {status}: {}",
-            said_core::text::truncate_utf8(&preview, 300)
-        );
-        return Err(json_error(
-            StatusCode::BAD_GATEWAY,
-            &format!("DeepSeek returned {status}"),
-        ));
-    }
-
-    let value: Value = resp.json().await.map_err(|e| {
-        json_error(
-            StatusCode::BAD_GATEWAY,
-            &format!("DeepSeek response parse failed: {e}"),
-        )
-    })?;
-
-    let output = value
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    if output.is_empty() {
-        return Err(json_error(
-            StatusCode::BAD_GATEWAY,
-            "DeepSeek returned empty output",
-        ));
-    }
-
-    Ok(output)
+    crate::deepinfra::call_deepinfra(
+        api_key,
+        said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
+        system_prompt,
+        user_message,
+        None,
+    )
+    .await
+    .map(|completion| completion.text)
 }
 
-// ── Message polish (DeepSeek) ───────────────────────────────────────────────
+// ── Message polish (Gemma 4) ───────────────────────────────────────────────
 
 pub async fn message_polish(
     State(state): State<AppState>,
@@ -2144,10 +1997,10 @@ pub async fn message_polish(
         return Err(json_error(StatusCode::BAD_REQUEST, "text is required"));
     }
 
-    if state.deepseek_api_key.trim().is_empty() {
+    if state.deepinfra_api_key.trim().is_empty() {
         return Err(json_error(
             StatusCode::SERVICE_UNAVAILABLE,
-            "DEEPSEEK_API_KEY is not configured on the server",
+            "DEEPINFRA_API_KEY is not configured on the server",
         ));
     }
 
@@ -2174,15 +2027,10 @@ pub async fn message_polish(
     let user_message = crate::message_helpers::build_user_message(mode, text);
     let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
-    let model = deepseek_message_polish_model(&state);
+    let model = said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B.to_string();
     let model_start = Instant::now();
-    let raw_output = call_deepseek_message_polish(
-        &state,
-        &state.deepseek_api_key,
-        &system_prompt,
-        &user_message,
-    )
-    .await?;
+    let raw_output =
+        call_gemma_message_polish(&state.deepinfra_api_key, &system_prompt, &user_message).await?;
     let output = scrub_message_polish_output(&raw_output);
     let model_ms = model_start.elapsed().as_millis() as i64;
     let total_ms = total_start.elapsed().as_millis() as i64;
@@ -2226,7 +2074,7 @@ pub async fn message_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model,
-        prompt_version: format!("message-helper-{}-deepseek-2026-06-27", mode.as_str()),
+        prompt_version: format!("message-helper-{}-gemma4-2026-07-18", mode.as_str()),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -2937,81 +2785,7 @@ async fn execute_voice_polish(
     let polish_usage = completion.usage;
     let output = completion.text;
 
-    // Deterministic post-processing runs inline (it computes the final output),
-    // but its telemetry stage events are RECORDED here and written later — every
-    // DB write is deferred to a single post-response spawn so nothing blocks the
-    // polished text returning to the client (#2).
     let mut deferred_events: Vec<(&'static str, Option<i64>, Value)> = Vec::new();
-
-    let output =
-        crate::voice_polish_standalone::enforce_output_script(&output, &req.output_language);
-    let restored = restore_literal_tokens(&formatted_transcript, &output, &merged_vocab);
-    let restored = restore_numeric_literal_tokens(&formatted_transcript, &restored);
-    if restored != output {
-        deferred_events.push((
-            "protected_resolver",
-            None,
-            json!({"safe_vocab_terms": merged_vocab.len(), "changed": true}),
-        ));
-    }
-    let output = crate::number_format::apply(&restored);
-    let output = restore_numeric_literal_tokens(&formatted_transcript, &output);
-    if output != restored {
-        deferred_events.push((
-            "formatter_post",
-            None,
-            json!({
-                "input_chars": restored.chars().count(),
-                "output_chars": output.chars().count()
-            }),
-        ));
-    }
-    let email_output = crate::format_recover::recover_emails(&output);
-    let output = if email_output != output {
-        deferred_events.push((
-            "email_recover_post",
-            None,
-            json!({
-                "input_chars": output.chars().count(),
-                "output_chars": email_output.chars().count()
-            }),
-        ));
-        email_output
-    } else {
-        output
-    };
-
-    // Stable 2.3.4 parity: final runtime mutation is approved/safe exact STT
-    // aliases only. Edit-policy rules are intentionally not applied here.
-    let (output, resolver_applied, resolver_skipped) =
-        apply_exact_resolver(&output, &formatted_transcript, &server_memory);
-    if resolver_applied > 0 {
-        deferred_events.push((
-            "exact_resolver",
-            None,
-            json!({
-                "evidence_count": server_memory.replacements.len(),
-                "applied_count": resolver_applied,
-                "skipped_count": resolver_skipped,
-            }),
-        ));
-    }
-    // Deterministic sentence-case + terminal punctuation. The prompt stays
-    // minimal-edit, so guarantee casing/punctuation mechanically here without
-    // re-triggering LLM over-editing.
-    let output = tidy_casing(&output);
-    let (output, guard_reason) =
-        guard_voice_polish_output(&output, &formatted_transcript, &req.output_language);
-    if let Some(reason) = guard_reason {
-        deferred_events.push((
-            "output_guard",
-            None,
-            json!({
-                "reason": reason,
-                "fallback_chars": output.chars().count(),
-            }),
-        ));
-    }
 
     deferred_events.push((
         "llm_complete",
@@ -3979,359 +3753,11 @@ fn normalize_scope(scope: Option<&str>) -> Result<String, (StatusCode, Json<Valu
     }
 }
 
-fn restore_literal_tokens(transcript: &str, output: &str, safe_vocab_terms: &[String]) -> String {
-    let source_words = transcript.split_whitespace().collect::<Vec<_>>();
-    let mut output_words = output
-        .split_whitespace()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    if source_words.is_empty() || source_words.len() != output_words.len() {
-        return output.to_string();
-    }
-
-    let mut changed = false;
-    for (source, out_word) in source_words.iter().zip(output_words.iter_mut()) {
-        let source_core = trim_token_edges(source);
-        let output_core = trim_token_edges(out_word);
-        if source_core.is_empty() || output_core.is_empty() {
-            continue;
-        }
-        if !is_literal_preserve_token(source_core, safe_vocab_terms) {
-            continue;
-        }
-        if contains_token_case_insensitive(output, source_core) {
-            continue;
-        }
-        if !source_core.eq_ignore_ascii_case(output_core) {
-            *out_word = replace_token_core(out_word, source_core);
-            changed = true;
-        }
-    }
-
-    if changed {
-        output_words.join(" ")
-    } else {
-        output.to_string()
-    }
-}
-
-fn restore_numeric_literal_tokens(transcript: &str, output: &str) -> String {
-    let source_words = transcript.split_whitespace().collect::<Vec<_>>();
-    let mut output_words = output
-        .split_whitespace()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    if source_words.is_empty() || source_words.len() != output_words.len() {
-        return output.to_string();
-    }
-
-    let mut changed = false;
-    for (source, out_word) in source_words.iter().zip(output_words.iter_mut()) {
-        let Some(source_core) = numeric_literal_core(source) else {
-            continue;
-        };
-        let Some(output_core) = numeric_literal_core(out_word) else {
-            continue;
-        };
-        if source_core == output_core {
-            continue;
-        }
-        if numeric_digits(&source_core) != numeric_digits(&output_core) {
-            continue;
-        }
-        *out_word = replace_numeric_token_core(out_word, &source_core);
-        changed = true;
-    }
-
-    if changed {
-        output_words.join(" ")
-    } else {
-        output.to_string()
-    }
-}
-
-fn numeric_literal_core(token: &str) -> Option<String> {
-    let core = token
-        .trim_matches(|c: char| !(c.is_ascii_digit() || matches!(c, '$' | '₹' | '%' | '.' | ',')));
-    if core.is_empty() || !core.chars().any(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let has_format_symbol = core
-        .chars()
-        .any(|c| matches!(c, '$' | '₹' | '%' | '.' | ','));
-    if has_format_symbol {
-        Some(core.to_string())
-    } else {
-        None
-    }
-}
-
-fn numeric_digits(token: &str) -> String {
-    token.chars().filter(|c| c.is_ascii_digit()).collect()
-}
-
-fn replace_numeric_token_core(output_word: &str, source_core: &str) -> String {
-    let start = output_word
-        .char_indices()
-        .find(|(_, c)| c.is_ascii_digit() || matches!(c, '$' | '₹' | '%' | '.' | ','))
-        .map(|(idx, _)| idx)
-        .unwrap_or(0);
-    let end = output_word
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_ascii_digit() || matches!(c, '$' | '₹' | '%' | '.' | ','))
-        .map(|(idx, c)| idx + c.len_utf8())
-        .unwrap_or(output_word.len());
-
-    format!(
-        "{}{}{}",
-        &output_word[..start],
-        source_core,
-        &output_word[end..]
-    )
-}
-
 fn trim_token_edges(token: &str) -> &str {
     token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
 }
 
-fn is_literal_preserve_token(token: &str, safe_vocab_terms: &[String]) -> bool {
-    if safe_vocab_terms
-        .iter()
-        .any(|term| term.trim().eq_ignore_ascii_case(token))
-    {
-        return true;
-    }
-    let has_upper = token.chars().any(|c| c.is_ascii_uppercase());
-    let has_internal_upper = token.chars().skip(1).any(|c| c.is_ascii_uppercase());
-    let has_digit_or_symbol = token
-        .chars()
-        .any(|c| c.is_ascii_digit() || matches!(c, '_' | '-' | '.' | '@' | '/'));
-    let is_all_caps = token
-        .chars()
-        .all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase())
-        && token.chars().any(|c| c.is_ascii_alphabetic());
-
-    token.len() >= 3 && (has_digit_or_symbol || has_internal_upper || is_all_caps || has_upper)
-}
-
-fn contains_token_case_insensitive(text: &str, token: &str) -> bool {
-    text.split_whitespace()
-        .map(trim_token_edges)
-        .any(|part| part.eq_ignore_ascii_case(token))
-}
-
-fn replace_token_core(output_word: &str, source_core: &str) -> String {
-    let start = output_word
-        .char_indices()
-        .find(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        .map(|(idx, _)| idx)
-        .unwrap_or(0);
-    let end = output_word
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        .map(|(idx, c)| idx + c.len_utf8())
-        .unwrap_or(output_word.len());
-
-    format!(
-        "{}{}{}",
-        &output_word[..start],
-        source_core,
-        &output_word[end..]
-    )
-}
-
-/// Deterministic sentence-case + terminal punctuation for the dictation output.
-/// The light-touch polish prompt under-edits casing/punctuation; this guarantees
-/// them mechanically. Conservative: only capitalizes the first letter of each
-/// sentence and appends a single '.' when the text ends without terminal
-/// punctuation. Never rewrites words, so it can't re-trigger LLM over-editing.
-fn tidy_casing(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return input.to_string();
-    }
-    let mut out = String::with_capacity(trimmed.len() + 1);
-    let mut at_sentence_start = true;
-    for ch in trimmed.chars() {
-        if at_sentence_start && ch.is_alphabetic() {
-            out.extend(ch.to_uppercase());
-            at_sentence_start = false;
-            continue;
-        }
-        out.push(ch);
-        if ch == '.' || ch == '?' || ch == '!' {
-            at_sentence_start = true;
-        } else if !ch.is_whitespace() {
-            at_sentence_start = false;
-        }
-    }
-    if out
-        .chars()
-        .rev()
-        .find(|c| !c.is_whitespace())
-        .is_some_and(char::is_alphanumeric)
-    {
-        out.push('.');
-    }
-    out
-}
-
-fn guard_voice_polish_output(
-    output: &str,
-    transcript: &str,
-    output_language: &str,
-) -> (String, Option<&'static str>) {
-    let stripped = crate::voice_polish_standalone::strip_leaked_instructions(output);
-    if stripped != output && !stripped.trim().is_empty() {
-        if voice_output_reject_reason(&stripped, transcript).is_none() {
-            return (tidy_casing(&stripped), Some("stripped_prompt_leak"));
-        }
-    }
-
-    if let Some(reason) = voice_output_reject_reason(&stripped, transcript) {
-        let fallback =
-            crate::voice_polish_standalone::enforce_output_script(transcript, output_language);
-        return (tidy_casing(&fallback), Some(reason));
-    }
-
-    (stripped, None)
-}
-
-fn voice_output_reject_reason(output: &str, transcript: &str) -> Option<&'static str> {
-    let trimmed = output.trim();
-    if trimmed.is_empty() {
-        return Some("empty_output");
-    }
-
-    let lower = trimmed.to_lowercase();
-    let start = lower.trim_start();
-    const START_MARKERS: &[&str] = &[
-        "the given response",
-        "here is the",
-        "explanation:",
-        "output:",
-        "input:",
-        "transcript:",
-        "as an ai",
-    ];
-    if START_MARKERS.iter().any(|marker| start.starts_with(marker)) {
-        return Some("instruction_leak");
-    }
-    const BODY_MARKERS: &[&str] = &[
-        "known correct terms",
-        "final instruction",
-        "begin transcript",
-        "end transcript",
-        "polish my message mode",
-    ];
-    if BODY_MARKERS.iter().any(|marker| lower.contains(marker)) {
-        return Some("instruction_leak");
-    }
-
-    let output_chars = trimmed.chars().count();
-    let transcript_chars = transcript.trim().chars().count().max(1);
-    if output_chars > 300 && output_chars > transcript_chars.saturating_mul(3) + 160 {
-        return Some("length_explosion");
-    }
-
-    if has_obvious_repetition_loop(trimmed) {
-        return Some("repetition_loop");
-    }
-
-    None
-}
-
-fn has_obvious_repetition_loop(text: &str) -> bool {
-    let tokens: Vec<String> = normalized_words(text)
-        .into_iter()
-        .map(|token| compact_alnum(&token))
-        .filter(|token| !token.is_empty())
-        .collect();
-    if tokens.len() < 3 {
-        return false;
-    }
-
-    let mut previous = "";
-    let mut run = 0usize;
-    for token in &tokens {
-        if token == previous {
-            run += 1;
-        } else {
-            previous = token;
-            run = 1;
-        }
-        if run >= 4 || (run >= 3 && token.chars().count() <= 2) {
-            return true;
-        }
-    }
-
-    for size in 2..=5 {
-        if tokens.len() < size * 3 {
-            continue;
-        }
-        for start in 0..=tokens.len() - size * 3 {
-            let a = &tokens[start..start + size];
-            let b = &tokens[start + size..start + size * 2];
-            let c = &tokens[start + size * 2..start + size * 3];
-            if a == b && b == c {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-#[cfg(test)]
-mod tidy_casing_tests {
-    use super::{guard_voice_polish_output, tidy_casing, voice_output_reject_reason};
-
-    #[test]
-    fn capitalizes_and_terminates() {
-        assert_eq!(tidy_casing("haan ye theek hai"), "Haan ye theek hai.");
-        assert_eq!(tidy_casing("yes. okay"), "Yes. Okay.");
-    }
-
-    #[test]
-    fn leaves_correct_text_unchanged() {
-        assert_eq!(tidy_casing("Hello world."), "Hello world.");
-        assert_eq!(tidy_casing("Is it ready?"), "Is it ready?");
-    }
-
-    #[test]
-    fn empty_and_numeric_safe() {
-        assert_eq!(tidy_casing(""), "");
-        assert_eq!(tidy_casing("250 ms"), "250 ms.");
-    }
-
-    #[test]
-    fn output_guard_falls_back_on_length_explosion() {
-        let transcript = "Depress and deep audit karo.";
-        let bad = "The given response is already follows the format. ".repeat(20);
-        let (output, reason) = guard_voice_polish_output(&bad, transcript, "hinglish");
-        assert_eq!(reason, Some("instruction_leak"));
-        assert_eq!(output, transcript);
-    }
-
-    #[test]
-    fn output_guard_allows_small_valid_vocab_fix() {
-        let reason = voice_output_reject_reason("Kafka ka use karenge.", "kaafka ka use karenge");
-        assert_eq!(reason, None);
-    }
-
-    #[test]
-    fn output_guard_rejects_repetition_loop() {
-        assert_eq!(
-            voice_output_reject_reason("Theek hai 1 1 1.", "Theek hai one."),
-            Some("repetition_loop")
-        );
-    }
-}
-
-/// Send every server-side polish request through the one production route.
-/// The model registry is hard-pinned to DeepInfra Gemma 4 26B A4B.
+/// Send every interactive dictation polish request through Gemma 4 on DeepInfra.
 async fn polish_llm(
     state: &AppState,
     polish_provider: &str,
@@ -6044,92 +5470,6 @@ fn levenshtein_bounded(left: &str, right: &str, max_distance: usize) -> usize {
     prev[right_chars.len()]
 }
 
-fn apply_exact_resolver(
-    output: &str,
-    transcript: &str,
-    memory: &RuntimeMemory,
-) -> (String, usize, usize) {
-    if memory.replacements.is_empty() {
-        return (output.to_string(), 0, 0);
-    }
-
-    let mut result = output.to_string();
-    let mut applied = 0usize;
-    let mut skipped = 0usize;
-
-    let mut rules: Vec<(&str, &str)> = memory
-        .replacements
-        .iter()
-        .map(|(s, d)| (s.as_str(), d.as_str()))
-        .collect();
-    rules.sort_by(|(left, _), (right, _)| {
-        count_words(right)
-            .cmp(&count_words(left))
-            .then_with(|| right.len().cmp(&left.len()))
-    });
-
-    for (source_form, correct_form) in rules {
-        if !is_runtime_exact_alias_safe(source_form, correct_form) {
-            skipped += 1;
-            continue;
-        }
-        let correct_norm = normalize_learning_text(correct_form);
-
-        // Skip if output already contains the correct form
-        if contains_normalized_phrase(&result, &correct_norm) {
-            skipped += 1;
-            continue;
-        }
-
-        // Only apply if transcript contains the source form as evidence
-        if !contains_normalized_phrase(transcript, source_form) {
-            skipped += 1;
-            continue;
-        }
-
-        let new_result = replace_exact_phrase(&result, source_form, correct_form);
-        if new_result != result {
-            result = new_result;
-            applied += 1;
-        } else {
-            skipped += 1;
-        }
-    }
-
-    (result, applied, skipped)
-}
-
-fn is_runtime_exact_alias_safe(source: &str, correct: &str) -> bool {
-    let source = source.trim();
-    let correct = correct.trim();
-    let source_norm = normalize_learning_text(source);
-    let correct_norm = normalize_learning_text(correct);
-    if source.len() < 2 || source_norm.is_empty() || correct_norm.is_empty() {
-        return false;
-    }
-    if source_norm == correct_norm {
-        return false;
-    }
-    if count_words(&source_norm) > 4 || count_words(&correct_norm) > 4 {
-        return false;
-    }
-    if is_common_learning_term(&source_norm)
-        || is_common_learning_term(&correct_norm)
-        || is_risky_single_word_alias_source(&source_norm)
-    {
-        return false;
-    }
-
-    // Mirror stable's conservative "plausible alias" intent: the target should
-    // look like a protected/custom term, not an ordinary lowercase word.
-    let target_has_protected_shape = correct.chars().any(|c| c.is_ascii_uppercase())
-        || correct.chars().any(|c| c.is_ascii_digit())
-        || correct
-            .chars()
-            .any(|c| matches!(c, '_' | '-' | '.' | '@' | '/'));
-    target_has_protected_shape || count_words(&source_norm) > 1
-}
-
 fn contains_normalized_phrase(text: &str, phrase: &str) -> bool {
     let phrase_tokens = normalized_words(phrase);
     if phrase_tokens.is_empty() {
@@ -6147,61 +5487,6 @@ fn normalized_words(text: &str) -> Vec<String> {
         .map(normalize_learning_text)
         .filter(|token| !token.is_empty())
         .collect()
-}
-
-fn replace_exact_phrase(text: &str, source: &str, correct: &str) -> String {
-    let source_tokens = normalized_words(source);
-    if source_tokens.is_empty() {
-        return text.to_string();
-    }
-
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let cores: Vec<String> = words
-        .iter()
-        .map(|word| normalize_learning_text(trim_token_edges(word)))
-        .collect();
-    let mut output_words: Vec<String> = Vec::with_capacity(words.len());
-    let mut changed = false;
-
-    let mut i = 0usize;
-    while i < words.len() {
-        let n = source_tokens.len();
-        if i + n <= words.len() && cores[i..i + n] == source_tokens[..] {
-            let replaced = if n == 1 {
-                replace_token_core(words[i], correct)
-            } else {
-                replace_phrase_core(words[i], words[i + n - 1], correct)
-            };
-            output_words.push(replaced);
-            changed = true;
-            i += n;
-        } else {
-            output_words.push(words[i].to_string());
-            i += 1;
-        }
-    }
-
-    if changed {
-        output_words.join(" ")
-    } else {
-        text.to_string()
-    }
-}
-
-fn replace_phrase_core(first_word: &str, last_word: &str, correct: &str) -> String {
-    let start = first_word
-        .char_indices()
-        .find(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        .map(|(idx, _)| idx)
-        .unwrap_or(0);
-    let end = last_word
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        .map(|(idx, c)| idx + c.len_utf8())
-        .unwrap_or(last_word.len());
-
-    format!("{}{}{}", &first_word[..start], correct, &last_word[end..])
 }
 
 /// Cached entry point for per-account learning memory. Returns a warm clone
@@ -6614,7 +5899,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_polish_model_resolves_deepinfra_gemma_for_legacy_names() {
+    fn selected_polish_model_code_routes_legacy_names_to_gemma() {
         use said_core::polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B;
         assert_eq!(
             selected_polish_model("fast"),
@@ -6663,55 +5948,6 @@ mod tests {
             merged,
             vec!["UserProvided".to_string(), "Kafka".to_string()]
         );
-    }
-
-    #[test]
-    fn restores_product_like_token_replaced_by_model() {
-        let output = restore_literal_tokens(
-            "Macobs ka pachas percent growth hai",
-            "MacBook ka pachas percent growth hai",
-            &[],
-        );
-        assert_eq!(output, "Macobs ka pachas percent growth hai");
-    }
-
-    #[test]
-    fn preserves_punctuation_when_restoring_literal_token() {
-        let output = restore_literal_tokens("Macobs ka update hai", "MacBook, ka update hai", &[]);
-        assert_eq!(output, "Macobs, ka update hai");
-    }
-
-    #[test]
-    fn restores_currency_symbol_flipped_by_model() {
-        let output = restore_numeric_literal_tokens(
-            "monthly $5 dena padega aur yearly lene par 20% off hai",
-            "monthly ₹5 dena padega aur yearly lene par 20% off hai",
-        );
-        assert_eq!(
-            output,
-            "monthly $5 dena padega aur yearly lene par 20% off hai"
-        );
-    }
-
-    #[test]
-    fn restores_numeric_literal_punctuation() {
-        let output =
-            restore_numeric_literal_tokens("Plan $19.99 yearly hai.", "Plan ₹19.99 yearly hai.");
-        assert_eq!(output, "Plan $19.99 yearly hai.");
-    }
-
-    #[test]
-    fn restores_currency_after_post_formatter_if_model_changed_unit_word() {
-        let formatted_transcript =
-            crate::number_format::apply("monthly five dollar dena padega aur twenty percent off");
-        assert_eq!(formatted_transcript, "monthly $5 dena padega aur 20% off");
-
-        let model_output = "monthly 5 rupaye dena padega aur 20% off";
-        let post_formatted = crate::number_format::apply(model_output);
-        assert_eq!(post_formatted, "monthly ₹5 dena padega aur 20% off");
-
-        let output = restore_numeric_literal_tokens(&formatted_transcript, &post_formatted);
-        assert_eq!(output, "monthly $5 dena padega aur 20% off");
     }
 
     #[test]
@@ -7313,62 +6549,5 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].original, "b s e");
         assert_eq!(candidates[0].corrected, "BSE");
-    }
-
-    #[test]
-    fn exact_resolver_uses_only_safe_stt_aliases_not_policy_rules() {
-        let memory = RuntimeMemory {
-            vocab_terms: vec![],
-            replacements: vec![("myak".to_string(), "EMIAC".to_string())],
-            policy_rules: vec![("kaisa".to_string(), "Macobs".to_string())],
-        };
-
-        let (output, applied, skipped) = apply_exact_resolver(
-            "myak ke andar kaam kaisa chal raha hai",
-            "myak ke andar kaam kaisa chal raha hai",
-            &memory,
-        );
-
-        assert_eq!(output, "EMIAC ke andar kaam kaisa chal raha hai");
-        assert_eq!(applied, 1);
-        assert_eq!(skipped, 0);
-    }
-
-    #[test]
-    fn exact_resolver_applies_multi_word_alias_longest_first() {
-        let memory = RuntimeMemory {
-            vocab_terms: vec![],
-            replacements: vec![
-                ("cops".to_string(), "Wrong".to_string()),
-                ("main cops".to_string(), "Macobs".to_string()),
-            ],
-            policy_rules: vec![],
-        };
-
-        let (output, applied, skipped) = apply_exact_resolver(
-            "hello bhai main cops, ka IPO aa gaya kya",
-            "hello bhai main cops ka IPO aa gaya kya",
-            &memory,
-        );
-
-        assert_eq!(output, "hello bhai Macobs, ka IPO aa gaya kya");
-        assert_eq!(applied, 1);
-        assert!(skipped >= 1);
-    }
-
-    #[test]
-    fn exact_resolver_blocks_risky_single_word_sources_even_if_memory_has_them() {
-        let memory = RuntimeMemory {
-            vocab_terms: vec![],
-            replacements: vec![("cops".to_string(), "Macobs".to_string())],
-            policy_rules: vec![],
-        };
-
-        let (output, applied, skipped) =
-            apply_exact_resolver("cops ka data lao", "cops ka data lao", &memory);
-
-        assert_eq!(output, "cops ka data lao");
-        assert_eq!(applied, 0);
-        assert_eq!(skipped, 1);
     }
 }

@@ -55,6 +55,7 @@ export function MeetingsPage() {
   }
 
   const meetings = data?.meetings ?? []
+  const usageCount = meetings.reduce((sum, meeting) => sum + meeting.usage_count, 0)
 
   return (
     <>
@@ -69,8 +70,8 @@ export function MeetingsPage() {
             <StatTile label="Meetings" value={num(data?.meeting_count ?? meetings.length)} sub="in view" />
             <StatTile label="Recording" value={duration(data?.total_recording_seconds ?? 0)} sub="meeting audio" />
             <StatTile label="Transcript" value={num(data?.total_transcript_words ?? 0)} sub="words" />
-            <StatTile label="Tokens" value={num(data?.total_tokens ?? 0)} sub="prompt + completion" />
-            <StatTile label="DeepSeek spend" value={usd2(data?.total_cost_usd ?? 0)} sub="estimated API cost" />
+            <StatTile label="Tokens" value={num(data?.total_tokens ?? 0)} sub={usageCount === 0 ? 'no AI calls recorded' : 'prompt + completion'} />
+            <StatTile label="Recorded AI spend" value={usd2(data?.total_cost_usd ?? 0)} sub={usageCount === 0 ? 'no billed AI calls in view' : `${num(usageCount)} DeepSeek call${usageCount === 1 ? '' : 's'}`} />
           </div>
 
           <div className="card mt">
@@ -93,9 +94,9 @@ export function MeetingsPage() {
                       <td><div className="person-cell"><Avatar name={mtg.host_name} size={24} /><span className="nm" style={{ fontSize: 12.5 }}>{firstName(mtg.host_name)}</span></div></td>
                       <td className="r tnum">{duration(mtg.duration_seconds)}</td>
                       <td className="r tnum">{num(mtg.transcript_word_count)}</td>
-                      <td><span className="chip mono">{mtg.usage_count === 0 ? 'No AI usage' : mtg.model || 'Unknown model'}</span></td>
+                      <td><span className="chip mono">{mtg.usage_count === 0 ? 'AI not run' : mtg.model || 'Unknown model'}</span></td>
                       <td className="r tnum mono" style={{ fontSize: 11.5 }}>{num(mtg.input_tokens + mtg.output_tokens)}</td>
-                      <td className="r"><span className="cost">{usd2(mtg.cost_usd)}</span></td>
+                      <td className="r"><span className="cost">{mtg.usage_count === 0 ? '—' : usd2(mtg.cost_usd)}</span></td>
                       <td>{mtg.status === 'live' ? <span className="tag warn">● Live</span> : <span className="tag neutral">{mtg.status}</span>}</td>
                     </tr>
                   ))}
@@ -105,10 +106,13 @@ export function MeetingsPage() {
           </div>
 
           {meetings.length > 0 && (data?.total_tokens ?? 0) === 0 && (
-            <div className="hint" style={{ marginTop: 14 }}>Meetings exist in this window, but no AI usage was recorded for them.</div>
+            <div className="hint" style={{ marginTop: 14 }}>Meetings exist in this window, but DeepSeek was not run or its token usage was not recorded. No cost is inferred without a provider usage event.</div>
           )}
           <div className="hint" style={{ marginTop: 14 }}>
-            Meeting costs are server-priced from the rate-card snapshot stored with each usage event. Historical cloud rows retain their truthful model and recorded rate; meetings without usage remain visible at zero cost without an inferred provider or model.
+            Meeting costs are server-priced from the rate-card snapshot stored with each usage event.
+            {(data?.rate_cards ?? []).map(rate => (
+              <span key={rate.model}> <b>{rate.model}</b>: ${rate.cache_hit_usd_per_million}/M cached input · ${rate.cache_miss_usd_per_million}/M uncached input · ${rate.output_usd_per_million}/M output.</span>
+            ))}
           </div>
         </>
       )}

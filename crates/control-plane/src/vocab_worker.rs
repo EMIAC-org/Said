@@ -50,7 +50,7 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         runtime_cipher: None,
                         deepseek_api_key: String::new(),
                         deepseek_base_url: String::new(),
-                        deepseek_message_polish_model: String::new(),
+                        platform_admin_org_slug: String::new(),
                         tenant_cache: setup_caches.tenant_cache,
                         runtime_memory_cache: setup_caches.runtime_memory_cache,
                         profile_cache: setup_caches.profile_cache,

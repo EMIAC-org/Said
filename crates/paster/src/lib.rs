@@ -2043,11 +2043,22 @@ pub enum InsertMethod {
     Clipboard,
 }
 
+/// A single macOS Unicode keyboard event is reliable, but splitting a longer
+/// insertion across events is not atomic from the focused app's perspective.
+/// Chromium/Electron editors can consume the tail of one event after the next
+/// event (for example `Google a|nd` becoming `Googlend ... a`). Keep direct
+/// typing to one event and use an atomic clipboard paste for longer text.
+const MACOS_DIRECT_INSERT_MAX_CHARS: usize = 96;
+
+fn requires_atomic_macos_paste(text: &str) -> bool {
+    cfg!(target_os = "macos") && text.chars().count() > MACOS_DIRECT_INSERT_MAX_CHARS
+}
+
 /// Insert `text` into the focused field using the safest strategy for the host:
-/// **direct keystroke injection first** (which never touches the user's
-/// clipboard), falling back to a clipboard paste only when direct injection is
-/// unavailable — no Accessibility grant on macOS, or `SendInput` blocked by an
-/// elevated target on Windows.
+/// direct keystroke injection for short text, with an atomic clipboard paste
+/// for macOS text that would otherwise require multiple Unicode events. Direct
+/// injection also falls back to clipboard when unavailable — no Accessibility
+/// grant on macOS, or `SendInput` blocked by an elevated target on Windows.
 ///
 /// This is the canonical "put this text in the focused field" entry point.
 /// Prefer it over calling [`type_text`]/[`paste`] directly, so the direct-first
@@ -2057,6 +2068,14 @@ pub fn insert_text(text: &str) -> Result<InsertMethod, String> {
     if text.is_empty() {
         return Ok(InsertMethod::Typed);
     }
+    if requires_atomic_macos_paste(text) {
+        tracing::info!(
+            "[paster] using atomic clipboard paste for long macOS insert chars={} direct_limit={}",
+            text.chars().count(),
+            MACOS_DIRECT_INSERT_MAX_CHARS,
+        );
+        return paste(text).map(|()| InsertMethod::Clipboard);
+    }
     match type_text(text) {
         Ok(true) => Ok(InsertMethod::Typed),
         Ok(false) => paste(text).map(|()| InsertMethod::Clipboard),
@@ -2064,5 +2083,34 @@ pub fn insert_text(text: &str) -> Result<InsertMethod, String> {
             tracing::warn!("[paster] direct typing failed ({e}); falling back to clipboard paste");
             paste(text).map(|()| InsertMethod::Clipboard)
         }
+    }
+}
+
+#[cfg(test)]
+mod insert_policy_tests {
+    use super::{MACOS_DIRECT_INSERT_MAX_CHARS, requires_atomic_macos_paste};
+
+    #[test]
+    fn macos_long_insert_policy_avoids_unicode_chunk_boundaries() {
+        let at_limit = "a".repeat(MACOS_DIRECT_INSERT_MAX_CHARS);
+        let over_limit = "a".repeat(MACOS_DIRECT_INSERT_MAX_CHARS + 1);
+
+        assert!(!requires_atomic_macos_paste(&at_limit));
+        assert_eq!(
+            requires_atomic_macos_paste(&over_limit),
+            cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn reported_google_and_boundary_uses_atomic_paste_on_macos() {
+        let text = concat!(
+            "Please let me know if you encounter any issues, and I will inform you and forward ",
+            "them accordingly.\n\nGemma is a good model from Deep Infra, and since you are already ",
+            "working well with Google and similar platforms, you should not face any difficulties."
+        );
+
+        assert_eq!(text.chars().count(), 251);
+        assert_eq!(requires_atomic_macos_paste(text), cfg!(target_os = "macos"));
     }
 }

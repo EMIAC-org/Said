@@ -635,8 +635,8 @@ fn humanize_error(raw: &str) -> String {
     if lower.contains("gemini") && (lower.contains("401") || lower.contains("403")) {
         return "Gemini key invalid".into();
     }
-    if lower.contains("together") && (lower.contains("rate limit") || lower.contains("429")) {
-        return "Together AI rate limit hit".into();
+    if lower.contains("deepinfra") && (lower.contains("rate limit") || lower.contains("429")) {
+        return "DeepInfra rate limit hit".into();
     }
     if lower.contains("rate") || lower.contains("429") {
         return "Rate limited — wait a moment".into();
@@ -860,41 +860,6 @@ async fn stt_pre_transcript(
         "[finish] speech transcript ready in {}ms provider={} chars={} words={}",
         started.elapsed().as_millis(),
         transcript.meta.provider,
-        transcript.transcript.len(),
-        transcript.transcript.split_whitespace().count()
-    );
-    Ok(transcript)
-}
-
-async fn finish_live_nemotron_transcript(
-    mut live_run: LiveNemotronRun,
-) -> Result<dictation_stt::PreTranscript, String> {
-    let started = std::time::Instant::now();
-    if let Some(drain_done_rx) = live_run.drain_done_rx.take() {
-        // The drain is the single producer of live PCM commands. Wait for it
-        // before committing so the final release cannot overtake its last
-        // recorder chunk through a separate mpsc sender.
-        tokio::task::spawn_blocking(move || drain_done_rx.recv_timeout(Duration::from_secs(2)))
-            .await
-            .map_err(|error| format!("live audio drain task failed: {error}"))?
-            .map_err(|_| "Live audio capture did not finish cleanly. Try again.".to_string())?;
-    }
-    live_run
-        .controller
-        .commit()
-        .await
-        .map_err(|error| error.to_string())?;
-    let transcript = tokio::time::timeout(Duration::from_secs(75), live_run.final_rx)
-        .await
-        .map_err(|_| {
-            "The speech service didn't respond within 75s — check your connection and try again."
-                .to_string()
-        })?
-        .map_err(|_| "Live speech transcription stopped unexpectedly. Try again.".to_string())??;
-    tracing::info!(
-        "[finish] live speech transcript finalized in {}ms provider={} chars={} words={}",
-        started.elapsed().as_millis(),
-        dictation_stt::provider_name(),
         transcript.transcript.len(),
         transcript.transcript.split_whitespace().count()
     );
@@ -1169,19 +1134,6 @@ struct RecordingSessionState {
     processing_id: Mutex<Option<String>>,
 }
 
-/// One active Together Nemotron session, captured at recording start. It is
-/// separate from `RecordingSessionState` because its command channel must stay
-/// available to the recorder drain while the final transcript receiver moves to
-/// the release pipeline.
-struct LiveNemotronRun {
-    generation: u64,
-    controller: asr_cloud::LiveTranscriptionController,
-    drain_done_rx: Option<std::sync::mpsc::Receiver<()>>,
-    final_rx: tokio::sync::oneshot::Receiver<Result<dictation_stt::PreTranscript, String>>,
-}
-
-struct LiveNemotronState(Mutex<Option<LiveNemotronRun>>);
-
 impl RecordingSessionState {
     fn begin(&self) -> (u64, String) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1232,145 +1184,6 @@ impl Default for RecordingSessionState {
             generation: AtomicU64::new(0),
             active_id: Mutex::new(None),
             processing_id: Mutex::new(None),
-        }
-    }
-}
-
-fn start_live_nemotron_session(app: &tauri::AppHandle, generation: u64, run_id: String) {
-    if !dictation_stt::uses_live_nemotron() {
-        return;
-    }
-
-    let (controller, input) = asr_cloud::live_transcription_input();
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (final_tx, final_rx) = tokio::sync::oneshot::channel();
-    let app_for_events = app.clone();
-    let run_for_events = run_id.clone();
-
-    // Together's deltas replace the prior hypothesis. They are strictly HUD
-    // preview; the focused app still receives only server-polished output.
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = event_rx.recv().await {
-            let still_recording = app_for_events
-                .try_state::<SharedApp>()
-                .and_then(|shared| {
-                    shared
-                        .0
-                        .lock()
-                        .ok()
-                        .map(|app_state| app_state.state == desktop::AppState::Recording)
-                })
-                .unwrap_or(false);
-            let generation_is_current = app_for_events
-                .try_state::<RecordingSessionState>()
-                .map(|session| session.generation.load(Ordering::SeqCst) == generation)
-                .unwrap_or(false);
-            if !still_recording || !generation_is_current {
-                continue;
-            }
-            match event {
-                asr_cloud::LiveTranscriptEvent::Ready => {
-                    tracing::info!(
-                        run_id = %run_for_events,
-                        generation,
-                        "[nemotron_live] websocket session ready while recording"
-                    );
-                    emit_voice_status(
-                        &app_for_events,
-                        "live_stt",
-                        Some("Listening…"),
-                        Some(&run_for_events),
-                    );
-                }
-                asr_cloud::LiveTranscriptEvent::Delta { transcript } => {
-                    emit_voice_status(
-                        &app_for_events,
-                        "live_stt",
-                        Some(&transcript),
-                        Some(&run_for_events),
-                    );
-                }
-            }
-        }
-    });
-
-    tauri::async_runtime::spawn(async move {
-        let result = dictation_stt::transcribe_live_nemotron(input, event_tx).await;
-        let _ = final_tx.send(result);
-    });
-
-    let live_state = app.state::<LiveNemotronState>();
-    let mut guard = live_state
-        .0
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    // A new recording is allowed to supersede an abandoned old one. Dropping
-    // its controller closes the command channel once its recorder drain ends.
-    *guard = Some(LiveNemotronRun {
-        generation,
-        controller,
-        drain_done_rx: None,
-        final_rx,
-    });
-    tracing::info!(
-        run_id = %run_id,
-        generation,
-        "[nemotron_live] session opening at recording start"
-    );
-}
-
-fn live_nemotron_controller(
-    app: &tauri::AppHandle,
-    generation: u64,
-) -> Option<asr_cloud::LiveTranscriptionController> {
-    let state = app.try_state::<LiveNemotronState>()?;
-    let guard = state.0.lock().ok()?;
-    guard
-        .as_ref()
-        .filter(|run| run.generation == generation)
-        .map(|run| run.controller.clone())
-}
-
-fn attach_live_nemotron_drain(
-    app: &tauri::AppHandle,
-    generation: u64,
-    drain_done_rx: std::sync::mpsc::Receiver<()>,
-) {
-    let Some(state) = app.try_state::<LiveNemotronState>() else {
-        return;
-    };
-    let Ok(mut guard) = state.0.lock() else {
-        return;
-    };
-    if let Some(run) = guard.as_mut().filter(|run| run.generation == generation) {
-        run.drain_done_rx = Some(drain_done_rx);
-    }
-}
-
-fn take_live_nemotron_run(
-    app: &tauri::AppHandle,
-    generation: Option<u64>,
-) -> Option<LiveNemotronRun> {
-    let generation = generation?;
-    let state = app.try_state::<LiveNemotronState>()?;
-    let mut guard = state.0.lock().ok()?;
-    if guard
-        .as_ref()
-        .is_some_and(|run| run.generation == generation)
-    {
-        guard.take()
-    } else {
-        None
-    }
-}
-
-fn discard_live_nemotron_run(app: &tauri::AppHandle) {
-    let Some(state) = app.try_state::<LiveNemotronState>() else {
-        return;
-    };
-    if let Ok(mut guard) = state.0.lock() {
-        if guard.take().is_some() {
-            tracing::debug!("[nemotron_live] session discarded before commit");
         }
     }
 }
@@ -3160,7 +2973,7 @@ async fn get_preferences(backend: State<'_, BackendState>) -> Result<api::Prefer
 
 #[derive(serde::Serialize)]
 struct SttRuntimeInfo {
-    /// Provider the next dictation will use: live Together Nemotron or the
+    /// Provider the next dictation will use: DeepInfra Cloud Whisper or the
     /// mandated Apple-Silicon on-device model.
     dictation_provider: &'static str,
     /// Dictation can transcribe right now (model present / key baked).
@@ -4238,7 +4051,7 @@ fn do_start_recording_inner(
     }
 
     {
-        let (session_gen, run_id) = app.state::<RecordingSessionState>().begin();
+        let (_, run_id) = app.state::<RecordingSessionState>().begin();
         let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
             RecordingRoute::Divo
         } else if PROBLEM_START_PENDING.swap(false, Ordering::SeqCst) {
@@ -4256,12 +4069,6 @@ fn do_start_recording_inner(
         };
         if let Ok(mut route_state) = app.state::<RecordingRouteState>().0.lock() {
             *route_state = Some(route);
-        }
-        // Every hold-to-talk route uses the live cloud session when Nemotron
-        // is selected. Meetings deliberately remain on their independent,
-        // local-only continuous-capture engine.
-        if route != RecordingRoute::Meeting {
-            start_live_nemotron_session(app, session_gen, run_id.clone());
         }
         let mode = match route {
             RecordingRoute::Divo => "divo",
@@ -4463,9 +4270,8 @@ fn do_start_recording_inner(
         }
     }
 
-    // Keep a local PCM tap for crash recovery. On-device speech recognition
-    // still runs once after release; when Together Nemotron is selected the
-    // same capture drain also feeds its WebSocket session while the key is held.
+    // Keep a local PCM tap for crash recovery. Speech recognition runs once
+    // after release, using either the local model or DeepInfra batch STT.
     let chunk_recv = shared.lock().ok().and_then(|mut d| d.take_chunk_receiver());
     if let Some(chunk_recv) = chunk_recv {
         // Crash-safe recovery: capture this dictation's audio to disk so a crash
@@ -4499,22 +4305,11 @@ fn do_start_recording_inner(
                     }
                 });
             }
-            let live_nemotron = session
-                .as_ref()
-                .and_then(|(generation, _)| live_nemotron_controller(app, *generation));
             tracing::info!(
                 provider = dictation_stt::provider_name(),
-                live_websocket = live_nemotron.is_some(),
                 "[speech] dictation audio drain started"
             );
-            let drain_done_rx = whisper_dictation_stream::spawn_dictation_audio_drain(
-                recording_id,
-                chunk_recv,
-                live_nemotron,
-            );
-            if let Some((generation, _)) = session {
-                attach_live_nemotron_drain(app, generation, drain_done_rx);
-            }
+            whisper_dictation_stream::spawn_dictation_audio_drain(recording_id, chunk_recv);
             return;
         }
     } else {
@@ -4533,7 +4328,6 @@ fn do_cancel_recording(
     reset_long_dictation_lock(&app);
     restore_speaker_suppression(&app, reason);
     recovery::clear();
-    discard_live_nemotron_run(&app);
     PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
 
     if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
@@ -4597,10 +4391,6 @@ fn do_finish_recording(
     // take), the generation bumps and this finish must not touch the shared state
     // machine — the newer recording owns it now.
     let finish_generation = session_end.as_ref().map(|(g, _)| *g);
-    // Capture the live session before recorder shutdown. Its bridge owns a
-    // controller clone until the mic stream closes; this receiver is the only
-    // place that may commit and await the final transcript.
-    let live_nemotron = take_live_nemotron_run(&app, finish_generation);
     let session_tag = session_end
         .as_ref()
         .map(|(generation, id)| format!("id={id} generation={generation}"))
@@ -4755,7 +4545,6 @@ fn do_finish_recording(
             .filter(|lang| !lang.is_empty())
             .unwrap_or_else(|| "hi".to_string());
 
-        let mut live_nemotron = live_nemotron;
         let pre_transcript = if let Some(levels) = dictation_wav_is_no_speech(&wav) {
             tracing::warn!(
                 "[finish] no speech energy detected — suppressing transcription (peak={:.5}, rms={:.5}, samples={})",
@@ -4763,18 +4552,9 @@ fn do_finish_recording(
                 levels.rms,
                 levels.samples,
             );
-            // There is no final result to request for silence. Dropping this
-            // session cancels it instead of submitting an empty utterance.
-            drop(live_nemotron.take());
             Err("No speech detected — try speaking again.".to_string())
         } else if is_meeting {
-            // Meetings have a hard local-only speech path. Ignore any stale
-            // live cloud session rather than letting it change the model a
-            // meeting uses on Windows.
-            drop(live_nemotron.take());
             stt_pre_transcript(&wav, &stt_language, true).await
-        } else if let Some(live_nemotron) = live_nemotron.take() {
-            finish_live_nemotron_transcript(live_nemotron).await
         } else {
             stt_pre_transcript(&wav, &stt_language, false).await
         };
@@ -5509,8 +5289,16 @@ fn emit_problem_context_event(
     );
 }
 
-/// Async SSE consumer: previews backend tokens, inserts the final result once,
-/// and stores it for paste-latest re-paste.
+#[derive(Default)]
+struct LiveDictationInsert {
+    typed_text: String,
+    failed: bool,
+    invalidated: bool,
+}
+
+/// Async SSE consumer: inserts backend tokens into the focused app as they
+/// arrive, reconciles only when the provider's final text differs, and stores
+/// the final result for paste-latest re-paste.
 /// Opt-in browser-context capture. If `target_app` is a browser and the
 /// `browser_context_enabled` pref is set, read the active tab's site (host only)
 /// and record it to the LOCAL backend. Fully fire-and-forget and on-device — the
@@ -5579,9 +5367,7 @@ async fn run_voice_polish_sse(
         .unwrap_or(0);
     let message_polish_mode = !suppress_local
         && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
-    tracing::debug!(
-        "[pipeline] target typing waits for final server output; stream tokens are preview-only"
-    );
+    tracing::debug!("[pipeline] target typing follows the server token stream");
     let initial_field_read_t0 = std::time::Instant::now();
     let initial_field_text = if suppress_local {
         None
@@ -5601,6 +5387,8 @@ async fn run_voice_polish_sse(
     let event_client_run_id = client_run_id.clone();
     let error_already_emitted = Arc::new(AtomicBool::new(false));
     let error_already_emitted_for_events = Arc::clone(&error_already_emitted);
+    let live_insert = Arc::new(Mutex::new(LiveDictationInsert::default()));
+    let live_insert_for_events = Arc::clone(&live_insert);
 
     let pre_transcript_chars = pre_transcript
         .as_ref()
@@ -5668,11 +5456,39 @@ async fn run_voice_polish_sse(
                 {
                     return;
                 }
-                // The backend uses this internal marker to invalidate an unsafe
-                // partial stream. It is never user-visible and final insertion
-                // does not need reconciliation.
-                if token != STREAM_RESET_SENTINEL {
-                    let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                if token == STREAM_RESET_SENTINEL {
+                    if let Ok(mut live) = live_insert_for_events.lock() {
+                        live.invalidated = true;
+                    }
+                    return;
+                }
+
+                let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
+                if suppress_local || token.is_empty() {
+                    return;
+                }
+
+                let Ok(mut live) = live_insert_for_events.lock() else {
+                    tracing::warn!("[pipeline] live insert state lock poisoned");
+                    return;
+                };
+                if live.failed || live.invalidated {
+                    return;
+                }
+                match paster::type_text(token) {
+                    Ok(true) => live.typed_text.push_str(token),
+                    Ok(false) => {
+                        live.failed = true;
+                        tracing::warn!(
+                            "[pipeline] direct live typing unavailable; final output will reconcile"
+                        );
+                    }
+                    Err(err) => {
+                        live.failed = true;
+                        tracing::warn!(
+                            "[pipeline] direct live typing failed ({err}); final output will reconcile"
+                        );
+                    }
                 }
             }
             api::PolishEvent::Status { phase, transcript } => {
@@ -5748,9 +5564,6 @@ async fn run_voice_polish_sse(
                     message_polish_mode,
                 );
                 let human = humanize_error(&message);
-                if error_code.as_deref() == Some("together_rate_limit") {
-                    notify_macos(&app_clone, "Together AI rate limit hit", &human);
-                }
                 let _ = app_clone.emit(
                     "voice-error",
                     serde_json::json!({
@@ -5892,6 +5705,11 @@ async fn run_voice_polish_sse(
         }
     };
 
+    let live_state = live_insert
+        .lock()
+        .map(|state| (state.typed_text.clone(), state.failed, state.invalidated))
+        .unwrap_or_default();
+    let (live_typed_text, live_typing_failed, live_stream_invalidated) = live_state;
     let mut output_pasted = false;
     let mut used_clipboard_fallback = false;
     // If a newer recording superseded this one, never paste the abandoned take.
@@ -5906,11 +5724,35 @@ async fn run_voice_polish_sse(
         );
     } else if suppress_local {
         tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
+    } else if !live_typed_text.is_empty() {
+        if live_typed_text == done.polished {
+            tracing::info!(
+                "[main] live stream already inserted final server result ({} chars)",
+                live_typed_text.chars().count()
+            );
+            output_pasted = true;
+        } else {
+            tracing::info!(
+                "[main] reconciling live stream chars={} final_chars={} failed={} invalidated={}",
+                live_typed_text.chars().count(),
+                done.polished.chars().count(),
+                live_typing_failed,
+                live_stream_invalidated,
+            );
+            match paster::reconcile_current_recording(
+                initial_field_text.as_deref(),
+                &live_typed_text,
+                &done.polished,
+            ) {
+                Ok(_) => output_pasted = true,
+                Err(err) => {
+                    tracing::warn!("[main] live stream reconciliation failed: {err}");
+                }
+            }
+        }
     } else {
-        // Insert only the final server result so the focused field never needs
-        // a second reconciliation mutation.
         tracing::info!(
-            "[main] direct insert final server result ({} chars)",
+            "[main] stream produced no insertable tokens; inserting final server result ({} chars)",
             done.polished.len()
         );
         if !done.polished.is_empty() {
@@ -10693,7 +10535,6 @@ fn main() {
         .manage(HotPathCache(Arc::new(tokio::sync::RwLock::new(HotPathCacheInner::default()))))
         .manage(StatusBarHideGen(Arc::new(AtomicU64::new(0))))
         .manage(RecordingSessionState::default())
-        .manage(LiveNemotronState(Mutex::new(None)))
         .manage(StatusBarPersistentHold(AtomicBool::new(false)))
         .manage(StatusBarPlacementActive(AtomicBool::new(false)))
         .manage(StatusBarInteractive(AtomicBool::new(false)))

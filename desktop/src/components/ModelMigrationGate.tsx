@@ -171,13 +171,13 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
       <div className="mig-overlay" role="dialog" aria-modal="true" aria-labelledby="model-migration-title">
         <div className="mig-card">
           <div className="mig-badge"><Cloud size={12} /> Updated speech setup</div>
-          <h2 id="model-migration-title" className="mig-title">Live Nemotron is enabled.</h2>
+          <h2 id="model-migration-title" className="mig-title">Cloud Whisper is enabled.</h2>
           <p className="mig-desc">
-            {policy.cpu_family === "intel" ? "This Intel Mac" : "Windows"} now uses live cloud speech recognition for dictation. No local dictation download is needed.
+            {policy.cpu_family === "intel" ? "This Intel Mac" : "Windows"} now uses DeepInfra cloud speech recognition for dictation. No local dictation download is needed.
           </p>
           <div className="mig-model">
             <div className="mig-model-row">
-              <span className="mig-model-left"><span className="mig-model-ico"><Cloud size={13} /></span><span className="mig-model-name">Nemotron Streaming 3.5 · Live</span></span>
+              <span className="mig-model-left"><span className="mig-model-ico"><Cloud size={13} /></span><span className="mig-model-name">Whisper Large V3 Turbo · DeepInfra</span></span>
               <span className="mig-ready"><Check size={12} /> Ready</span>
             </div>
             {oriserve?.installed && <p className="text-[11px] text-muted-foreground mt-2">Oriserve remains installed for local Meetings.</p>}

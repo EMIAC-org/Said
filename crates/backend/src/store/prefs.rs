@@ -50,7 +50,6 @@ pub struct Preferences {
     pub gateway_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
     pub groq_api_key: Option<String>,
-    pub together_api_key: Option<String>,
     pub deepinfra_api_key: Option<String>,
     /// LLM routing: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     pub llm_provider: String,
@@ -75,7 +74,6 @@ pub struct PrefsUpdate {
     pub gateway_api_key: Option<Option<String>>,
     pub gemini_api_key: Option<Option<String>>,
     pub groq_api_key: Option<Option<String>>,
-    pub together_api_key: Option<Option<String>>,
     pub deepinfra_api_key: Option<Option<String>>,
     /// LLM provider: "gateway" | "gemini_direct" | "groq" | "openai_codex"
     pub llm_provider: Option<String>,
@@ -89,7 +87,8 @@ pub fn validate_polish_model_key(raw: &str) -> String {
     said_core::polish::model::validate_polish_model_key(raw)
 }
 
-/// Server polish runtime is always enabled — polish routes through control-plane.
+/// Server polish runtime is always enabled for interactive dictation so the
+/// desktop never diverges from the production Gemma route.
 pub fn server_runtime_forced() -> bool {
     true
 }
@@ -101,7 +100,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
                 learning_enabled, server_runtime_enabled, 0 AS server_audio_runtime_enabled, updated_at,
                 gateway_api_key, gemini_api_key, llm_provider,
-                groq_api_key, together_api_key, deepinfra_api_key
+                groq_api_key, deepinfra_api_key
          FROM preferences WHERE user_id = ?1",
         params![user_id],
         |row| {
@@ -136,8 +135,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                     }
                 },
                 groq_api_key: row.get(17)?,
-                together_api_key: row.get(18)?,
-                deepinfra_api_key: row.get(19)?,
+                deepinfra_api_key: row.get(18)?,
             })
         },
     )
@@ -250,13 +248,6 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
     if let Some(v) = update.groq_api_key {
         conn.execute(
             "UPDATE preferences SET groq_api_key = ?1, updated_at = ?2 WHERE user_id = ?3",
-            params![v, now, user_id],
-        )
-        .ok()?;
-    }
-    if let Some(v) = update.together_api_key {
-        conn.execute(
-            "UPDATE preferences SET together_api_key = ?1, updated_at = ?2 WHERE user_id = ?3",
             params![v, now, user_id],
         )
         .ok()?;
