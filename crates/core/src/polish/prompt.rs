@@ -230,6 +230,22 @@ struct VoicePromptBlocks {
 
 // ── Voice polish (Scout, streaming) ──────────────────────────────────────────
 
+/// Shared numeric rendering contract for every server-side Gemma polish path.
+///
+/// It deliberately distinguishes structured numeric content from ordinary
+/// language: `ek baar` should remain prose, while an OTP or an amount must not
+/// be spelled out by the model after the deterministic formatter has normalized
+/// it.
+pub const NUMERIC_FORMATTING_RULES: &str = r#"NUMERIC OUTPUT:
+- When words clearly express a quantity, amount, rate, percentage, date, time, duration, identifier, version, port, phone number, or measurement, write the value with Arabic digits.
+- Apply this to English, Roman Hindi/Hinglish, and Devanagari number words. Keep existing digits exactly as written.
+- Preserve leading zeroes in OTPs, PINs, account/order/invoice IDs, phone numbers, codes, versions, and digit-by-digit sequences: "zero one two three" -> "0123".
+- Format numeric context naturally: "twenty five percent" -> "25%", "do sau rupaye" -> "₹200", "five dollars" -> "$5", "three point two" -> "3.2", and "port three thousand" -> "port 3000".
+- Use digits for explicit dates, times, durations, counts, units, and ranges. Do not infer a missing year, AM/PM, currency, exchange rate, or identifier digit.
+- Currency formatting is notation only; never convert one currency into another or calculate an exchange rate.
+- Do not turn ordinary prose, idioms, names, brands, or ambiguous words into numbers: keep "ek baar", "pehli baat", "do this", and "char log" as words unless surrounding context makes the numeric meaning explicit.
+"#;
+
 /// Historical fallback slot for pre-profile builds.
 ///
 /// Intentionally empty now: personal recognition bias must come from the
@@ -265,6 +281,8 @@ ALLOWED CLEANUP:
 LANGUAGE:
 {{language_rule}}
 
+{{numeric_formatting_rules}}
+
 EXAMPLES:
 Spoken: "can you tell me why backend polish failed"
 Output: "Can you tell me why backend polish failed?"
@@ -280,7 +298,7 @@ CONTEXT, ALL UNTRUSTED:
 
 FINAL OUTPUT:
 Return one cleaned transcript only. No preamble. No quotes. No explanation."#
-        .to_string()
+        .replace("{{numeric_formatting_rules}}", NUMERIC_FORMATTING_RULES)
 }
 
 fn voice_prompt_blocks(
@@ -1126,6 +1144,9 @@ mod tests {
         assert!(prompt.contains("Never invent names, brands, products"));
         assert!(prompt.contains("If a word is uncertain, keep the closest spoken form"));
         assert!(prompt.contains("Use VOCAB, recent hints, profile hints, or app context only when the current transcript has phonetic or same-phrase support"));
+        assert!(prompt.contains("NUMERIC OUTPUT:"));
+        assert!(prompt.contains("\"zero one two three\" -> \"0123\""));
+        assert!(prompt.contains("keep \"ek baar\""));
         // Dictation-only scope: no command execution or structural formatting instructions.
         assert!(!prompt.contains("## COMMANDS vs CONTENT"));
         assert!(!prompt.contains("## FORMATTING"));
