@@ -3,14 +3,14 @@
 
 export const downloads = {
   mac: {
-    latestVersion: "2.4.4",
+    latestVersion: "2.4.5",
     latestDmg:
-      "https://airnote.emiactech.com/releases/2.4.4/AirNote_2.4.4_aarch64.dmg",
+      "https://airnote.emiactech.com/releases/2.4.5/AirNote_2.4.5_aarch64.dmg",
   },
   windows: {
-    latestVersion: "2.4.3",
+    latestVersion: "2.4.4",
     latestSetup:
-      "https://airnote.emiactech.com/releases/2.4.3/AirNote_2.4.3_x64-setup.exe",
+      "https://airnote.emiactech.com/releases/2.4.4/AirNote_2.4.4_x64-setup.exe",
   },
 };
 

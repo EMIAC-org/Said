@@ -28,56 +28,55 @@ export const metadata: Metadata = {
 };
 
 const latest = {
-  version: "2.4.4",
-  date: "Jul 16, 2026",
-  title: "Better UI. More accurate dictation.",
+  version: "2.4.5",
+  date: "Jul 18, 2026",
+  title: "Direct streaming. More reliable dictation.",
   intro:
-    "AirNote 2.4.4 is the current stable macOS release, with a clearer desktop experience, more accurate dictation, and a complete meeting workflow from live capture to summaries and tasks. The current Windows release is 2.4.3.",
+    "AirNote 2.4.5 is the current stable macOS release. Polished dictation now reaches your focused app as it streams, while the desktop app and server safely recover from interrupted output. The current Windows release is 2.4.4.",
   sections: [
     {
-      id: "interface",
-      eyebrow: "#Better UI",
-      title: "A clearer AirNote, at a glance",
-      icon: LayoutDashboard,
+      id: "streaming",
+      eyebrow: "#Direct Streaming",
+      title: "See your dictation arrive as it is polished",
+      icon: Radio,
       body: [
-        "The redesigned dashboard puts today’s output, time saved, top apps, pace, learned edits, activity, and recent recordings into one calm workspace.",
-        "Navigation is cleaner, important states are easier to scan, and the interface now matches the way dictation, learning, and meetings fit together.",
+        "AirNote now sends polished dictation into the focused app as the provider streams it, so the result no longer waits for a separate final insertion step.",
+        "If a stream is interrupted or its final result differs, AirNote reconciles the recording safely instead of duplicating the text.",
       ],
       bullets: [
-        "Redesigned dashboard",
-        "Top apps at a glance",
-        "Clearer navigation",
-        "Clear activity overview",
+        "Direct streamed insertion",
+        "No duplicate final paste",
+        "Safe interrupted-stream recovery",
       ],
     },
     {
-      id: "accuracy",
-      eyebrow: "#More Accurate",
-      title: "Dictation that gets your words right",
+      id: "reliability",
+      eyebrow: "#Reliable Dictation",
+      title: "A steadier speech-to-text path",
       icon: Mic2,
       body: [
-        "AirNote’s transcription and polish pipeline is more reliable across English, Hindi, Hinglish, names, product terms, and mixed technical speech.",
-        "Vocabulary, learned edits, and safer context handling work together to preserve what you meant while removing filler and fixing genuine recognition mistakes.",
+        "The desktop speech path uses the current DeepInfra Whisper integration, with resilient handling for slow responses, retries, and recovery after an app restart.",
+        "AirNote keeps your normal dictation path focused on the model’s output while preserving the meeting and background-processing workflows separately.",
       ],
       bullets: [
-        "Stronger mixed-language accuracy",
-        "Better names and terminology",
-        "Safer learned corrections",
+        "Improved speech-service resilience",
+        "Clearer failure recovery",
+        "Separate meeting processing",
       ],
     },
     {
-      id: "meetings",
-      eyebrow: "#Meetings",
-      title: "From live conversation to summary and tasks",
+      id: "visibility",
+      eyebrow: "#Meetings & Visibility",
+      title: "Clearer operational insight",
       icon: Video,
       body: [
-        "Start a meeting from the Meetings workspace, keep recording status and transcript progress visible, then safely leave when the conversation ends.",
-        "After processing, the transcript, notes, structured summary, decisions, and action-item task section stay together in one meeting record.",
+        "Meeting telemetry now maintains durable, ordered delivery so activity remains correctly attributed across workspaces and recovers cleanly after interruptions.",
+        "The admin experience makes dictation and meeting usage easier to inspect, including explicit no-AI-usage and retryable-error states.",
       ],
       bullets: [
-        "Live meeting capture",
-        "Structured summaries",
-        "Action-item task section",
+        "Durable meeting telemetry",
+        "Cross-workspace attribution protection",
+        "Clear admin reporting states",
       ],
     },
   ],
@@ -85,45 +84,45 @@ const latest = {
 
 const noteGroups = [
   {
-    title: "Better UI",
+    title: "Direct streaming",
     count: 3,
     items: [
-      "Redesigned the dashboard around today’s dictation output and time saved.",
-      "Added Top Apps alongside pace, learned edits, activity, and recent recordings.",
-      "Unified dictation, learning, meetings, settings, and guide navigation.",
+      "Polished text now arrives in the focused app as it streams.",
+      "Removed the delayed post-model insertion path for normal dictation.",
+      "Added safe reconciliation for interrupted or divergent streams.",
     ],
   },
   {
-    title: "Accuracy",
+    title: "Reliability",
     count: 3,
     items: [
-      "Improved dictation quality for English, Hindi, Hinglish, and mixed technical speech.",
-      "Improved preservation of names, vocabulary terms, and user-preferred corrections.",
-      "Strengthened correction safety so ordinary words are less likely to be changed incorrectly.",
+      "Improved recovery from slow or interrupted speech-service responses.",
+      "Kept normal dictation model output direct and predictable.",
+      "Preserved separate processing for meetings and background services.",
     ],
   },
   {
-    title: "Meetings",
+    title: "Meetings & visibility",
     count: 3,
     items: [
-      "Added live meeting capture with clear waiting, recording, processing, and completed states.",
-      "Added structured summaries, transcripts, notes, decisions, and action-item tasks.",
-      "Added a dedicated visual guide for the complete meetings workflow.",
+      "Protected cross-workspace meeting telemetry attribution.",
+      "Kept blocked events from starving the outbox.",
+      "Added clearer admin usage and retryable-error states.",
     ],
   },
 ];
 
 const releaseDownloads = [
   {
-    version: "2.4.4",
-    date: "Jul 16, 2026",
+    version: "2.4.5",
+    date: "Jul 18, 2026",
     title: "Latest stable for macOS",
     downloads: [
       { platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg },
     ],
   },
   {
-    version: "2.4.3",
+    version: "2.4.4",
     date: "Jul 17, 2026",
     title: "Current stable for Windows",
     downloads: [
@@ -330,7 +329,7 @@ function CurrentDashboardSnapshot() {
         boxShadow: "0 34px 90px -42px rgba(0,0,0,.9), inset 0 0 0 1px rgba(255,255,255,.025)",
         fontFamily: APP_FONT,
       }}
-      aria-label="AirNote 2.4.4 dashboard interface"
+      aria-label="AirNote 2.4.5 dashboard interface"
     >
       <div className="grid h-full" style={{ gridTemplateColumns: "24% 1fr" }}>
         <aside className="flex min-h-0 flex-col border-r border-[#303034] bg-[#0d0d0f] px-3 py-3">
