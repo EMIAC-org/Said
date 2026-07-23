@@ -13,6 +13,7 @@ use sysinfo::System;
 use said_core::prefs::DesktopPrefs;
 
 pub const CLOUD_DEEPINFRA_PREF: &str = "cloud-deepinfra-whisper-v3-turbo";
+pub const CLOUD_OPENAI_PREF: &str = "cloud-openai-gpt-4o-mini-transcribe";
 const LEGACY_CLOUD_NEMOTRON_PREF: &str = "cloud-nemotron-3.5";
 pub const LOCAL_PREF: &str = "local";
 pub const ORISERVE_PREF: &str = "oriserve";
@@ -24,7 +25,8 @@ const EIGHT_GIB: u64 = 8 * 1024 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupKind {
-    /// Windows and Intel Macs always use hosted DeepInfra Whisper.
+    /// Windows and Intel Macs use a hosted STT route; they can select a
+    /// configured cloud provider but cannot choose local dictation yet.
     CloudLocked,
     /// Apple Silicon Macs receive a required local model during setup.
     LocalRequired,
@@ -65,26 +67,29 @@ pub fn current() -> &'static SttSetupPolicy {
 }
 
 /// Normalize a preference record to the policy without changing an explicit
-/// Apple-Silicon cloud choice. Cloud-locked devices are always forced back to
-/// DeepInfra Whisper. The previous Together preference migrates in place so
-/// released clients keep their cloud selection after updating.
+/// Apple-Silicon cloud choice. Cloud-locked devices can use either supported
+/// hosted provider but never local dictation. The previous Together preference
+/// migrates in place so released clients keep their cloud selection after
+/// updating.
 pub fn normalize_prefs(prefs: DesktopPrefs) -> DesktopPrefs {
     normalize_prefs_for(prefs, current())
 }
 
 fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> DesktopPrefs {
     if policy.is_cloud_locked() {
-        prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
+        if !is_cloud_pref(&prefs.dictation_stt) {
+            prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
+        }
         prefs.local_stt_compat_override = None;
         return prefs;
     }
 
-    // Apple Silicon offers exactly one user decision in Settings: local or
-    // hosted DeepInfra Whisper. Preserve the previous Together cloud choice
-    // during migration; every other legacy value becomes the local default.
+    // Apple Silicon offers local dictation plus the configured cloud routes.
+    // Preserve the previous Together cloud choice during migration; every
+    // unknown legacy value becomes the local default.
     if prefs.dictation_stt == LEGACY_CLOUD_NEMOTRON_PREF {
         prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
-    } else if prefs.dictation_stt != CLOUD_DEEPINFRA_PREF {
+    } else if prefs.dictation_stt != LOCAL_PREF && !is_cloud_pref(&prefs.dictation_stt) {
         prefs.dictation_stt = LOCAL_PREF.to_string();
     }
     let compatibility_override = valid_compatibility_override(
@@ -101,6 +106,10 @@ fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> Desk
         }
     }
     prefs
+}
+
+fn is_cloud_pref(pref: &str) -> bool {
+    matches!(pref, CLOUD_DEEPINFRA_PREF | CLOUD_OPENAI_PREF)
 }
 
 /// Compatibility overrides exist only for high-memory Apple Silicon machines
@@ -236,14 +245,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_is_always_hosted_deepinfra() {
+    fn windows_is_cloud_only() {
         let policy = policy_for("windows", "x86_64", false, 64 * EIGHT_GIB);
         assert!(policy.is_cloud_locked());
         assert_eq!(policy.local_model, None);
     }
 
     #[test]
-    fn intel_mac_is_always_hosted_deepinfra() {
+    fn intel_mac_is_cloud_only() {
         let policy = policy_for("macos", "x86_64", false, 64 * EIGHT_GIB);
         assert!(policy.is_cloud_locked());
         assert_eq!(policy.cpu_family, "intel");
@@ -269,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn cloud_locked_policy_overrides_every_stale_preference() {
+    fn cloud_locked_policy_overrides_local_but_keeps_valid_cloud_selection() {
         let policy = policy_for("windows", "x86_64", false, EIGHT_GIB);
         let normalized = normalize_prefs_for(
             DesktopPrefs {
@@ -280,10 +289,19 @@ mod tests {
             &policy,
         );
         assert_eq!(normalized.dictation_stt, CLOUD_DEEPINFRA_PREF);
+
+        let openai = normalize_prefs_for(
+            DesktopPrefs {
+                dictation_stt: CLOUD_OPENAI_PREF.into(),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(openai.dictation_stt, CLOUD_OPENAI_PREF);
     }
 
     #[test]
-    fn apple_silicon_keeps_explicit_deepinfra_and_migrates_together() {
+    fn apple_silicon_keeps_explicit_cloud_selection_and_migrates_together() {
         let policy = policy_for("macos", "arm64", false, EIGHT_GIB + 1);
         let local = normalize_prefs_for(DesktopPrefs::default(), &policy);
         assert_eq!(local.dictation_stt, LOCAL_PREF);
@@ -298,6 +316,15 @@ mod tests {
         );
         assert_eq!(cloud.dictation_stt, CLOUD_DEEPINFRA_PREF);
         assert_eq!(cloud.local_stt_model, NEMOTRON_Q4_PREF);
+
+        let openai = normalize_prefs_for(
+            DesktopPrefs {
+                dictation_stt: CLOUD_OPENAI_PREF.into(),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(openai.dictation_stt, CLOUD_OPENAI_PREF);
 
         let migrated = normalize_prefs_for(
             DesktopPrefs {

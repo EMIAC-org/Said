@@ -61,7 +61,7 @@ export interface SttRuntimeInfo {
   dictation_provider: string;
   /** Dictation can transcribe right now (model present / key baked). */
   dictation_ready: boolean;
-  /** Effective persisted route: local or hosted DeepInfra Whisper. */
+  /** Effective persisted route: local or selected hosted STT provider. */
   dictation_stt_pref: string;
   /** Policy-default route for diagnostic/status UI. */
   dictation_auto_provider: string;

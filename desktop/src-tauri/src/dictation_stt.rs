@@ -2,12 +2,12 @@
 //!
 //! | platform | provider |
 //! |----------|----------|
-//! | Windows / Intel Mac | DeepInfra Whisper batch (fixed) |
-//! | Apple Silicon Mac | mandated local model, with an optional Cloud Whisper switch in Settings |
+//! | Windows / Intel Mac | selected hosted STT route |
+//! | Apple Silicon Mac | local model or a selected hosted STT route |
 //!
 //! The platform policy in `stt_policy` is authoritative. A stale preference
-//! cannot route Windows or Intel Macs to local ASR, and Apple Silicon has only
-//! a deliberate local ↔ Cloud Whisper choice.
+//! cannot route Windows or Intel Macs to local ASR. Everything downstream is
+//! provider-agnostic: the transcript feeds the existing polish route unchanged.
 //!
 //! There is deliberately no mid-clip provider fallback: a clip runs on exactly
 //! one provider and fails loudly with an actionable message. (Within the
@@ -29,9 +29,8 @@ pub struct PreTranscript {
     pub meta: TranscriptMeta,
 }
 
-/// Stable identifier of the provider the next dictation will use (status UI,
-/// logs): `"on-device/whisper"`, `"on-device/nemotron"`, or
-/// `"deepinfra/whisper-large-v3-turbo"`.
+/// Stable identifier of the provider the next dictation will use (status UI
+/// and logs).
 pub fn provider_name() -> &'static str {
     provider::name()
 }
@@ -43,7 +42,7 @@ pub fn dictation_ready() -> bool {
     provider::ready()
 }
 
-/// The policy-default provider for diagnostic/status UI.
+/// The policy-resolved provider for diagnostic/status UI.
 pub fn auto_provider_name() -> &'static str {
     provider::auto_name()
 }
@@ -142,10 +141,9 @@ pub async fn transcribe_meeting_wav_bytes(
     })
 }
 
-/// Warm this platform's provider at startup so the first utterance doesn't
-/// pay setup costs: on-device pre-loads its model; DeepInfra resolves the
-/// API key and logs loudly if the build shipped without one, so a broken build
-/// is visible before the first dictation.
+/// Warm this platform's provider at startup so the first utterance doesn't pay
+/// setup costs. Cloud routes resolve their key and log loudly if the build
+/// shipped without it, so a broken configuration is visible before dictation.
 pub fn prewarm() {
     provider::prewarm();
 }
@@ -276,34 +274,46 @@ mod on_device {
     }
 }
 
-// ── Enforced local / DeepInfra batch STT ────────────────────────────────────
+// ── Selected local / cloud completed-recording STT ──────────────────────────
 mod provider {
     use std::sync::OnceLock;
 
-    use asr_cloud::{API_KEY_ENV, DeepInfraClient};
+    use asr_cloud::{
+        API_KEY_ENV as DEEPINFRA_API_KEY_ENV, DeepInfraClient, OPENAI_API_KEY_ENV, OpenAiClient,
+    };
     use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
 
     use super::PreTranscript;
 
     const DEEPINFRA_WHISPER_NAME: &str = "deepinfra/whisper-large-v3-turbo";
+    const OPENAI_GPT_4O_MINI_NAME: &str = "openai/gpt-4o-mini-transcribe";
 
     #[derive(Clone, Copy, PartialEq)]
     enum Selected {
         OnDevice,
         DeepInfraWhisper,
+        OpenAiGpt4oMini,
     }
 
-    /// Resolve the next clip from the central device policy. Only Apple
-    /// Silicon permits a user-selected cloud route.
+    /// Resolve the next clip from the central device policy. Cloud-only
+    /// devices may choose between hosted routes; Apple Silicon may also use
+    /// its local model.
     fn selection() -> Selected {
         let policy = crate::stt_policy::current();
         if policy.is_cloud_locked() {
-            return Selected::DeepInfraWhisper;
+            return cloud_selection();
         }
-        if said_core::prefs::load().dictation_stt == crate::stt_policy::CLOUD_DEEPINFRA_PREF {
-            Selected::DeepInfraWhisper
-        } else {
-            Selected::OnDevice
+        match said_core::prefs::load().dictation_stt.as_str() {
+            crate::stt_policy::CLOUD_DEEPINFRA_PREF => Selected::DeepInfraWhisper,
+            crate::stt_policy::CLOUD_OPENAI_PREF => Selected::OpenAiGpt4oMini,
+            _ => Selected::OnDevice,
+        }
+    }
+
+    fn cloud_selection() -> Selected {
+        match said_core::prefs::load().dictation_stt.as_str() {
+            crate::stt_policy::CLOUD_OPENAI_PREF => Selected::OpenAiGpt4oMini,
+            _ => Selected::DeepInfraWhisper,
         }
     }
 
@@ -311,6 +321,7 @@ mod provider {
         match s {
             Selected::OnDevice => super::on_device::name(),
             Selected::DeepInfraWhisper => DEEPINFRA_WHISPER_NAME,
+            Selected::OpenAiGpt4oMini => OPENAI_GPT_4O_MINI_NAME,
         }
     }
 
@@ -319,17 +330,14 @@ mod provider {
     }
 
     pub(super) fn auto_name() -> &'static str {
-        if crate::stt_policy::current().is_cloud_locked() {
-            DEEPINFRA_WHISPER_NAME
-        } else {
-            super::on_device::name()
-        }
+        name_of(selection())
     }
 
     pub(super) fn ready() -> bool {
         match selection() {
             Selected::OnDevice => super::on_device::ready(),
-            Selected::DeepInfraWhisper => api_key().is_some(),
+            Selected::DeepInfraWhisper => deepinfra_api_key().is_some(),
+            Selected::OpenAiGpt4oMini => openai_api_key().is_some(),
         }
     }
 
@@ -346,24 +354,31 @@ mod provider {
                     tracing::error!("[dictation_stt] DeepInfra Whisper provider NOT ready: {e}")
                 }
             },
+            Selected::OpenAiGpt4oMini => match openai_client() {
+                Ok(client) => tracing::info!(
+                    model = client.model(),
+                    transport = "http-completed-recording",
+                    "[dictation_stt] OpenAI GPT-4o mini Transcribe provider ready"
+                ),
+                Err(e) => {
+                    tracing::error!("[dictation_stt] OpenAI transcription provider NOT ready: {e}")
+                }
+            },
         }
     }
 
-    /// DeepInfra key baked into the build at compile time — same scheme as
-    /// `DEEPSEEK_API_KEY` for meeting summaries: set `DEEPINFRA_API_KEY` in
-    /// the build environment (scripts/build-windows.ps1 loads it from the
-    /// repo-root .env) and it ships inside the binary; users never enter it.
-    /// Dev builds without the bake fall back to a runtime env var.
-    fn bundled_api_key() -> Option<String> {
+    /// Cloud keys are baked into distributable builds. Dev builds read the
+    /// runtime environment after `said_core::load_env()` loads the repo `.env`.
+    fn bundled_deepinfra_api_key() -> Option<String> {
         option_env!("DEEPINFRA_API_KEY")
             .map(str::trim)
             .filter(|key| !key.is_empty())
             .map(str::to_string)
     }
 
-    fn api_key() -> Option<String> {
-        bundled_api_key().or_else(|| {
-            std::env::var(API_KEY_ENV)
+    fn deepinfra_api_key() -> Option<String> {
+        bundled_deepinfra_api_key().or_else(|| {
+            std::env::var(DEEPINFRA_API_KEY_ENV)
                 .ok()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
@@ -375,12 +390,42 @@ mod provider {
         if let Some(client) = CLIENT.get() {
             return Ok(client);
         }
-        let key = api_key().ok_or_else(|| {
+        let key = deepinfra_api_key().ok_or_else(|| {
             format!(
-                "Speech service unavailable — no DeepInfra key in this build (bake {API_KEY_ENV} at build time, or set it as an env var)."
+                "Speech service unavailable — no DeepInfra key in this build (bake {DEEPINFRA_API_KEY_ENV} at build time, or set it as an env var)."
             )
         })?;
         let client = DeepInfraClient::new(key).map_err(|e| e.to_string())?;
+        Ok(CLIENT.get_or_init(|| client))
+    }
+
+    fn bundled_openai_api_key() -> Option<String> {
+        option_env!("OPENAI_API_KEY")
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+    }
+
+    fn openai_api_key() -> Option<String> {
+        bundled_openai_api_key().or_else(|| {
+            std::env::var(OPENAI_API_KEY_ENV)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+    }
+
+    fn openai_client() -> Result<&'static OpenAiClient, String> {
+        static CLIENT: OnceLock<OpenAiClient> = OnceLock::new();
+        if let Some(client) = CLIENT.get() {
+            return Ok(client);
+        }
+        let key = openai_api_key().ok_or_else(|| {
+            format!(
+                "Speech service unavailable — no OpenAI key in this build (bake {OPENAI_API_KEY_ENV} at build time, or set it as an env var)."
+            )
+        })?;
+        let client = OpenAiClient::new(key).map_err(|e| e.to_string())?;
         Ok(CLIENT.get_or_init(|| client))
     }
 
@@ -397,6 +442,10 @@ mod provider {
                     .map_err(|e| e.to_string())?;
                 transcription
             }
+            Selected::OpenAiGpt4oMini => openai_client()?
+                .transcribe_wav(wav)
+                .await
+                .map_err(|e| e.to_string())?,
             Selected::OnDevice => unreachable!("on-device returned before cloud dispatch"),
         };
 
@@ -405,10 +454,10 @@ mod provider {
             audio_secs = transcription.audio_secs.unwrap_or(0.0),
             detected_language = transcription.language.as_deref().unwrap_or("unreported"),
             requested_language = language,
-            forced_language = asr_cloud::LANGUAGE,
-            transport = "http-batch",
+            transport = "http-completed-recording",
             model = %transcription.model,
-            "[dictation_stt] DeepInfra transcription complete"
+            provider = %name_of(selected),
+            "[dictation_stt] cloud transcription complete"
         );
 
         // An empty transcript is a terminal "nothing to type" outcome — fail
@@ -428,13 +477,21 @@ mod provider {
                 low_confidence_count: 0,
                 word_count,
                 languages: transcription.language.into_iter().collect(),
-                model: format!("deepinfra:{}", transcription.model),
-                provider: "deepinfra".to_string(),
+                model: format!("{}:{}", provider_id(selected), transcription.model),
+                provider: provider_id(selected).to_string(),
                 path: "http_batch".to_string(),
                 duration_ms: transcription.latency_ms,
                 origin: TranscriptOrigin::DictationHosted,
                 ..TranscriptMeta::default()
             },
         })
+    }
+
+    fn provider_id(selected: Selected) -> &'static str {
+        match selected {
+            Selected::OnDevice => "local",
+            Selected::DeepInfraWhisper => "deepinfra",
+            Selected::OpenAiGpt4oMini => "openai",
+        }
     }
 }

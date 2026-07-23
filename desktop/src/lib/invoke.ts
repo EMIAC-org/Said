@@ -1085,8 +1085,8 @@ export interface DesktopPrefs {
   launch_at_login: boolean;
   beta_mode: boolean;
   browser_context_enabled: boolean;
-  /** Enforced device route: local or hosted DeepInfra Whisper. */
-  dictation_stt: "local" | "cloud-deepinfra-whisper-v3-turbo";
+  /** Effective device route: local or a configured hosted STT provider. */
+  dictation_stt: "local" | "cloud-deepinfra-whisper-v3-turbo" | "cloud-openai-gpt-4o-mini-transcribe";
   /** Hardware-assigned local model. Meetings retain their own Oriserve path. */
   local_stt_model: "oriserve" | "nemotron-q4" | "nemotron-q8";
   /** Explicit decision to keep an older installed model during an upgrade. */

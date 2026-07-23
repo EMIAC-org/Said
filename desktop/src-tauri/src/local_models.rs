@@ -273,7 +273,9 @@ pub fn delete_all_local_speech_models() -> Result<LocalModelCleanupResult, Strin
     let previous = said_core::prefs::load();
     let policy = stt_policy::current();
     let mut cloud = previous.clone();
-    cloud.dictation_stt = stt_policy::CLOUD_DEEPINFRA_PREF.into();
+    if cloud.dictation_stt == stt_policy::LOCAL_PREF {
+        cloud.dictation_stt = stt_policy::CLOUD_DEEPINFRA_PREF.into();
+    }
     cloud.local_stt_compat_override = None;
     if let Some(recommended) = policy.local_pref() {
         cloud.local_stt_model = recommended.into();
@@ -282,7 +284,7 @@ pub fn delete_all_local_speech_models() -> Result<LocalModelCleanupResult, Strin
     said_core::prefs::save(&cloud)?;
     if !dictation_stt::dictation_ready() {
         said_core::prefs::save(&previous)?;
-        return Err("Cloud Whisper is not ready, so AirNote kept your local speech models.".into());
+        return Err("The selected cloud speech model is not ready, so AirNote kept your local speech models.".into());
     }
 
     let inventory = local_model_inventory()?;

@@ -3,8 +3,10 @@ fn main() {
     // object file never ships a stale or missing key. Mirrors crates/backend/build.rs.
     //   DEEPSEEK_API_KEY  — meeting summaries (meeting_engine.rs)
     //   DEEPINFRA_API_KEY — DeepInfra cloud dictation STT (dictation_stt.rs)
+    //   OPENAI_API_KEY    — OpenAI cloud dictation STT (dictation_stt.rs)
     println!("cargo:rerun-if-env-changed=DEEPSEEK_API_KEY");
     println!("cargo:rerun-if-env-changed=DEEPINFRA_API_KEY");
+    println!("cargo:rerun-if-env-changed=OPENAI_API_KEY");
 
     #[cfg(target_os = "macos")]
     {

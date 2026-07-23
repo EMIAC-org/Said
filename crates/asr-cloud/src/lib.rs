@@ -4,8 +4,13 @@
 //! build-time API-key ownership.
 
 mod deepinfra;
+mod openai;
 
 pub use deepinfra::{API_KEY_ENV, DeepInfraClient, ENDPOINT, LANGUAGE, MODEL};
+pub use openai::{
+    API_KEY_ENV as OPENAI_API_KEY_ENV, ENDPOINT as OPENAI_ENDPOINT, MODEL as OPENAI_MODEL,
+    OpenAiClient,
+};
 
 /// A completed cloud transcription.
 #[derive(Debug, Clone)]

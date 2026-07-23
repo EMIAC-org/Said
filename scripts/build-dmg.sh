@@ -169,6 +169,20 @@ else
   warn "DEEPINFRA_API_KEY not set — Cloud Whisper dictation will be unavailable"
 fi
 
+# GPT-4o mini Transcribe is the optional OpenAI cloud route. It is selected
+# explicitly in Settings, so a missing key does not affect the existing local
+# or DeepInfra routes.
+if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  OPENAI_API_KEY="$(grep -E '^OPENAI_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"')"
+fi
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  export OPENAI_API_KEY
+  touch "$TAURI_DIR/src/dictation_stt.rs"
+  ok "OpenAI cloud-dictation key will be bundled into the build"
+else
+  warn "OPENAI_API_KEY not set — GPT-4o mini Transcribe will be unavailable"
+fi
+
 # ── Tauri build ──────────────────────────────────────────────────────────────
 step "Run tauri build (--target $TARGET)"
 cd "$DESKTOP_DIR"
