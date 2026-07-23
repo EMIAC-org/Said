@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::cors::{Any, CorsLayer};
 
 pub mod auth;
@@ -126,6 +126,11 @@ pub struct LiveServerRuntimeResult {
 
 pub type LiveServerRuntimeCache = Arc<RwLock<HashMap<String, LiveServerRuntimeResult>>>;
 
+/// Ephemeral fan-out for active local polish WebSocket runs. Durable terminal
+/// state still belongs in SQLite; this map exists only so a reconnect can attach
+/// to an in-flight run without starting a second model request.
+pub type VoiceRunHub = Arc<Mutex<HashMap<String, broadcast::Sender<serde_json::Value>>>>;
+
 /// Read corrections + stt_replacements from cache, or SQLite on miss.
 /// On a miss, both reads run in parallel on blocking threads.
 pub async fn get_lexicon_cached(
@@ -228,6 +233,8 @@ pub struct AppState {
     pub lexicon_cache: LexiconCache,
     /// Short-lived cache of live server-runtime results keyed by recording/session id.
     pub live_server_runtime_cache: LiveServerRuntimeCache,
+    /// Active local-WebSocket polish runs keyed by immutable client run id.
+    pub voice_run_hub: VoiceRunHub,
     /// Shared HTTP client — keeps TCP/TLS connections alive across all requests.
     pub http_client: Client,
     /// Watchdog health state — shared with the bare-thread watchdog.
@@ -267,6 +274,7 @@ pub fn router_with_state(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/v1/pre-embed", post(routes::pre_embed::handler))
         .route("/v1/voice/polish", post(routes::voice::polish))
+        .route("/v1/voice/polish/ws", get(routes::voice::polish_ws))
         .route(
             "/v1/problem/transcribe",
             post(routes::voice::problem_transcribe),
@@ -500,6 +508,7 @@ pub fn router() -> Router {
         prefs_cache: Arc::new(RwLock::new(None)),
         lexicon_cache: Arc::new(RwLock::new(None)),
         live_server_runtime_cache: Arc::new(RwLock::new(HashMap::new())),
+        voice_run_hub: Arc::new(Mutex::new(HashMap::new())),
         http_client,
         watchdog: wd.clone(),
     };

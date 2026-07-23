@@ -3,14 +3,148 @@
 //! All functions take a `&BackendEndpoint` (url + secret).
 //! They never interact with the child process — only the BackendState owns that.
 
-use futures::StreamExt;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use said_core::{text::Utf8LineBuffer, transcript::TranscriptMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::Mutex;
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async,
+    tungstenite::{
+        Message as WsMessage,
+        client::IntoClientRequest,
+        http::{HeaderValue, header},
+    },
+};
 use tracing::{debug, info, warn};
 
 use crate::backend::BackendEndpoint;
+
+type LocalPolishWs = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+const LOCAL_POLISH_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+const LOCAL_POLISH_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCAL_POLISH_MAX_RECONNECTS: u8 = 3;
+
+struct LocalPolishWsConnection {
+    endpoint_url: String,
+    secret: String,
+    socket: LocalPolishWs,
+}
+
+/// One warm, authenticated WebSocket to the local AirNote backend. The mutex
+/// intentionally serializes dictation runs: the desktop state machine permits
+/// one in-flight dictation, and serial ownership prevents token interleaving.
+#[derive(Clone, Default)]
+pub struct PersistentPolishSocket {
+    connection: Arc<Mutex<Option<LocalPolishWsConnection>>>,
+}
+
+impl PersistentPolishSocket {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Establish the local connection early so the first dictation does not pay
+    /// the TCP/WebSocket handshake cost. Failure is intentionally non-fatal: the
+    /// next run reconnects with its normal bounded recovery path.
+    pub async fn prewarm(&self, ep: &BackendEndpoint) {
+        let mut slot = self.connection.lock().await;
+        let _ = ensure_local_polish_connection(&mut slot, ep).await;
+    }
+
+    /// Keep the dormant loopback connection warm. Runs never share a socket, so
+    /// this waits for any active dictation instead of competing with its stream.
+    /// A failed heartbeat simply drops the stale socket; the next dictation will
+    /// establish a fresh one through its bounded reconnect path.
+    pub async fn keep_alive(&self, ep: &BackendEndpoint) {
+        let mut slot = self.connection.lock().await;
+        if ensure_local_polish_connection(&mut slot, ep).await.is_err() {
+            *slot = None;
+            return;
+        }
+        let Some(connection) = slot.as_mut() else {
+            return;
+        };
+        if connection
+            .socket
+            .send(WsMessage::Text(
+                r#"{"type":"ping","protocol_version":1}"#.into(),
+            ))
+            .await
+            .is_err()
+        {
+            *slot = None;
+        }
+    }
+}
+
+/// The persistent protocol is deliberately an *owned-sidecar*, loopback-only
+/// optimization. An explicitly configured backend uses legacy HTTP/SSE even
+/// when that backend happens to listen on a loopback address.
+pub fn supports_local_polish_websocket(ep: &BackendEndpoint, using_external_backend: bool) -> bool {
+    !using_external_backend
+        && reqwest::Url::parse(&ep.url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"))
+}
+
+fn local_polish_ws_url(ep: &BackendEndpoint) -> Result<String, String> {
+    let scheme = if let Some(rest) = ep.url.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else if let Some(rest) = ep.url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else {
+        return Err("backend endpoint must use http or https".to_string());
+    };
+    Ok(format!(
+        "{}/v1/voice/polish/ws",
+        scheme.trim_end_matches('/')
+    ))
+}
+
+async fn open_local_polish_connection(
+    ep: &BackendEndpoint,
+) -> Result<LocalPolishWsConnection, String> {
+    let url = local_polish_ws_url(ep)?;
+    let mut request = url
+        .into_client_request()
+        .map_err(|e| format!("build local polish WebSocket request: {e}"))?;
+    let bearer = HeaderValue::from_str(&ep.bearer())
+        .map_err(|e| format!("encode local polish authorization: {e}"))?;
+    request.headers_mut().insert(header::AUTHORIZATION, bearer);
+    let (socket, _) = connect_async(request)
+        .await
+        .map_err(|e| format!("connect local polish WebSocket: {e}"))?;
+    Ok(LocalPolishWsConnection {
+        endpoint_url: ep.url.clone(),
+        secret: ep.secret.clone(),
+        socket,
+    })
+}
+
+async fn ensure_local_polish_connection(
+    slot: &mut Option<LocalPolishWsConnection>,
+    ep: &BackendEndpoint,
+) -> Result<(), String> {
+    let matches_endpoint = slot.as_ref().is_some_and(|connection| {
+        connection.endpoint_url == ep.url && connection.secret == ep.secret
+    });
+    if !matches_endpoint {
+        *slot = None;
+    }
+    if slot.is_none() {
+        *slot = Some(open_local_polish_connection(ep).await?);
+    }
+    Ok(())
+}
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -404,6 +538,245 @@ where
     }
 
     consume_sse(resp.bytes_stream(), on_event).await
+}
+
+/// Stream a transcript-only polish run over the persistent localhost
+/// WebSocket. The desktop has already completed STT, so this path never sends
+/// the WAV to the polish backend.
+///
+/// If the local socket drops after `polish.start`, the same immutable run id is
+/// resumed; it is never re-submitted as a second model request. The backend
+/// remains the source of truth for whether that run was accepted or completed.
+pub async fn stream_voice_polish_ws<F>(
+    transport: &PersistentPolishSocket,
+    ep: &BackendEndpoint,
+    target_app: Option<String>,
+    client_run_id: Option<String>,
+    client_trace_json: Option<Value>,
+    pre_transcript: String,
+    pre_transcript_meta: TranscriptMeta,
+    repair_mode: Option<String>,
+    screen_context: Option<String>,
+    message_polish_mode: bool,
+    mut on_event: F,
+) -> Result<PolishDone, String>
+where
+    F: FnMut(PolishEvent),
+{
+    let run_id = client_run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let started = Instant::now();
+    let total_timeout = LOCAL_POLISH_TOTAL_TIMEOUT;
+    let idle_timeout = LOCAL_POLISH_IDLE_TIMEOUT;
+    let mut reconnect_attempts = 0u8;
+    let mut unknown_before_accept_retries = 0u8;
+    let mut sent_start = false;
+    let mut run_accepted = false;
+    let mut last_seq = 0u64;
+
+    loop {
+        if started.elapsed() >= total_timeout {
+            return Err("local polish run timed out before a terminal response".to_string());
+        }
+
+        let mut slot = transport.connection.lock().await;
+        if let Err(error) = ensure_local_polish_connection(&mut slot, ep).await {
+            drop(slot);
+            reconnect_attempts = reconnect_attempts.saturating_add(1);
+            if reconnect_attempts > LOCAL_POLISH_MAX_RECONNECTS {
+                return Err(error);
+            }
+            tokio::time::sleep(Duration::from_millis(
+                150 * 2u64.pow(reconnect_attempts as u32),
+            ))
+            .await;
+            continue;
+        }
+        let socket = &mut slot.as_mut().expect("connection ensured").socket;
+        let outbound = if sent_start {
+            serde_json::json!({
+                "type": "run.resume",
+                "protocol_version": 1,
+                "run_id": &run_id,
+                "last_seq": last_seq,
+            })
+        } else {
+            serde_json::json!({
+                "type": "polish.start",
+                "protocol_version": 1,
+                "run_id": &run_id,
+                "transcript": &pre_transcript,
+                "target_app": target_app.clone(),
+                "pre_transcript_meta": pre_transcript_meta.clone(),
+                "repair_mode": repair_mode.clone(),
+                "screen_context": screen_context.clone(),
+                "message_polish_mode": message_polish_mode,
+                "client_trace_json": client_trace_json.clone(),
+            })
+        };
+        sent_start = true;
+        if socket
+            .send(WsMessage::Text(outbound.to_string()))
+            .await
+            .is_err()
+        {
+            *slot = None;
+            drop(slot);
+            reconnect_attempts = reconnect_attempts.saturating_add(1);
+            if reconnect_attempts > LOCAL_POLISH_MAX_RECONNECTS {
+                return Err("local polish connection closed while submitting run".to_string());
+            }
+            continue;
+        }
+
+        let mut reconnect = false;
+        let mut retry_start_after_unknown = false;
+        while started.elapsed() < total_timeout {
+            let remaining = total_timeout.saturating_sub(started.elapsed());
+            let wait_for = remaining.min(idle_timeout);
+            let inbound = tokio::time::timeout(wait_for, socket.next()).await;
+            let message = match inbound {
+                Ok(Some(Ok(message))) => message,
+                Ok(Some(Err(_))) | Ok(None) | Err(_) => {
+                    reconnect = true;
+                    break;
+                }
+            };
+            match message {
+                WsMessage::Ping(payload)
+                    if socket.send(WsMessage::Pong(payload.clone())).await.is_err() =>
+                {
+                    reconnect = true;
+                    break;
+                }
+                WsMessage::Ping(_) => {}
+                WsMessage::Close(_) => {
+                    reconnect = true;
+                    break;
+                }
+                WsMessage::Text(text) => {
+                    let Ok(event) = serde_json::from_str::<Value>(&text) else {
+                        continue;
+                    };
+                    if event
+                        .get("run_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id != run_id)
+                    {
+                        continue;
+                    }
+                    if let Some(seq) = event.get("seq").and_then(Value::as_u64) {
+                        if seq > 0 && seq <= last_seq {
+                            continue;
+                        }
+                        last_seq = last_seq.max(seq);
+                    }
+                    let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
+                    let payload = event.get("payload").cloned().unwrap_or(Value::Null);
+                    match kind {
+                        "polish.connected" | "pong" | "run.resumed" | "run.status" => {}
+                        "run.accepted" => run_accepted = true,
+                        "run.resync_required" => {
+                            // The final done event remains authoritative and will
+                            // reconcile any missed preview tokens.
+                        }
+                        "status" => {
+                            run_accepted = true;
+                            let phase = payload
+                                .get("phase")
+                                .and_then(Value::as_str)
+                                .unwrap_or("polishing")
+                                .to_string();
+                            let transcript = payload
+                                .get("transcript")
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
+                            on_event(PolishEvent::Status { phase, transcript });
+                        }
+                        "token" => {
+                            run_accepted = true;
+                            if let Some(token) = payload.get("token").and_then(Value::as_str) {
+                                on_event(PolishEvent::Token {
+                                    token: token.to_string(),
+                                });
+                            }
+                        }
+                        "done" => {
+                            let done: PolishDone = serde_json::from_value(payload)
+                                .map_err(|e| format!("invalid local polish completion: {e}"))?;
+                            on_event(PolishEvent::Done(done.clone()));
+                            return Ok(done);
+                        }
+                        "error" => {
+                            let error_code = payload
+                                .get("error_code")
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
+                            // A disconnect can occur between transmitting the
+                            // first start frame and receiving its acknowledgement.
+                            // If the reconnected backend proves it never saw the
+                            // run, one same-ID re-submit is safe; after acceptance
+                            // we *only* resume and never create a second request.
+                            if !run_accepted
+                                && sent_start
+                                && error_code.as_deref() == Some("unknown_run")
+                                && unknown_before_accept_retries == 0
+                            {
+                                unknown_before_accept_retries = 1;
+                                sent_start = false;
+                                retry_start_after_unknown = true;
+                                break;
+                            }
+                            let message = payload
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("local polish failed")
+                                .to_string();
+                            on_event(PolishEvent::Error {
+                                message: message.clone(),
+                                run_id: event
+                                    .get("run_id")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                audio_id: payload
+                                    .get("audio_id")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                error_code,
+                                retryable: payload.get("retryable").and_then(Value::as_bool),
+                                owned_by_airnote: payload
+                                    .get("owned_by_airnote")
+                                    .and_then(Value::as_bool),
+                                diagnostic: payload
+                                    .get("diagnostic")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                            });
+                            return Err(message);
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        if retry_start_after_unknown {
+            drop(slot);
+            continue;
+        }
+        if !reconnect {
+            return Err("local polish run timed out before a terminal response".to_string());
+        }
+        *slot = None;
+        drop(slot);
+        reconnect_attempts = reconnect_attempts.saturating_add(1);
+        if reconnect_attempts > LOCAL_POLISH_MAX_RECONNECTS {
+            return Err("local polish connection closed before a terminal response".to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(
+            150 * 2u64.pow(reconnect_attempts as u32),
+        ))
+        .await;
+    }
 }
 
 pub async fn patch_dictation_trace(
@@ -1115,32 +1488,8 @@ pub struct WorkspaceListResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeLiveConfig {
-    pub enabled: bool,
-    pub connected: bool,
-    pub server_url: Option<String>,
-    pub runtime_ws_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeNotificationConfig {
     pub notifications_ws_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeLiveLatency {
-    pub stt: i64,
-    pub polish: i64,
-    pub total: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeLiveResultUpload {
-    pub client_run_id: String,
-    pub transcript: String,
-    pub output: String,
-    pub model_used: String,
-    pub latency_ms: RuntimeLiveLatency,
 }
 
 /// POST /v1/auth/signup on the cloud control plane.
@@ -1505,19 +1854,6 @@ pub async fn deactivate_workspace_on_server(server_url: &str, token: &str) -> Re
     }
 }
 
-pub async fn get_runtime_live_config(ep: &BackendEndpoint) -> Result<RuntimeLiveConfig, String> {
-    let url = format!("{}/v1/runtime/live/config", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("runtime live config failed: {e}"))?
-        .json::<RuntimeLiveConfig>()
-        .await
-        .map_err(|e| format!("parse runtime live config: {e}"))
-}
-
 pub async fn get_runtime_notification_config(
     ep: &BackendEndpoint,
 ) -> Result<RuntimeNotificationConfig, String> {
@@ -1531,27 +1867,6 @@ pub async fn get_runtime_notification_config(
         .json::<RuntimeNotificationConfig>()
         .await
         .map_err(|e| format!("parse runtime notification config: {e}"))
-}
-
-pub async fn cache_runtime_live_result(
-    ep: &BackendEndpoint,
-    result: RuntimeLiveResultUpload,
-) -> Result<(), String> {
-    let url = format!("{}/v1/runtime/live/result", ep.url);
-    let status = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&result)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| format!("cache runtime live result failed: {e}"))?
-        .status();
-    if status.is_success() || status.as_u16() == 204 {
-        Ok(())
-    } else {
-        Err(format!("cache runtime live result error: {status}"))
-    }
 }
 
 fn extract_error(body: &str) -> String {
@@ -1612,9 +1927,8 @@ pub struct PendingEditsResponse {
 /// Four-way edit classifier response.
 ///
 /// `class` is one of `STT_ERROR | POLISH_ERROR | USER_REPHRASE | USER_REWRITE`.
-/// `learned` indicates whether any artifact was written (vocabulary entry,
-/// post-STT replacement, or word correction).  `notify` is the desktop's
-/// notification gate.
+/// Classification only proposes review candidates. `learned` is retained for
+/// wire compatibility and is set by the separate, user-confirmed batch flow.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ClassifyEditResponse {
     pub class: String,
@@ -1814,9 +2128,8 @@ pub async fn skip_edit_review_session(
 /// Classify an edit using the four-way classifier.
 ///
 /// Sends (recording_id, ai_output, user_kept) to the backend, which looks up
-/// the original transcript and calls Groq.  Promotion happens server-side:
-/// STT_ERROR auto-promotes on first sighting; POLISH_ERROR promotes only on
-/// repeat; REPHRASE/REWRITE do nothing.
+/// the original transcript and proposes only safe review candidates. Nothing
+/// is learned until the user explicitly confirms a candidate batch.
 /// Capture-error metadata.  Sent alongside the edit so the backend's
 /// CAPTURE_ERROR pre-filter can cheaply reject obvious bad signals
 /// (app-switch, paste-on-top, stale capture) before any pipeline cost.
@@ -2344,4 +2657,25 @@ pub async fn recording_audio_bytes(ep: &BackendEndpoint, id: &str) -> Result<Vec
         .await
         .map(|b| b.to_vec())
         .map_err(|e| format!("audio read failed: {e}"))
+}
+
+#[cfg(test)]
+mod local_polish_transport_tests {
+    use super::{BackendEndpoint, supports_local_polish_websocket};
+
+    #[test]
+    fn persistent_polish_socket_is_loopback_only() {
+        let loopback = BackendEndpoint {
+            url: "http://127.0.0.1:43123".to_string(),
+            secret: "secret".to_string(),
+        };
+        let remote = BackendEndpoint {
+            url: "https://airnote.example.test".to_string(),
+            secret: "secret".to_string(),
+        };
+
+        assert!(supports_local_polish_websocket(&loopback, false));
+        assert!(!supports_local_polish_websocket(&remote, false));
+        assert!(!supports_local_polish_websocket(&loopback, true));
+    }
 }

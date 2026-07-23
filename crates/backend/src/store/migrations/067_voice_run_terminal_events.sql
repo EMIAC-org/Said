@@ -1,0 +1,3 @@
+-- Durable terminal delivery payload for the local polish WebSocket.
+-- The idempotent column addition lives in store/mod.rs because SQLite does not
+-- support ALTER TABLE ... ADD COLUMN IF NOT EXISTS.

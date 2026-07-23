@@ -29,7 +29,6 @@ import {
   onEditDetected,
   onPendingEditsChanged,
   getPendingEdits,
-  resolvePendingEdit,
   sendNotification,
   requestInputMonitoring,
   requestMicrophone,
@@ -63,7 +62,7 @@ import { useTheme } from "@/lib/useTheme";
 import { useBackendHeartbeat } from "@/lib/useBackendHeartbeat";
 import { startDailyAutoUpdateCheck } from "@/lib/autoUpdate";
 import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
-import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
+import type { AppSnapshot, HistoryItem, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
 export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "meetings" | "divo" | "settings" | "live-meeting";
@@ -227,9 +226,6 @@ export default function App() {
 
   // ── Download success toast ────────────────────────────────────────────────
   const [downloadToast, setDownloadToast] = useState<{ path: string } | null>(null);
-
-  // ── Pending edits ─────────────────────────────────────────────────────────
-  const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
 
   // ── History refresh key — incremented after each dictation to trigger reload
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -505,7 +501,6 @@ export default function App() {
     const sessionStartMs = Date.now();
     const refreshPending = async () => {
       const r = await getPendingEdits();
-      setPendingEdits(r.edits);
       // Only notify for edits created during this session that we haven't shown yet.
       // Edits from previous sessions (older than 30s before session start) are stale.
       const cutoff = sessionStartMs - 30_000;
@@ -585,28 +580,6 @@ export default function App() {
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [busy, refreshSnapshot]);
-
-  // ── Record toggle (button click) ───────────────────────────────────────────
-  const handleToggle = useCallback(async () => {
-    if (!snapshot) return;
-    setErrorBanner("");
-    if (snapshot.state === "recording") {
-      setBusy(true);
-      setSnapshot((p) => (p ? { ...p, state: "processing" } : p));
-    }
-    try {
-      const next = await invoke("toggle_recording");
-      setSnapshot(next);
-      if (next.state === "idle") {
-        await refreshHistory();
-        setBusy(false);
-      }
-    } catch (err: unknown) {
-      setErrorBanner(err instanceof Error ? err.message : String(err));
-      setSnapshot((p) => (p ? { ...p, state: "idle" } : p));
-      setBusy(false);
-    }
-  }, [snapshot, refreshHistory]);
 
   // ── Accessibility ──────────────────────────────────────────────────────────
   const handleAccessibility = useCallback(async () => {
@@ -806,17 +779,9 @@ export default function App() {
                 {activeView === "dashboard" && (
                   <DashboardView
                     snapshot={snapshotWithHistory}
-                    busy={busy}
-                    onToggle={handleToggle}
-                    onAccessibility={handleAccessibility}
                     onNavigate={handleViewChange}
-                    pendingEdits={pendingEdits}
                     onDownloadSuccess={handleDownloadSuccess}
                     refreshKey={historyRefreshKey}
-                    onResolvePending={async (id, action) => {
-                      await resolvePendingEdit(id, action);
-                      setPendingEdits((prev) => prev.filter((e) => e.id !== id));
-                    }}
                   />
                 )}
                 {activeView === "insights" && <InsightsView />}

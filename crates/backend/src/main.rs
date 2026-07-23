@@ -162,6 +162,9 @@ async fn async_main() {
         live_server_runtime_cache: std::sync::Arc::new(tokio::sync::RwLock::new(
             std::collections::HashMap::new(),
         )),
+        voice_run_hub: std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
         http_client,
         watchdog: wd.clone(),
     };

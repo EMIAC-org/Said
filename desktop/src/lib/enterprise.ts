@@ -851,82 +851,6 @@ export async function getMyOrg(
   }
 }
 
-// ── OpenAI integration ───────────────────────────────────────────────────────
-
-export interface OpenAIStatus {
-  connected: boolean;
-  plan_type?: string;
-  label?: string;
-  connected_at?: string;
-}
-
-/** Get current OpenAI connection status */
-export async function getOpenAIStatus(): Promise<OpenAIStatus | null> {
-  try {
-    const conn = getConnection();
-    if (!conn) return null;
-    const url = conn.serverUrl.replace(/\/+$/, "");
-    const res = await fetch(`${url}/v1/openai/status`, {
-      headers: { Authorization: `Bearer ${conn.jwt}` },
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-/** Initiate OpenAI PKCE OAuth — returns auth_url, code_verifier, state */
-export async function initiateOpenAIConnect(): Promise<{
-  auth_url: string;
-  code_verifier: string;
-  state: string;
-} | null> {
-  try {
-    const conn = getConnection();
-    if (!conn) return null;
-    const url = conn.serverUrl.replace(/\/+$/, "");
-    const res = await fetch(`${url}/v1/openai/connect`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${conn.jwt}` },
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-/** Complete OpenAI OAuth by exchanging the authorization code */
-export async function completeOpenAIConnect(
-  code: string,
-  codeVerifier: string,
-  planType?: string,
-  label?: string,
-): Promise<boolean> {
-  try {
-    const conn = getConnection();
-    if (!conn) return false;
-    const url = conn.serverUrl.replace(/\/+$/, "");
-    const body: Record<string, string> = { code, code_verifier: codeVerifier };
-    if (planType) body.plan_type = planType;
-    if (label) body.label = label;
-    const res = await fetch(`${url}/v1/openai/complete`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${conn.jwt}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    return data.connected === true;
-  } catch {
-    return false;
-  }
-}
-
 export interface LarkExportPayload {
   title: string;
   summary: string;
@@ -988,21 +912,5 @@ export async function exportMeetingToLark(
     };
   } catch {
     return { ok: false, code: "offline", message: "You're offline — try again." };
-  }
-}
-
-/** Disconnect OpenAI account */
-export async function disconnectOpenAI(): Promise<boolean> {
-  try {
-    const conn = getConnection();
-    if (!conn) return false;
-    const url = conn.serverUrl.replace(/\/+$/, "");
-    const res = await fetch(`${url}/v1/openai/disconnect`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${conn.jwt}` },
-    });
-    return res.status === 204 || res.ok;
-  } catch {
-    return false;
   }
 }

@@ -39,10 +39,6 @@ pub fn default_artifact_path(user_id: &str) -> PathBuf {
     artifact_dir(user_id).join("correction_model.onnx")
 }
 
-pub fn default_vocab_index_path(user_id: &str) -> PathBuf {
-    artifact_dir(user_id).join("vocab_index.json")
-}
-
 pub fn get(pool: &DbPool, user_id: &str) -> Option<Tier2ModelMetadata> {
     let conn = pool.get().ok()?;
     conn.query_row(

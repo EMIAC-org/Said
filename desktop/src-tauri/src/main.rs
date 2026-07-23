@@ -683,6 +683,10 @@ pub(crate) struct SharedApp(Arc<Mutex<DesktopApp>>);
 /// Holds the backend endpoint (url + secret). None until daemon starts.
 struct BackendState(Arc<Mutex<Option<BackendEndpoint>>>);
 
+/// Owns the one warm, transcript-only WebSocket to the local backend.
+#[derive(Clone)]
+struct PolishTransportState(api::PersistentPolishSocket);
+
 /// Owns the BackendHandle (and its Child) for the lifetime of the app.
 /// When Tauri drops managed state on exit, Drop fires → SIGTERM → SIGKILL.
 struct BackendHandleState(Mutex<Option<backend::BackendHandle>>);
@@ -725,6 +729,50 @@ fn install_backend_handle(
         Err(p) => *p.into_inner() = Some(handle),
     }
     ep
+}
+
+fn prewarm_local_polish_transport(app: &tauri::AppHandle, ep: BackendEndpoint) {
+    if !api::supports_local_polish_websocket(&ep, backend::external_backend_url().is_some()) {
+        return;
+    }
+    let Some(transport) = app
+        .try_state::<PolishTransportState>()
+        .map(|state| state.0.clone())
+    else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        transport.prewarm(&ep).await;
+    });
+}
+
+/// Keep the single localhost polish socket alive between dictations. This is
+/// started once per desktop process; backend restarts are handled because the
+/// endpoint is read fresh on each heartbeat.
+fn start_local_polish_transport_heartbeat(app: tauri::AppHandle) {
+    let Some(transport) = app
+        .try_state::<PolishTransportState>()
+        .map(|state| state.0.clone())
+    else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            let endpoint = app
+                .try_state::<BackendState>()
+                .and_then(|state| state.0.lock().ok().and_then(|slot| slot.clone()));
+            let Some(endpoint) = endpoint else {
+                continue;
+            };
+            if api::supports_local_polish_websocket(
+                &endpoint,
+                backend::external_backend_url().is_some(),
+            ) {
+                transport.keep_alive(&endpoint).await;
+            }
+        }
+    });
 }
 
 fn start_backend_watchdog(app: tauri::AppHandle, using_external_backend: bool) {
@@ -778,6 +826,7 @@ fn start_backend_watchdog(app: tauri::AppHandle, using_external_backend: bool) {
                     Ok(handle) => {
                         let ep_notifications = handle.endpoint();
                         let ep = install_backend_handle(&app, handle);
+                        prewarm_local_polish_transport(&app, ep.clone());
                         failed_checks = 0;
                         tracing::warn!("[backend-watchdog] backend recovered at {}", ep.url);
                         said_core::reporter::report_event(
@@ -4650,7 +4699,7 @@ fn do_finish_recording(
         // Opt-in, on-device: if the target is a browser, capture the active
         // tab's site (host only) for the Insights "Sites" section. Fire-and-forget.
         maybe_capture_browser_site(&back_arc2, target_app.clone());
-        let result = run_voice_polish_sse(
+        let result = run_voice_polish(
             &back_arc2,
             wav,
             target_app,
@@ -4669,7 +4718,7 @@ fn do_finish_recording(
         // processing to redo a mis-released take). The new recording now owns the
         // state machine and recovery buffer — this stale finish must not call
         // finish_ok/err (which would reset the live recording to Idle) or paste.
-        // Its paste was already suppressed inside run_voice_polish_sse.
+        // Its paste was already suppressed inside run_voice_polish.
         if app2
             .try_state::<RecordingSessionState>()
             .map(|s| Some(s.generation.load(Ordering::SeqCst)) != finish_generation)
@@ -5334,7 +5383,7 @@ fn maybe_capture_browser_site(
     });
 }
 
-async fn run_voice_polish_sse(
+async fn run_voice_polish(
     back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
     wav: Vec<u8>,
     target_app: Option<String>,
@@ -5367,7 +5416,7 @@ async fn run_voice_polish_sse(
         .unwrap_or(0);
     let message_polish_mode = !suppress_local
         && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
-    tracing::debug!("[pipeline] target typing follows the server token stream");
+    tracing::debug!("[pipeline] target typing follows the local polish token stream");
     let initial_field_read_t0 = std::time::Instant::now();
     let initial_field_text = if suppress_local {
         None
@@ -5430,8 +5479,7 @@ async fn run_voice_polish_sse(
         pre_transcript_meta.as_deref().unwrap_or("none"),
     );
     tracing::info!(
-        "[pipeline] → sending to backend: wav={}KB pre_transcript={}",
-        wav.len() / 1024,
+        "[pipeline] → preparing local polish handoff: transcript={}",
         pre_transcript
             .as_ref()
             .map(|t| {
@@ -5588,9 +5636,9 @@ async fn run_voice_polish_sse(
     initial_trace.add_stage(said_core::dictation_trace::TraceStageInput {
         stage: "desktop.pipeline.handoff",
         component: "desktop",
-        function: "run_voice_polish_sse",
+        function: "run_voice_polish",
         output: pre_transcript.as_ref().map(|t| t.transcript.as_str()),
-        reason: Some("desktop handing audio/transcript candidate to backend"),
+        reason: Some("desktop handing local transcript candidate to backend"),
         risk: Some("desktop_transcript_selection"),
         metadata: serde_json::json!({
             "run_id": client_run_id.as_deref(),
@@ -5625,21 +5673,44 @@ async fn run_voice_polish_sse(
         return Err("Local transcript is required before voice polish".into());
     };
     let speech_identity = telemetry::speech_identity(&transcript.meta);
-    tracing::info!("[pipeline] sending WAV + local transcript to backend");
-    let done_result = api::stream_voice_polish(
-        &ep,
-        wav,
-        target_app,
-        client_run_id.clone(),
-        initial_trace_json,
-        Some(transcript.transcript),
-        Some(transcript.meta),
-        repair_mode,
-        screen_context,
-        message_polish_mode,
-        &mut on_polish_event,
-    )
-    .await;
+    let use_persistent_text_transport = !is_meeting
+        && api::supports_local_polish_websocket(&ep, backend::external_backend_url().is_some());
+    let done_result = if use_persistent_text_transport {
+        tracing::info!("[pipeline] sending local transcript to backend over persistent WebSocket");
+        let transport = app.state::<PolishTransportState>().0.clone();
+        api::stream_voice_polish_ws(
+            &transport,
+            &ep,
+            target_app,
+            client_run_id.clone(),
+            initial_trace_json,
+            transcript.transcript,
+            transcript.meta,
+            repair_mode,
+            screen_context,
+            message_polish_mode,
+            &mut on_polish_event,
+        )
+        .await
+    } else {
+        // Meetings retain their existing audio-backed HTTP/SSE lifecycle. A
+        // configured remote backend also remains compatible with older builds.
+        tracing::info!("[pipeline] using legacy audio-backed polish transport");
+        api::stream_voice_polish(
+            &ep,
+            wav,
+            target_app,
+            client_run_id.clone(),
+            initial_trace_json,
+            Some(transcript.transcript),
+            Some(transcript.meta),
+            repair_mode,
+            screen_context,
+            message_polish_mode,
+            &mut on_polish_event,
+        )
+        .await
+    };
     let done = match done_result {
         Ok(d) => d,
         Err(e) => {
@@ -5651,13 +5722,20 @@ async fn run_voice_polish_sse(
             }
             let mut retry_audio_id: Option<String> = None;
             if let Some(run_id) = client_run_id.as_deref() {
-                match api::mark_voice_run_failed(&ep, run_id, "sse_missing_done", &e, true, true)
-                    .await
+                match api::mark_voice_run_failed(
+                    &ep,
+                    run_id,
+                    "polish_stream_missing_terminal",
+                    &e,
+                    is_meeting,
+                    true,
+                )
+                .await
                 {
                     Ok(Some(run)) => {
                         retry_audio_id = run.audio_id.clone();
                         tracing::warn!(
-                            "[retry] marked voice run failed after missing done run_id={} audio_id={} status={} attempts={}",
+                            "[retry] marked voice run failed after missing terminal event run_id={} audio_id={} status={} attempts={}",
                             run.run_id,
                             run.audio_id.as_deref().unwrap_or("none"),
                             run.status,
@@ -5666,12 +5744,12 @@ async fn run_voice_polish_sse(
                     }
                     Ok(None) => {
                         tracing::warn!(
-                            "[retry] missing-done failure could not be linked to run_id={run_id}"
+                            "[retry] missing-terminal failure could not be linked to run_id={run_id}"
                         );
                     }
                     Err(mark_err) => {
                         tracing::warn!(
-                            "[retry] failed to mark missing-done run_id={run_id}: {mark_err}"
+                            "[retry] failed to mark missing-terminal run_id={run_id}: {mark_err}"
                         );
                     }
                 }
@@ -5680,7 +5758,7 @@ async fn run_voice_polish_sse(
                 &app,
                 retry_audio_id.clone(),
                 &e,
-                Some("sse_missing_done".to_string()),
+                Some("polish_stream_missing_terminal".to_string()),
                 target_app_for_telemetry.clone(),
                 client_run_id.clone(),
                 message_polish_mode,
@@ -5688,19 +5766,19 @@ async fn run_voice_polish_sse(
             let _ = app.emit(
                 "voice-error",
                 serde_json::json!({
-                    "message": "Audio saved. Processing failed.",
+                    "message": if is_meeting { "Audio saved. Processing failed." } else { "Processing failed before a final result. Try again." },
                     "raw_error": e,
                     "run_id": client_run_id,
                     "audio_id": retry_audio_id,
-                    "error_code": "sse_missing_done",
-                    "retryable": true,
+                    "error_code": "polish_stream_missing_terminal",
+                    "retryable": is_meeting,
                     "owned_by_airnote": true,
-                    "diagnostic": "SSE stream ended without a done event after audio capture",
+                    "diagnostic": if is_meeting { "Legacy audio polish stream ended without a terminal event" } else { "Persistent local polish stream ended without a terminal event" },
                     "auto_hide_ms": 4000,
                 }),
             );
             return Err(mark_voice_error_already_emitted(
-                "SSE stream ended without a `done` event",
+                "polish stream ended without a terminal event",
             ));
         }
     };
@@ -6572,7 +6650,7 @@ fn retry_recording_spawn(
                 return;
             }
         };
-        let result = run_voice_polish_sse(
+        let result = run_voice_polish(
             &back_arc2,
             wav,
             None,
@@ -6949,94 +7027,6 @@ async fn send_invite_email(
 /// Tauri's webview blocks `window.open("mailto:…")` silently — calls fall
 /// through to the browser's noop handler, so the user sees nothing happen.
 /// This command shells out to the OS opener instead.
-
-// ── OpenAI / ChatGPT OAuth ───────────────────────────────────────────────────
-
-#[derive(serde::Serialize)]
-struct OpenAIStatus {
-    connected: bool,
-    expires_at: Option<i64>,
-    connected_at: Option<i64>,
-}
-
-#[tauri::command]
-async fn openai_connect(app: tauri::AppHandle) -> Result<String, String> {
-    let ep = {
-        let st = app.state::<BackendState>();
-        st.0.lock().ok().and_then(|g| g.clone())
-    }
-    .ok_or("backend not ready")?;
-
-    let url = format!("{}/v1/openai-oauth/initiate", ep.url);
-    let resp: serde_json::Value = reqwest::Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("initiate failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("parse failed: {e}"))?;
-
-    let auth_url = resp
-        .get("auth_url")
-        .and_then(|u| u.as_str())
-        .ok_or("no auth_url in response")?
-        .to_string();
-
-    open_external(auth_url.clone())?;
-    Ok(auth_url)
-}
-
-#[tauri::command]
-async fn openai_status(app: tauri::AppHandle) -> Result<OpenAIStatus, String> {
-    let ep = {
-        let st = app.state::<BackendState>();
-        st.0.lock().ok().and_then(|g| g.clone())
-    }
-    .ok_or("backend not ready")?;
-
-    let url = format!("{}/v1/openai-oauth/status", ep.url);
-    let resp: serde_json::Value = reqwest::Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| format!("status failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("parse failed: {e}"))?;
-
-    Ok(OpenAIStatus {
-        connected: resp
-            .get("connected")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        expires_at: resp.get("expires_at").and_then(|v| v.as_i64()),
-        connected_at: resp.get("connected_at").and_then(|v| v.as_i64()),
-    })
-}
-
-#[tauri::command]
-async fn openai_disconnect(app: tauri::AppHandle) -> Result<(), String> {
-    let ep = {
-        let st = app.state::<BackendState>();
-        st.0.lock().ok().and_then(|g| g.clone())
-    }
-    .ok_or("backend not ready")?;
-
-    let url = format!("{}/v1/openai-oauth/disconnect", ep.url);
-    reqwest::Client::new()
-        .delete(&url)
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| format!("disconnect failed: {e}"))?;
-    Ok(())
-}
 
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
@@ -7910,6 +7900,17 @@ struct OwnedTextSpan {
     suffix: String,
 }
 
+impl OwnedTextSpan {
+    /// A non-empty boundary proves that the observed field still contains the
+    /// text that was around AirNote's insertion. With no surrounding text (a
+    /// blank composer), the whole field cannot be treated as ours just because
+    /// it is readable: after Send, many apps expose a non-empty placeholder or
+    /// immediately reuse the same accessibility element for the next message.
+    fn has_surrounding_anchor(&self) -> bool {
+        !self.prefix.is_empty() || !self.suffix.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct EditCaptureAnchor {
     target_pid: Option<i32>,
@@ -7922,7 +7923,6 @@ struct EditCaptureAnchor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EditObservation {
     elapsed_ms: u64,
-    field_value: String,
     owned_text: String,
 }
 
@@ -7933,23 +7933,16 @@ struct EditObservationTimeline {
 }
 
 impl EditObservationTimeline {
-    fn record(
-        &mut self,
-        anchor: &EditCaptureAnchor,
-        post_paste: &str,
-        field_value: &str,
-        elapsed_ms: u64,
-    ) -> Result<bool, &'static str> {
-        if field_value == post_paste || field_value.is_empty() {
-            return Ok(false);
+    fn record(&mut self, owned_text: &str, elapsed_ms: u64) -> bool {
+        if owned_text.is_empty() {
+            return false;
         }
-        let owned_text = extract_owned_text(anchor, field_value)?;
         if self
             .observations
             .back()
-            .is_some_and(|last| last.field_value == field_value && last.owned_text == owned_text)
+            .is_some_and(|last| last.owned_text == owned_text)
         {
-            return Ok(false);
+            return false;
         }
         self.total_observations += 1;
         if self.observations.len() == EDIT_WATCH_MAX_OBSERVATIONS {
@@ -7957,16 +7950,15 @@ impl EditObservationTimeline {
         }
         self.observations.push_back(EditObservation {
             elapsed_ms,
-            field_value: field_value.to_string(),
-            owned_text,
+            owned_text: owned_text.to_string(),
         });
-        Ok(true)
+        true
     }
 
-    fn latest_field_value(&self) -> Option<&str> {
+    fn latest_owned_text(&self) -> Option<&str> {
         self.observations
             .back()
-            .map(|observation| observation.field_value.as_str())
+            .map(|observation| observation.owned_text.as_str())
     }
 
     fn retained_count(&self) -> usize {
@@ -7985,19 +7977,134 @@ impl EditObservationTimeline {
     }
 }
 
-fn effective_owned_field_value(
+/// Return the portion we can safely attribute to our insertion.
+///
+/// Strong anchors (text before or after the insertion) are exact. In an empty
+/// composer there is no such boundary, so only a small, local continuation of
+/// the last trusted value can be retained. This deliberately rejects a Send
+/// reset, placeholder, or a new unrelated draft without relying on app-specific
+/// placeholder strings.
+fn trusted_owned_text(
     anchor: &EditCaptureAnchor,
-    last_value: &str,
-    observations: &EditObservationTimeline,
-) -> String {
-    if !last_value.is_empty() && extract_owned_text(anchor, last_value).is_ok() {
-        last_value.to_string()
-    } else {
-        observations
-            .latest_field_value()
-            .unwrap_or(last_value)
-            .to_string()
+    previous_owned: &str,
+    current_field: &str,
+) -> Result<String, &'static str> {
+    let span = anchor.owned_span.as_ref().ok_or("anchor_missing")?;
+    if current_field.trim().is_empty() {
+        return Err("field_cleared");
     }
+    if span.has_surrounding_anchor() {
+        return extract_owned_text(anchor, current_field).and_then(|owned| {
+            if owned.is_empty() {
+                Err("field_cleared")
+            } else {
+                Ok(owned)
+            }
+        });
+    }
+    if weak_anchor_is_local_edit(previous_owned, current_field) {
+        Ok(current_field.trim().to_string())
+    } else {
+        Err("weak_anchor_untrusted")
+    }
+}
+
+/// Conservative ownership check for blank composers. We accept normal typo,
+/// casing and small multi-word corrections, but not a replacement that looks
+/// like a new draft or a post-send placeholder. The backend remains responsible
+/// for judging whether a trusted correction is actually worth learning.
+fn weak_anchor_is_local_edit(previous_owned: &str, candidate: &str) -> bool {
+    let previous = previous_owned.trim();
+    let candidate = candidate.trim();
+    if previous.is_empty() || candidate.is_empty() {
+        return false;
+    }
+
+    let previous_normalized = normalize_spacing_and_punctuation(previous).to_lowercase();
+    let candidate_normalized = normalize_spacing_and_punctuation(candidate).to_lowercase();
+    if previous_normalized == candidate_normalized {
+        return true;
+    }
+
+    let previous_chars = previous_normalized.chars().count();
+    let candidate_chars = candidate_normalized.chars().count();
+    // A fresh long document cannot be a local correction of a short paste.
+    if previous_chars > 1_200
+        || candidate_chars > 1_200
+        || candidate_chars > previous_chars.saturating_mul(3).saturating_add(24)
+        || previous_chars > candidate_chars.saturating_mul(3).saturating_add(24)
+    {
+        return false;
+    }
+
+    let previous_words = observation_words(&previous_normalized);
+    let candidate_words = observation_words(&candidate_normalized);
+    let shared_words = previous_words
+        .iter()
+        .filter(|word| candidate_words.contains(*word))
+        .count();
+    let changed_previous_words = previous_words.len().saturating_sub(shared_words);
+    let changed_candidate_words = candidate_words.len().saturating_sub(shared_words);
+
+    // A single-token correction such as `CQLite` → `SQLite` has no unchanged
+    // word to anchor it, so permit it only when the edit distance is small.
+    if previous_words.len() == 1 && candidate_words.len() == 1 {
+        let max_len = previous_chars.max(candidate_chars);
+        return levenshtein_distance(&previous_normalized, &candidate_normalized)
+            <= (max_len / 2).max(2);
+    }
+
+    // Keep compact identifier normalizations such as `n8n` → `n8n.io`.
+    // They retain the full prior identifier and are still bounded more tightly
+    // than a general phrase rewrite.
+    if previous_words.len() == 1
+        && candidate_words.len() <= 2
+        && candidate_words.is_superset(&previous_words)
+    {
+        let max_len = previous_chars.max(candidate_chars);
+        return levenshtein_distance(&previous_normalized, &candidate_normalized)
+            <= max_len.saturating_mul(60) / 100;
+    }
+
+    // For phrases, retain a correction only when enough of the original remains
+    // visible, no more than four words were replaced/inserted in one pass, and
+    // the character edit is bounded. Set overlap alone is insufficient:
+    // `Please check CQLite status` and `Please send invoice today` share
+    // `Please`, but the latter is a new draft rather than a correction.
+    // Larger rewrites may be intentional writing, but they are not safe generic
+    // learning signals and must not be confused with a recycled composer.
+    let max_len = previous_chars.max(candidate_chars);
+    let bounded_character_edit = levenshtein_distance(&previous_normalized, &candidate_normalized)
+        <= max_len.saturating_mul(45) / 100;
+    shared_words > 0
+        && changed_previous_words <= 4
+        && changed_candidate_words <= 4
+        && bounded_character_edit
+}
+
+fn observation_words(text: &str) -> std::collections::HashSet<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for (row, a_char) in a.iter().enumerate() {
+        let mut current = Vec::with_capacity(b.len() + 1);
+        current.push(row + 1);
+        for (column, b_char) in b.iter().enumerate() {
+            let substitution = previous[column] + usize::from(a_char != b_char);
+            let insertion = current[column] + 1;
+            let deletion = previous[column + 1] + 1;
+            current.push(substitution.min(insertion).min(deletion));
+        }
+        previous = current;
+    }
+    previous[b.len()]
 }
 
 fn derive_owned_text_span(
@@ -8414,16 +8521,25 @@ async fn watch_for_edit(
     }
 
     let mut last_val = post_paste.clone();
+    // The last value we can prove belongs to the dictation. It starts as the
+    // exact inserted span, not as the whole field. Later reads may be a reset
+    // or a recycled accessibility element, so they never replace this unless
+    // they pass `trusted_owned_text`.
+    let initial_owned_text = anchor
+        .owned_span
+        .as_ref()
+        .map(|span| span.text.trim().to_string());
+    let mut last_trusted_owned = initial_owned_text.clone();
     let mut observations = EditObservationTimeline::default();
     let mut idle_at = Instant::now();
     let started = Instant::now();
     let mut last_change_at = Instant::now();
     let mut current_interval = EDIT_WATCH_FAST_INTERVAL;
     let mut last_pid = initial_pid;
-    let mut ownership_lost_reason: Option<&'static str> = None;
     let mut finalize_requested = finalize_token.is_cancelled();
     let mut field_empty_since: Option<Instant> = None;
     let mut explicit_boundary: Option<&'static str> = None;
+    let mut discard_trusted_edits = false;
 
     // Scale timeouts by sentence length — long sentences need more reading time
     let word_count = polished.split_whitespace().count();
@@ -8471,8 +8587,12 @@ async fn watch_for_edit(
         if pid_switched {
             app_switched_during_capture = true;
             explicit_boundary = Some("app_switched");
+            // An app switch is not proof that a previously observed field value
+            // was finalized. Fail closed rather than classifying a correction
+            // while the user may still be editing or sending the message.
+            discard_trusted_edits = true;
             tracing::info!(
-                "[edit-watch] app boundary for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
+                "[edit-watch] app boundary for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}; discarding unsettled edits"
             );
             break;
         }
@@ -8538,8 +8658,9 @@ async fn watch_for_edit(
                 .await;
                 if observed != Some(expected) {
                     explicit_boundary = Some("field_changed");
+                    discard_trusted_edits = true;
                     tracing::info!(
-                        "[edit-watch] field boundary for {recording_id} — finalizing last owned state"
+                        "[edit-watch] field boundary for {recording_id} — discarding unsettled edits"
                     );
                     break;
                 }
@@ -8548,26 +8669,57 @@ async fn watch_for_edit(
             last_change_at = Instant::now();
             current_interval = EDIT_WATCH_FAST_INTERVAL;
             field_empty_since = now_val.is_empty().then(Instant::now);
-            if now_val != post_paste {
-                if !saw_user_edit {
-                    tracing::info!(
-                        "[edit-watch] first edit observed for {recording_id}; waiting {}s after the last change before classify",
-                        post_edit_idle_timeout.as_secs()
-                    );
-                }
-                saw_user_edit = true;
+            if now_val.is_empty() {
+                // A user can briefly clear while replacing text. Give the field
+                // its short boundary grace period before deciding this is a
+                // real deletion. Do not turn the empty field into feedback.
+                last_val = now_val;
+                continue;
             }
-            if let Err(reason) = observations.record(
-                &anchor,
-                &post_paste,
-                &now_val,
-                started.elapsed().as_millis() as u64,
-            ) {
-                ownership_lost_reason = Some(reason);
+
+            if now_val == post_paste {
+                // The user reverted an earlier correction. The final state is
+                // our original output, so stale observations must not win.
+                last_trusted_owned = initial_owned_text.clone();
+                last_val = now_val;
+                continue;
+            }
+
+            let Some(previous_owned) = last_trusted_owned.as_deref() else {
+                explicit_boundary = Some("anchor_missing");
                 tracing::info!(
-                    "[edit-watch] ownership lost for {recording_id} — {reason}; refusing changed field state"
+                    "[edit-watch] no owned span for {recording_id}; refusing changed field state"
                 );
                 break;
+            };
+            match trusted_owned_text(&anchor, previous_owned, &now_val) {
+                Ok(owned_text) => {
+                    if owned_text != previous_owned {
+                        if !saw_user_edit
+                            && initial_owned_text.as_deref() != Some(owned_text.as_str())
+                        {
+                            tracing::info!(
+                                "[edit-watch] first trusted edit for {recording_id}; waiting {}s after the last change before classify",
+                                post_edit_idle_timeout.as_secs()
+                            );
+                        }
+                        if initial_owned_text.as_deref() != Some(owned_text.as_str()) {
+                            saw_user_edit = true;
+                            observations.record(&owned_text, started.elapsed().as_millis() as u64);
+                        }
+                        last_trusted_owned = Some(owned_text);
+                    }
+                }
+                Err(reason) => {
+                    // Preserve an earlier trusted edit, if any. This is the
+                    // normal post-Send path in blank composers, not a signal
+                    // that the placeholder itself was user feedback.
+                    explicit_boundary = Some(reason);
+                    tracing::info!(
+                        "[edit-watch] trusted observation ended for {recording_id} — {reason}; retaining only earlier owned edits"
+                    );
+                    break;
+                }
             }
             last_val = now_val;
         } else if last_change_at.elapsed() > Duration::from_secs(2) {
@@ -8578,6 +8730,7 @@ async fn watch_for_edit(
             .is_some_and(|empty_since| empty_since.elapsed() >= EDIT_WATCH_EMPTY_FIELD_BOUNDARY)
         {
             explicit_boundary = Some("field_cleared");
+            discard_trusted_edits = true;
             tracing::info!("[edit-watch] field-clear boundary for {recording_id}");
             break;
         }
@@ -8634,65 +8787,77 @@ async fn watch_for_edit(
                 if observed != Some(expected) {
                     explicit_boundary = Some("field_changed");
                     final_field_is_owned = false;
+                    discard_trusted_edits = true;
                 }
             }
-            if final_field_is_owned && ownership_lost_reason.is_none() && now_val != last_val {
-                saw_user_edit = now_val != post_paste;
-                if let Err(reason) = observations.record(
-                    &anchor,
-                    &post_paste,
-                    &now_val,
-                    started.elapsed().as_millis() as u64,
-                ) {
-                    ownership_lost_reason = Some(reason);
+            if final_field_is_owned && now_val != last_val {
+                if now_val.trim().is_empty() {
+                    discard_trusted_edits = true;
+                    explicit_boundary = Some("field_cleared");
+                } else if now_val == post_paste {
+                    last_trusted_owned = initial_owned_text.clone();
+                } else if let Some(previous_owned) = last_trusted_owned.as_deref() {
+                    match trusted_owned_text(&anchor, previous_owned, &now_val) {
+                        Ok(owned_text) => {
+                            if owned_text != previous_owned {
+                                if initial_owned_text.as_deref() != Some(owned_text.as_str()) {
+                                    saw_user_edit = true;
+                                    observations
+                                        .record(&owned_text, started.elapsed().as_millis() as u64);
+                                }
+                                last_trusted_owned = Some(owned_text);
+                            }
+                        }
+                        Err(reason) => {
+                            explicit_boundary = Some(reason);
+                        }
+                    }
+                } else {
+                    explicit_boundary = Some("anchor_missing");
                 }
-                last_val = now_val;
             }
         }
     }
 
-    if let Some(reason) = ownership_lost_reason {
+    if discard_trusted_edits {
         if let (Some(run_id), Some(ep)) = (
             client_run_id.as_deref(),
             back_arc.lock().ok().and_then(|guard| guard.clone()),
         ) {
-            telemetry::on_edit_excluded(&ep, run_id, reason);
+            telemetry::on_edit_excluded(&ep, run_id, "field_cleared");
         }
         return;
     }
 
-    // A submit can clear the field after several valid edits. Recover the latest
-    // anchored state rather than guessing from word overlap or a single snapshot.
-    let effective_val = effective_owned_field_value(&anchor, &last_val, &observations);
-    if effective_val != last_val {
+    let Some(user_kept) = last_trusted_owned else {
         tracing::info!(
-            "[edit-watch] final field unavailable (sent message?); using latest owned observation"
+            "[edit-watch] no owned text retained for {recording_id}; skipping classification"
         );
-    }
+        return;
+    };
 
     let final_front_pid = blocking_ax_option("focused_pid final", paster::focused_pid).await;
     tracing::info!(
         "[edit-watch] done watching {recording_id} — field changed: {}, target still frontmost: {}, boundary={:?}",
-        effective_val != post_paste,
+        initial_owned_text.as_deref() != Some(user_kept.as_str()),
         matches!((initial_pid, final_front_pid), (Some(a), Some(b)) if a == b),
         explicit_boundary,
     );
 
     // ── Determine user_kept + capture_method ───────────────────────────────────
     //
-    // The capture_method is propagated to the backend so auto-promotion thresholds
-    // can scale with capture confidence:
+    // The capture_method is propagated to the backend so its candidate-review
+    // gates can scale with capture confidence:
     //   • "ax"                 → AX API read directly (high confidence, ground truth)
     //   • "keystroke_verified" → keystroke replay AGREES with clipboard read (high)
     //   • "clipboard"          → clipboard read; keystroke unavailable or disagreed (medium)
     //   • "keystroke_only"     → keystroke replay; clipboard unreachable (LOW — pending only)
 
-    let user_kept: String;
     let capture_method: &'static str;
 
     if !post_paste.is_empty() {
         // ── AX was readable — compare values directly ──────────────────────────
-        if effective_val == post_paste {
+        if initial_owned_text.as_deref() == Some(user_kept.as_str()) {
             tracing::info!("[edit-watch] ax_no_edit for {recording_id}");
             if let (Some(run_id), Some(ep)) = (
                 client_run_id.as_deref(),
@@ -8702,21 +8867,6 @@ async fn watch_for_edit(
             }
             return;
         }
-        user_kept = match extract_owned_text(&anchor, &effective_val) {
-            Ok(text) => text,
-            Err(reason) => {
-                tracing::info!(
-                    "[edit-watch] ownership lost for {recording_id} — {reason}; skipping classification"
-                );
-                if let (Some(run_id), Some(ep)) = (
-                    client_run_id.as_deref(),
-                    back_arc.lock().ok().and_then(|guard| guard.clone()),
-                ) {
-                    telemetry::on_edit_excluded(&ep, run_id, reason);
-                }
-                return;
-            }
-        };
         capture_method = "ax";
         tracing::info!(
             "[edit-watch] ax_capture for {recording_id}: {:?} → {:?}",
@@ -8759,27 +8909,6 @@ async fn watch_for_edit(
                 user_kept.is_empty(),
                 true,
             );
-        }
-        return;
-    }
-
-    // Garbage check: if user_kept shares zero words with polished it's likely
-    // a UI placeholder (e.g. Slack's "Type / for commands") that leaked through.
-    //
-    // Exception: format transformations like "abhishek at the rate gmail dot com"
-    // → "abhishek@gmail.com" produce no word overlap but ARE valid corrections.
-    // Detect these by checking if user_kept looks like an email, URL, handle, or
-    // other compact identifier format — let those through to the classifier.
-    if !shares_word_overlap(&user_kept, &polished) && !is_format_transformation(&user_kept) {
-        tracing::info!(
-            "[edit-watch] user_kept has no word overlap with polished — garbage, skipping. kept={:?}",
-            user_kept.chars().take(40).collect::<String>()
-        );
-        if let (Some(run_id), Some(ep)) = (
-            client_run_id.as_deref(),
-            back_arc.lock().ok().and_then(|g| g.clone()),
-        ) {
-            telemetry::on_accepted_no_edit(&ep, run_id);
         }
         return;
     }
@@ -8976,8 +9105,10 @@ async fn watch_for_edit(
                     }
                 }
 
-                // Review candidates — show interactive picker
-                if !resp.review_candidates.is_empty() {
+                // Review candidates — show the persisted interactive picker.
+                // The frontend dequeues by session id, so never surface a card
+                // until the backend has durably accepted the review session.
+                if let Some(review_session_id) = resp.review_session_id.as_deref() {
                     let _ = present_status_bar_native(&app, "vocab-review", false);
                     let candidates: Vec<serde_json::Value> = resp
                         .review_candidates
@@ -8998,7 +9129,7 @@ async fn watch_for_edit(
                         serde_json::json!({
                             "candidates": candidates,
                             "detected_changes": &resp.changes,
-                            "review_session_id": &resp.review_session_id,
+                            "review_session_id": review_session_id,
                             "recording_id": recording_id,
                         }),
                     );
@@ -9006,6 +9137,10 @@ async fn watch_for_edit(
                         "[edit-watch] review card: {} candidate(s), {} detected change(s)",
                         resp.review_candidates.len(),
                         resp.changes.len(),
+                    );
+                } else if !resp.review_candidates.is_empty() {
+                    tracing::warn!(
+                        "[edit-watch] review candidates for {recording_id} were not persisted; withholding confirmation card"
                     );
                 }
 
@@ -9129,77 +9264,6 @@ async fn watch_for_edit(
         }
     }
     let _ = back_arc; // keep arc alive until end of scope
-}
-
-/// Returns true if `candidate` shares at least one significant word (>3 chars,
-/// case-insensitive ASCII) with `reference`.  Used to detect when the app has
-/// cleared its text field (e.g. Slack post-send shows "Type / for commands").
-/// Returns true if `text` looks like a format-transformed value — an email,
-/// URL, handle, phone number, or similar compact identifier.  These are valid
-/// corrections that the word-overlap garbage gate would otherwise discard,
-/// because "abhishek@gmail.com" shares no whitespace-delimited tokens with
-/// "Abhishek at the rate gmail dot com."
-fn is_format_transformation(text: &str) -> bool {
-    let t = text.trim();
-    // Email address: something@something.tld
-    if t.contains('@') && t.contains('.') && !t.contains(' ') {
-        return true;
-    }
-    // URL: starts with http/https/www or contains ://
-    if t.starts_with("http://")
-        || t.starts_with("https://")
-        || t.starts_with("www.")
-        || t.contains("://")
-    {
-        return true;
-    }
-    // Handle / username: starts with @ or contains _ with no spaces
-    if t.starts_with('@') || (t.contains('_') && !t.contains(' ') && t.len() < 40) {
-        return true;
-    }
-    // Phone number: mostly digits, spaces/dashes/dots/parens, 7+ chars
-    let digits: usize = t.chars().filter(|c| c.is_ascii_digit()).count();
-    if digits >= 7
-        && t.chars()
-            .all(|c| c.is_ascii_digit() || " -.+()\u{00A0}".contains(c))
-    {
-        return true;
-    }
-    false
-}
-
-fn shares_word_overlap(candidate: &str, reference: &str) -> bool {
-    let cand_lower = candidate.to_lowercase();
-    let ref_lower = reference.to_lowercase();
-    let ref_words: Vec<String> = ref_lower
-        .split_whitespace()
-        .filter(|w| w.chars().count() > 2)
-        .map(|w| w.to_string())
-        .collect();
-    if ref_words.is_empty() {
-        // Short reference text — fall back to character-level overlap.
-        // Check if >40% of reference chars appear in candidate.
-        let ref_lower = reference.to_lowercase();
-        let cand_lower = candidate.to_lowercase();
-        let shared = ref_lower
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .filter(|c| cand_lower.contains(*c))
-            .count();
-        let total = ref_lower.chars().filter(|c| !c.is_whitespace()).count();
-        return total > 0 && shared * 100 / total > 40;
-    }
-    for cw in cand_lower.split_whitespace() {
-        if cw.chars().count() <= 2 {
-            continue;
-        }
-        for rw in &ref_words {
-            if cw == *rw || rw.contains(&*cw) || cw.contains(&**rw) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn common_prefix_bytes(a: &str, b: &str) -> usize {
@@ -9657,7 +9721,8 @@ fn main() {
                         let ep_notifications = handle.endpoint();
                         // Store the full handle so Drop kills the child on app exit.
                         // Without this the child outlives the app (zombie leak).
-                        let _ = install_backend_handle(app.handle(), handle);
+                        let endpoint = install_backend_handle(app.handle(), handle);
+                        prewarm_local_polish_transport(app.handle(), endpoint);
                         tracing::info!("[main] backend daemon ready");
 
                         start_runtime_notification_listener(
@@ -9757,6 +9822,7 @@ fn main() {
                     }
                 }
                 start_backend_watchdog(app.handle().clone(), using_external_backend);
+                start_local_polish_transport_heartbeat(app.handle().clone());
 
                 // signal_hook's iterator module is `cfg(not(windows))` upstream —
                 // POSIX signals don't exist on Windows the same way (Ctrl+C is
@@ -10520,6 +10586,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .manage(SharedApp(shared_app))
         .manage(BackendState(backend_arc))
+        .manage(PolishTransportState(api::PersistentPolishSocket::new()))
         .manage(BackendHandleState(Mutex::new(None)))
         .manage(EditWatcherState(Mutex::new(None)))
         .manage(EditTargetState(Mutex::new(None)))
@@ -10649,10 +10716,6 @@ fn main() {
             patch_vocabulary_term,
             // Invite a friend
             send_invite_email,
-            // OpenAI / ChatGPT OAuth
-            openai_connect,
-            openai_status,
-            openai_disconnect,
             // External URL opener (mailto:, https://) — Tauri webview blocks window.open
             open_external,
             // Desktop-only prefs read at process startup (Sentry on/off + update channel).
@@ -10908,8 +10971,8 @@ mod edit_watch_timeout_tests {
     use super::{
         EDIT_WATCH_MAX_OBSERVATIONS, EditCaptureAnchor, EditObservationTimeline,
         clipboard_content_was_added, derive_owned_text_span, edit_watch_crossed_app_boundary,
-        edit_watch_timeouts, edit_watcher_generation_is_current, effective_owned_field_value,
-        extract_owned_text, new_edit_watcher_control,
+        edit_watch_timeouts, edit_watcher_generation_is_current, extract_owned_text,
+        new_edit_watcher_control, trusted_owned_text, weak_anchor_is_local_edit,
     };
 
     #[test]
@@ -11055,48 +11118,103 @@ mod edit_watch_timeout_tests {
     }
 
     #[test]
-    fn observation_timeline_preserves_multiple_owned_edits() {
+    fn blank_composer_placeholder_is_not_an_owned_edit() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: None,
+            post_paste_text: "Please check CQLite and MacOps".to_string(),
+            owned_span: derive_owned_text_span(
+                None,
+                "Please check CQLite and MacOps",
+                "Please check CQLite and MacOps",
+            ),
+        };
+
+        assert_eq!(
+            trusted_owned_text(&anchor, "Please check CQLite and MacOps", "Type a message",),
+            Err("weak_anchor_untrusted"),
+        );
+        assert_eq!(
+            trusted_owned_text(&anchor, "Please check CQLite and MacOps", ""),
+            Err("field_cleared"),
+        );
+    }
+
+    #[test]
+    fn blank_composer_keeps_valid_corrections_before_a_send_reset() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: None,
+            post_paste_text: "Please check CQLite and MacOps".to_string(),
+            owned_span: derive_owned_text_span(
+                None,
+                "Please check CQLite and MacOps",
+                "Please check CQLite and MacOps",
+            ),
+        };
+        let corrected = trusted_owned_text(
+            &anchor,
+            "Please check CQLite and MacOps",
+            "Please check SQLite and MacOps",
+        )
+        .expect("local correction is owned");
+        let mut timeline = EditObservationTimeline::default();
+        assert!(timeline.record(&corrected, 500));
+
+        assert_eq!(
+            trusted_owned_text(&anchor, &corrected, "Type a message"),
+            Err("weak_anchor_untrusted"),
+        );
+        assert_eq!(timeline.latest_owned_text(), Some(corrected.as_str()));
+    }
+
+    #[test]
+    fn anchored_field_keeps_prior_correction_when_the_field_is_reused() {
         let anchor = EditCaptureAnchor {
             target_pid: Some(42),
             field_fingerprint: Some(7),
             pre_paste_text: Some("Before  After".to_string()),
-            post_paste_text: "Before CQLite and MacOps After".to_string(),
+            post_paste_text: "Before CQLite After".to_string(),
             owned_span: derive_owned_text_span(
                 Some("Before  After"),
-                "Before CQLite and MacOps After",
-                "CQLite and MacOps",
+                "Before CQLite After",
+                "CQLite",
             ),
         };
+        let corrected = trusted_owned_text(&anchor, "CQLite", "Before SQLite After")
+            .expect("anchored correction is owned");
         let mut timeline = EditObservationTimeline::default();
+        assert!(timeline.record(&corrected, 500));
+
         assert_eq!(
-            timeline.record(
-                &anchor,
-                &anchor.post_paste_text,
-                "Before SQLite and MacOps After",
-                500,
-            ),
-            Ok(true),
+            trusted_owned_text(&anchor, &corrected, "New message draft"),
+            Err("prefix_mismatch"),
         );
-        assert_eq!(
-            timeline.record(
-                &anchor,
-                &anchor.post_paste_text,
-                "Before SQLite and MACOBS After",
-                900,
-            ),
-            Ok(true),
+        assert_eq!(timeline.latest_owned_text(), Some("SQLite"));
+    }
+
+    #[test]
+    fn blank_composer_allows_small_single_term_corrections_only() {
+        assert!(weak_anchor_is_local_edit("CQLite", "SQLite"));
+        assert!(weak_anchor_is_local_edit("n8n", "n8n.io"));
+        assert!(!weak_anchor_is_local_edit("AirNote", "Start a new message"));
+        assert!(
+            !weak_anchor_is_local_edit("Please check CQLite status", "Please send invoice today",),
+            "a shared common word cannot make a reused composer look owned",
         );
+    }
+
+    #[test]
+    fn observation_timeline_preserves_multiple_owned_edits() {
+        let mut timeline = EditObservationTimeline::default();
+        assert!(timeline.record("SQLite and MacOps", 500));
+        assert!(timeline.record("SQLite and MACOBS", 900));
         assert_eq!(timeline.total_observations, 2);
         assert_eq!(timeline.retained_count(), 2);
         assert_eq!(timeline.elapsed_span_ms(), Some(400));
-        assert_eq!(
-            timeline.latest_field_value(),
-            Some("Before SQLite and MACOBS After"),
-        );
-        assert_eq!(
-            effective_owned_field_value(&anchor, "Before SQLite and MACOBS After", &timeline,),
-            "Before SQLite and MACOBS After",
-        );
+        assert_eq!(timeline.latest_owned_text(), Some("SQLite and MACOBS"));
     }
 
     #[test]
@@ -11109,14 +11227,10 @@ mod edit_watch_timeout_tests {
             owned_span: derive_owned_text_span(None, "Original output", "Original output"),
         };
         let mut timeline = EditObservationTimeline::default();
-        timeline
-            .record(&anchor, &anchor.post_paste_text, "Corrected output", 500)
-            .unwrap();
-
-        assert_eq!(
-            effective_owned_field_value(&anchor, "Corrected output", &timeline),
-            "Corrected output",
-        );
+        let corrected = trusted_owned_text(&anchor, "Original output", "Corrected output")
+            .expect("small edit in an empty composer");
+        assert!(timeline.record(&corrected, 500));
+        assert_eq!(timeline.latest_owned_text(), Some("Corrected output"));
     }
 
     #[test]
@@ -11134,21 +11248,12 @@ mod edit_watch_timeout_tests {
         };
         let mut timeline = EditObservationTimeline::default();
         for index in 0..EDIT_WATCH_MAX_OBSERVATIONS + 5 {
-            let value = format!("Before edit-{index} After");
-            assert_eq!(
-                timeline.record(&anchor, &anchor.post_paste_text, &value, index as u64,),
-                Ok(true),
-            );
+            assert!(timeline.record(&format!("edit-{index}"), index as u64));
         }
         assert_eq!(timeline.retained_count(), EDIT_WATCH_MAX_OBSERVATIONS);
         assert_eq!(timeline.dropped_count(), 5);
         assert_eq!(
-            timeline.record(
-                &anchor,
-                &anchor.post_paste_text,
-                "Changed edit outside the anchor After",
-                100,
-            ),
+            trusted_owned_text(&anchor, "edit", "Changed edit outside the anchor After"),
             Err("prefix_mismatch"),
         );
     }

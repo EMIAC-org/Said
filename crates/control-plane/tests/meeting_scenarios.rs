@@ -1602,31 +1602,6 @@ async fn s24_cannot_end_ended_meeting() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 25: OpenAI status returns disconnected by default
-// ═══════════════════════════════════════════════════════════════════════════════
-
-#[tokio::test]
-async fn s25_openai_status_disconnected_by_default() {
-    let srv = TestServer::start().await;
-    let tag = Uuid::new_v4();
-
-    let (account_id, token) = srv.create_account(&format!("oai-{tag}")).await;
-    srv.create_org(token, account_id, &format!("oai-{tag}"), "COMPANY_ADMIN")
-        .await;
-
-    let res = srv
-        .client
-        .get(srv.url("/v1/openai/status"))
-        .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let body: Value = res.json().await.unwrap();
-    assert_eq!(body["connected"], false);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // Scenario 26: Sync-to-lark rejected on non-ended meeting
 // ═══════════════════════════════════════════════════════════════════════════════
 

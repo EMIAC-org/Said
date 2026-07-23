@@ -10,14 +10,17 @@
 
 use axum::{
     Json,
-    extract::{Multipart, State},
+    extract::{
+        Multipart, State, WebSocketUpgrade,
+        ws::{Message as WsMessage, WebSocket},
+    },
     http::StatusCode,
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
 };
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use said_core::{
     text::Utf8LineBuffer,
     transcript::{TranscriptMeta, TranscriptOrigin},
@@ -26,9 +29,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -747,6 +750,543 @@ pub async fn polish_transcript(
         },
     )
     .await
+}
+
+// ── Persistent local polish WebSocket ────────────────────────────────────────
+//
+// This endpoint deliberately transports an already-produced desktop transcript.
+// It is not the legacy `/v1/runtime/live/ws` cloud-audio proxy, and it never
+// accepts microphone frames. The detached SSE drain keeps an accepted polish run
+// alive while a desktop client reconnects to the local sidecar.
+
+#[derive(Debug, Deserialize)]
+struct PolishWsStart {
+    run_id: String,
+    transcript: String,
+    #[serde(default)]
+    target_app: Option<String>,
+    #[serde(default)]
+    pre_transcript_meta: Option<TranscriptMeta>,
+    #[serde(default)]
+    repair_mode: Option<String>,
+    #[serde(default)]
+    screen_context: Option<String>,
+    #[serde(default)]
+    message_polish_mode: bool,
+    #[serde(default)]
+    client_trace_json: Option<Value>,
+}
+
+fn ws_envelope(kind: &str, run_id: &str, seq: u64, payload: Value) -> Value {
+    json!({
+        "type": kind,
+        "protocol_version": 1,
+        "run_id": run_id,
+        "seq": seq,
+        "payload": payload,
+    })
+}
+
+fn ws_error(run_id: Option<&str>, code: &str, message: impl Into<String>) -> Value {
+    json!({
+        "type": "error",
+        "protocol_version": 1,
+        "run_id": run_id,
+        "payload": {
+            "message": message.into(),
+            "error_code": code,
+            "retryable": false,
+            "owned_by_airnote": true,
+        }
+    })
+}
+
+#[derive(Clone, Copy)]
+struct PolishWsDeadlines {
+    first_event: Duration,
+    idle: Duration,
+    total: Duration,
+}
+
+const DEFAULT_POLISH_WS_DEADLINES: PolishWsDeadlines = PolishWsDeadlines {
+    first_event: Duration::from_secs(20),
+    idle: Duration::from_secs(30),
+    total: Duration::from_secs(120),
+};
+
+async fn send_ws_json(
+    sink: &mut futures::stream::SplitSink<WebSocket, WsMessage>,
+    value: &Value,
+) -> bool {
+    sink.send(WsMessage::Text(value.to_string())).await.is_ok()
+}
+
+/// Return the durable terminal event after a sidecar restart. A non-terminal
+/// database row without an in-memory producer is intentionally failed rather
+/// than guessed/replayed, because the model work may have been interrupted.
+fn durable_ws_resume_event(state: &AppState, run_id: &str) -> Value {
+    let Some(run) = crate::store::voice_runs::get_voice_run(&state.pool, run_id) else {
+        return ws_error(Some(run_id), "unknown_run", "polish run was not accepted");
+    };
+    if let Some(event) = run
+        .terminal_event_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+    {
+        return event;
+    }
+
+    if run.status == "completed" {
+        if let Some(recording) = run
+            .recording_id
+            .as_deref()
+            .and_then(|id| crate::store::history::get_recording(&state.pool, id))
+        {
+            return ws_envelope(
+                "done",
+                run_id,
+                0,
+                json!({
+                    "recording_id": recording.id,
+                    "transcript": recording.transcript,
+                    "polished": recording.polished,
+                    "model_used": recording.model_used,
+                    "confidence": recording.confidence,
+                    "audio_id": recording.audio_id,
+                    "source": recording.source,
+                    "target_app": recording.target_app,
+                    "enriched_transcript": recording.enriched_transcript,
+                    "examples_used": 0,
+                    "latency_ms": {
+                        "transcribe": recording.transcribe_ms.unwrap_or_default(),
+                        "embed": recording.embed_ms.unwrap_or_default(),
+                        "retrieve": 0,
+                        "polish": recording.polish_ms.unwrap_or_default(),
+                        "total": recording.transcribe_ms.unwrap_or_default()
+                            + recording.embed_ms.unwrap_or_default()
+                            + recording.polish_ms.unwrap_or_default(),
+                    }
+                }),
+            );
+        }
+    }
+
+    if matches!(run.status.as_str(), "captured" | "processing") {
+        let message = "local backend restarted before this polish run completed";
+        let payload = ws_error(Some(run_id), "backend_restarted", message);
+        let _ = crate::store::voice_runs::mark_voice_run_failed(
+            &state.pool,
+            run_id,
+            "backend_restarted",
+            message,
+            false,
+            true,
+            Some(&payload),
+        );
+        let _ = crate::store::voice_runs::store_terminal_event(&state.pool, run_id, &payload);
+        return payload;
+    }
+
+    ws_error(
+        Some(run_id),
+        run.error_code.as_deref().unwrap_or("polish_failed"),
+        run.error_message
+            .unwrap_or_else(|| "polish run failed".to_string()),
+    )
+}
+
+async fn forward_polish_sse_to_ws(
+    state: AppState,
+    run_id: String,
+    sender: broadcast::Sender<Value>,
+    response: Response,
+) {
+    forward_polish_sse_to_ws_with_deadlines(
+        state,
+        run_id,
+        sender,
+        response,
+        DEFAULT_POLISH_WS_DEADLINES,
+    )
+    .await;
+}
+
+/// Drains the internal polish SSE independently of a desktop socket. Its own
+/// deadlines are essential: a client-side timeout alone would otherwise leave
+/// the detached producer and durable run stuck in `processing` forever.
+async fn forward_polish_sse_to_ws_with_deadlines(
+    state: AppState,
+    run_id: String,
+    sender: broadcast::Sender<Value>,
+    response: Response,
+    deadlines: PolishWsDeadlines,
+) {
+    let status = response.status();
+    if !status.is_success() {
+        let event = ws_error(
+            Some(&run_id),
+            "polish_start_failed",
+            format!("local polish request was rejected with {status}"),
+        );
+        let _ = crate::store::voice_runs::store_terminal_event(&state.pool, &run_id, &event);
+        let _ = sender.send(event);
+        state.voice_run_hub.lock().await.remove(&run_id);
+        return;
+    }
+
+    let mut stream = response.into_body().into_data_stream();
+    let mut line_buffer = Utf8LineBuffer::default();
+    let mut event_name = String::from("message");
+    let mut data_lines: Vec<String> = Vec::new();
+    let mut seq = 0u64;
+    let mut terminal = false;
+    let started = Instant::now();
+    let mut last_progress = started;
+    let mut saw_progress = false;
+    let mut stream_failure: Option<(&str, &str)> = None;
+
+    loop {
+        let now = Instant::now();
+        let total_remaining = (started + deadlines.total).saturating_duration_since(now);
+        let phase_deadline = if saw_progress {
+            last_progress + deadlines.idle
+        } else {
+            started + deadlines.first_event
+        };
+        let phase_remaining = phase_deadline.saturating_duration_since(now);
+        let wait_for = total_remaining.min(phase_remaining);
+        if wait_for.is_zero() {
+            stream_failure = Some(if total_remaining.is_zero() {
+                (
+                    "polish_stream_total_timeout",
+                    "local polish stream exceeded its total deadline",
+                )
+            } else if saw_progress {
+                (
+                    "polish_stream_idle_timeout",
+                    "local polish stream stopped making progress",
+                )
+            } else {
+                (
+                    "polish_stream_first_event_timeout",
+                    "local polish stream did not start in time",
+                )
+            });
+            break;
+        }
+
+        let chunk = match tokio::time::timeout(wait_for, stream.next()).await {
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(Some(Err(_))) => {
+                stream_failure = Some((
+                    "polish_stream_read_failed",
+                    "local polish stream failed while reading the provider response",
+                ));
+                break;
+            }
+            Ok(None) => break,
+            Err(_) => {
+                stream_failure = Some(if total_remaining <= phase_remaining {
+                    (
+                        "polish_stream_total_timeout",
+                        "local polish stream exceeded its total deadline",
+                    )
+                } else if saw_progress {
+                    (
+                        "polish_stream_idle_timeout",
+                        "local polish stream stopped making progress",
+                    )
+                } else {
+                    (
+                        "polish_stream_first_event_timeout",
+                        "local polish stream did not start in time",
+                    )
+                });
+                break;
+            }
+        };
+        let lines = match line_buffer.push(&chunk) {
+            Ok(lines) => lines,
+            Err(_) => {
+                stream_failure = Some((
+                    "polish_stream_invalid_data",
+                    "local polish stream returned invalid data",
+                ));
+                break;
+            }
+        };
+        for mut line in lines {
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            if line.is_empty() {
+                if !data_lines.is_empty() {
+                    seq = seq.saturating_add(1);
+                    let payload_text = data_lines.join("\n");
+                    let payload = serde_json::from_str::<Value>(&payload_text)
+                        .unwrap_or_else(|_| json!({ "message": payload_text }));
+                    let kind = match event_name.as_str() {
+                        "token" | "status" | "done" | "error" => event_name.as_str(),
+                        _ => "status",
+                    };
+                    let event = ws_envelope(kind, &run_id, seq, payload);
+                    if matches!(kind, "done" | "error") {
+                        let _ = crate::store::voice_runs::store_terminal_event(
+                            &state.pool,
+                            &run_id,
+                            &event,
+                        );
+                        terminal = true;
+                    }
+                    let _ = sender.send(event);
+                    saw_progress = true;
+                    last_progress = Instant::now();
+                }
+                event_name.clear();
+                event_name.push_str("message");
+                data_lines.clear();
+                continue;
+            }
+            if let Some(name) = line.strip_prefix("event:") {
+                event_name = name.trim().to_string();
+            } else if let Some(data) = line.strip_prefix("data:") {
+                data_lines.push(data.trim_start().to_string());
+            }
+        }
+    }
+
+    if !terminal {
+        let (code, message) = stream_failure.unwrap_or((
+            "stream_ended_without_terminal",
+            "local polish stream ended without a terminal event",
+        ));
+        let event = ws_error(Some(&run_id), code, message);
+        let _ = crate::store::voice_runs::mark_voice_run_failed(
+            &state.pool,
+            &run_id,
+            code,
+            message,
+            false,
+            true,
+            Some(&event),
+        );
+        let _ = crate::store::voice_runs::store_terminal_event(&state.pool, &run_id, &event);
+        let _ = sender.send(event);
+    }
+    state.voice_run_hub.lock().await.remove(&run_id);
+}
+
+async fn start_or_subscribe_ws_run(
+    state: AppState,
+    start: PolishWsStart,
+) -> Result<broadcast::Receiver<Value>, Value> {
+    let run_id = start.run_id.trim().to_string();
+    if run_id.is_empty() || run_id.len() > 128 {
+        return Err(ws_error(
+            None,
+            "invalid_run_id",
+            "run_id must be 1-128 characters",
+        ));
+    }
+    let transcript = start.transcript.trim().to_string();
+    if transcript.is_empty() {
+        return Err(ws_error(
+            Some(&run_id),
+            "local_transcript_required",
+            "local speech transcript is required before voice polish",
+        ));
+    }
+    {
+        let hub = state.voice_run_hub.lock().await;
+        if let Some(sender) = hub.get(&run_id) {
+            return Ok(sender.subscribe());
+        }
+    }
+    if crate::store::voice_runs::get_voice_run(&state.pool, &run_id).is_some() {
+        return Err(ws_error(
+            Some(&run_id),
+            "run_already_exists",
+            "run already exists; resume it instead of starting it again",
+        ));
+    }
+
+    let (sender, receiver, is_new) = {
+        let mut hub = state.voice_run_hub.lock().await;
+        if let Some(sender) = hub.get(&run_id) {
+            (sender.clone(), sender.subscribe(), false)
+        } else {
+            let (sender, receiver) = broadcast::channel(512);
+            hub.insert(run_id.clone(), sender.clone());
+            (sender, receiver, true)
+        }
+    };
+    if !is_new {
+        return Ok(receiver);
+    }
+
+    let response = polish_with_input(
+        state.clone(),
+        VoicePolishInput {
+            wav_data: Vec::new(),
+            target_app: start.target_app,
+            pre_transcript: Some(transcript),
+            pre_transcript_meta: start.pre_transcript_meta,
+            repair_mode: start.repair_mode,
+            screen_context: start.screen_context,
+            message_polish_mode: start.message_polish_mode,
+            client_run_id: Some(run_id.clone()),
+            client_trace_json: start.client_trace_json,
+        },
+    )
+    .await;
+    if !response.status().is_success() {
+        let event = ws_error(
+            Some(&run_id),
+            "polish_start_failed",
+            format!(
+                "local polish request was rejected with {}",
+                response.status()
+            ),
+        );
+        let _ = crate::store::voice_runs::store_terminal_event(&state.pool, &run_id, &event);
+        let _ = sender.send(event.clone());
+        state.voice_run_hub.lock().await.remove(&run_id);
+        return Err(event);
+    }
+
+    let attempt = crate::store::voice_runs::get_voice_run(&state.pool, &run_id)
+        .map(|run| run.attempt_count)
+        .unwrap_or(1);
+    let _ = sender.send(ws_envelope(
+        "run.accepted",
+        &run_id,
+        0,
+        json!({ "attempt": attempt }),
+    ));
+    tokio::spawn(forward_polish_sse_to_ws(state, run_id, sender, response));
+    Ok(receiver)
+}
+
+pub async fn polish_ws(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    if !crate::store::users::has_enterprise_auth(&state.pool, &state.default_user_id) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    ws.on_upgrade(move |socket| handle_polish_ws(state, socket))
+        .into_response()
+}
+
+async fn handle_polish_ws(state: AppState, socket: WebSocket) {
+    let (mut sink, mut stream) = socket.split();
+    if !send_ws_json(
+        &mut sink,
+        &json!({ "type": "polish.connected", "protocol_version": 1 }),
+    )
+    .await
+    {
+        return;
+    }
+
+    let mut active_run: Option<String> = None;
+    let mut subscription: Option<broadcast::Receiver<Value>> = None;
+    loop {
+        tokio::select! {
+            inbound = stream.next() => {
+                let Some(Ok(inbound)) = inbound else { return };
+                match inbound {
+                    WsMessage::Text(raw) => {
+                        let value = match serde_json::from_str::<Value>(&raw) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                if !send_ws_json(&mut sink, &ws_error(None, "invalid_json", "invalid WebSocket JSON")).await { return; }
+                                continue;
+                            }
+                        };
+                        let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
+                        match kind {
+                            "ping" => {
+                                if !send_ws_json(&mut sink, &json!({ "type": "pong", "protocol_version": 1 })).await { return; }
+                            }
+                            "polish.start" => {
+                                if active_run.is_some() {
+                                    if !send_ws_json(&mut sink, &ws_error(active_run.as_deref(), "run_already_active", "finish or reconnect the active run first")).await { return; }
+                                    continue;
+                                }
+                                let start = match serde_json::from_value::<PolishWsStart>(value) {
+                                    Ok(start) => start,
+                                    Err(_) => {
+                                        if !send_ws_json(&mut sink, &ws_error(None, "invalid_start", "invalid polish.start payload")).await { return; }
+                                        continue;
+                                    }
+                                };
+                                let run_id = start.run_id.trim().to_string();
+                                match start_or_subscribe_ws_run(state.clone(), start).await {
+                                    Ok(receiver) => {
+                                        active_run = Some(run_id);
+                                        subscription = Some(receiver);
+                                    }
+                                    Err(event) => {
+                                        if !send_ws_json(&mut sink, &event).await { return; }
+                                    }
+                                }
+                            }
+                            "run.resume" => {
+                                let Some(run_id) = value.get("run_id").and_then(Value::as_str).map(str::trim).filter(|id| !id.is_empty()) else {
+                                    if !send_ws_json(&mut sink, &ws_error(None, "invalid_run_id", "run.resume requires a run_id")).await { return; }
+                                    continue;
+                                };
+                                if active_run.is_some() {
+                                    if !send_ws_json(&mut sink, &ws_error(active_run.as_deref(), "run_already_active", "finish or reconnect the active run first")).await { return; }
+                                    continue;
+                                }
+                                let receiver = {
+                                    let hub = state.voice_run_hub.lock().await;
+                                    hub.get(run_id).map(broadcast::Sender::subscribe)
+                                };
+                                if let Some(receiver) = receiver {
+                                    active_run = Some(run_id.to_string());
+                                    subscription = Some(receiver);
+                                    if !send_ws_json(&mut sink, &ws_envelope("run.resumed", run_id, 0, json!({}))).await { return; }
+                                } else {
+                                    let event = durable_ws_resume_event(&state, run_id);
+                                    if !send_ws_json(&mut sink, &event).await { return; }
+                                }
+                            }
+                            _ => {
+                                if !send_ws_json(&mut sink, &ws_error(None, "unknown_message", "unknown polish WebSocket message")).await { return; }
+                            }
+                        }
+                    }
+                    WsMessage::Ping(payload)
+                        if sink.send(WsMessage::Pong(payload.clone())).await.is_err() =>
+                    {
+                        return;
+                    }
+                    WsMessage::Ping(_) => {}
+                    WsMessage::Close(_) => return,
+                    _ => {}
+                }
+            }
+            event = async { subscription.as_mut().expect("subscription guarded").recv().await }, if subscription.is_some() => {
+                match event {
+                    Ok(event) => {
+                        let terminal = matches!(event.get("type").and_then(Value::as_str), Some("done" | "error"));
+                        if !send_ws_json(&mut sink, &event).await { return; }
+                        if terminal {
+                            active_run = None;
+                            subscription = None;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if !send_ws_json(&mut sink, &json!({ "type": "run.resync_required", "protocol_version": 1, "run_id": active_run })).await { return; }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        subscription = None;
+                        active_run = None;
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub async fn problem_transcribe(
@@ -3351,5 +3891,176 @@ mod audio_tests {
             parsed.pcm,
             [2000i16.to_le_bytes(), (-500i16).to_le_bytes()].concat()
         );
+    }
+}
+
+#[cfg(test)]
+mod polish_ws_tests {
+    use super::{
+        PolishWsDeadlines, durable_ws_resume_event, forward_polish_sse_to_ws_with_deadlines,
+    };
+    use crate::{AppState, store, watchdog};
+    use axum::{body::Body, response::Response};
+    use bytes::Bytes;
+    use futures::{SinkExt, StreamExt};
+    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use tokio::sync::{Mutex, RwLock};
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{Message, client::IntoClientRequest},
+    };
+
+    fn test_state() -> AppState {
+        let pool = store::open(&std::env::temp_dir().join(format!(
+            "airnote-polish-ws-test-{}.sqlite",
+            uuid::Uuid::new_v4()
+        )));
+        let user_id = store::ensure_default_user(&pool);
+        AppState {
+            pool,
+            shared_secret: Arc::new("test-secret".to_string()),
+            default_user_id: Arc::new(user_id),
+            prefs_cache: Arc::new(RwLock::new(None)),
+            lexicon_cache: Arc::new(RwLock::new(None)),
+            live_server_runtime_cache: Arc::new(RwLock::new(HashMap::new())),
+            voice_run_hub: Arc::new(Mutex::new(HashMap::new())),
+            http_client: reqwest::Client::new(),
+            watchdog: Arc::new(watchdog::WatchdogState::new()),
+        }
+    }
+
+    #[test]
+    fn resume_returns_the_persisted_terminal_event_after_restart() {
+        let state = test_state();
+        let terminal = serde_json::json!({
+            "type": "error",
+            "protocol_version": 1,
+            "run_id": "run-42",
+            "seq": 3,
+            "payload": { "message": "provider unavailable", "error_code": "upstream" },
+        });
+        store::voice_runs::create_voice_run_captured(
+            &state.pool,
+            store::voice_runs::CapturedVoiceRun {
+                run_id: "run-42",
+                user_id: &state.default_user_id,
+                audio_id: None,
+                mode: "normal",
+                target_app: None,
+                wav_bytes: 0,
+                duration_ms: 1200,
+                pre_transcript: Some("hello"),
+            },
+        )
+        .unwrap();
+        store::voice_runs::store_terminal_event(&state.pool, "run-42", &terminal).unwrap();
+
+        assert_eq!(durable_ws_resume_event(&state, "run-42"), terminal);
+    }
+
+    #[tokio::test]
+    async fn authenticated_socket_handshakes_and_answers_heartbeat() {
+        let state = test_state();
+        store::users::update_enterprise_auth(
+            &state.pool,
+            &state.default_user_id,
+            "cloud-token",
+            "team",
+            None,
+            Some("https://control.example.test"),
+            None,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = crate::router_with_state(state);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let mut request = format!("ws://{address}/v1/voice/polish/ws")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer test-secret".parse().unwrap());
+        let (mut socket, _) = connect_async(request).await.unwrap();
+
+        let connected = socket.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&connected)
+                .unwrap()
+                .get("type")
+                .and_then(serde_json::Value::as_str),
+            Some("polish.connected")
+        );
+
+        socket
+            .send(Message::Text(
+                r#"{"type":"ping","protocol_version":1}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let pong = socket.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&pong)
+                .unwrap()
+                .get("type")
+                .and_then(serde_json::Value::as_str),
+            Some("pong")
+        );
+    }
+
+    #[tokio::test]
+    async fn silent_upstream_becomes_a_durable_terminal_failure() {
+        let state = test_state();
+        store::voice_runs::create_voice_run_captured(
+            &state.pool,
+            store::voice_runs::CapturedVoiceRun {
+                run_id: "run-silent",
+                user_id: &state.default_user_id,
+                audio_id: None,
+                mode: "normal",
+                target_app: None,
+                wav_bytes: 0,
+                duration_ms: 500,
+                pre_transcript: Some("hello"),
+            },
+        )
+        .unwrap();
+        let (sender, mut subscriber) = tokio::sync::broadcast::channel(8);
+        state
+            .voice_run_hub
+            .lock()
+            .await
+            .insert("run-silent".to_string(), sender.clone());
+        let response = Response::new(Body::from_stream(futures::stream::pending::<
+            Result<Bytes, std::convert::Infallible>,
+        >()));
+
+        forward_polish_sse_to_ws_with_deadlines(
+            state.clone(),
+            "run-silent".to_string(),
+            sender,
+            response,
+            PolishWsDeadlines {
+                first_event: Duration::from_millis(15),
+                idle: Duration::from_millis(15),
+                total: Duration::from_millis(50),
+            },
+        )
+        .await;
+
+        let event = subscriber.recv().await.unwrap();
+        assert_eq!(
+            event
+                .get("payload")
+                .and_then(|payload| payload.get("error_code"))
+                .and_then(serde_json::Value::as_str),
+            Some("polish_stream_first_event_timeout")
+        );
+        let run = store::voice_runs::get_voice_run(&state.pool, "run-silent").unwrap();
+        assert_eq!(run.status, "failed");
+        assert!(run.terminal_event_json.is_some());
+        assert!(state.voice_run_hub.lock().await.get("run-silent").is_none());
     }
 }

@@ -6,12 +6,11 @@
 //!
 //!   1. **Capture gate** (cheap): reject stale / clipboard / app-switched edits
 //!   2. **Branch** — no-edit (reward active vocab), full deletion, or stale
-//!   3. **Demotion** — unconditional negative signal for removed terms
-//!   4. **Deterministic classifier** — classify hunks from diff without LLM
-//!   5. **Complex edit interpreter** — DeepSeek may propose spans, but only real
+//!   3. **Deterministic classifier** — classify hunks from diff without LLM
+//!   4. **Complex edit interpreter** — DeepSeek may propose spans, but only real
 //!      transcript/output/kept spans survive verification
-//!   6. **Meaning generation** — background call ONLY for new STT correction terms
-//!   7. **Save** — persist learnable changes by reason type
+//!   5. **Review queue** — persist only proposed candidates; `/v1/confirm-batch`
+//!      is the sole learning mutation path
 
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
@@ -26,8 +25,7 @@ use crate::{
         edit_diff, promotion_gate,
     },
     store::{
-        edit_review_sessions, email_memory, history, prefs::get_prefs, stt_replacements,
-        tier2_edit_policy, users, vectors, vocabulary,
+        edit_review_sessions, history, prefs::get_prefs, tier2_edit_policy, users, vocabulary,
     },
 };
 
@@ -443,23 +441,8 @@ async fn classify_inner(
 
     // No edit: polished output kept verbatim
     if body.ai_output.trim() == body.user_kept.trim() {
-        // Positive reinforcement: bump weight of known vocab terms used in output
-        let rewarded = if audit_only {
-            0
-        } else {
-            vocabulary::reward_active_terms(
-                &state.pool,
-                &state.default_user_id,
-                &body.ai_output,
-                0.1,
-            )
-        };
-        if rewarded > 0 {
-            info!(
-                "[classify] no-edit reward: bumped {rewarded} active vocab term(s) for {}",
-                body.recording_id,
-            );
-        }
+        // An unchanged paste is not user confirmation. Keep classification
+        // completely read-only until a review card is explicitly approved.
         return (
             StatusCode::OK,
             Json(empty_response("no_edit", "no changes detected")),
@@ -647,134 +630,13 @@ async fn classify_inner(
         response.changes = analyzer_output.changes;
         return (StatusCode::OK, Json(response));
     }
-    let has_correction_evidence = analyzer_output.changes.iter().any(|change| {
-        change.should_learn
-            && matches!(
-                change.reason,
-                ChangeReason::SttError | ChangeReason::PolishError | ChangeReason::FormatPreference
-            )
-    });
-    let correction_pairs: std::collections::HashSet<(String, String)> = analyzer_output
-        .changes
-        .iter()
-        .filter(|change| {
-            change.should_learn
-                && matches!(
-                    change.reason,
-                    ChangeReason::SttError
-                        | ChangeReason::PolishError
-                        | ChangeReason::FormatPreference
-                )
-        })
-        .map(|change| {
-            (
-                tier2_edit_policy::normalize_token(&change.original),
-                tier2_edit_policy::normalize_token(&change.corrected),
-            )
-        })
-        .collect();
-    let all_changes_are_corrections = !analyzer_output.changes.is_empty()
-        && analyzer_output.changes.iter().all(|change| {
-            change.should_learn
-                && matches!(
-                    change.reason,
-                    ChangeReason::SttError
-                        | ChangeReason::PolishError
-                        | ChangeReason::FormatPreference
-                )
-        });
-
-    let mut learned_emails = Vec::new();
-    let mut negative_terms: Vec<NegativeTerm> = Vec::new();
-    let mut policy_touched = false;
-
-    history::apply_edit_feedback(&state.pool, &body.recording_id, &body.user_kept);
-
-    if has_correction_evidence {
-        let edit_event_id = vectors::insert_edit_event(
-            &state.pool,
-            &rec.user_id,
-            Some(&rec.id),
-            &transcript,
-            &body.ai_output,
-            &body.user_kept,
-            rec.target_app.as_deref(),
-        );
-        if let Some(ref id) = edit_event_id {
-            info!(
-                "[classify] correlated edit_event {} created for recording {}",
-                id, rec.id
-            );
-        } else {
-            warn!(
-                "[classify] failed to insert correlated edit_event for {}",
-                body.recording_id
-            );
-        }
-
-        learned_emails = email_memory::upsert_many_from_text(
-            &state.pool,
-            &state.default_user_id,
-            &body.user_kept,
-            Some(&body.user_kept),
-        );
-        if !learned_emails.is_empty() {
-            info!(
-                "[classify] learned {} local email memory item(s) for {}",
-                learned_emails.len(),
-                body.recording_id,
-            );
-        }
-
-        let reverted =
-            run_alias_revert_pass(&state, &body.ai_output, &body.user_kept, &correction_pairs);
-        if !reverted.is_empty() {
-            info!(
-                "[classify] reverted {} wrong alias(es) after correlated correction",
-                reverted.len()
-            );
-            for reverted_alias in &reverted {
-                negative_terms.push(NegativeTerm {
-                    term: reverted_alias.replaced_with.clone(),
-                    wrong_replacement: reverted_alias.term.clone(),
-                    correction_count: 1,
-                });
-            }
-        }
-
-        if all_changes_are_corrections {
-            let policy_feedback = tier2_edit_policy::mark_removed_feedback(
-                &state.pool,
-                &state.default_user_id,
-                &body.recording_id,
-                &body.ai_output,
-                &body.user_kept,
-            );
-            for (replaced_with, term) in &policy_feedback.penalized_pairs {
-                if negative_terms.iter().any(|negative| {
-                    negative.term == *term && negative.wrong_replacement == *replaced_with
-                }) {
-                    continue;
-                }
-                info!(
-                    "[classify] policy-revert: {:?} -> {:?} blocked from future corrections",
-                    replaced_with, term,
-                );
-                negative_terms.push(NegativeTerm {
-                    term: term.clone(),
-                    wrong_replacement: replaced_with.clone(),
-                    correction_count: 1,
-                });
-            }
-            policy_touched = policy_feedback.marked_kept > 0 || policy_feedback.penalized > 0;
-            if policy_touched {
-                info!(
-                    "[classify] tier2 edit-policy feedback: kept_marked={} penalized={} for {}",
-                    policy_feedback.marked_kept, policy_feedback.penalized, body.recording_id,
-                );
-            }
-        }
-    }
+    // Classification is deliberately read-only. A trusted field observation can
+    // propose candidates, but no vocabulary, alias, email or negative-policy
+    // mutation is allowed until the user approves a review card through
+    // `/v1/confirm-batch`.
+    let learned_emails: Vec<String> = Vec::new();
+    let negative_terms: Vec<NegativeTerm> = Vec::new();
+    let policy_touched = false;
 
     // ── Step 5: Prepare learnable candidates ────────────────────────────────
     // STT learning is human-in-the-loop: classify proposes candidates, and
@@ -1264,7 +1126,8 @@ async fn classify_inner(
     }
     let has_review = !review_candidates.is_empty();
 
-    // Invalidate after any corrections, stt_replacements, or Tier 2 policy writes.
+    // Classify is read-only, so these stay false until a later explicit
+    // `/v1/confirm-batch` request performs the approved mutation.
     if learned || policy_touched || has_negatives || !learned_emails.is_empty() {
         crate::invalidate_lexicon_cache(&state.lexicon_cache).await;
     }
@@ -1387,98 +1250,6 @@ async fn classify_inner(
             review_candidates,
         }),
     )
-}
-
-/// Info about a wrong alias the system applied that the user reverted.
-struct RevertedAlias {
-    /// The vocab term the system wrongly output (e.g. "Macobs")
-    term: String,
-    /// What the user actually wanted (e.g. "access")
-    replaced_with: String,
-}
-
-/// Detect vocab terms in polish that the user replaced with a different word.
-/// Only deletes the offending STT alias — the vocabulary entry itself stays
-/// intact because the term is valid, just the alias was wrong.
-fn run_alias_revert_pass(
-    state: &AppState,
-    polish: &str,
-    user_kept: &str,
-    allowed_pairs: &std::collections::HashSet<(String, String)>,
-) -> Vec<RevertedAlias> {
-    let polish_lower = polish.to_ascii_lowercase();
-    let kept_lower = user_kept.to_ascii_lowercase();
-    let vocab = vocabulary::top_terms(&state.pool, &state.default_user_id, 1000);
-
-    let mut reverted = Vec::new();
-    for v in vocab {
-        let term_lower = v.term.to_ascii_lowercase();
-        if !polish_lower.contains(&term_lower) || kept_lower.contains(&term_lower) {
-            continue;
-        }
-
-        let replaced_with =
-            find_replacement_at_position(polish, user_kept, &v.term).unwrap_or_default();
-
-        if replaced_with.is_empty() {
-            continue;
-        }
-        let pair = (
-            tier2_edit_policy::normalize_token(&v.term),
-            tier2_edit_policy::normalize_token(&replaced_with),
-        );
-        if !allowed_pairs.contains(&pair) {
-            info!(
-                "[revert] skipped uncorrelated alias removal {:?} -> {:?}",
-                replaced_with, v.term,
-            );
-            continue;
-        }
-
-        // Delete only the specific alias that caused the wrong replacement.
-        // The vocabulary entry for "Macobs" stays — it's a real word. Only
-        // the alias "access" → "Macobs" was wrong.
-        let alias_deleted = stt_replacements::delete_alias_pair(
-            &state.pool,
-            &state.default_user_id,
-            &replaced_with,
-            &v.term,
-        );
-        if alias_deleted > 0 {
-            info!(
-                "[revert] deleted {alias_deleted} wrong alias(es) {:?} → {:?} (vocab kept)",
-                replaced_with, v.term,
-            );
-            reverted.push(RevertedAlias {
-                term: v.term.clone(),
-                replaced_with,
-            });
-        }
-    }
-    reverted
-}
-
-/// Given polish and user_kept, find what word the user wrote in place of `term`.
-fn find_replacement_at_position(polish: &str, user_kept: &str, term: &str) -> Option<String> {
-    let p_tokens: Vec<&str> = polish.split_whitespace().collect();
-    let k_tokens: Vec<&str> = user_kept.split_whitespace().collect();
-    let term_lower = term.to_ascii_lowercase();
-
-    for (i, pt) in p_tokens.iter().enumerate() {
-        if pt
-            .trim_matches(|c: char| !c.is_alphanumeric())
-            .to_ascii_lowercase()
-            == term_lower
-        {
-            if let Some(kt) = k_tokens.get(i) {
-                let cleaned = kt.trim_matches(|c: char| !c.is_alphanumeric());
-                if !cleaned.is_empty() && cleaned.to_ascii_lowercase() != term_lower {
-                    return Some(cleaned.to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};

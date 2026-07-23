@@ -594,39 +594,6 @@
   .orb-recording { animation: pulse-orb 1.4s ease-in-out infinite; }
   .orb-glow      { box-shadow: 0 0 20px hsl(var(--primary) / 0.55); }
 
-  /* ── Heatmap cells (mint ramp on black) ─────────────────────────── */
-  .heat-0       { background: hsl(var(--heat-0)); }
-  .heat-1       { background: hsl(140 45% 22%); }
-  .heat-2       { background: hsl(135 55% 32%); }
-  .heat-3       { background: hsl(125 65% 45%); }
-  .heat-4       { background: hsl(115 75% 60%); }
-  .heat-current {
-    background: hsl(105 75% 68% / 0.25);
-    box-shadow: inset 0 0 0 1.5px hsl(var(--primary));
-  }
-  /* Light mode — lighter & friendlier mint ramp */
-  [data-theme="light"] .heat-0 { background: hsl(220 12% 84%); }
-  [data-theme="light"] .heat-1 { background: hsl(160 55% 82%); }
-  [data-theme="light"] .heat-2 { background: hsl(150 60% 68%); }
-  [data-theme="light"] .heat-3 { background: hsl(140 65% 52%); }
-  [data-theme="light"] .heat-4 { background: hsl(135 65% 42%); }
-
-  /* ── Activity heatmap (TimelineCard) — responsive cells + hover tooltip ── */
-  .heat-cell {
-    transition: transform 0.12s ease, box-shadow 0.12s ease;
-  }
-  .heat-cell:hover {
-    transform: scale(1.35);
-    box-shadow: 0 0 0 1px hsl(var(--foreground) / 0.28),
-                0 6px 18px hsl(0 0% 0% / 0.45);
-    z-index: 10;
-  }
-  .heat-cell:hover .heat-tip { opacity: 1 !important; }
-  [data-theme="light"] .heat-cell:hover {
-    box-shadow: 0 0 0 1px hsl(var(--foreground) / 0.18),
-                0 6px 18px hsl(0 0% 0% / 0.12);
-  }
-
   /* ── Input fields — quiet dark fill, hairline border, accent focus ── */
   .input {
     @apply w-full text-[12.5px] rounded-lg px-3 py-2.5 transition-colors;
@@ -776,13 +743,6 @@
   .onb-perm-wrap { display: flex; flex-direction: column; }
   .onb-perm-settings-link { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; margin: -2px 0 8px 44px; background: none; border: none; cursor: pointer; font-size: 11px; color: hsl(var(--primary)); transition: opacity 0.15s ease; }
   .onb-perm-settings-link:hover { opacity: 0.8; }
-
-  /* Old-model cleanup row inside the new-model card */
-  .onb-reclaim { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 10px 11px; border-radius: 10px; background: hsl(0 0% 100% / 0.025); box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke)); }
-  .onb-reclaim-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-  .onb-reclaim-copy { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 11.5px; color: hsl(var(--muted-foreground)); }
-  .onb-reclaim-error { font-size: 11px; color: hsl(var(--destructive)); }
-  .onb-reclaim-done { flex-direction: row; align-items: center; gap: 7px; font-size: 11.5px; color: hsl(140 65% 65%); background: hsl(140 65% 50% / 0.1); box-shadow: inset 0 0 0 1px hsl(140 65% 50% / 0.2); }
 
   /* Onboarding error boundary fallback */
   .onb-error-screen { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: hsl(var(--background)); }
@@ -1109,6 +1069,83 @@
   }
   .onb-row .row-title { font-size: 12.5px; font-weight: 500; color: hsl(var(--foreground)); }
   .onb-row .row-desc  { font-size: 11.5px; color: hsl(var(--muted-foreground)); margin-top: 2px; line-height: 1.4; }
+
+  /* Speech route catalogue: compact, explicit choices with no hidden default. */
+  .onb-model-catalogue {
+    overflow: hidden;
+    border: 1px solid hsl(var(--glass-stroke-strong));
+    border-radius: 10px;
+    background: hsl(0 0% 100% / 0.02);
+  }
+  .onb-model-option {
+    display: grid;
+    grid-template-columns: 16px 30px minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
+    width: 100%;
+    padding: 12px;
+    border: 0;
+    border-bottom: 1px solid hsl(var(--glass-stroke));
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .onb-model-option:last-child { border-bottom: 0; }
+  .onb-model-option:hover { background: hsl(0 0% 100% / 0.04); }
+  .onb-model-option:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: -2px; }
+  .onb-model-option:disabled { cursor: wait; opacity: 0.7; }
+  .onb-model-option.selected { background: hsl(var(--primary) / 0.08); }
+  .onb-model-option-radio {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    border: 1px solid hsl(var(--surface-4));
+    border-radius: 999px;
+    color: white;
+  }
+  .onb-model-option.selected .onb-model-option-radio {
+    border-color: hsl(var(--primary));
+    background: hsl(var(--primary));
+  }
+  .onb-model-option-icon {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid hsl(var(--glass-stroke));
+    border-radius: 7px;
+    color: hsl(var(--muted-foreground));
+  }
+  .onb-model-option.selected .onb-model-option-icon { color: hsl(var(--primary)); border-color: hsl(var(--primary) / 0.42); }
+  .onb-model-option-title { font-size: 12.5px; font-weight: 600; color: hsl(var(--foreground)); }
+  .onb-model-option-provider,
+  .onb-model-option-description,
+  .onb-model-option-detail { display: block; }
+  .onb-model-option-provider { margin-top: 1px; font-size: 10.5px; color: hsl(var(--primary)); }
+  .onb-model-option-description { margin-top: 4px; font-size: 11.5px; line-height: 1.4; color: hsl(var(--muted-foreground)); }
+  .onb-model-option-detail { margin-top: 3px; font-size: 10.5px; line-height: 1.35; color: hsl(var(--muted-foreground) / 0.78); }
+  .onb-model-option-badge {
+    flex-shrink: 0;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: hsl(var(--primary) / 0.14);
+    color: hsl(var(--primary));
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .onb-model-detail {
+    padding: 12px;
+    border: 1px solid hsl(var(--glass-stroke));
+    border-radius: 10px;
+    background: hsl(0 0% 100% / 0.018);
+  }
+  .onb-model-detail-title { font-size: 12px; font-weight: 600; color: hsl(var(--foreground)); }
+  .onb-model-detail-copy { margin-top: 3px; font-size: 11.5px; line-height: 1.45; color: hsl(var(--muted-foreground)); }
 
   /* Key glyph used for hotkey choices */
   .key-glyph {

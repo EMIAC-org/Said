@@ -50,10 +50,6 @@ impl SttSetupPolicy {
         self.setup_kind == SetupKind::CloudLocked
     }
 
-    pub fn allows_cloud_toggle(&self) -> bool {
-        self.setup_kind == SetupKind::LocalRequired
-    }
-
     pub fn local_pref(&self) -> Option<&str> {
         self.local_model.as_deref()
     }

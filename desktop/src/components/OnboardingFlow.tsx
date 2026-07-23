@@ -11,7 +11,6 @@ import {
   Wifi,
   LogOut,
   Loader2,
-  Sparkles,
   ExternalLink,
   X,
 } from "lucide-react";
@@ -29,8 +28,11 @@ import type { AppSnapshot, Preferences } from "@/types";
 import {
   getPreferences, invoke, patchPreferences,
   chooseInstalledLocalModel, getDesktopPrefs, getSttSetupPolicy, setDesktopPrefs, requestBrowserAutomation,
+  type DesktopPrefs,
+  type DictationRoute,
   type SttSetupPolicy,
 } from "@/lib/invoke";
+import { dictationRouteOptions } from "@/lib/dictationCatalogue";
 import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
@@ -131,6 +133,7 @@ export function OnboardingFlow({
   const [dictationModel, setDictationModel] = useState<DictationModelStatus | null>(null);
   const [dictationDownload, setDictationDownload] = useState<DictationDownloadProgress | null>(null);
   const [sttPolicy, setSttPolicy] = useState<SttSetupPolicy | null>(null);
+  const [desktopPrefs, setDesktopPrefsState] = useState<DesktopPrefs | null>(null);
   const [nemotronQ4Model, setNemotronQ4Model] = useState<DictationModelStatus | null>(null);
   const [nemotronQ4Download, setNemotronQ4Download] = useState<DictationDownloadProgress | null>(null);
   const [dictationBusy, setDictationBusy] = useState(false);
@@ -210,8 +213,12 @@ export function OnboardingFlow({
 
   const refreshSttSetup = useCallback(async () => {
     try {
-      const policy = await getSttSetupPolicy();
+      const [policy, nextDesktopPrefs] = await Promise.all([
+        getSttSetupPolicy(),
+        getDesktopPrefs(),
+      ]);
       setSttPolicy(policy);
+      setDesktopPrefsState(nextDesktopPrefs);
       if (policy.setup_kind === "cloud_locked") return policy;
       if (policy.local_model === "nemotron-q4") {
         const status = await invoke<DictationModelStatus>("nemotron_model_status", { variant: "q4" });
@@ -562,6 +569,36 @@ export function OnboardingFlow({
     };
   }, [step]);
 
+  const persistDictationRoute = useCallback(async (route: DictationRoute) => {
+    if (!sttPolicy) throw new Error("Speech setup is still loading.");
+    if (route === "local" && sttPolicy.setup_kind === "cloud_locked") {
+      throw new Error("Local speech recognition is not available on this device.");
+    }
+
+    const current = desktopPrefs ?? await getDesktopPrefs();
+    if (route === "local" && localModelInstalled) {
+      if (!sttPolicy.local_model) throw new Error("No local model is assigned to this device.");
+      await chooseInstalledLocalModel(sttPolicy.local_model);
+      onLocalModelReady?.();
+    } else if (current.dictation_stt !== route) {
+      await setDesktopPrefs({ ...current, dictation_stt: route });
+    }
+    await refreshSttSetup();
+  }, [desktopPrefs, localModelInstalled, onLocalModelReady, refreshSttSetup, sttPolicy]);
+
+  const handleDictationRouteSelect = useCallback(async (route: DictationRoute) => {
+    setKeySaving(true);
+    setKeyError("");
+    try {
+      await persistDictationRoute(route);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setKeyError(message || "Couldn't save your speech choice. Try again.");
+    } finally {
+      setKeySaving(false);
+    }
+  }, [persistDictationRoute]);
+
   const chooseLocalEngine = useCallback(async () => {
     if (!localModelInstalled) {
       setKeyError("Download the local model first, then continue.");
@@ -570,9 +607,7 @@ export function OnboardingFlow({
     setKeySaving(true);
     setKeyError("");
     try {
-      if (!sttPolicy?.local_model) throw new Error("No local model is assigned to this device.");
-      await chooseInstalledLocalModel(sttPolicy.local_model);
-      onLocalModelReady?.();
+      await persistDictationRoute("local");
       advanceToNextUndone(completedThroughCurrentStep());
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -580,7 +615,7 @@ export function OnboardingFlow({
     } finally {
       setKeySaving(false);
     }
-  }, [advanceToNextUndone, completedThroughCurrentStep, localModelInstalled, onLocalModelReady, sttPolicy?.local_model]);
+  }, [advanceToNextUndone, completedThroughCurrentStep, localModelInstalled, persistDictationRoute]);
 
   const handleDictationDownload = useCallback(async () => {
     setDictationBusy(true);
@@ -1015,124 +1050,113 @@ export function OnboardingFlow({
       );
     }
 
-    const cloudLocked = sttPolicy?.setup_kind === "cloud_locked";
-    const recommendedName = sttPolicy?.local_model_name ?? NEW_MODEL_NAME;
-    const recommendedSize = sttPolicy?.local_model_size_hint ?? NEW_MODEL_SIZE_HINT;
-    const selectedDownload = sttPolicy?.local_model === "nemotron-q4" ? nemotronQ4Download : dictationDownload;
-    const selectedModel = sttPolicy?.local_model === "nemotron-q4" ? nemotronQ4Model : dictationModel;
+    const options = dictationRouteOptions(sttPolicy);
+    const selectedRoute = desktopPrefs?.dictation_stt ?? options[0].id;
+    const selectedOption = options.find((option) => option.id === selectedRoute) ?? options[0];
+    const localSelected = selectedOption.id === "local";
+    const recommendedName = sttPolicy.local_model_name ?? NEW_MODEL_NAME;
+    const recommendedSize = sttPolicy.local_model_size_hint ?? NEW_MODEL_SIZE_HINT;
+    const selectedDownload = sttPolicy.local_model === "nemotron-q4" ? nemotronQ4Download : dictationDownload;
+    const selectedModel = sttPolicy.local_model === "nemotron-q4" ? nemotronQ4Model : dictationModel;
     const downloadPct = selectedDownload && selectedDownload.total > 0
       ? Math.min(100, Math.round((selectedDownload.received / selectedDownload.total) * 100))
       : null;
-
-    if (cloudLocked) {
-      const intelMac = sttPolicy?.cpu_family === "intel";
-      return (
-        <OnboardingShell
-          step={stepIndex}
-          totalSteps={totalSteps}
-          eyebrow="Cloud speech recognition"
-          title="Cloud Whisper is ready."
-          subtitle="AirNote uses DeepInfra Whisper speech recognition on this device. No local speech model download is needed."
-          brandTagline="Speak naturally. AirNote transcribes when you release the key."
-          brandKicker="Cloud Whisper"
-          brandQuote={intelMac ? "This Intel Mac uses the cloud speech engine for a reliable experience." : "This PC uses the cloud speech engine for a reliable experience."}
-          topRight={<span>{stepLabel(step)}</span>}
-          onBack={goBack}
-          {...navProps}
-        >
-          <div className="mt-7 flex flex-col gap-3">
-            <div className="rounded-xl p-4" style={{ border: "1px solid hsl(var(--primary) / 0.45)", background: "hsl(var(--primary) / 0.06)" }}>
-              <div className="flex items-center gap-2">
-                <span className="w-[22px] h-[22px] rounded-[7px] grid place-items-center" style={{ background: "hsl(var(--primary))", color: "white" }}><Wifi size={13} /></span>
-                <p className="text-[13.5px] font-semibold text-foreground">Whisper Large V3 Turbo</p>
-              </div>
-              <p className="text-[11.5px] text-muted-foreground leading-relaxed mt-3">
-                AirNote securely sends the finished recording to DeepInfra when you release the key. An internet connection is required.
-              </p>
-            </div>
-            <button onClick={() => advanceToNextUndone(completedThroughCurrentStep())} className="btn-primary btn-lg w-full">
-              Continue <ArrowRight size={14} />
-            </button>
-          </div>
-        </OnboardingShell>
-      );
-    }
 
     return (
       <OnboardingShell
         step={stepIndex}
         totalSteps={totalSteps}
-        eyebrow="Local model"
-        title={localModelInstalled ? "Local speech model is ready." : "Installing your local speech model."}
-        subtitle={
-          localModelInstalled
-            ? `${recommendedName} is installed and selected for this Mac.`
-            : `AirNote selected ${recommendedName} for this Apple Silicon Mac. Download it before dictation can run.`
-        }
-        brandTagline="On-device speech keeps dictation local and avoids per-use speech cost."
-        brandKicker="Recommended · on-device"
-        brandQuote="This hardware-assigned model runs locally, privately, and offline."
+        eyebrow="Speech recognition"
+        title="Choose how AirNote hears you."
+        subtitle="Pick a dictation route for this device. You can change it any time in Settings."
+        brandTagline="Start with one reliable speech route. Tune it later as your setup changes."
+        brandKicker="Your speech route"
+        brandQuote="Local keeps speech recognition on this device. Cloud routes process the completed recording after release."
         topRight={<span>{stepLabel(step)}</span>}
         onBack={goBack}
         {...navProps}
       >
         <div className="mt-7 flex flex-col gap-3">
-          <div
-            className="rounded-xl p-4"
-            style={{
-              border: "1px solid hsl(var(--primary) / 0.45)",
-              background: "hsl(var(--primary) / 0.06)",
-            }}
-          >
-            <div className="flex items-center justify-between mb-1.5 gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className="w-[22px] h-[22px] rounded-[7px] grid place-items-center shrink-0"
-                  style={{ background: "hsl(var(--primary))", color: "white" }}
+          <div className="onb-model-catalogue" role="radiogroup" aria-label="Dictation speech recognition route">
+            {options.map((option) => {
+              const selected = option.id === selectedOption.id;
+              const Icon = option.kind === "local" ? Cpu : Wifi;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={keySaving}
+                  onClick={() => void handleDictationRouteSelect(option.id)}
+                  className={`onb-model-option${selected ? " selected" : ""}`}
                 >
-                  <Sparkles size={13} />
-                </span>
-                <p className="text-[13.5px] font-semibold text-foreground truncate">
-                {recommendedName}
-                </p>
-              </div>
-              <span
-                className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
-                style={{ background: "hsl(var(--primary) / 0.18)", color: "hsl(var(--primary))" }}
-              >
-                Recommended
-              </span>
-            </div>
-            <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              AirNote selected this model from your Mac’s processor and RAM. It is the required
-              local setup for dictation and avoids cloud speech usage by default.
-            </p>
-            <DictationModelCard
-              modelName={recommendedName}
-              installed={localModelInstalled}
-              sizeBytes={selectedModel?.size_bytes ?? 0}
-              sizeHint={recommendedSize}
-              progressPct={downloadPct}
-              busy={dictationBusy}
-              error={dictationError}
-              onDownload={() => void handleDictationDownload()}
-              onCancel={() => void handleDictationCancel()}
-              canCancel={sttPolicy?.local_model !== "nemotron-q4"}
-            />
-
-            <button
-              onClick={() => void chooseLocalEngine()}
-              disabled={keySaving || !localModelInstalled}
-              className="btn-primary btn-lg w-full mt-3"
-            >
-              {keySaving
-                ? "Saving…"
-                : localModelInstalled
-                  ? "Continue"
-                  : `Download ${recommendedName} · ${recommendedSize}`}
-              {!keySaving && localModelInstalled && <ArrowRight size={14} />}
-            </button>
+                  <span className="onb-model-option-radio" aria-hidden="true">
+                    {selected && <Check size={11} strokeWidth={3} />}
+                  </span>
+                  <span className="onb-model-option-icon" aria-hidden="true"><Icon size={14} /></span>
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span className="onb-model-option-title truncate">{option.label}</span>
+                      {option.badge && <span className="onb-model-option-badge">{option.badge}</span>}
+                    </span>
+                    <span className="onb-model-option-provider">{option.provider}</span>
+                    <span className="onb-model-option-description">{option.description}</span>
+                    <span className="onb-model-option-detail">{option.detail}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
+
+          {localSelected ? (
+            <div className="onb-model-detail">
+              <p className="onb-model-detail-title">Local model</p>
+              <p className="onb-model-detail-copy">
+                {localModelInstalled
+                  ? `${recommendedName} is installed and ready for local speech recognition.`
+                  : `Download ${recommendedName} before using the local route.`}
+              </p>
+              <DictationModelCard
+                modelName={recommendedName}
+                installed={localModelInstalled}
+                sizeBytes={selectedModel?.size_bytes ?? 0}
+                sizeHint={recommendedSize}
+                progressPct={downloadPct}
+                busy={dictationBusy}
+                error={dictationError}
+                onDownload={() => void handleDictationDownload()}
+                onCancel={() => void handleDictationCancel()}
+                canCancel={sttPolicy.local_model !== "nemotron-q4"}
+              />
+            </div>
+          ) : (
+            <div className="onb-model-detail">
+              <p className="onb-model-detail-title">{selectedOption.label} is selected</p>
+              <p className="onb-model-detail-copy">
+                AirNote will use {selectedOption.provider} for completed-recording transcription. Your selected polish mode stays the same.
+              </p>
+            </div>
+          )}
+
+          <button
+            onClick={() => {
+              if (localSelected) {
+                void chooseLocalEngine();
+              } else {
+                advanceToNextUndone(completedThroughCurrentStep());
+              }
+            }}
+            disabled={keySaving || (localSelected && !localModelInstalled)}
+            className="btn-primary btn-lg w-full"
+          >
+            {keySaving
+              ? "Saving your choice…"
+              : localSelected && !localModelInstalled
+                ? `Download ${recommendedName} to continue`
+                : "Continue"}
+            {!keySaving && (!localSelected || localModelInstalled) && <ArrowRight size={14} />}
+          </button>
 
           {keyError && (
             <p className="text-[12px] text-center" style={{ color: "hsl(var(--destructive))" }}>

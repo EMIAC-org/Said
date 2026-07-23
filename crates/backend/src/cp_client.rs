@@ -6,11 +6,6 @@ use crate::store::users::LocalUser;
 
 pub const ORG_HEADER: &str = "x-airnote-org-id";
 
-pub fn active_org_header_value(user: Option<&LocalUser>) -> Option<String> {
-    user.and_then(|u| u.active_org_id.clone())
-        .filter(|s| !s.trim().is_empty())
-}
-
 pub fn with_org_context(builder: RequestBuilder, user: Option<&LocalUser>) -> RequestBuilder {
     with_org_id(builder, user.and_then(|u| u.active_org_id.as_deref()))
 }

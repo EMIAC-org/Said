@@ -1,21 +1,13 @@
-import type { AppSnapshot, PendingEdit } from "@/types";
+import type { AppSnapshot } from "@/types";
 import { EditorialDashboard } from "@/components/views/dashboards/EditorialDashboard";
 import { SplitDashboard } from "@/components/views/dashboards/SplitDashboard";
 import { useDashboardLayout } from "@/lib/useDashboardLayout";
 
-// ── Props ──────────────────────────────────────────────────────────────────────
-// Kept identical to the previous DashboardView so App.tsx doesn't change.
-
 interface DashboardViewProps {
-  snapshot:        AppSnapshot | null;
-  busy:            boolean;
-  onToggle:        () => void;
-  onAccessibility: () => void;
-  onNavigate?:     (view: string) => void;
-  pendingEdits?:   PendingEdit[];
-  onResolvePending?: (id: string, action: "approve" | "skip") => void;
+  snapshot: AppSnapshot | null;
+  onNavigate?: (view: string) => void;
   onDownloadSuccess?: (path: string) => void;
-  refreshKey?:     number;
+  refreshKey?: number;
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────

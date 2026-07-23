@@ -48,15 +48,6 @@ pub fn set_mode(_key: &str) -> Result<&'static Mode, String> {
     Ok(&MODES[0])
 }
 
-pub fn mode_label() -> &'static str {
-    MODES[0].label
-}
-
-/// Returns the polish model route.
-pub fn resolve_model(key_or_model: &str) -> String {
-    polish::model::resolve_polish_route(key_or_model).label()
-}
-
 /// Gateway/LLM key baked into the build at compile time (set `GATEWAY_API_KEY`
 /// in the build environment; `build-dmg.sh` exports it from `.env`). The shipped
 /// app ships with a working key so end users never enter one. Captured at
@@ -74,14 +65,6 @@ pub fn api_key() -> String {
                 .filter(|s| !s.trim().is_empty())
         })
         .unwrap_or_default()
-}
-
-pub fn validate_api_key() {
-    let key = api_key();
-    if key.is_empty() {
-        eprintln!("[config] GATEWAY_API_KEY not set in .env");
-        std::process::exit(1);
-    }
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────────

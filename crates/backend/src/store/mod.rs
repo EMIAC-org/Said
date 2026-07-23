@@ -97,6 +97,7 @@ const MIGRATION_063: &str = include_str!("migrations/063_vocab_card_fts.sql");
 const MIGRATION_064: &str = include_str!("migrations/064_telemetry_speech_provider.sql");
 const MIGRATION_065: &str = include_str!("migrations/065_telemetry_speech_identity.sql");
 const MIGRATION_066: &str = include_str!("migrations/066_meeting_observability_outbox.sql");
+const MIGRATION_067: &str = include_str!("migrations/067_voice_run_terminal_events.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -818,6 +819,37 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 66")
             .expect("failed to set user_version to 66");
     }
+
+    if version < 67 {
+        info!("running migration 067_voice_run_terminal_events");
+        conn.execute_batch(MIGRATION_067)
+            .expect("migration 067 prelude failed");
+        let voice_runs_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'voice_runs')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if voice_runs_exists {
+            let has_terminal_event: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('voice_runs') WHERE name = 'terminal_event_json'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(false);
+            if !has_terminal_event {
+                conn.execute_batch("ALTER TABLE voice_runs ADD COLUMN terminal_event_json TEXT;")
+                    .expect("migration 067 failed adding terminal_event_json");
+            }
+        } else {
+            warn!("migration 067 skipped: voice_runs is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 67")
+            .expect("failed to set user_version to 67");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -1103,7 +1135,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 66);
+        assert_eq!(version, 67);
 
         for table in [
             "tier2_policy_weights",
@@ -1140,6 +1172,18 @@ mod tests {
                 .unwrap();
             assert_eq!(exists, 1, "recordings.{column} should exist");
         }
+
+        let terminal_event_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('voice_runs') WHERE name = 'terminal_event_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            terminal_event_column, 1,
+            "voice_runs.terminal_event_json should exist"
+        );
 
         let together_key_exists: i64 = conn
             .query_row(
@@ -1192,7 +1236,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 66);
+        assert_eq!(version, 67);
         let identity: (String, String, String) = conn
             .query_row(
                 "SELECT speech_provider, speech_model, speech_path
@@ -1233,7 +1277,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 66);
+        assert_eq!(version, 67);
         assert_eq!(table_exists, 1);
     }
 }

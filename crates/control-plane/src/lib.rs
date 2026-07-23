@@ -516,11 +516,6 @@ pub fn build_router(state: AppState) -> Router {
         )
         // Enterprise — WebSocket
         .route("/v1/meetings/:id/ws", get(routes::ws::handler))
-        // Enterprise — OpenAI account connection
-        .route("/v1/openai/connect", post(routes::openai::connect))
-        .route("/v1/openai/complete", post(routes::openai::complete))
-        .route("/v1/openai/status", get(routes::openai::status))
-        .route("/v1/openai/disconnect", delete(routes::openai::disconnect))
         // Public OAuth redirect (browser flow — desktop app opens this URL)
         .route("/auth/lark", get(routes::lark_auth::desktop_start))
         // Admin React SPA — static assets first, then catch-all.

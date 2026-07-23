@@ -612,29 +612,6 @@ pub fn collect_evidence_with_store(
     .collect_evidence(transcript)
 }
 
-pub fn final_resolve_with_store(
-    pool: &DbPool,
-    user_id: &str,
-    polished: &str,
-    evidence: &EvidenceResult,
-    raw_source: &str,
-    stt_replacements: &[SttReplacement],
-    vocabulary: &[VocabTerm],
-) -> ApplyResult {
-    let metadata = crate::store::tier2_model::get(pool, user_id);
-    let policy_weights = crate::store::tier2_policy::load_weights(pool, user_id);
-    let edit_policy_rules =
-        crate::store::tier2_edit_policy::load_active_replace_rules(pool, user_id);
-    CorrectionEngine::new_with_policy(
-        stt_replacements,
-        vocabulary,
-        metadata,
-        policy_weights,
-        edit_policy_rules,
-    )
-    .final_resolve(polished, evidence, raw_source)
-}
-
 pub fn correct_with_store(
     pool: &DbPool,
     user_id: &str,

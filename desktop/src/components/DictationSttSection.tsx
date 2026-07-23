@@ -13,10 +13,12 @@ import {
   setDesktopPrefs,
   type LocalModelInventory,
   type LocalModelKey,
+  type DictationRoute,
   type SttSetupPolicy,
 } from "../lib/invoke";
 import { ErrorNotice } from "./ErrorNotice";
 import { friendlyError } from "../lib/friendlyError";
+import { dictationRouteOptions } from "../lib/dictationCatalogue";
 
 interface DownloadProgress {
   name: string;
@@ -107,7 +109,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
     return () => { void unlisten.then((stop) => stop()); };
   }, [inventory?.recommended_model, inventory?.setup_kind, refresh]);
 
-  const selectRoute = useCallback(async (route: "local" | "cloud-deepinfra-whisper-v3-turbo" | "cloud-openai-gpt-4o-mini-transcribe") => {
+  const selectRoute = useCallback(async (route: DictationRoute) => {
     if (!desktopPrefs || desktopPrefs.dictation_stt === route) return;
     setError("");
     setNotice("");
@@ -224,27 +226,12 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
 
       <div className="px-5 py-4 flex flex-col gap-3">
         <div className="rounded-xl border overflow-hidden" style={{ borderColor: "hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}>
-          {[
-            ...(policy.setup_kind === "local_required" ? [{
-              id: "local" as const,
-              icon: <Cpu size={14} />,
-              label: "Local",
-              description: `${active?.name ?? recommended?.name ?? "Recommended local model"} · private and no per-use speech cost`,
-            }] : []),
-            {
-              id: "cloud-deepinfra-whisper-v3-turbo" as const,
-              icon: <Cloud size={14} />,
-              label: "Cloud Whisper",
-              description: "DeepInfra Whisper Large V3 Turbo. Internet required.",
-            },
-            {
-              id: "cloud-openai-gpt-4o-mini-transcribe" as const,
-              icon: <Cloud size={14} />,
-              label: "Cloud · GPT-4o mini Transcribe",
-              description: "OpenAI completed-recording transcription. Uses OPENAI_API_KEY; polish stays unchanged.",
-            },
-          ].map((option, index) => {
+          {dictationRouteOptions(policy).map((option, index) => {
             const selected = option.id === desktopPrefs.dictation_stt;
+            const Icon = option.kind === "local" ? Cpu : Cloud;
+            const label = option.kind === "local"
+              ? `Local · ${active?.name ?? option.label}`
+              : `Cloud · ${option.label}`;
             return (
               <button
                 key={option.id}
@@ -257,8 +244,9 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
                   {selected && <Check size={11} strokeWidth={3} className="text-white" />}
                 </span>
                 <span className="min-w-0">
-                  <span className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">{option.icon}{option.label}</span>
+                  <span className="flex items-center gap-1.5 text-[13px] font-medium text-foreground"><Icon size={14} />{label}</span>
                   <span className="block text-[11px] text-muted-foreground mt-1">{option.description}</span>
+                  <span className="block text-[10px] text-muted-foreground mt-1">{option.provider} · {option.detail}</span>
                 </span>
               </button>
             );

@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowRight, Check, Cloud, Cpu, Download, Loader2, Trash2 } from "lucide-react";
 import {
   chooseInstalledLocalModel,
+  getDesktopPrefs,
   getLocalModelInventory,
   getSttSetupPolicy,
   invoke,
@@ -10,8 +11,10 @@ import {
   type LocalModelInfo,
   type LocalModelInventory,
   type LocalModelKey,
+  type DesktopPrefs,
   type SttSetupPolicy,
 } from "@/lib/invoke";
+import { dictationRouteOption } from "@/lib/dictationCatalogue";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import type { Platform } from "@/lib/hotkeys";
@@ -53,6 +56,7 @@ function formatSize(bytes: number): string {
  */
 export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: () => void; platform: Platform }) {
   const [policy, setPolicy] = useState<SttSetupPolicy | null>(null);
+  const [desktopPrefs, setDesktopPrefs] = useState<DesktopPrefs | null>(null);
   const [inventory, setInventory] = useState<LocalModelInventory | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,12 +65,14 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
 
   const refresh = useCallback(async () => {
     try {
-      const [nextPolicy, nextInventory] = await Promise.all([
+      const [nextPolicy, nextPrefs, nextInventory] = await Promise.all([
         getSttSetupPolicy(),
+        getDesktopPrefs(),
         getLocalModelInventory(),
       ]);
       if (!mounted.current) return null;
       setPolicy(nextPolicy);
+      setDesktopPrefs(nextPrefs);
       setInventory(nextInventory);
       return nextInventory;
     } catch (cause) {
@@ -147,7 +153,7 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
     }
   }, [onDone, refresh]);
 
-  if (!policy || !inventory) {
+  if (!policy || !inventory || !desktopPrefs) {
     return (
       <div className="mig-overlay" role="dialog" aria-modal="true" aria-labelledby="model-migration-title">
         <div className="mig-card">
@@ -167,17 +173,18 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
 
   if (policy.setup_kind === "cloud_locked") {
     const oriserve = inventory.models.find((model) => model.key === "oriserve");
+    const selectedRoute = dictationRouteOption(policy, desktopPrefs.dictation_stt);
     return (
       <div className="mig-overlay" role="dialog" aria-modal="true" aria-labelledby="model-migration-title">
         <div className="mig-card">
           <div className="mig-badge"><Cloud size={12} /> Updated speech setup</div>
-          <h2 id="model-migration-title" className="mig-title">Cloud Whisper is enabled.</h2>
+          <h2 id="model-migration-title" className="mig-title">Cloud transcription is enabled.</h2>
           <p className="mig-desc">
-            {policy.cpu_family === "intel" ? "This Intel Mac" : "Windows"} now uses DeepInfra cloud speech recognition for dictation. No local dictation download is needed.
+            {policy.cpu_family === "intel" ? "This Intel Mac" : "Windows"} uses {selectedRoute.provider} for completed-recording transcription. No local dictation download is needed.
           </p>
           <div className="mig-model">
             <div className="mig-model-row">
-              <span className="mig-model-left"><span className="mig-model-ico"><Cloud size={13} /></span><span className="mig-model-name">Whisper Large V3 Turbo · DeepInfra</span></span>
+              <span className="mig-model-left"><span className="mig-model-ico"><Cloud size={13} /></span><span className="mig-model-name">{selectedRoute.label} · {selectedRoute.provider}</span></span>
               <span className="mig-ready"><Check size={12} /> Ready</span>
             </div>
             {oriserve?.installed && <p className="text-[11px] text-muted-foreground mt-2">Oriserve remains installed for local Meetings.</p>}

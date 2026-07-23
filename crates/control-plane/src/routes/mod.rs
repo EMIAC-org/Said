@@ -12,7 +12,6 @@ pub mod meeting_telemetry;
 pub mod meetings;
 pub mod metering;
 pub mod observability;
-pub mod openai;
 pub mod orgs;
 pub mod runtime;
 pub mod runtime_history;

@@ -296,43 +296,6 @@ export async function patchPreferences(
   }
 }
 
-// ── OpenAI / ChatGPT OAuth ───────────────────────────────────────────────────
-
-export interface OpenAIStatus {
-  connected: boolean;
-  expires_at: number | null;
-  connected_at: number | null;
-}
-
-export async function openaiConnect(): Promise<string | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<string>("openai_connect");
-  } catch (e) {
-    console.error("openai_connect failed:", e);
-    return null;
-  }
-}
-
-export async function openaiStatus(): Promise<OpenAIStatus | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<OpenAIStatus>("openai_status");
-  } catch {
-    return null;
-  }
-}
-
-export async function openaiDisconnect(): Promise<boolean> {
-  if (!isTauriRuntime()) return false;
-  try {
-    await tauriInvoke("openai_disconnect");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Fetch recording history from the backend (newest first). */
 export async function listHistory(limit = 50, before?: number): Promise<Recording[]> {
   if (!isTauriRuntime()) return [];
@@ -495,8 +458,8 @@ export async function getDebugLogs(): Promise<DebugLogs | null> {
       desktop_path: "~/Library/Logs/AirNote/said.log",
       backend_path: "~/Library/Logs/AirNote/backend.log",
       desktop:      "[main] said desktop starting — preview log",
-      backend:      "airnote-backend build=0.1.0 features=openai_oauth+codex_api",
-      combined:     "── AirNote desktop ──\n[main] airnote desktop starting — preview log\n\n── airnote-backend ──\nairnote-backend build=0.1.0 features=openai_oauth+codex_api",
+      backend:      "airnote-backend build=0.1.0",
+      combined:     "── AirNote desktop ──\n[main] airnote desktop starting — preview log\n\n── airnote-backend ──\nairnote-backend build=0.1.0",
       truncated:    false,
     };
   }
@@ -1078,6 +1041,11 @@ export function onDictationRecovered(handler: (text: string) => void): () => voi
 // preferences DB) because they're read by the desktop process synchronously
 // at startup, before the backend daemon is reachable. Changing them takes
 // effect on next launch.
+export type DictationRoute =
+  | "local"
+  | "cloud-deepinfra-whisper-v3-turbo"
+  | "cloud-openai-gpt-4o-mini-transcribe";
+
 export interface DesktopPrefs {
   sentry_disabled: boolean;
   update_channel: "stable" | "beta";
@@ -1086,7 +1054,7 @@ export interface DesktopPrefs {
   beta_mode: boolean;
   browser_context_enabled: boolean;
   /** Effective device route: local or a configured hosted STT provider. */
-  dictation_stt: "local" | "cloud-deepinfra-whisper-v3-turbo" | "cloud-openai-gpt-4o-mini-transcribe";
+  dictation_stt: DictationRoute;
   /** Hardware-assigned local model. Meetings retain their own Oriserve path. */
   local_stt_model: "oriserve" | "nemotron-q4" | "nemotron-q8";
   /** Explicit decision to keep an older installed model during an upgrade. */

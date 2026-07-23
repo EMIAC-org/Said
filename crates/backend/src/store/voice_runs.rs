@@ -24,6 +24,7 @@ pub struct VoiceRun {
     pub completed_successfully: bool,
     pub paste_success: Option<bool>,
     pub diagnostic_json: Option<String>,
+    pub terminal_event_json: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub failed_at_ms: Option<i64>,
@@ -197,25 +198,6 @@ pub fn mark_voice_run_failed(
     Some(())
 }
 
-pub fn mark_voice_run_paste_success(
-    pool: &DbPool,
-    recording_id: &str,
-    paste_success: bool,
-) -> Option<()> {
-    let conn = pool.get().ok()?;
-    let now = now_ms();
-    conn.execute(
-        "UPDATE voice_runs
-            SET paste_success=?2,
-                updated_at_ms=?3
-          WHERE recording_id=?1",
-        params![recording_id, i64::from(paste_success), now],
-    )
-    .ok()
-    .filter(|n| *n > 0)?;
-    Some(())
-}
-
 pub fn mark_voice_run_paste_success_by_run(
     pool: &DbPool,
     run_id: &str,
@@ -233,6 +215,37 @@ pub fn mark_voice_run_paste_success_by_run(
     .ok()
     .filter(|n| *n > 0)?;
     Some(())
+}
+
+/// Save the exact terminal wire payload before it is delivered to a WebSocket
+/// client. A reconnect after the sidecar restarts can then receive the same
+/// terminal result instead of re-running the model.
+pub fn store_terminal_event(pool: &DbPool, run_id: &str, event: &Value) -> Option<()> {
+    let conn = pool.get().ok()?;
+    let now = now_ms();
+    conn.execute(
+        "UPDATE voice_runs
+            SET terminal_event_json=?2,
+                updated_at_ms=?3
+          WHERE run_id=?1",
+        params![run_id, event.to_string(), now],
+    )
+    .ok()
+    .filter(|n| *n > 0)?;
+    Some(())
+}
+
+/// Fetch one durable voice run for reconnect/resume handling.
+pub fn get_voice_run(pool: &DbPool, run_id: &str) -> Option<VoiceRun> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        &format!("SELECT {SELECT_COLS} FROM voice_runs WHERE run_id=?1"),
+        params![run_id],
+        row_to_voice_run,
+    )
+    .optional()
+    .ok()
+    .flatten()
 }
 
 pub fn latest_retryable_failed_voice_run(pool: &DbPool, user_id: &str) -> Option<VoiceRun> {
@@ -330,7 +343,7 @@ pub fn recent_successful_normal_transcripts_for_app(
 const SELECT_COLS: &str = "run_id, user_id, audio_id, mode, target_app, status,
     wav_bytes, duration_ms, pre_transcript, recording_id, error_code, error_message,
     retryable, owned_by_airnote, attempt_count, completed_successfully, paste_success,
-    diagnostic_json, created_at_ms, updated_at_ms, failed_at_ms, completed_at_ms";
+    diagnostic_json, terminal_event_json, created_at_ms, updated_at_ms, failed_at_ms, completed_at_ms";
 
 fn row_to_voice_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<VoiceRun> {
     let retryable: i64 = row.get(12)?;
@@ -356,10 +369,11 @@ fn row_to_voice_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<VoiceRun> {
         completed_successfully: completed_successfully != 0,
         paste_success: paste_success_raw.map(|v| v != 0),
         diagnostic_json: row.get(17)?,
-        created_at_ms: row.get(18)?,
-        updated_at_ms: row.get(19)?,
-        failed_at_ms: row.get(20)?,
-        completed_at_ms: row.get(21)?,
+        terminal_event_json: row.get(18)?,
+        created_at_ms: row.get(19)?,
+        updated_at_ms: row.get(20)?,
+        failed_at_ms: row.get(21)?,
+        completed_at_ms: row.get(22)?,
     })
 }
 
@@ -397,8 +411,8 @@ mod tests {
         mark_voice_run_failed(
             &pool,
             "run-1",
-            "sse_missing_done",
-            "SSE stream ended without done",
+            "polish_stream_missing_terminal",
+            "polish stream ended without a terminal event",
             true,
             true,
             None,
@@ -485,6 +499,43 @@ mod tests {
         .unwrap();
         let ids = retryable_failed_audio_ids(&pool, now_ms() - 1_000);
         assert_eq!(ids, vec!["audio-3".to_string()]);
+    }
+
+    #[test]
+    fn terminal_event_survives_a_fresh_voice_run_lookup() {
+        let (pool, user_id) = pool();
+        create_voice_run_captured(
+            &pool,
+            CapturedVoiceRun {
+                run_id: "run-terminal",
+                user_id: &user_id,
+                audio_id: None,
+                mode: "normal",
+                target_app: None,
+                wav_bytes: 0,
+                duration_ms: 900,
+                pre_transcript: Some("hello"),
+            },
+        )
+        .unwrap();
+        let terminal = serde_json::json!({
+            "type": "done",
+            "protocol_version": 1,
+            "run_id": "run-terminal",
+            "seq": 4,
+            "payload": { "polished": "Hello" },
+        });
+        store_terminal_event(&pool, "run-terminal", &terminal).unwrap();
+
+        let loaded = get_voice_run(&pool, "run-terminal").unwrap();
+        let recovered: Value = serde_json::from_str(
+            loaded
+                .terminal_event_json
+                .as_deref()
+                .expect("terminal event is persisted"),
+        )
+        .unwrap();
+        assert_eq!(recovered, terminal);
     }
 
     #[test]
