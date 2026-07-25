@@ -64,6 +64,19 @@ const TONE_PRESETS = [
 
 type ToneKey = (typeof TONE_PRESETS)[number]["key"];
 
+const POLISH_MODELS = [
+  {
+    key: "deepinfra-gemma-4-26b-a4b",
+    label: "Gemma 4 26B A4B",
+    detail: "Current quality baseline · DeepInfra priority",
+  },
+  {
+    key: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    detail: "Fast, low-cost comparison · reasoning off",
+  },
+] as const;
+
 const DEVELOPER_CONTEXT_MAX_CHARS = 8_000;
 
 function splitDeveloperAliases(value: string): string[] {
@@ -1200,6 +1213,36 @@ export function SettingsView({
 
         {/* ── Models ───────────────────────────────────── */}
         <Show when={isOn("models")}>
+        <Section title="Polish model">
+          <div className="px-5 py-4">
+            <p className="text-[12px] text-muted-foreground mb-3">
+              Choose the model that cleans up each transcript. The selection syncs across your AirNote devices.
+            </p>
+            <div className="rounded-xl border overflow-hidden" style={{ borderColor: "hsl(var(--surface-3))", background: "hsl(var(--surface-2))" }}>
+              {POLISH_MODELS.map((model, index) => {
+                const selected = (prefs?.selected_model ?? POLISH_MODELS[0].key) === model.key;
+                return (
+                  <button
+                    key={model.key}
+                    type="button"
+                    disabled={saving || !prefs}
+                    onClick={() => void patch({ selected_model: model.key })}
+                    className="w-full text-left px-3 py-3 flex items-start gap-2.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-50"
+                    style={index > 0 ? { borderTop: "1px solid hsl(var(--surface-3))" } : undefined}
+                  >
+                    <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border" style={{ borderColor: selected ? "hsl(var(--primary))" : "hsl(var(--surface-4))", background: selected ? "hsl(var(--primary))" : "transparent" }}>
+                      {selected && <Check size={11} strokeWidth={3} className="text-white" />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-medium text-foreground">{model.label}</span>
+                      <span className="block text-[11px] text-muted-foreground mt-1">{model.detail}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </Section>
         {/* On-device STT is cross-platform, so the cloud-vs-local picker shows on Windows too. */}
         <DictationSttSection
           prefs={prefs}

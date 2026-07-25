@@ -1,8 +1,7 @@
 //! Single source of truth for dictation polish model selection.
 //!
-//! Production voice polish has one intentional route. Keeping this registry
-//! narrow prevents the UI, stored preferences, and the runtime from claiming
-//! that a different model/provider is in use.
+//! Keeping this registry narrow prevents the UI, stored preferences, and the
+//! runtime from claiming that a different model/provider is in use.
 
 /// Fast Groq model used only by non-polish helpers such as the learning judge.
 pub const GROQ_POLISH_MODEL_FAST: &str = "llama-3.1-8b-instant";
@@ -13,7 +12,10 @@ pub const GROQ_POLISH_MODEL_SMART_DEFAULT: &str = "llama-3.3-70b-versatile";
 /// Paid Gemma 4 26B A4B via DeepInfra's direct OpenAI-compatible API.
 pub const DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B: &str = "google/gemma-4-26B-A4B-it";
 
-/// The only selectable production dictation-polish model.
+/// Fast, low-cost DeepSeek model with thinking disabled at request time.
+pub const DEEPSEEK_POLISH_MODEL_V4_FLASH: &str = "deepseek-v4-flash";
+
+/// Default production dictation-polish model.
 pub const DEFAULT_POLISH_MODEL_KEY: &str = "deepinfra-gemma-4-26b-a4b";
 
 /// One selectable polish model in the catalog.
@@ -29,16 +31,25 @@ pub struct PolishModelSpec {
     pub beta_only: bool,
 }
 
-/// Curated catalog. Interactive dictation deliberately exposes one route so
-/// every voice/text helper uses the same quality model.
-pub const POLISH_MODEL_CATALOG: &[PolishModelSpec] = &[PolishModelSpec {
-    key: DEFAULT_POLISH_MODEL_KEY,
-    label: "Gemma 4 26B A4B (DeepInfra)",
-    provider: "deepinfra",
-    model_id: DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
-    reasoning_low: false,
-    beta_only: false,
-}];
+/// Curated production catalog shared by preferences and runtime routing.
+pub const POLISH_MODEL_CATALOG: &[PolishModelSpec] = &[
+    PolishModelSpec {
+        key: DEFAULT_POLISH_MODEL_KEY,
+        label: "Gemma 4 26B A4B (DeepInfra)",
+        provider: "deepinfra",
+        model_id: DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
+        reasoning_low: false,
+        beta_only: false,
+    },
+    PolishModelSpec {
+        key: DEEPSEEK_POLISH_MODEL_V4_FLASH,
+        label: "DeepSeek V4 Flash (No reasoning)",
+        provider: "deepseek",
+        model_id: DEEPSEEK_POLISH_MODEL_V4_FLASH,
+        reasoning_low: false,
+        beta_only: false,
+    },
+];
 
 /// Where a polish request should be sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,8 +76,8 @@ pub fn catalog_spec(key: &str) -> Option<&'static PolishModelSpec> {
     POLISH_MODEL_CATALOG.iter().find(|spec| spec.key == key)
 }
 
-/// Old selections resolve to the one current production route. We deliberately
-/// do not retain provider-specific aliases: deployments migrate stored values.
+/// Old selections resolve to the default production route. We deliberately do
+/// not retain provider-specific aliases: deployments migrate stored values.
 pub fn validate_polish_model_key(raw: &str) -> String {
     catalog_spec(raw)
         .map(|spec| spec.key.to_string())
@@ -77,10 +88,9 @@ pub fn normalize_selected_model(raw: &str) -> String {
     validate_polish_model_key(raw)
 }
 
-/// Interactive dictation is hard-pinned to paid Gemma 4 via DeepInfra. Stored
-/// legacy selections cannot route a user to a different polish provider.
-pub fn resolve_polish_route(_selected_model: &str) -> PolishRoute {
-    let spec = catalog_spec(DEFAULT_POLISH_MODEL_KEY).expect("default polish catalog entry");
+pub fn resolve_polish_route(selected_model: &str) -> PolishRoute {
+    let key = validate_polish_model_key(selected_model);
+    let spec = catalog_spec(&key).expect("validated polish catalog entry");
     PolishRoute {
         key: spec.key.to_string(),
         provider: spec.provider,
@@ -119,10 +129,19 @@ mod tests {
     }
 
     #[test]
-    fn production_route_is_paid_deepinfra_gemma() {
+    fn default_route_is_paid_deepinfra_gemma() {
         let route = resolve_polish_route("anything");
         assert_eq!(route.provider, "deepinfra");
         assert_eq!(route.model, DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B);
+        assert!(!route.reasoning_low);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_routes_to_deepseek() {
+        let route = resolve_polish_route(DEEPSEEK_POLISH_MODEL_V4_FLASH);
+        assert_eq!(route.key, DEEPSEEK_POLISH_MODEL_V4_FLASH);
+        assert_eq!(route.provider, "deepseek");
+        assert_eq!(route.model, DEEPSEEK_POLISH_MODEL_V4_FLASH);
         assert!(!route.reasoning_low);
     }
 }

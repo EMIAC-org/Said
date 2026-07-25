@@ -54,6 +54,7 @@ const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
 const OPENAI_VALIDATE_ENDPOINT: &str = "https://api.openai.com/v1/models";
 const DEEPINFRA_VALIDATE_ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/models";
+const DEEPSEEK_VALIDATE_ENDPOINT: &str = "https://api.deepseek.com/models";
 const GEMINI_VALIDATE_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const GATEWAY_VALIDATE_ENDPOINT: &str = "https://gateway.outreachdeal.com/v1/chat/completions";
 const RUNTIME_PROMPT_LOG_ENV: &str = "AIRNOTE_RUNTIME_PROMPT_LOG";
@@ -3438,6 +3439,7 @@ async fn runtime_provider_secret(
         "openai" => !state.openai_api_key.trim().is_empty(),
         "groq" => !state.groq_api_key.trim().is_empty(),
         "deepinfra" => !state.deepinfra_api_key.trim().is_empty(),
+        "deepseek" => !state.deepseek_api_key.trim().is_empty(),
         _ => false,
     };
 
@@ -3465,6 +3467,7 @@ async fn runtime_provider_secret(
         "openai" => state.openai_api_key.trim(),
         "groq" => state.groq_api_key.trim(),
         "deepinfra" => state.deepinfra_api_key.trim(),
+        "deepseek" => state.deepseek_api_key.trim(),
         _ => "",
     };
     if tenant::allow_platform_credential_fallback() && !fallback.is_empty() {
@@ -3641,6 +3644,7 @@ fn provider_display_name(provider: &str) -> &'static str {
         "gemini" => "Gemini",
         "gateway" => "Gateway",
         "deepinfra" => "DeepInfra",
+        "deepseek" => "DeepSeek",
         _ => "Provider",
     }
 }
@@ -3671,6 +3675,14 @@ async fn validate_provider_secret(
         "deepinfra" => {
             client
                 .get(DEEPINFRA_VALIDATE_ENDPOINT)
+                .bearer_auth(secret)
+                .timeout(timeout)
+                .send()
+                .await
+        }
+        "deepseek" => {
+            client
+                .get(DEEPSEEK_VALIDATE_ENDPOINT)
                 .bearer_auth(secret)
                 .timeout(timeout)
                 .send()
@@ -3734,7 +3746,7 @@ async fn validate_provider_secret(
 fn normalize_provider(provider: &str) -> Result<String, (StatusCode, Json<Value>)> {
     let provider = provider.trim().to_lowercase();
     match provider.as_str() {
-        "groq" | "openai" | "gemini" | "gateway" | "deepinfra" => Ok(provider),
+        "groq" | "openai" | "gemini" | "gateway" | "deepinfra" | "deepseek" => Ok(provider),
         _ => Err(json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown provider",
@@ -3757,7 +3769,7 @@ fn trim_token_edges(token: &str) -> &str {
     token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
 }
 
-/// Send every interactive dictation polish request through Gemma 4 on DeepInfra.
+/// Send an interactive dictation polish request through its selected route.
 async fn polish_llm(
     state: &AppState,
     polish_provider: &str,
@@ -3773,16 +3785,32 @@ async fn polish_llm(
             "[runtime] voice polish stream requested — provider={polish_provider} model={polish_model}"
         );
     }
-    debug_assert_eq!(polish_provider, "deepinfra");
     let _ = state;
-    crate::deepinfra::call_deepinfra(
-        api_secret,
-        polish_model,
-        system_prompt,
-        user_message,
-        token_tx,
-    )
-    .await
+    match polish_provider {
+        "deepinfra" => {
+            crate::deepinfra::call_deepinfra(
+                api_secret,
+                polish_model,
+                system_prompt,
+                user_message,
+                token_tx,
+            )
+            .await
+        }
+        "deepseek" => {
+            crate::deepseek::call_deepseek(
+                api_secret,
+                polish_model,
+                system_prompt,
+                user_message,
+                token_tx,
+            )
+            .await
+        }
+        _ => Err(crate::openai_compat_polish::gateway_err(
+            "unsupported polish provider",
+        )),
+    }
 }
 
 async fn call_groq(

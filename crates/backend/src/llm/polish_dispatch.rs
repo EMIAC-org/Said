@@ -27,6 +27,9 @@ pub async fn stream_polish_routed(
     user_message: &str,
     token_tx: mpsc::Sender<String>,
 ) -> Result<PolishResult, String> {
+    if route.provider == "deepseek" {
+        return Err("DeepSeek V4 Flash polish requires the AirNote server runtime".to_string());
+    }
     if llm_provider == "openai_codex" {
         let access_token = openai_access_token.unwrap_or("");
         if access_token.is_empty() {
@@ -95,5 +98,38 @@ pub async fn stream_polish_routed(
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stream_polish_routed;
+    use said_core::polish::model::{DEEPSEEK_POLISH_MODEL_V4_FLASH, resolve_polish_route};
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn deepseek_route_fails_closed_without_server_runtime() {
+        let route = resolve_polish_route(DEEPSEEK_POLISH_MODEL_V4_FLASH);
+        let (token_tx, _token_rx) = mpsc::channel(1);
+        let result = stream_polish_routed(
+            &reqwest::Client::new(),
+            &route,
+            "",
+            "",
+            "",
+            "",
+            None,
+            "gateway",
+            "system",
+            "user",
+            token_tx,
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("DeepSeek must not fall through to another provider"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("requires the AirNote server runtime"));
     }
 }

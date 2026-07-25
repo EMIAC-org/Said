@@ -482,4 +482,12 @@ mod tests {
             "deepinfra-gemma-4-26b-a4b"
         );
     }
+
+    #[test]
+    fn preserves_deepseek_v4_flash_selection() {
+        assert_eq!(
+            normalize_runtime_selected_model("deepseek-v4-flash".into()),
+            "deepseek-v4-flash"
+        );
+    }
 }

@@ -8,6 +8,7 @@ pub mod auth;
 pub mod codex_client;
 pub mod costs;
 pub mod deepinfra;
+pub mod deepseek;
 pub mod format_recover;
 pub mod lark_client;
 pub mod lark_sync;
