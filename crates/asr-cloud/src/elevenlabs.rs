@@ -1,8 +1,4 @@
-//! OpenAI completed-recording speech-to-text transport.
-//!
-//! This uses `POST /v1/audio/transcriptions`, not OpenAI's asynchronous Batch
-//! API. AirNote uploads one WAV after push-to-talk ends and waits for its
-//! transcription before the existing polish pipeline runs.
+//! ElevenLabs completed-recording speech-to-text transport.
 
 use std::{fmt, sync::Arc, time::Instant};
 
@@ -12,36 +8,32 @@ use tokio::time::{Duration, sleep, timeout};
 
 use crate::{CloudSttError, CloudTranscription, classify_http_status};
 
-pub const API_KEY_ENV: &str = "OPENAI_API_KEY";
-pub const MODEL: &str = "gpt-4o-mini-transcribe";
-pub const ENDPOINT: &str = "https://api.openai.com/v1/audio/transcriptions";
-
-// AirNote's current cloud-STT product scope is Hindi/Hinglish. Sending an
-// explicit hint prevents auto-detection from choosing Urdu for Hindi speech.
-const LANGUAGE: &str = "hi";
+pub const API_KEY_ENV: &str = "ELEVEN_LABS_API_KEY";
+pub const MODEL: &str = "scribe_v2";
+pub const ENDPOINT: &str = "https://api.elevenlabs.io/v1/speech-to-text";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
-pub struct OpenAiClient {
+pub struct ElevenLabsClient {
     api_key: Arc<str>,
     http: reqwest::Client,
 }
 
-impl fmt::Debug for OpenAiClient {
+impl fmt::Debug for ElevenLabsClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OpenAiClient")
+        f.debug_struct("ElevenLabsClient")
             .field("model", &MODEL)
             .finish_non_exhaustive()
     }
 }
 
-impl OpenAiClient {
+impl ElevenLabsClient {
     pub fn new(api_key: String) -> Result<Self, CloudSttError> {
         if api_key.trim().is_empty() {
             return Err(CloudSttError::MissingApiKey {
-                provider: "OpenAI".into(),
+                provider: "ElevenLabs".into(),
                 env_var: API_KEY_ENV.into(),
             });
         }
@@ -49,7 +41,7 @@ impl OpenAiClient {
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|error| CloudSttError::InvalidResponse {
-                detail: format!("couldn't initialize the OpenAI client: {error}"),
+                detail: format!("couldn't initialize the ElevenLabs client: {error}"),
             })?;
         Ok(Self {
             api_key: Arc::from(api_key),
@@ -79,16 +71,16 @@ impl OpenAiClient {
 
         Ok(CloudTranscription {
             text: response.text.trim().to_string(),
-            // The documented JSON response is text + usage. AirNote sends a
-            // deliberate Hindi hint rather than inferring a language locally.
-            language: Some(LANGUAGE.to_string()),
+            language: response
+                .language_code
+                .filter(|language| !language.trim().is_empty()),
             audio_secs: None,
             latency_ms: started.elapsed().as_millis() as u64,
             model: MODEL.to_string(),
         })
     }
 
-    async fn transcribe_once(&self, wav: &[u8]) -> Result<OpenAiResponse, CloudSttError> {
+    async fn transcribe_once(&self, wav: &[u8]) -> Result<ElevenLabsResponse, CloudSttError> {
         timeout(REQUEST_TIMEOUT, async {
             let audio = Part::bytes(wav.to_vec())
                 .file_name("dictation.wav")
@@ -96,16 +88,17 @@ impl OpenAiClient {
                 .map_err(|error| CloudSttError::InvalidResponse {
                     detail: format!("invalid audio upload: {error}"),
                 })?;
-            let form = Form::new()
-                .part("file", audio)
-                .text("model", MODEL)
-                .text("response_format", "json")
-                .text("language", LANGUAGE);
             let response = self
                 .http
                 .post(ENDPOINT)
-                .bearer_auth(self.api_key.as_ref())
-                .multipart(form)
+                .header("xi-api-key", self.api_key.as_ref())
+                .multipart(
+                    Form::new()
+                        .part("file", audio)
+                        .text("model_id", MODEL)
+                        .text("diarize", "false")
+                        .text("tag_audio_events", "false"),
+                )
                 .send()
                 .await
                 .map_err(request_error)?;
@@ -118,7 +111,7 @@ impl OpenAiClient {
                 ));
             }
             serde_json::from_slice(&body).map_err(|error| CloudSttError::InvalidResponse {
-                detail: format!("invalid OpenAI transcription response: {error}"),
+                detail: format!("invalid ElevenLabs transcription response: {error}"),
             })
         })
         .await
@@ -129,8 +122,9 @@ impl OpenAiClient {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiResponse {
+struct ElevenLabsResponse {
     text: String,
+    language_code: Option<String>,
 }
 
 fn request_error(error: reqwest::Error) -> CloudSttError {
@@ -142,7 +136,7 @@ fn request_error(error: reqwest::Error) -> CloudSttError {
         CloudSttError::Offline
     } else {
         CloudSttError::InvalidResponse {
-            detail: format!("OpenAI request failed: {error}"),
+            detail: format!("ElevenLabs request failed: {error}"),
         }
     }
 }
@@ -169,21 +163,28 @@ mod tests {
 
     #[test]
     fn debug_output_never_exposes_the_api_key() {
-        let client = OpenAiClient::new("secret-token".into()).unwrap();
+        let client = ElevenLabsClient::new("secret-token".into()).unwrap();
         let debug = format!("{client:?}");
         assert!(debug.contains(MODEL));
         assert!(!debug.contains("secret-token"));
     }
 
     #[test]
-    fn uses_hindi_for_every_openai_transcription() {
-        assert_eq!(LANGUAGE, "hi");
+    fn uses_scribe_v2() {
+        assert_eq!(MODEL, "scribe_v2");
+    }
+
+    #[test]
+    fn reads_detected_language() {
+        let response: ElevenLabsResponse =
+            serde_json::from_str(r#"{"text":"hello","language_code":"en"}"#).unwrap();
+        assert_eq!(response.language_code.as_deref(), Some("en"));
     }
 
     #[test]
     fn extracts_structured_provider_errors() {
         assert_eq!(
-            provider_error_detail(br#"{"error":{"message":"bad audio"}}"#),
+            provider_error_detail(br#"{"detail":{"message":"bad audio"}}"#),
             "bad audio"
         );
     }

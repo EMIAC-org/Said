@@ -680,6 +680,18 @@ export function onVoiceDone(
   return () => unsub();
 }
 
+/** Listen for the deferred WAV attachment that follows transcript-first polish. */
+export function onRecordingAudioAttached(
+  handler: (recordingId: string) => void
+): Unsubscribe {
+  if (!isTauriRuntime()) return () => {};
+  let unsub: Unsubscribe = () => {};
+  listen<{ recording_id: string }>("recording-audio-attached", (e) =>
+    handler(e.payload.recording_id)
+  ).then((fn) => { unsub = fn; });
+  return () => unsub();
+}
+
 /** Listen for error events. `audioId` is the saved WAV id for retrying. */
 export type VoiceErrorPayload = {
   message: string;
@@ -1044,7 +1056,7 @@ export function onDictationRecovered(handler: (text: string) => void): () => voi
 export type DictationRoute =
   | "local"
   | "cloud-deepinfra-whisper-v3-turbo"
-  | "cloud-openai-gpt-4o-mini-transcribe";
+  | "cloud-elevenlabs-scribe-v2";
 
 export interface DesktopPrefs {
   sentry_disabled: boolean;

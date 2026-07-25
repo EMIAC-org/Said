@@ -279,20 +279,20 @@ mod provider {
     use std::sync::OnceLock;
 
     use asr_cloud::{
-        API_KEY_ENV as DEEPINFRA_API_KEY_ENV, DeepInfraClient, OPENAI_API_KEY_ENV, OpenAiClient,
+        DEEPINFRA_API_KEY_ENV, DeepInfraClient, ELEVEN_LABS_API_KEY_ENV, ElevenLabsClient,
     };
     use said_core::transcript::{TranscriptMeta, TranscriptOrigin};
 
     use super::PreTranscript;
 
     const DEEPINFRA_WHISPER_NAME: &str = "deepinfra/whisper-large-v3-turbo";
-    const OPENAI_GPT_4O_MINI_NAME: &str = "openai/gpt-4o-mini-transcribe";
+    const ELEVENLABS_SCRIBE_V2_NAME: &str = "elevenlabs/scribe-v2";
 
     #[derive(Clone, Copy, PartialEq)]
     enum Selected {
         OnDevice,
         DeepInfraWhisper,
-        OpenAiGpt4oMini,
+        ElevenLabsScribeV2,
     }
 
     /// Resolve the next clip from the central device policy. Cloud-only
@@ -305,14 +305,14 @@ mod provider {
         }
         match said_core::prefs::load().dictation_stt.as_str() {
             crate::stt_policy::CLOUD_DEEPINFRA_PREF => Selected::DeepInfraWhisper,
-            crate::stt_policy::CLOUD_OPENAI_PREF => Selected::OpenAiGpt4oMini,
+            crate::stt_policy::CLOUD_ELEVENLABS_PREF => Selected::ElevenLabsScribeV2,
             _ => Selected::OnDevice,
         }
     }
 
     fn cloud_selection() -> Selected {
         match said_core::prefs::load().dictation_stt.as_str() {
-            crate::stt_policy::CLOUD_OPENAI_PREF => Selected::OpenAiGpt4oMini,
+            crate::stt_policy::CLOUD_ELEVENLABS_PREF => Selected::ElevenLabsScribeV2,
             _ => Selected::DeepInfraWhisper,
         }
     }
@@ -321,7 +321,7 @@ mod provider {
         match s {
             Selected::OnDevice => super::on_device::name(),
             Selected::DeepInfraWhisper => DEEPINFRA_WHISPER_NAME,
-            Selected::OpenAiGpt4oMini => OPENAI_GPT_4O_MINI_NAME,
+            Selected::ElevenLabsScribeV2 => ELEVENLABS_SCRIBE_V2_NAME,
         }
     }
 
@@ -337,7 +337,7 @@ mod provider {
         match selection() {
             Selected::OnDevice => super::on_device::ready(),
             Selected::DeepInfraWhisper => deepinfra_api_key().is_some(),
-            Selected::OpenAiGpt4oMini => openai_api_key().is_some(),
+            Selected::ElevenLabsScribeV2 => elevenlabs_api_key().is_some(),
         }
     }
 
@@ -354,14 +354,16 @@ mod provider {
                     tracing::error!("[dictation_stt] DeepInfra Whisper provider NOT ready: {e}")
                 }
             },
-            Selected::OpenAiGpt4oMini => match openai_client() {
+            Selected::ElevenLabsScribeV2 => match elevenlabs_client() {
                 Ok(client) => tracing::info!(
                     model = client.model(),
                     transport = "http-completed-recording",
-                    "[dictation_stt] OpenAI GPT-4o mini Transcribe provider ready"
+                    "[dictation_stt] ElevenLabs Scribe v2 provider ready"
                 ),
                 Err(e) => {
-                    tracing::error!("[dictation_stt] OpenAI transcription provider NOT ready: {e}")
+                    tracing::error!(
+                        "[dictation_stt] ElevenLabs transcription provider NOT ready: {e}"
+                    )
                 }
             },
         }
@@ -369,20 +371,21 @@ mod provider {
 
     /// Cloud keys are baked into distributable builds. Dev builds read the
     /// runtime environment after `said_core::load_env()` loads the repo `.env`.
-    fn bundled_deepinfra_api_key() -> Option<String> {
-        option_env!("DEEPINFRA_API_KEY")
+    fn api_key(bundled: Option<&str>, env_var: &str) -> Option<String> {
+        bundled
             .map(str::trim)
             .filter(|key| !key.is_empty())
             .map(str::to_string)
+            .or_else(|| {
+                std::env::var(env_var)
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            })
     }
 
     fn deepinfra_api_key() -> Option<String> {
-        bundled_deepinfra_api_key().or_else(|| {
-            std::env::var(DEEPINFRA_API_KEY_ENV)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        })
+        api_key(option_env!("DEEPINFRA_API_KEY"), DEEPINFRA_API_KEY_ENV)
     }
 
     fn deepinfra_client() -> Result<&'static DeepInfraClient, String> {
@@ -399,33 +402,21 @@ mod provider {
         Ok(CLIENT.get_or_init(|| client))
     }
 
-    fn bundled_openai_api_key() -> Option<String> {
-        option_env!("OPENAI_API_KEY")
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .map(str::to_string)
+    fn elevenlabs_api_key() -> Option<String> {
+        api_key(option_env!("ELEVEN_LABS_API_KEY"), ELEVEN_LABS_API_KEY_ENV)
     }
 
-    fn openai_api_key() -> Option<String> {
-        bundled_openai_api_key().or_else(|| {
-            std::env::var(OPENAI_API_KEY_ENV)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        })
-    }
-
-    fn openai_client() -> Result<&'static OpenAiClient, String> {
-        static CLIENT: OnceLock<OpenAiClient> = OnceLock::new();
+    fn elevenlabs_client() -> Result<&'static ElevenLabsClient, String> {
+        static CLIENT: OnceLock<ElevenLabsClient> = OnceLock::new();
         if let Some(client) = CLIENT.get() {
             return Ok(client);
         }
-        let key = openai_api_key().ok_or_else(|| {
+        let key = elevenlabs_api_key().ok_or_else(|| {
             format!(
-                "Speech service unavailable — no OpenAI key in this build (bake {OPENAI_API_KEY_ENV} at build time, or set it as an env var)."
+                "Speech service unavailable — no ElevenLabs key in this build (bake {ELEVEN_LABS_API_KEY_ENV} at build time, or set it as an env var)."
             )
         })?;
-        let client = OpenAiClient::new(key).map_err(|e| e.to_string())?;
+        let client = ElevenLabsClient::new(key).map_err(|e| e.to_string())?;
         Ok(CLIENT.get_or_init(|| client))
     }
 
@@ -442,7 +433,7 @@ mod provider {
                     .map_err(|e| e.to_string())?;
                 transcription
             }
-            Selected::OpenAiGpt4oMini => openai_client()?
+            Selected::ElevenLabsScribeV2 => elevenlabs_client()?
                 .transcribe_wav(wav)
                 .await
                 .map_err(|e| e.to_string())?,
@@ -491,7 +482,7 @@ mod provider {
         match selected {
             Selected::OnDevice => "local",
             Selected::DeepInfraWhisper => "deepinfra",
-            Selected::OpenAiGpt4oMini => "openai",
+            Selected::ElevenLabsScribeV2 => "elevenlabs",
         }
     }
 }

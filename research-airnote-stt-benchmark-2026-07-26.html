@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AirNote STT Benchmark — Scribe v2 vs GPT-4o mini Transcribe</title>
+  <style>
+    :root {
+      --bg: #090a0d;
+      --surface: #111318;
+      --surface-2: #171a20;
+      --line: #292d36;
+      --text: #f4f5f7;
+      --muted: #9ba2ae;
+      --dim: #6d7480;
+      --accent: #a3ffbf;
+      --accent-2: #67d98b;
+      --openai: #83a8ff;
+      --warn: #ffc875;
+      --danger: #ff8585;
+      --radius: 18px;
+      --max: 1120px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 78% -15%, rgba(163, 255, 191, .09), transparent 33rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    a { color: inherit; }
+
+    .shell {
+      width: min(var(--max), calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      backdrop-filter: blur(18px);
+      background: rgba(9, 10, 13, .82);
+      border-bottom: 1px solid rgba(41, 45, 54, .8);
+    }
+
+    .nav-inner {
+      min-height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .brand {
+      font-weight: 750;
+      letter-spacing: -.03em;
+    }
+
+    .brand span { color: var(--accent); }
+
+    .nav-links {
+      display: flex;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .nav-links a { text-decoration: none; }
+    .nav-links a:hover { color: var(--text); }
+
+    header {
+      padding: 88px 0 54px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow, .confidence {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(163, 255, 191, .1);
+    }
+
+    h1 {
+      max-width: 820px;
+      margin: 22px 0 18px;
+      font-size: clamp(44px, 7vw, 84px);
+      line-height: .98;
+      letter-spacing: -.065em;
+    }
+
+    .lede {
+      max-width: 760px;
+      margin: 0;
+      color: var(--muted);
+      font-size: clamp(18px, 2.2vw, 24px);
+      line-height: 1.45;
+    }
+
+    .winner {
+      color: var(--accent);
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .chip {
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.025);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    main { padding: 28px 0 90px; }
+
+    section {
+      padding: 58px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-child { border-bottom: 0; }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(220px, .8fr) minmax(0, 1.6fr);
+      gap: 48px;
+      margin-bottom: 28px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 43px);
+      line-height: 1.08;
+      letter-spacing: -.045em;
+    }
+
+    h3 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: -.02em;
+    }
+
+    p { margin: 0; }
+
+    .section-copy {
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .metric-grid,
+    .reason-grid,
+    .clip-grid,
+    .method-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .metric-grid { grid-template-columns: repeat(4, 1fr); }
+    .reason-grid { grid-template-columns: repeat(3, 1fr); }
+    .clip-grid { grid-template-columns: repeat(2, 1fr); }
+    .method-grid { grid-template-columns: repeat(2, 1fr); }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, rgba(255,255,255,.035), rgba(255,255,255,.012));
+      padding: 22px;
+    }
+
+    .card.good {
+      border-color: rgba(163, 255, 191, .28);
+      background: linear-gradient(145deg, rgba(163,255,191,.075), rgba(255,255,255,.012));
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .metric-value {
+      margin: 10px 0 5px;
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 760;
+      letter-spacing: -.045em;
+    }
+
+    .metric-note, .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .decision {
+      display: grid;
+      grid-template-columns: 1.25fr .75fr;
+      gap: 14px;
+    }
+
+    .decision-main {
+      min-height: 260px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .decision-title {
+      max-width: 690px;
+      margin: 18px 0;
+      font-size: clamp(28px, 4.5vw, 52px);
+      line-height: 1.05;
+      letter-spacing: -.05em;
+    }
+
+    .callout {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .reason-index {
+      color: var(--accent);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+
+    .reason-copy {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .score-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .score {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
+
+    .score strong {
+      display: block;
+      font-size: 24px;
+      letter-spacing: -.035em;
+    }
+
+    .score.scribe strong { color: var(--accent); }
+    .score.openai strong { color: var(--openai); }
+
+    .hits {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 16px;
+    }
+
+    .term {
+      padding: 5px 8px;
+      border-radius: 7px;
+      background: rgba(163,255,191,.08);
+      color: #caffd8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 145px 1fr 70px;
+      align-items: center;
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .bar-label { color: var(--muted); font-size: 13px; }
+
+    .track {
+      height: 10px;
+      overflow: hidden;
+      border-radius: 99px;
+      background: #252933;
+    }
+
+    .fill {
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+    }
+
+    .fill.openai { background: var(--openai); }
+
+    .bar-value {
+      text-align: right;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    details + details { margin-top: 10px; }
+
+    summary {
+      padding: 18px 20px;
+      cursor: pointer;
+      list-style: none;
+      font-weight: 680;
+    }
+
+    summary::-webkit-details-marker { display: none; }
+    summary::after {
+      content: "+";
+      float: right;
+      color: var(--muted);
+    }
+    details[open] summary::after { content: "–"; }
+
+    .transcripts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--line);
+      border-top: 1px solid var(--line);
+    }
+
+    .transcript {
+      background: #0e1014;
+      padding: 20px;
+      min-width: 0;
+    }
+
+    .provider {
+      display: inline-block;
+      margin-bottom: 10px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .provider.scribe { color: var(--accent); }
+    .provider.openai { color: var(--openai); }
+
+    .transcript p {
+      color: #c6cbd4;
+      overflow-wrap: anywhere;
+    }
+
+    .finding {
+      margin-top: 12px;
+      color: var(--warn);
+      font-size: 13px;
+    }
+
+    .warning {
+      border-left: 3px solid var(--warn);
+      padding: 16px 18px;
+      background: rgba(255,200,117,.06);
+      color: #e5d1ad;
+      border-radius: 0 12px 12px 0;
+    }
+
+    .next-steps {
+      counter-reset: step;
+      display: grid;
+      gap: 10px;
+    }
+
+    .next-step {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 14px;
+      align-items: start;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    .next-step::before {
+      content: counter(step, decimal-leading-zero);
+      color: var(--accent);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+
+    .next-step p {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .source-list {
+      display: grid;
+      gap: 9px;
+      margin-top: 18px;
+    }
+
+    .source {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .source a:hover { color: var(--text); }
+
+    .source-id {
+      color: var(--dim);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    footer {
+      padding: 32px 0 50px;
+      color: var(--dim);
+      font-size: 12px;
+    }
+
+    @media (max-width: 880px) {
+      .metric-grid, .reason-grid { grid-template-columns: repeat(2, 1fr); }
+      .decision, .section-head { grid-template-columns: 1fr; gap: 22px; }
+    }
+
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 22px, var(--max)); }
+      header { padding-top: 58px; }
+      .metric-grid, .reason-grid, .clip-grid, .method-grid,
+      .score-pair, .transcripts { grid-template-columns: 1fr; }
+      .nav-links { display: none; }
+      .bar-row { grid-template-columns: 105px 1fr 58px; gap: 9px; }
+      .metric-value { font-size: 30px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="shell nav-inner">
+      <div class="brand">AirNote <span>Lab</span></div>
+      <div class="nav-links">
+        <a href="#decision">Decision</a>
+        <a href="#quality">Quality</a>
+        <a href="#latency">Latency</a>
+        <a href="#method">Method</a>
+      </div>
+    </div>
+  </nav>
+
+  <header>
+    <div class="shell">
+      <div class="eyebrow"><span class="dot"></span> STT provider decision · 26 July 2026</div>
+      <h1><span class="winner">Scribe v2</span> wins the AirNote baseline.</h1>
+      <p class="lede">
+        ElevenLabs preserved the mixed-language and technical surface that AirNote needs,
+        without paying a latency penalty. This lowers how much semantic repair the polish
+        model must perform.
+      </p>
+      <div class="hero-meta">
+        <span class="chip">16 real recordings</span>
+        <span class="chip">6m 16s audio</span>
+        <span class="chip">32 successful API calls</span>
+        <span class="chip">No prompts or keyterms</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section aria-label="headline metrics">
+      <div class="metric-grid">
+        <article class="card good">
+          <div class="metric-label">Technical-term recall</div>
+          <div class="metric-value">86.4%</div>
+          <div class="metric-note">Scribe · 19 of 22 exact terms</div>
+        </article>
+        <article class="card">
+          <div class="metric-label">OpenAI term recall</div>
+          <div class="metric-value">13.6%</div>
+          <div class="metric-note">3 of 22 exact terms</div>
+        </article>
+        <article class="card good">
+          <div class="metric-label">Median latency</div>
+          <div class="metric-value">6.06s</div>
+          <div class="metric-note">Scribe · OpenAI 6.86s</div>
+        </article>
+        <article class="card good">
+          <div class="metric-label">p95 latency</div>
+          <div class="metric-value">22.72s</div>
+          <div class="metric-note">Scribe · OpenAI 29.90s</div>
+        </article>
+      </div>
+    </section>
+
+    <section id="decision">
+      <div class="decision">
+        <article class="card good decision-main">
+          <div>
+            <div class="confidence"><span class="dot"></span> High confidence for this AirNote use case</div>
+            <div class="decision-title">Make Scribe v2 the paid-cloud default.</div>
+          </div>
+          <p class="section-copy">
+            Keep GPT-4o mini Transcribe as a fallback. The benchmark does not justify removing
+            either provider, but it does justify choosing Scribe first when both keys are available.
+          </p>
+        </article>
+        <div class="stack">
+          <article class="card">
+            <div class="metric-label">Pipeline implication</div>
+            <p style="margin-top:10px">
+              Scribe → deterministic script cleanup → cheaper, less “smart” polish becomes viable.
+            </p>
+          </article>
+          <article class="card">
+            <div class="metric-label">Important boundary</div>
+            <p style="margin-top:10px">
+              Scribe reduces semantic correction work; it does not remove AirNote’s Romanization
+              and formatting layer.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Why it won</h2>
+        <p class="section-copy">
+          AirNote’s critical failure mode is not punctuation. It is losing product names,
+          acronyms, and English words inside Hindi speech—then asking the polish model to guess
+          them back. Scribe gave the downstream pipeline much cleaner evidence.
+        </p>
+      </div>
+      <div class="reason-grid">
+        <article class="card">
+          <div class="reason-index">01 / TERMS</div>
+          <h3 style="margin-top:12px">6.3× more exact recoveries</h3>
+          <p class="reason-copy">
+            Scribe retained Docker, webhook, Sentry, ZooKeeper, Kafka, CPA and Meta Ads
+            in their useful written form.
+          </p>
+        </article>
+        <article class="card">
+          <div class="reason-index">02 / CODE-SWITCHING</div>
+          <h3 style="margin-top:12px">English stayed English</h3>
+          <p class="reason-copy">
+            Scribe preserved Latin-script code-switches. OpenAI frequently transliterated them
+            into Devanagari or Urdu, increasing downstream ambiguity.
+          </p>
+        </article>
+        <article class="card">
+          <div class="reason-index">03 / SPEED</div>
+          <h3 style="margin-top:12px">Better tail behavior</h3>
+          <p class="reason-copy">
+            Providers split clip-level wins 8–8, but Scribe’s median was 0.80s lower and its p95
+            was 7.18s lower in this single pass.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section id="quality">
+      <div class="section-head">
+        <h2>Technical-term evidence</h2>
+        <p class="section-copy">
+          These four rubrics existed in the lab before this run. Scoring was strict surface
+          matching: a transliterated or misspelled term did not count, because the goal is to
+          reduce corrective work in the polish stage.
+        </p>
+      </div>
+      <div class="clip-grid">
+        <article class="card">
+          <div class="metric-label">Caps Lock / DeepInfra clip</div>
+          <div class="score-pair">
+            <div class="score scribe"><strong>7 / 9</strong><span class="small">Scribe</span></div>
+            <div class="score openai"><strong>1 / 9</strong><span class="small">OpenAI</span></div>
+          </div>
+          <div class="hits">
+            <span class="term">Caps Lock</span><span class="term">Swift</span>
+            <span class="term">Docker</span><span class="term">SQLite</span>
+            <span class="term">webhook</span><span class="term">Sentry</span><span class="term">PR</span>
+          </div>
+        </article>
+        <article class="card">
+          <div class="metric-label">ZooKeeper / Kafka clip</div>
+          <div class="score-pair">
+            <div class="score scribe"><strong>4 / 5</strong><span class="small">Scribe</span></div>
+            <div class="score openai"><strong>0 / 5</strong><span class="small">OpenAI</span></div>
+          </div>
+          <div class="hits">
+            <span class="term">Caps Lock</span><span class="term">Sentry</span>
+            <span class="term">ZooKeeper</span><span class="term">Kafka</span>
+          </div>
+        </article>
+        <article class="card">
+          <div class="metric-label">Docker / SQLite clip</div>
+          <div class="score-pair">
+            <div class="score scribe"><strong>4 / 4</strong><span class="small">Scribe</span></div>
+            <div class="score openai"><strong>2 / 4</strong><span class="small">OpenAI</span></div>
+          </div>
+          <div class="hits">
+            <span class="term">Docker</span><span class="term">SQLite</span>
+            <span class="term">webhook</span><span class="term">PR</span>
+          </div>
+        </article>
+        <article class="card">
+          <div class="metric-label">Google Ads / CPA clip</div>
+          <div class="score-pair">
+            <div class="score scribe"><strong>4 / 4</strong><span class="small">Scribe</span></div>
+            <div class="score openai"><strong>0 / 4</strong><span class="small">OpenAI</span></div>
+          </div>
+          <div class="hits">
+            <span class="term">Google Ads</span><span class="term">Meta Ads</span>
+            <span class="term">CPA</span><span class="term">landing page</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Transcript evidence</h2>
+        <p class="section-copy">
+          Selected pairs below show why the numeric difference matters. They are raw provider
+          outputs—no AirNote polishing, hints, Romanization, or manual correction.
+        </p>
+      </div>
+
+      <details open>
+        <summary>Ads clip — semantic terms survive with Scribe</summary>
+        <div class="transcripts">
+          <div class="transcript">
+            <span class="provider scribe">Scribe v2</span>
+            <p>Client को एक professional update भेजना है कि Google Ads campaign का <strong>CPA</strong> अभी थोड़ा high चल रहा है… <strong>landing page</strong>… <strong>meta ads</strong>…</p>
+            <div class="finding">Recovered all four benchmark terms.</div>
+          </div>
+          <div class="transcript">
+            <span class="provider openai">GPT-4o mini Transcribe</span>
+            <p>क्लाइंट को एक प्रोफेशनल अपडेट भेजना है कि गूगल ऐड्स कैंपेन का <strong>सीपीआई</strong>… लैंडिंग पेज… <strong>मेटा हैड्स</strong>…</p>
+            <div class="finding">Material misses: CPA→CPI and Meta Ads→“meta heads.”</div>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>Developer clip — Scribe retains downstream-ready spellings</summary>
+        <div class="transcripts">
+          <div class="transcript">
+            <span class="provider scribe">Scribe v2</span>
+            <p>भाई <strong>PR main branch</strong> में merge करने से पहले एक बार <strong>Docker rebuild, SQLite migration, webhook retry</strong>…</p>
+            <div class="finding">4/4 strict term recovery.</div>
+          </div>
+          <div class="transcript">
+            <span class="provider openai">GPT-4o mini Transcribe</span>
+            <p>भाई <strong>PR</strong> मेन ब्रांच में मर्ज करने से पहले एक बार <strong>डॉकर</strong> रीबिल्ड, <strong>SQLite</strong> माइग्रेशन, <strong>वेबहुक</strong> रिट्राई…</p>
+            <div class="finding">Meaning is partly present, but two terms require script recovery.</div>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>Recent Hinglish clip — both understand it, script choice differs</summary>
+        <div class="transcripts">
+          <div class="transcript">
+            <span class="provider scribe">Scribe v2</span>
+            <p>अब तो कोई भी दिक्कत नहीं आएगी ना भाई <strong>showroom</strong></p>
+            <div class="finding">Keeps the English code-switch in Latin script.</div>
+          </div>
+          <div class="transcript">
+            <span class="provider openai">GPT-4o mini Transcribe</span>
+            <p dir="rtl">اب تو کوئی بھی دقت نہیں آئے گی نا بھائی شوروں میں</p>
+            <div class="finding">Returned Urdu script and garbled “showroom.”</div>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>Counterexample — OpenAI wins a proper noun</summary>
+        <div class="transcripts">
+          <div class="transcript">
+            <span class="provider scribe">Scribe v2</span>
+            <p>Above is the draft contract attached. <strong>Urbanora</strong> is my company, EYP is the other counterparty…</p>
+            <div class="finding">Likely merged the company name incorrectly.</div>
+          </div>
+          <div class="transcript">
+            <span class="provider openai">GPT-4o mini Transcribe</span>
+            <p>Above is the draft contract attached. <strong>Urban Aura</strong> is my company, EYP is the other counterparty…</p>
+            <div class="finding">OpenAI is stronger on this clip. Scribe is not universally better.</div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section id="latency">
+      <div class="section-head">
+        <h2>Latency is close—Scribe’s tail is better</h2>
+        <p class="section-copy">
+          This was one sequential network pass with alternating provider order, so latency is
+          directional rather than a service-level guarantee. Both providers won exactly eight clips.
+        </p>
+      </div>
+      <article class="card">
+        <h3>Median request wall time</h3>
+        <div class="bar-row">
+          <span class="bar-label">Scribe v2</span>
+          <div class="track"><div class="fill" style="width:88.3%"></div></div>
+          <span class="bar-value">6.06s</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">OpenAI mini</span>
+          <div class="track"><div class="fill openai" style="width:100%"></div></div>
+          <span class="bar-value">6.86s</span>
+        </div>
+        <h3 style="margin-top:30px">p95 request wall time</h3>
+        <div class="bar-row">
+          <span class="bar-label">Scribe v2</span>
+          <div class="track"><div class="fill" style="width:76%"></div></div>
+          <span class="bar-value">22.72s</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">OpenAI mini</span>
+          <div class="track"><div class="fill openai" style="width:100%"></div></div>
+          <span class="bar-value">29.90s</span>
+        </div>
+        <p class="small" style="margin-top:24px">
+          Mean real-time factor slightly favored OpenAI (0.616 vs 0.663), driven by several fast
+          individual calls. This does not overturn the median/tail result or the quality gap.
+        </p>
+      </article>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>What this changes</h2>
+        <p class="section-copy">
+          The benchmark supports simplifying the paid-cloud path while preserving AirNote’s
+          multimodal combinations.
+        </p>
+      </div>
+      <div class="next-steps">
+        <article class="next-step">
+          <div><h3>Default to Scribe v2</h3><p>Use it when the ElevenLabs key is configured; retain OpenAI as the cloud fallback.</p></div>
+        </article>
+        <article class="next-step">
+          <div><h3>Keep deterministic output guards</h3><p>Romanization and formatting still belong in AirNote. They are predictable transforms, unlike guessing lost terminology.</p></div>
+        </article>
+        <article class="next-step">
+          <div><h3>Benchmark the combination matrix next</h3><p>Compare Scribe + cheap polish, Scribe + current polish, OpenAI + current polish, and local STT + strong polish on the same corpus.</p></div>
+        </article>
+        <article class="next-step">
+          <div><h3>Add provider bias only in round two</h3><p>This result is the unbiased baseline. Keyterms or prompts should be evaluated as separate configurations, not mixed into the provider decision.</p></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="method">
+      <div class="section-head">
+        <h2>Method and limits</h2>
+        <p class="section-copy">
+          The test is strong enough to select a default for this voice and workload, but it is
+          not a universal speech-recognition leaderboard.
+        </p>
+      </div>
+      <div class="method-grid">
+        <article class="card">
+          <div class="metric-label">Controlled</div>
+          <p style="margin-top:10px">
+            Same 16 WAVs, fixed model IDs, no prompt, no language hint, no keyterms, no diarization,
+            no audio-event tags, alternating call order.
+          </p>
+        </article>
+        <article class="card">
+          <div class="metric-label">Measured</div>
+          <p style="margin-top:10px">
+            Request wall time, failures, strict technical-term recovery, output scripts, and
+            transcript-level disagreements.
+          </p>
+        </article>
+        <article class="card">
+          <div class="metric-label">Known limitation</div>
+          <p style="margin-top:10px">
+            Only one clip has a full reference script. Surface WER is distorted when equivalent
+            Hindi is written in Roman, Devanagari, or Urdu scripts, so it was not used as the
+            deciding metric.
+          </p>
+        </article>
+        <article class="card">
+          <div class="metric-label">Confidence boundary</div>
+          <p style="margin-top:10px">
+            High confidence for AirNote’s current Hinglish/technical workload; medium confidence
+            for other speakers, accents, languages, and noisy environments until the corpus expands.
+          </p>
+        </article>
+      </div>
+      <div class="warning" style="margin-top:16px">
+        Both models still failed some content: both heard STT as STD in the known-script clip,
+        and Scribe misspelled Urban Aura. The recommendation is “best of these two,” not “solved.”
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Sources and artifacts</h2>
+        <p class="section-copy">
+          Primary provider documentation defines the endpoints and fixed model identifiers.
+          All benchmark outputs are preserved locally for replay and inspection.
+        </p>
+      </div>
+      <div class="source-list">
+        <div class="source">
+          <span class="source-id">[01]</span>
+          <a href="https://platform.openai.com/docs/api-reference/audio/createTranscription">OpenAI Audio Transcriptions API reference</a>
+        </div>
+        <div class="source">
+          <span class="source-id">[02]</span>
+          <a href="https://elevenlabs.io/docs/api-reference/speech-to-text/convert">ElevenLabs Speech-to-Text API reference</a>
+        </div>
+        <div class="source">
+          <span class="source-id">[03]</span>
+          <span>Local run: AirNote-STT-Benchmark-20260725T195140Z/results.json and results.csv</span>
+        </div>
+        <div class="source">
+          <span class="source-id">[04]</span>
+          <span>Existing AirNote lab rubrics: lab/batch_compare_two_models.py and lab/READ_SCRIPT.txt</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">
+      AirNote Lab · unbiased cloud STT baseline · raw recordings and results remain local.
+    </div>
+  </footer>
+</body>
+</html>

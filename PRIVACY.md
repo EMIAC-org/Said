@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated: 2026-05-15**
+**Last updated: 2026-07-26**
 
 Said is a voice-to-text dictation app. This document describes what data leaves your machine, where it goes, and what stays local. It is written plainly so you can audit it against the source code.
 
@@ -12,7 +12,7 @@ If anything here is unclear or appears to contradict the code, please open an is
 
 | Data | Where it goes | Why |
 |---|---|---|
-| Microphone audio (while a hotkey is held) | **This device only** | Local speech-to-text |
+| Microphone audio (while a hotkey is held) | **This device only** for local STT; **DeepInfra or ElevenLabs** when that cloud route is selected | Speech-to-text |
 | Transcript text | **Groq** servers | LLM polish |
 | Optional correction context (snippets of edits you make) | **Gemini** API (Google) | Embedding for the on-device learning lexicon |
 | Anonymous crash reports + lifecycle events | **Sentry** servers | Diagnose crashes and regressions |
@@ -24,13 +24,14 @@ We never sell or share your data. We send the minimum required to make the app w
 
 ## What we send to which third party
 
-Said is a thin client that orchestrates three external services to convert your speech into polished text.
+Said orchestrates local and configured external services to convert your speech into polished text.
 
-### 1. Local speech-to-text
-- **What is sent**: Nothing to a speech provider. Raw audio is transcribed locally on your device.
-- **What is received**: A local transcript.
+### 1. Speech-to-text
+- **Local route**: Nothing is sent to a speech provider. Raw audio is transcribed on your device.
+- **Cloud routes**: The completed push-to-talk recording is sent directly to the selected provider, either DeepInfra Whisper or ElevenLabs Scribe v2.
+- **What is received**: A transcript.
 - **When**: Only while you are dictating. Audio capture stops on key-release.
-- **API key**: None.
+- **API key**: None for local STT. Cloud-route credentials are configured by the build.
 
 ### 2. Groq / configured text polish runtime
 - **What is sent**: The local transcript text, plus a polish prompt and any keyterms / replacements you've added to your local lexicon.
@@ -75,7 +76,7 @@ The first time Said launches, it generates a random UUID (e.g. `7b9d3e4f-...`). 
 ## Opt-out
 
 - **Sentry**: Settings → Diagnostics → off. Toggle is honored within ~30 seconds; no events are sent while off.
-- **All external services**: don't enter API keys. Said cannot polish without an LLM key, but no telemetry leaves your machine in this state either.
+- **Cloud speech providers**: On supported Macs, select the local speech route to keep microphone audio on-device. Cloud-locked devices require a configured cloud route.
 - **Audio retention**: clear it manually with `said audio clear`, or delete the audio dir directly.
 
 ---

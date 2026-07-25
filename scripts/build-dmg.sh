@@ -169,18 +169,18 @@ else
   warn "DEEPINFRA_API_KEY not set — Cloud Whisper dictation will be unavailable"
 fi
 
-# GPT-4o mini Transcribe is the optional OpenAI cloud route. It is selected
+# Scribe v2 is the optional ElevenLabs cloud route. It is selected
 # explicitly in Settings, so a missing key does not affect the existing local
 # or DeepInfra routes.
-if [ -z "${OPENAI_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
-  OPENAI_API_KEY="$(grep -E '^OPENAI_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"')"
+if [ -z "${ELEVEN_LABS_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  ELEVEN_LABS_API_KEY="$(grep -E '^ELEVEN_LABS_API_KEY=' "$REPO_ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"')"
 fi
-if [ -n "${OPENAI_API_KEY:-}" ]; then
-  export OPENAI_API_KEY
+if [ -n "${ELEVEN_LABS_API_KEY:-}" ]; then
+  export ELEVEN_LABS_API_KEY
   touch "$TAURI_DIR/src/dictation_stt.rs"
-  ok "OpenAI cloud-dictation key will be bundled into the build"
+  ok "ElevenLabs cloud-dictation key will be bundled into the build"
 else
-  warn "OPENAI_API_KEY not set — GPT-4o mini Transcribe will be unavailable"
+  warn "ELEVEN_LABS_API_KEY not set — Scribe v2 will be unavailable"
 fi
 
 # ── Tauri build ──────────────────────────────────────────────────────────────

@@ -13,8 +13,9 @@ use sysinfo::System;
 use said_core::prefs::DesktopPrefs;
 
 pub const CLOUD_DEEPINFRA_PREF: &str = "cloud-deepinfra-whisper-v3-turbo";
-pub const CLOUD_OPENAI_PREF: &str = "cloud-openai-gpt-4o-mini-transcribe";
+pub const CLOUD_ELEVENLABS_PREF: &str = "cloud-elevenlabs-scribe-v2";
 const LEGACY_CLOUD_NEMOTRON_PREF: &str = "cloud-nemotron-3.5";
+const LEGACY_CLOUD_OPENAI_PREF: &str = "cloud-openai-gpt-4o-mini-transcribe";
 pub const LOCAL_PREF: &str = "local";
 pub const ORISERVE_PREF: &str = "oriserve";
 pub const NEMOTRON_Q4_PREF: &str = "nemotron-q4";
@@ -64,14 +65,19 @@ pub fn current() -> &'static SttSetupPolicy {
 
 /// Normalize a preference record to the policy without changing an explicit
 /// Apple-Silicon cloud choice. Cloud-locked devices can use either supported
-/// hosted provider but never local dictation. The previous Together preference
-/// migrates in place so released clients keep their cloud selection after
-/// updating.
+/// hosted provider but never local dictation. Retired cloud preferences migrate
+/// in place so released clients keep a working cloud selection after updating.
 pub fn normalize_prefs(prefs: DesktopPrefs) -> DesktopPrefs {
     normalize_prefs_for(prefs, current())
 }
 
 fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> DesktopPrefs {
+    if prefs.dictation_stt == LEGACY_CLOUD_OPENAI_PREF {
+        prefs.dictation_stt = CLOUD_ELEVENLABS_PREF.to_string();
+    } else if prefs.dictation_stt == LEGACY_CLOUD_NEMOTRON_PREF {
+        prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
+    }
+
     if policy.is_cloud_locked() {
         if !is_cloud_pref(&prefs.dictation_stt) {
             prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
@@ -81,11 +87,8 @@ fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> Desk
     }
 
     // Apple Silicon offers local dictation plus the configured cloud routes.
-    // Preserve the previous Together cloud choice during migration; every
-    // unknown legacy value becomes the local default.
-    if prefs.dictation_stt == LEGACY_CLOUD_NEMOTRON_PREF {
-        prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
-    } else if prefs.dictation_stt != LOCAL_PREF && !is_cloud_pref(&prefs.dictation_stt) {
+    // Every unknown legacy value becomes the local default.
+    if prefs.dictation_stt != LOCAL_PREF && !is_cloud_pref(&prefs.dictation_stt) {
         prefs.dictation_stt = LOCAL_PREF.to_string();
     }
     let compatibility_override = valid_compatibility_override(
@@ -105,7 +108,7 @@ fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> Desk
 }
 
 fn is_cloud_pref(pref: &str) -> bool {
-    matches!(pref, CLOUD_DEEPINFRA_PREF | CLOUD_OPENAI_PREF)
+    matches!(pref, CLOUD_DEEPINFRA_PREF | CLOUD_ELEVENLABS_PREF)
 }
 
 /// Compatibility overrides exist only for high-memory Apple Silicon machines
@@ -286,18 +289,27 @@ mod tests {
         );
         assert_eq!(normalized.dictation_stt, CLOUD_DEEPINFRA_PREF);
 
-        let openai = normalize_prefs_for(
+        let elevenlabs = normalize_prefs_for(
             DesktopPrefs {
-                dictation_stt: CLOUD_OPENAI_PREF.into(),
+                dictation_stt: CLOUD_ELEVENLABS_PREF.into(),
                 ..DesktopPrefs::default()
             },
             &policy,
         );
-        assert_eq!(openai.dictation_stt, CLOUD_OPENAI_PREF);
+        assert_eq!(elevenlabs.dictation_stt, CLOUD_ELEVENLABS_PREF);
+
+        let migrated_openai = normalize_prefs_for(
+            DesktopPrefs {
+                dictation_stt: LEGACY_CLOUD_OPENAI_PREF.into(),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(migrated_openai.dictation_stt, CLOUD_ELEVENLABS_PREF);
     }
 
     #[test]
-    fn apple_silicon_keeps_explicit_cloud_selection_and_migrates_together() {
+    fn apple_silicon_keeps_cloud_selection_and_migrates_retired_routes() {
         let policy = policy_for("macos", "arm64", false, EIGHT_GIB + 1);
         let local = normalize_prefs_for(DesktopPrefs::default(), &policy);
         assert_eq!(local.dictation_stt, LOCAL_PREF);
@@ -313,14 +325,23 @@ mod tests {
         assert_eq!(cloud.dictation_stt, CLOUD_DEEPINFRA_PREF);
         assert_eq!(cloud.local_stt_model, NEMOTRON_Q4_PREF);
 
-        let openai = normalize_prefs_for(
+        let elevenlabs = normalize_prefs_for(
             DesktopPrefs {
-                dictation_stt: CLOUD_OPENAI_PREF.into(),
+                dictation_stt: CLOUD_ELEVENLABS_PREF.into(),
                 ..DesktopPrefs::default()
             },
             &policy,
         );
-        assert_eq!(openai.dictation_stt, CLOUD_OPENAI_PREF);
+        assert_eq!(elevenlabs.dictation_stt, CLOUD_ELEVENLABS_PREF);
+
+        let migrated_openai = normalize_prefs_for(
+            DesktopPrefs {
+                dictation_stt: LEGACY_CLOUD_OPENAI_PREF.into(),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(migrated_openai.dictation_stt, CLOUD_ELEVENLABS_PREF);
 
         let migrated = normalize_prefs_for(
             DesktopPrefs {

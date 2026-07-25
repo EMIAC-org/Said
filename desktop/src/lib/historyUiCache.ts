@@ -1,4 +1,4 @@
-import { listHistory, onVoiceDone } from "@/lib/invoke";
+import { listHistory, onRecordingAudioAttached, onVoiceDone } from "@/lib/invoke";
 import type { Recording } from "@/types";
 
 const FRESH_FOR_MS = 60_000;
@@ -91,6 +91,12 @@ function ensureEvents() {
   if (eventsInstalled) return;
   eventsInstalled = true;
   onVoiceDone(() => {
+    invalidationVersion += 1;
+    stale = true;
+    notify();
+    scheduleRefresh();
+  });
+  onRecordingAudioAttached(() => {
     invalidationVersion += 1;
     stale = true;
     notify();

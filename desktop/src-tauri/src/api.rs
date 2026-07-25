@@ -2659,6 +2659,44 @@ pub async fn recording_audio_bytes(ep: &BackendEndpoint, id: &str) -> Result<Vec
         .map_err(|e| format!("audio read failed: {e}"))
 }
 
+pub async fn upload_recording_audio(
+    ep: &BackendEndpoint,
+    recording_id: &str,
+    wav_data: Vec<u8>,
+) -> Result<(), String> {
+    if wav_data.is_empty() {
+        return Ok(());
+    }
+
+    let url = format!("{}/v1/recordings/{recording_id}/audio", ep.url);
+    let form = reqwest::multipart::Form::new().part(
+        "audio",
+        reqwest::multipart::Part::bytes(wav_data)
+            .file_name("recording.wav")
+            .mime_str("audio/wav")
+            .map_err(|e| format!("mime error: {e}"))?,
+    );
+    let response = Client::new()
+        .post(&url)
+        .bearer_auth(&ep.secret)
+        .multipart(form)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| format!("recording audio upload failed: {e}"))?;
+
+    let status = response.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        Err(format!(
+            "recording audio upload error {status}: {}",
+            said_core::text::truncate_utf8(&body, 300)
+        ))
+    }
+}
+
 #[cfg(test)]
 mod local_polish_transport_tests {
     use super::{BackendEndpoint, supports_local_polish_websocket};

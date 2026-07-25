@@ -4,12 +4,15 @@
 //! build-time API-key ownership.
 
 mod deepinfra;
-mod openai;
+mod elevenlabs;
 
-pub use deepinfra::{API_KEY_ENV, DeepInfraClient, ENDPOINT, LANGUAGE, MODEL};
-pub use openai::{
-    API_KEY_ENV as OPENAI_API_KEY_ENV, ENDPOINT as OPENAI_ENDPOINT, MODEL as OPENAI_MODEL,
-    OpenAiClient,
+pub use deepinfra::{
+    API_KEY_ENV as DEEPINFRA_API_KEY_ENV, DeepInfraClient, ENDPOINT as DEEPINFRA_ENDPOINT,
+    LANGUAGE as DEEPINFRA_LANGUAGE, MODEL as DEEPINFRA_MODEL,
+};
+pub use elevenlabs::{
+    API_KEY_ENV as ELEVEN_LABS_API_KEY_ENV, ENDPOINT as ELEVENLABS_ENDPOINT, ElevenLabsClient,
+    MODEL as ELEVENLABS_MODEL,
 };
 
 /// A completed cloud transcription.

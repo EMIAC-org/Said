@@ -5338,16 +5338,6 @@ fn emit_problem_context_event(
     );
 }
 
-#[derive(Default)]
-struct LiveDictationInsert {
-    typed_text: String,
-    failed: bool,
-    invalidated: bool,
-}
-
-/// Async SSE consumer: inserts backend tokens into the focused app as they
-/// arrive, reconciles only when the provider's final text differs, and stores
-/// the final result for paste-latest re-paste.
 /// Opt-in browser-context capture. If `target_app` is a browser and the
 /// `browser_context_enabled` pref is set, read the active tab's site (host only)
 /// and record it to the LOCAL backend. Fully fire-and-forget and on-device — the
@@ -5416,7 +5406,9 @@ async fn run_voice_polish(
         .unwrap_or(0);
     let message_polish_mode = !suppress_local
         && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
-    tracing::debug!("[pipeline] target typing follows the local polish token stream");
+    let use_persistent_text_transport = !is_meeting
+        && api::supports_local_polish_websocket(&ep, backend::external_backend_url().is_some());
+    tracing::debug!("[pipeline] target receives one paste after polish completes");
     let initial_field_read_t0 = std::time::Instant::now();
     let initial_field_text = if suppress_local {
         None
@@ -5436,9 +5428,6 @@ async fn run_voice_polish(
     let event_client_run_id = client_run_id.clone();
     let error_already_emitted = Arc::new(AtomicBool::new(false));
     let error_already_emitted_for_events = Arc::clone(&error_already_emitted);
-    let live_insert = Arc::new(Mutex::new(LiveDictationInsert::default()));
-    let live_insert_for_events = Arc::clone(&live_insert);
-
     let pre_transcript_chars = pre_transcript
         .as_ref()
         .map(|t| t.transcript.chars().count())
@@ -5505,39 +5494,10 @@ async fn run_voice_polish(
                     return;
                 }
                 if token == STREAM_RESET_SENTINEL {
-                    if let Ok(mut live) = live_insert_for_events.lock() {
-                        live.invalidated = true;
-                    }
                     return;
                 }
 
                 let _ = app_clone.emit("voice-token", serde_json::json!({ "token": token }));
-                if suppress_local || token.is_empty() {
-                    return;
-                }
-
-                let Ok(mut live) = live_insert_for_events.lock() else {
-                    tracing::warn!("[pipeline] live insert state lock poisoned");
-                    return;
-                };
-                if live.failed || live.invalidated {
-                    return;
-                }
-                match paster::type_text(token) {
-                    Ok(true) => live.typed_text.push_str(token),
-                    Ok(false) => {
-                        live.failed = true;
-                        tracing::warn!(
-                            "[pipeline] direct live typing unavailable; final output will reconcile"
-                        );
-                    }
-                    Err(err) => {
-                        live.failed = true;
-                        tracing::warn!(
-                            "[pipeline] direct live typing failed ({err}); final output will reconcile"
-                        );
-                    }
-                }
             }
             api::PolishEvent::Status { phase, transcript } => {
                 if app_clone
@@ -5660,7 +5620,7 @@ async fn run_voice_polish(
         function: "paster::read_focused_value_fast",
         output: initial_field_text.as_deref(),
         duration_ms: Some(initial_field_read_ms),
-        reason: Some("field text before live typing/reconcile"),
+        reason: Some("field text before the final paste"),
         risk: Some("paste_context"),
         metadata: serde_json::json!({
             "readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
@@ -5673,12 +5633,11 @@ async fn run_voice_polish(
         return Err("Local transcript is required before voice polish".into());
     };
     let speech_identity = telemetry::speech_identity(&transcript.meta);
-    let use_persistent_text_transport = !is_meeting
-        && api::supports_local_polish_websocket(&ep, backend::external_backend_url().is_some());
+    let mut deferred_audio_upload: Option<(BackendEndpoint, String, Vec<u8>)> = None;
     let done_result = if use_persistent_text_transport {
         tracing::info!("[pipeline] sending local transcript to backend over persistent WebSocket");
         let transport = app.state::<PolishTransportState>().0.clone();
-        api::stream_voice_polish_ws(
+        let result = api::stream_voice_polish_ws(
             &transport,
             &ep,
             target_app,
@@ -5691,7 +5650,13 @@ async fn run_voice_polish(
             message_polish_mode,
             &mut on_polish_event,
         )
-        .await
+        .await;
+        if let Ok(done) = &result {
+            if !wav.is_empty() {
+                deferred_audio_upload = Some((ep.clone(), done.recording_id.clone(), wav));
+            }
+        }
+        result
     } else {
         // Meetings retain their existing audio-backed HTTP/SSE lifecycle. A
         // configured remote backend also remains compatible with older builds.
@@ -5783,11 +5748,6 @@ async fn run_voice_polish(
         }
     };
 
-    let live_state = live_insert
-        .lock()
-        .map(|state| (state.typed_text.clone(), state.failed, state.invalidated))
-        .unwrap_or_default();
-    let (live_typed_text, live_typing_failed, live_stream_invalidated) = live_state;
     let mut output_pasted = false;
     let mut used_clipboard_fallback = false;
     // If a newer recording superseded this one, never paste the abandoned take.
@@ -5802,42 +5762,14 @@ async fn run_voice_polish(
         );
     } else if suppress_local {
         tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
-    } else if !live_typed_text.is_empty() {
-        if live_typed_text == done.polished {
-            tracing::info!(
-                "[main] live stream already inserted final server result ({} chars)",
-                live_typed_text.chars().count()
-            );
-            output_pasted = true;
-        } else {
-            tracing::info!(
-                "[main] reconciling live stream chars={} final_chars={} failed={} invalidated={}",
-                live_typed_text.chars().count(),
-                done.polished.chars().count(),
-                live_typing_failed,
-                live_stream_invalidated,
-            );
-            match paster::reconcile_current_recording(
-                initial_field_text.as_deref(),
-                &live_typed_text,
-                &done.polished,
-            ) {
-                Ok(_) => output_pasted = true,
-                Err(err) => {
-                    tracing::warn!("[main] live stream reconciliation failed: {err}");
-                }
-            }
-        }
     } else {
         tracing::info!(
-            "[main] stream produced no insertable tokens; inserting final server result ({} chars)",
-            done.polished.len()
+            "[main] pasting final server result once ({} chars)",
+            done.polished.chars().count()
         );
         if !done.polished.is_empty() {
-            let (insert_res, clipboard) =
-                insert_text_prefer_direct("main_final_insert", &done.polished);
-            used_clipboard_fallback = clipboard;
-            match insert_res {
+            used_clipboard_fallback = true;
+            match paster::paste(&done.polished) {
                 Ok(()) => {
                     output_pasted = true;
                 }
@@ -5902,14 +5834,32 @@ async fn run_voice_polish(
         );
     }
 
+    if let Some((upload_ep, recording_id, wav)) = deferred_audio_upload {
+        let app_for_upload = app.clone();
+        tauri::async_runtime::spawn(async move {
+            match api::upload_recording_audio(&upload_ep, &recording_id, wav).await {
+                Ok(()) => {
+                    tracing::info!("[pipeline] attached WAV to recording {recording_id}");
+                    let _ = app_for_upload.emit(
+                        "recording-audio-attached",
+                        serde_json::json!({ "recording_id": recording_id }),
+                    );
+                }
+                Err(err) => tracing::warn!(
+                    "[pipeline] failed to attach WAV to recording {recording_id}: {err}"
+                ),
+            }
+        });
+    }
+
     if !is_divo {
         let mut paste_trace = said_core::dictation_trace::DictationTrace::default();
         paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "desktop.final_insert",
             component: "desktop",
-            function: "insert_text_prefer_direct",
+            function: "paster::paste",
             output: Some(done.polished.as_str()),
-            reason: Some("desktop inserted the final server output once"),
+            reason: Some("desktop pasted the final server output once"),
             risk: Some("paste_insert"),
             metadata: serde_json::json!({
                 "output_pasted": output_pasted,

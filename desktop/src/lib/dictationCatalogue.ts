@@ -27,12 +27,12 @@ export function dictationRouteOptions(policy: SttSetupPolicy): DictationRouteOpt
       detail: "Internet required · recording is sent to DeepInfra",
     },
     {
-      id: "cloud-openai-gpt-4o-mini-transcribe",
+      id: "cloud-elevenlabs-scribe-v2",
       kind: "cloud",
-      label: "GPT-4o mini Transcribe",
-      provider: "OpenAI",
+      label: "Scribe v2",
+      provider: "ElevenLabs",
       description: "Hosted transcription after you release the dictation key.",
-      detail: "Internet required · recording is sent to OpenAI",
+      detail: "Internet required · recording is sent to ElevenLabs",
     },
   ];
 

@@ -78,11 +78,11 @@ sequenceDiagram
 |---|---|---|
 | On-device model | Stays on the desktop | No key |
 | DeepInfra Whisper | Desktop directly to DeepInfra | Key baked into the desktop build, or desktop runtime env in development |
-| GPT-4o mini Transcribe | Desktop directly to OpenAI | Key baked into the desktop build, or desktop runtime env in development |
+| ElevenLabs Scribe v2 | Desktop directly to ElevenLabs | Key baked into the desktop build, or desktop runtime env in development |
 
 There is **not** currently a user-BYOK-first, managed-server-fallback policy.
-If an OpenAI key was not supplied to the desktop build or desktop process, the
-OpenAI route fails; it does not silently call the deployed server.
+If an ElevenLabs key was not supplied to the desktop build or desktop process,
+the Scribe route fails; it does not silently call the deployed server.
 
 ### What was duplicated
 
