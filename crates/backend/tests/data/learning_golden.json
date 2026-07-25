@@ -1,7 +1,6 @@
 {
-  "_doc": "Hand-labelled golden set for the learning pipeline. Each case is exercised against the deterministic stages (pre_filter + diff + promotion_gate) and, when run with --features live-eval and GROQ_API_KEY, also the LLM classifier. See crates/backend/tests/learning_eval.rs for the runner.",
+  "_doc": "Hand-labelled golden set for the learning pipeline. Each case is exercised against the deterministic stages (diff + promotion_gate) and, when run with --features live-eval and GROQ_API_KEY, also the LLM classifier. See crates/backend/tests/learning_eval.rs for the runner.",
   "_label_keys": {
-    "pre_filter": "drop | early_user_rewrite | early_user_rephrase | pass",
     "expected_class": "STT_ERROR | POLISH_ERROR | USER_REPHRASE | USER_REWRITE | DROP",
     "should_promote_term": "exact correct_form expected to survive promotion gates, or null if no promotion expected",
     "promotion_should_pass": "true if promotion gates would accept (assuming the LLM hands them this term)",
@@ -15,7 +14,6 @@
       "transcript": "hello world",
       "output_language": "english",
       "expected": {
-        "pre_filter": "drop",
         "expected_class": "DROP",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -29,7 +27,6 @@
       "transcript": "hello world",
       "output_language": "english",
       "expected": {
-        "pre_filter": "drop",
         "expected_class": "DROP",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -43,7 +40,6 @@
       "transcript": "I use written for automation",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "n8n",
         "promotion_should_pass": true,
@@ -57,7 +53,6 @@
       "transcript": "running k aids in production",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "k8s",
         "promotion_should_pass": true,
@@ -71,7 +66,6 @@
       "transcript": "Anis sent the email",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "anish",
         "promotion_should_pass": true,
@@ -85,7 +79,6 @@
       "transcript": "MAAR is here for review",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "EMIACMAAR",
         "promotion_should_pass": false,
@@ -99,7 +92,6 @@
       "transcript": "I will please send it",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "POLISH_ERROR",
         "should_promote_term": "please",
         "promotion_should_pass": true,
@@ -113,7 +105,6 @@
       "transcript": "the meeting was good",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "USER_REPHRASE",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -127,11 +118,10 @@
       "transcript": "short note",
       "output_language": "english",
       "expected": {
-        "pre_filter": "early_user_rewrite",
         "expected_class": "USER_REWRITE",
         "should_promote_term": null,
         "promotion_should_pass": false,
-        "notes": "1.4x growth catches in pre_filter"
+        "notes": "1.4x growth is a rewrite, not a correction"
       }
     },
     {
@@ -141,7 +131,6 @@
       "transcript": "Anish at Gmail dot com ka zara batana kaun sa mail ID par bhejna hai",
       "output_language": "hinglish",
       "expected": {
-        "pre_filter": "early_user_rewrite",
         "expected_class": "USER_REWRITE",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -155,7 +144,6 @@
       "transcript": "main kal jaunga",
       "output_language": "hinglish",
       "expected": {
-        "pre_filter": "early_user_rephrase",
         "expected_class": "USER_REPHRASE",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -173,7 +161,6 @@
         "correct_form": "मैं"
       },
       "expected": {
-        "pre_filter": "drop",
         "expected_class": "DROP",
         "should_promote_term": "मैं",
         "promotion_should_pass": false,
@@ -187,7 +174,6 @@
       "transcript": "see said.app for more",
       "output_language": "english",
       "expected": {
-        "pre_filter": "drop",
         "expected_class": "DROP",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -201,7 +187,6 @@
       "transcript": "Hello world",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "USER_REPHRASE",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -215,7 +200,6 @@
       "transcript": "I bought an iphone yesterday",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "iPhone",
         "promotion_should_pass": true,
@@ -229,7 +213,6 @@
       "transcript": "use the get user ID function",
       "output_language": "english",
       "expected": {
-        "pre_filter": "drop",
         "expected_class": "DROP",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -243,7 +226,6 @@
       "transcript": "main written use karta hun",
       "output_language": "hindi",
       "expected": {
-        "pre_filter": "drop",
         "expected_class": "DROP",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -257,7 +239,6 @@
       "transcript": "anees ne mail bhejna hai",
       "output_language": "hinglish",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "Anish",
         "promotion_should_pass": true,
@@ -271,7 +252,6 @@
       "transcript": "n a tin and aiden are tools",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "n8n",
         "promotion_should_pass": true,
@@ -286,7 +266,6 @@
       "output_language": "english",
       "capture_method": "keystroke_only",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "n8n",
         "promotion_should_pass": false,
@@ -300,7 +279,6 @@
       "transcript": "I had writen the doc",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "written",
         "promotion_should_pass": true,
@@ -314,7 +292,6 @@
       "transcript": "I bought an iphone",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "iPhone",
         "promotion_should_pass": true,
@@ -328,7 +305,6 @@
       "transcript": "good morning everyone",
       "output_language": "english",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "USER_REPHRASE",
         "should_promote_term": null,
         "promotion_should_pass": false,
@@ -343,7 +319,6 @@
       "output_language": "hinglish",
       "capture_method": "ax",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "MACOBS",
         "promotion_should_pass": true,
@@ -358,7 +333,6 @@
       "output_language": "hinglish",
       "capture_method": "ax",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "STT_ERROR",
         "should_promote_term": "MACOBS",
         "promotion_should_pass": true,
@@ -372,7 +346,6 @@
       "transcript": "main kal jaunga",
       "output_language": "hindi",
       "expected": {
-        "pre_filter": "pass",
         "expected_class": "USER_REPHRASE",
         "should_promote_term": null,
         "promotion_should_pass": false,

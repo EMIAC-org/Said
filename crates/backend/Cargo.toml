@@ -28,10 +28,6 @@ name = "e2e-groq"
 path = "src/bin/e2e_groq.rs"
 
 [[bin]]
-name = "e2e-formatter"
-path = "src/bin/e2e_formatter.rs"
-
-[[bin]]
 name = "pipeline-quality"
 path = "src/bin/pipeline_quality.rs"
 

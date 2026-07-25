@@ -387,11 +387,6 @@ pub async fn polish(
             llm_result.polished = scrubbed;
         }
 
-        // format_recover disabled — will re-enable with targeted replacement
-        // let recovered = crate::llm::format_recover::recover(&llm_result.polished);
-        // if recovered != llm_result.polished {
-        //     llm_result.polished = recovered;
-        // }
 
         let total_ms     = total_start.elapsed().as_millis() as i64;
         let recording_id = Uuid::new_v4().to_string();

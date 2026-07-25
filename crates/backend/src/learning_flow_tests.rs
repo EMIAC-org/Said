@@ -5,17 +5,16 @@
 //! through the same promotion/gate code the live route uses.  This covers:
 //!   1. STT_ERROR + jargon candidate → vocabulary + stt_replacement written
 //!   2. Demotion of starred terms is rejected
-//!   3. The email-link bug never reaches promotion (caught at pre_filter)
-//!   4. The Devanagari-hallucination bug never reaches promotion (caught at
+//!   3. The Devanagari-hallucination bug never reaches promotion (caught at
 //!      diff stage — hallucinated terms simply aren't in the diff hunks)
-//!   5. Repeat promotion bumps use_count, doesn't duplicate
+//!   4. Repeat promotion bumps use_count, doesn't duplicate
 
 #![cfg(test)]
 
 use crate::llm::{
     classifier::{EditClass, ExtractedTerm, LabelledHunk},
     edit_diff::{self, Hunk},
-    phonetics, pre_filter, promotion_gate,
+    phonetics, promotion_gate,
 };
 use crate::store::{DbPool, stt_replacements, vocabulary};
 use r2d2_sqlite::SqliteConnectionManager;
@@ -192,22 +191,16 @@ fn n8n_case_promotes_via_full_pipeline() {
     let user_kept = "I use n8n for automation";
     let transcript = polish; // STT misheard
 
-    // Stage 1 — pre-filter must let this through.
-    assert_eq!(
-        pre_filter::run(polish, user_kept, "hinglish"),
-        pre_filter::PreFilter::Pass
-    );
-
-    // Stage 2 — diff produces exactly one hunk with concrete text.
+    // Stage 1 — diff produces exactly one hunk with concrete text.
     let hunks = edit_diff::diff(transcript, polish, user_kept);
     assert_eq!(hunks.len(), 1);
     assert_eq!(hunks[0].polish_window, "written");
     assert_eq!(hunks[0].kept_window, "n8n");
 
-    // Stage 3 — labeler (simulated) tags as STT_ERROR.
+    // Stage 2 — labeler (simulated) tags as STT_ERROR.
     let cands = vec![label(hunks[0].clone(), EditClass::SttError, 0.9)];
 
-    // Stage 4 — promotion.
+    // Stage 3 — promotion.
     let (promoted, learned) = promote(&pool, "u1", user_kept, "hinglish", &cands);
     assert_eq!(promoted, 2, "vocab + stt_replacement");
     assert!(learned);
@@ -215,21 +208,8 @@ fn n8n_case_promotes_via_full_pipeline() {
 }
 
 #[test]
-fn email_link_prefix_bug_blocked_at_pre_filter() {
-    // The exact production failure that prompted this rebuild.
-    let polish = "Anish at Gmail dot com ka zara batana kaun sa mail ID par bhejna hai";
-    let kept = "[anish@gmail.com](mailto:anish@gmail.com) Anish at Gmail dot com ka zara batana kaun sa mail ID par bhejna hai";
-
-    match pre_filter::run(polish, kept, "hinglish") {
-        pre_filter::PreFilter::EarlyClass(d) => assert_eq!(d.class, "USER_REWRITE"),
-        other => panic!("expected USER_REWRITE early-exit, got {other:?}"),
-    }
-    // Pipeline never even reaches the LLM — no hallucinated promotions possible.
-}
-
-#[test]
 fn devanagari_hallucination_blocked_at_diff_stage() {
-    // Even if pre_filter let it through (suppose it did), the diff stage
+    // Whatever reaches the diff stage, the diff stage
     // produces hunks whose text is taken from the actual strings — the
     // hallucinated "अनीष / का / ज़रा" candidates from the Groq bug cannot
     // appear because they don't exist in any of the three texts.

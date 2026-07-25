@@ -6178,29 +6178,6 @@ fn finalize_repair_or_refine_output(
     Ok(())
 }
 
-/// Paste the most-recently stored polished result into the focused app.
-/// Invoked by the global paste-latest hotkey and by the UI's "Paste latest" button.
-#[tauri::command]
-fn paste_latest(latest: State<'_, LatestResult>) -> Result<bool, String> {
-    let text = {
-        let g = latest.0.lock().map_err(|_| "lock failed")?;
-        g.clone()
-    };
-    match text {
-        None => {
-            tracing::info!("[paste_latest] nothing stored yet");
-            Ok(false)
-        }
-        Some(t) => {
-            tracing::info!("[paste_latest] pasting {} chars", t.len());
-            // Direct-first (never clobbers the clipboard); clipboard only if
-            // injection is blocked.
-            paster::insert_text(&t).map_err(|e| format!("paste failed: {e}"))?;
-            Ok(true)
-        }
-    }
-}
-
 fn run_fast_voice_repair(app: tauri::AppHandle, action: LastVoiceAction) {
     let shared = app.state::<SharedApp>();
     let backend = app.state::<BackendState>();
@@ -7149,135 +7126,6 @@ fn open_log_folder() -> Result<(), String> {
     open::that(&dir).map_err(|e| format!("couldn't open {}: {e}", dir.display()))
 }
 
-// ── Meeting mode commands ────────────────────────────────────────────────────
-
-/// Enter meeting mode: auto-start recording, invert hotkey (hold = mute).
-/// Polished text is emitted as `meeting-transcript` events instead of typed.
-#[tauri::command]
-fn start_meeting_stt(
-    app: tauri::AppHandle,
-    meeting_mode: State<'_, MeetingModeState>,
-    state: State<'_, SharedApp>,
-) -> Result<MeetingSttStatus, String> {
-    meeting_engine::require_meeting_local_model()?;
-    let was_inactive = meeting_mode.enter();
-    tracing::info!("[meeting_mode] entered — auto-starting recording");
-    if let Err(err) = meeting_mode.ensure_echo_reference() {
-        tracing::warn!("[meeting_mode] speaker filter unavailable: {err}");
-        meeting_mode
-            .echo_gate
-            .mark_reference_unavailable(err.clone());
-        let _ = app.emit(
-            "voice-error",
-            serde_json::json!({
-                "message": "Speaker filter unavailable",
-                "raw_error": err,
-                "audio_id": null,
-                "auto_hide_ms": 3500,
-            }),
-        );
-    }
-    let current = state.0.lock().map_err(|_| "lock failed")?.state;
-    if was_inactive || current == desktop::AppState::Idle {
-        do_start_recording(&state.0, &app);
-    }
-    emit_meeting_stt_status(&app);
-    Ok(meeting_mode.status())
-}
-
-/// Leave meeting mode: stop recording if active, restore normal hotkey behavior.
-#[tauri::command]
-fn stop_meeting_stt(
-    app: tauri::AppHandle,
-    meeting_mode: State<'_, MeetingModeState>,
-    state: State<'_, SharedApp>,
-    _backend: State<'_, BackendState>,
-) -> Result<MeetingSttStatus, String> {
-    let was = meeting_mode.exit();
-    if !was {
-        emit_meeting_stt_status(&app);
-        return Ok(meeting_mode.status()); // already not in meeting mode
-    }
-    tracing::info!("[meeting_mode] exited — stopping recording");
-    let current = state.0.lock().map_err(|_| "lock failed")?.state;
-    let route = app
-        .state::<RecordingRouteState>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|route| *route);
-    if current == desktop::AppState::Recording && route == Some(RecordingRoute::Meeting) {
-        do_cancel_recording(Arc::clone(&state.0), app, "leave meeting");
-    } else {
-        emit_meeting_stt_status(&app);
-    }
-    Ok(meeting_mode.status())
-}
-
-/// Toggle meeting capture. Muted meeting mode leaves normal AirNote dictation available.
-#[tauri::command]
-fn toggle_meeting_mute(
-    app: tauri::AppHandle,
-    meeting_mode: State<'_, MeetingModeState>,
-    state: State<'_, SharedApp>,
-    _backend: State<'_, BackendState>,
-) -> Result<MeetingSttStatus, String> {
-    if !meeting_mode.is_active() {
-        return Err("not in meeting mode".into());
-    }
-    let current = state.0.lock().map_err(|_| "lock failed")?.state;
-    let route = app
-        .state::<RecordingRouteState>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|route| *route);
-
-    if meeting_mode.is_muted() {
-        if current != desktop::AppState::Idle {
-            return Err(
-                "finish the current AirNote recording before resuming meeting capture".into(),
-            );
-        }
-        meeting_mode.set_muted(false);
-        if let Err(err) = meeting_mode.ensure_echo_reference() {
-            tracing::warn!("[meeting_mode] speaker filter unavailable after resume: {err}");
-            meeting_mode
-                .echo_gate
-                .mark_reference_unavailable(err.clone());
-            let _ = app.emit(
-                "voice-error",
-                serde_json::json!({
-                    "message": "Speaker filter unavailable",
-                    "raw_error": err,
-                    "audio_id": null,
-                    "auto_hide_ms": 3500,
-                }),
-            );
-        }
-        emit_meeting_stt_status(&app);
-        do_start_recording(&state.0, &app);
-        return Ok(meeting_mode.status());
-    }
-
-    meeting_mode.set_muted(true);
-    emit_meeting_stt_status(&app);
-    if current == desktop::AppState::Recording && route == Some(RecordingRoute::Meeting) {
-        do_cancel_recording(Arc::clone(&state.0), app, "mute");
-    }
-    Ok(meeting_mode.status())
-}
-
-#[tauri::command]
-fn get_meeting_stt_status(
-    app: tauri::AppHandle,
-    meeting_mode: State<'_, MeetingModeState>,
-) -> MeetingSttStatus {
-    let status = meeting_mode.status();
-    let _ = app.emit("meeting-stt-state", status.clone());
-    status
-}
-
 // ── Cloud auth commands ───────────────────────────────────────────────────────
 
 /// Cloud URL — read from env, default to the hosted service.
@@ -7492,27 +7340,6 @@ async fn cloud_logout(backend: State<'_, BackendState>) -> Result<(), String> {
 async fn get_cloud_status(backend: State<'_, BackendState>) -> Result<api::CloudStatus, String> {
     let ep = get_endpoint(&backend)?;
     api::get_cloud_status(&ep).await
-}
-
-/// On launch, refresh license from cloud if a token is stored.
-/// Returns the cached tier on network failure (graceful degradation).
-#[tauri::command]
-async fn refresh_license(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
-    let ep = get_endpoint(&backend)?;
-    let status = api::get_cloud_status(&ep).await?;
-    if !status.connected {
-        return Ok(serde_json::json!({ "tier": "free", "source": "local" }));
-    }
-    // We don't store the raw token in Tauri state, but the backend has it.
-    // We can get it back via the status endpoint... but the backend doesn't
-    // expose the raw token over HTTP for security. So for license refresh,
-    // Tauri asks the backend to re-check — the backend can do this if needed.
-    // For now, return the locally-stored tier.
-    Ok(serde_json::json!({
-        "tier":      status.license_tier,
-        "connected": status.connected,
-        "source":    "local",
-    }))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -7953,12 +7780,6 @@ impl EditObservationTimeline {
             owned_text: owned_text.to_string(),
         });
         true
-    }
-
-    fn latest_owned_text(&self) -> Option<&str> {
-        self.observations
-            .back()
-            .map(|observation| observation.owned_text.as_str())
     }
 
     fn retained_count(&self) -> usize {
@@ -10681,11 +10502,9 @@ fn main() {
             cloud_login,
             cloud_logout,
             get_cloud_status,
-            refresh_license,
             get_debug_logs,
             get_performance_snapshot,
             // Paste latest
-            paste_latest,
             // Retry
             retry_recording,
             // Recording management
@@ -10790,10 +10609,6 @@ fn main() {
             meeting_engine_set_manual_actions,
             meeting_engine_search_meetings,
             meeting_engine_retranscribe,
-            start_meeting_stt,
-            stop_meeting_stt,
-            toggle_meeting_mute,
-            get_meeting_stt_status,
         ])
         .build(tauri::generate_context!());
 
@@ -11167,7 +10982,10 @@ mod edit_watch_timeout_tests {
             trusted_owned_text(&anchor, &corrected, "Type a message"),
             Err("weak_anchor_untrusted"),
         );
-        assert_eq!(timeline.latest_owned_text(), Some(corrected.as_str()));
+        // The rejected value never enters the timeline — the earlier correction
+        // stays the only retained observation.
+        assert_eq!(timeline.retained_count(), 1);
+        assert_eq!(timeline.total_observations, 1);
     }
 
     #[test]
@@ -11192,7 +11010,9 @@ mod edit_watch_timeout_tests {
             trusted_owned_text(&anchor, &corrected, "New message draft"),
             Err("prefix_mismatch"),
         );
-        assert_eq!(timeline.latest_owned_text(), Some("SQLite"));
+        // The reused composer's new draft never enters the timeline.
+        assert_eq!(timeline.retained_count(), 1);
+        assert_eq!(timeline.total_observations, 1);
     }
 
     #[test]
@@ -11214,7 +11034,7 @@ mod edit_watch_timeout_tests {
         assert_eq!(timeline.total_observations, 2);
         assert_eq!(timeline.retained_count(), 2);
         assert_eq!(timeline.elapsed_span_ms(), Some(400));
-        assert_eq!(timeline.latest_owned_text(), Some("SQLite and MACOBS"));
+        assert_eq!(timeline.dropped_count(), 0);
     }
 
     #[test]
@@ -11229,8 +11049,9 @@ mod edit_watch_timeout_tests {
         let mut timeline = EditObservationTimeline::default();
         let corrected = trusted_owned_text(&anchor, "Original output", "Corrected output")
             .expect("small edit in an empty composer");
+        assert_eq!(corrected, "Corrected output");
         assert!(timeline.record(&corrected, 500));
-        assert_eq!(timeline.latest_owned_text(), Some("Corrected output"));
+        assert_eq!(timeline.retained_count(), 1);
     }
 
     #[test]

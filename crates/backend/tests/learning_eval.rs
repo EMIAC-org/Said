@@ -3,9 +3,8 @@
 //! Loads `tests/data/learning_golden.json` (a hand-labelled set of edit cases)
 //! and runs each case through the **deterministic** stages of the pipeline:
 //!
-//!   1. `pre_filter::run` — early-class decisions
-//!   2. `edit_diff::diff` — structural hunk extraction
-//!   3. `promotion_gate::*` + `phonetics::*` — STT_ERROR/POLISH_ERROR gates
+//!   1. `edit_diff::diff` — structural hunk extraction
+//!   2. `promotion_gate::*` + `phonetics::*` — STT_ERROR/POLISH_ERROR gates
 //!
 //! For each case we record what each stage decided versus what the golden
 //! label says should happen, then print a precision/recall table per-class
@@ -25,7 +24,7 @@ use serde::Deserialize;
 use said_backend::llm::{
     classifier::{EditClass, ExtractedTerm, LabelledHunk},
     edit_diff::{self, Hunk},
-    phonetics, pre_filter, promotion_gate,
+    phonetics, promotion_gate,
 };
 
 #[derive(Debug, Deserialize)]
@@ -51,8 +50,6 @@ fn default_capture_method() -> String {
 
 #[derive(Debug, Deserialize)]
 struct Expected {
-    /// "drop" | "early_user_rewrite" | "early_user_rephrase" | "pass"
-    pre_filter: String,
     /// "STT_ERROR" | "POLISH_ERROR" | "USER_REPHRASE" | "USER_REWRITE" | "DROP"
     expected_class: String,
     /// Term that promotion gates should accept (or null if none).
@@ -66,7 +63,6 @@ struct Expected {
 #[derive(Default, Debug)]
 struct Stats {
     total: usize,
-    pre_filter_ok: usize,
     promotion_ok: usize,
     failures: Vec<String>,
 }
@@ -86,30 +82,7 @@ fn learning_pipeline_golden_eval() {
         stats.total += 1;
         let mut case_failed = false;
 
-        // ── Stage 1: pre_filter ──────────────────────────────────────────
-        let pf = pre_filter::run(&case.polish, &case.user_kept, &case.output_language);
-        let pf_actual = match &pf {
-            pre_filter::PreFilter::Drop => "drop",
-            pre_filter::PreFilter::EarlyClass(d) if d.class == "USER_REWRITE" => {
-                "early_user_rewrite"
-            }
-            pre_filter::PreFilter::EarlyClass(d) if d.class == "USER_REPHRASE" => {
-                "early_user_rephrase"
-            }
-            pre_filter::PreFilter::EarlyClass(_) => "early_other",
-            pre_filter::PreFilter::Pass => "pass",
-        };
-        if pf_actual == case.expected.pre_filter {
-            stats.pre_filter_ok += 1;
-        } else {
-            case_failed = true;
-            stats.failures.push(format!(
-                "  ✗ [{}] pre_filter: expected {:?}, got {:?}",
-                case.name, case.expected.pre_filter, pf_actual,
-            ));
-        }
-
-        // ── Stage 4: promotion_gate (synthetic LabelledHunk) ─────────────
+        // ── promotion_gate (synthetic LabelledHunk) ──────────────────────
         // Only run promotion gate check when the case expects a specific
         // term to be evaluated. We synthesise a hunk that the LLM might
         // plausibly produce so we test the gate in isolation.
@@ -163,12 +136,6 @@ fn learning_pipeline_golden_eval() {
 
     // ── Summary ──────────────────────────────────────────────────────────
     println!("\n=== Results ===");
-    println!(
-        "Pre-filter:  {}/{}  ({:.1}%)",
-        stats.pre_filter_ok,
-        stats.total,
-        100.0 * stats.pre_filter_ok as f64 / stats.total as f64
-    );
     println!(
         "Promotion:   {}/{}  ({:.1}%)",
         stats.promotion_ok,

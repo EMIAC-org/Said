@@ -15,9 +15,6 @@ pub fn read_focused_value_fast() -> Option<String> {
 pub fn read_focused_value_first() -> Option<String> {
     None
 }
-pub fn read_focused_value() -> Option<String> {
-    None
-}
 pub fn read_focused_value_fast_for_pid(_pid: i32) -> Option<String> {
     None
 }
@@ -79,14 +76,6 @@ pub fn type_text(_text: &str) -> Result<bool, String> {
 
 pub fn paste(_text: &str) -> Result<(), String> {
     Err("paste not implemented on this platform".into())
-}
-
-pub fn paste_replacing(_text: &str) -> Result<(), String> {
-    Err("paste_replacing not implemented on this platform".into())
-}
-
-pub fn replace_typed_suffix(_typed_text: &str, _replacement: &str) -> Result<(), String> {
-    Err("replace_typed_suffix not implemented on this platform".into())
 }
 
 pub fn reconcile_typed_text(_typed_text: &str, _replacement: &str) -> Result<bool, String> {

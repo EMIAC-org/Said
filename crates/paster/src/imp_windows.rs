@@ -68,7 +68,9 @@ pub fn read_focused_value_fast() -> Option<String> {
 pub fn read_focused_value_first() -> Option<String> {
     crate::uia::value(false, None, 450)
 }
-pub fn read_focused_value() -> Option<String> {
+/// Full read of the focused element. Internal to `replace_focused_text_exact`,
+/// which needs the whole field value to prove a select-all replace is safe.
+fn read_focused_value() -> Option<String> {
     crate::uia::value(false, None, 450)
 }
 pub fn read_focused_value_fast_for_pid(pid: i32) -> Option<String> {
@@ -602,11 +604,11 @@ pub fn paste(text: &str) -> Result<(), String> {
     paste_via_clipboard(text, false)
 }
 
-pub fn paste_replacing(text: &str) -> Result<(), String> {
-    paste_via_clipboard(text, true)
-}
-
-pub fn replace_typed_suffix(typed_text: &str, replacement: &str) -> Result<(), String> {
+/// Replace only the suffix typed during the current recording, by backspacing
+/// exactly as many characters as we typed and retyping the corrected tail.
+/// Internal to `reconcile_typed_text` — never call it with a `typed_text` that
+/// isn't the text this process just injected.
+fn replace_typed_suffix(typed_text: &str, replacement: &str) -> Result<(), String> {
     let chars_to_delete = typed_text.chars().count();
     if chars_to_delete == 0 {
         return type_or_paste_at_cursor(replacement);
@@ -846,7 +848,7 @@ mod windows_tests {
     // We initially had one, but Windows treats a clipboard buffer that's just
     // a single NUL terminator as "no text data" — `GetClipboardData(CF_UNICODETEXT)`
     // returns null after writing it. The non-empty round-trip above is the
-    // production-relevant case; production callers (paste / paste_replacing)
-    // never push empty strings into the clipboard. `type_text` already
+    // production-relevant case; the production caller (`paste`) never pushes
+    // empty strings into the clipboard. `type_text` already
     // early-returns on empty input.
 }

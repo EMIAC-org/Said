@@ -478,11 +478,6 @@ mod imp {
         }
     }
 
-    /// Back-compat shim for one-shot callers that expect the full read path.
-    pub fn read_focused_value() -> Option<String> {
-        read_focused_value_first()
-    }
-
     /// Fast path for a locked target app.
     ///
     /// Unlike `read_focused_value_fast`, this does not ask the system-wide AX
@@ -1486,59 +1481,7 @@ mod imp {
     }
 
     pub fn paste(text: &str) -> Result<(), String> {
-        paste_inner(text, /* select_all_first = */ false)
-    }
-
-    /// Paste replacing whatever is currently in the focused field. Sends
-    /// Cmd+A to select-all, then Cmd+V to replace. Use this when the
-    /// caller knows it needs to overwrite existing content (the
-    /// safety-paste path that fires when word-by-word typing partially
-    /// failed or got reset by a draft-then-final LLM stream).
-    pub fn paste_replacing(text: &str) -> Result<(), String> {
-        paste_inner(text, /* select_all_first = */ true)
-    }
-
-    /// Replace only the suffix that AirNote typed during the current recording.
-    /// This avoids Cmd+A in normal voice fallback paths, so existing user text
-    /// in the field is not selected or overwritten.
-    pub fn replace_typed_suffix(typed_text: &str, replacement: &str) -> Result<(), String> {
-        let chars_to_delete = typed_text.chars().count();
-        if chars_to_delete == 0 {
-            return paste(replacement);
-        }
-        let ax_ok = unsafe { ffi::AXIsProcessTrusted() };
-        tracing::info!(
-            "[paste] replacing current typed suffix — delete_chars={} replacement_len={}",
-            chars_to_delete,
-            replacement.len()
-        );
-        if !ax_ok {
-            return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable AirNote".into());
-        }
-
-        unsafe {
-            let source = ffi::CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION);
-            for _ in 0..chars_to_delete {
-                post_key(source, KEY_DELETE, true, 0);
-                thread::sleep(Duration::from_millis(2));
-                post_key(source, KEY_DELETE, false, 0);
-                thread::sleep(Duration::from_millis(2));
-            }
-            if !source.is_null() {
-                ffi::CFRelease(source);
-            }
-        }
-        thread::sleep(Duration::from_millis(40));
-        match type_text(replacement) {
-            Ok(true) => Ok(()),
-            Ok(false) => paste(replacement),
-            Err(e) => {
-                tracing::warn!(
-                    "[paste] direct replacement typing failed ({e}) — falling back to clipboard paste"
-                );
-                paste(replacement)
-            }
-        }
+        paste_inner(text)
     }
 
     fn diff_single_span(old: &str, new: &str) -> (usize, usize, String, usize) {
@@ -1863,12 +1806,11 @@ mod imp {
         Ok(true)
     }
 
-    fn paste_inner(text: &str, select_all_first: bool) -> Result<(), String> {
+    fn paste_inner(text: &str) -> Result<(), String> {
         let ax_ok = unsafe { ffi::AXIsProcessTrusted() };
         tracing::info!(
-            "[paste] called — AXIsProcessTrusted={ax_ok}, text_len={}, select_all_first={}",
+            "[paste] called — AXIsProcessTrusted={ax_ok}, text_len={}",
             text.len(),
-            select_all_first,
         );
 
         if !ax_ok {
@@ -1879,7 +1821,7 @@ mod imp {
             return Err("Accessibility permission not granted — go to System Settings → Privacy → Accessibility and enable AirNote".into());
         }
 
-        // Copy text to clipboard, optionally select-all, send Cmd+V, then restore original clipboard
+        // Copy text to clipboard, send Cmd+V, then restore original clipboard
         let original = pbpaste();
         pbcopy(text);
         thread::sleep(Duration::from_millis(80));
@@ -1887,23 +1829,9 @@ mod imp {
         unsafe {
             let source = ffi::CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION);
 
-            // Select-all first if requested (Cmd+A) so the paste REPLACES
-            // existing content instead of appending.
-            if select_all_first {
-                tracing::info!("[paste] sending Cmd+A (select-all-then-replace)");
-                post_key(source, KEY_CMD, true, 0);
-                thread::sleep(Duration::from_millis(10));
-                post_key(source, KEY_A, true, K_CG_FLAG_COMMAND);
-                thread::sleep(Duration::from_millis(10));
-                post_key(source, KEY_A, false, K_CG_FLAG_COMMAND);
-                thread::sleep(Duration::from_millis(20));
-            }
-
             tracing::debug!("[paste] sending Cmd+V keypress");
-            if !select_all_first {
-                post_key(source, KEY_CMD, true, 0);
-                thread::sleep(Duration::from_millis(10));
-            }
+            post_key(source, KEY_CMD, true, 0);
+            thread::sleep(Duration::from_millis(10));
             post_key(source, KEY_V, true, K_CG_FLAG_COMMAND);
             thread::sleep(Duration::from_millis(10));
             post_key(source, KEY_V, false, K_CG_FLAG_COMMAND);
