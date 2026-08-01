@@ -68,8 +68,12 @@ pub fn vad_installed() -> bool {
 /// `language` is the user's configured dictation language; providers may use
 /// it as a hint or run their own detection (see each provider module).
 /// Errors are complete user-facing sentences, shown verbatim in the UI.
-pub async fn transcribe_wav_bytes(wav: &[u8], language: &str) -> Result<PreTranscript, String> {
-    provider::transcribe(wav, language).await
+pub async fn transcribe_wav_bytes(
+    wav: &[u8],
+    language: &str,
+    recording_id: Option<&str>,
+) -> Result<PreTranscript, String> {
+    provider::transcribe(wav, language, recording_id).await
 }
 
 /// Transcribe a legacy meeting-mode chunk with the native meeting provider.
@@ -156,23 +160,23 @@ mod on_device {
     use super::PreTranscript;
 
     const WHISPER_NAME: &str = "on-device/whisper";
-    const NEMOTRON_NAME: &str = "on-device/nemotron";
+    const TRANSCRIBE_CPP_NAME: &str = "on-device/transcribe-cpp";
 
-    fn uses_nemotron() -> bool {
-        crate::nemotron::is_selected()
+    fn uses_catalog_model() -> bool {
+        crate::local_transcribe::is_selected()
     }
 
     pub(super) fn name() -> &'static str {
-        if uses_nemotron() {
-            NEMOTRON_NAME
+        if uses_catalog_model() {
+            TRANSCRIBE_CPP_NAME
         } else {
             WHISPER_NAME
         }
     }
 
     pub(super) fn ready() -> bool {
-        if uses_nemotron() {
-            crate::nemotron::selected_installed()
+        if uses_catalog_model() {
+            crate::local_transcribe::selected_installed()
         } else {
             super::model_installed() && super::runtime_ready()
         }
@@ -180,35 +184,45 @@ mod on_device {
 
     /// Pre-load the whisper model so the first utterance skips the model load.
     pub(super) fn prewarm() {
-        if uses_nemotron() {
-            crate::nemotron::prewarm();
+        if uses_catalog_model() {
+            crate::local_transcribe::prewarm();
         } else {
             crate::asr::prewarm_default_language();
         }
     }
 
-    pub(super) async fn transcribe(wav: &[u8], language: &str) -> Result<PreTranscript, String> {
-        if uses_nemotron() {
-            if !crate::nemotron::selected_installed() {
-                return Err(
-                    "Nemotron is selected but not installed. Download it in Settings → Speech recognition."
-                        .into(),
-                );
+    pub(super) async fn transcribe(
+        wav: &[u8],
+        language: &str,
+        recording_id: Option<&str>,
+    ) -> Result<PreTranscript, String> {
+        if uses_catalog_model() {
+            if !crate::local_transcribe::selected_installed() {
+                return Err(format!(
+                    "{} is selected but not installed. Download it in Settings → Speech recognition.",
+                    crate::local_transcribe::selected_model_name()
+                ));
             }
 
             let wav = wav.to_vec();
             let language = language.to_string();
+            let recording_id = recording_id.map(str::to_string);
             let output = tokio::task::spawn_blocking(move || {
-                crate::nemotron::transcribe_wav_bytes(&wav, &language)
+                crate::local_transcribe::transcribe_wav_bytes(
+                    &wav,
+                    &language,
+                    recording_id.as_deref(),
+                )
             })
             .await
-            .map_err(|error| format!("Nemotron speech worker failed: {error}"))??;
+            .map_err(|error| format!("Local speech worker failed: {error}"))??;
             let word_count = output.transcript.split_whitespace().count();
             tracing::info!(
                 duration_ms = output.duration_ms,
                 language = output.language.as_deref().unwrap_or("unreported"),
-                model = crate::nemotron::selected_model_name(),
-                "[dictation_stt] Nemotron local ASR complete"
+                model = crate::local_transcribe::selected_model_name(),
+                streamed = output.streamed,
+                "[dictation_stt] catalog local ASR complete"
             );
             return Ok(PreTranscript {
                 transcript: output.transcript.clone(),
@@ -219,9 +233,13 @@ mod on_device {
                     low_confidence_count: 0,
                     word_count,
                     languages: output.language.into_iter().collect(),
-                    model: format!("local:{}", crate::nemotron::selected_model_file()),
-                    provider: "local_nemotron".to_string(),
-                    path: "local_batch".to_string(),
+                    model: format!("local:{}", crate::local_transcribe::selected_model_file()),
+                    provider: "local_transcribe_cpp".to_string(),
+                    path: if output.streamed {
+                        "local_stream".to_string()
+                    } else {
+                        "local_batch".to_string()
+                    },
                     duration_ms: output.duration_ms,
                     origin: TranscriptOrigin::DictationLocal,
                     ..TranscriptMeta::default()
@@ -420,10 +438,14 @@ mod provider {
         Ok(CLIENT.get_or_init(|| client))
     }
 
-    pub(super) async fn transcribe(wav: &[u8], language: &str) -> Result<PreTranscript, String> {
+    pub(super) async fn transcribe(
+        wav: &[u8],
+        language: &str,
+        recording_id: Option<&str>,
+    ) -> Result<PreTranscript, String> {
         let selected = selection();
         if selected == Selected::OnDevice {
-            return super::on_device::transcribe(wav, language).await;
+            return super::on_device::transcribe(wav, language, recording_id).await;
         }
         let transcription = match selected {
             Selected::DeepInfraWhisper => {

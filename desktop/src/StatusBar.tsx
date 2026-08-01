@@ -978,6 +978,16 @@ export default function StatusBar() {
       subs.push(fn);
     }).catch((err) => console.warn("[status-bar] voice-status subscribe failed", err));
 
+    listen<{ text?: string; recording_id?: string | null }>("local-stt-partial", (e) => {
+      const text = e.payload.text?.trim();
+      const runId = normalizeRunId(e.payload.recording_id);
+      if (!text || barKindRef.current !== "recording") return;
+      if (!runId || runId !== currentRunIdRef.current) return;
+      setLiveTranscript(text);
+    }).then((fn) => {
+      subs.push(fn);
+    }).catch((err) => console.warn("[status-bar] local STT subscribe failed", err));
+
     listen<{ level: number }>("voice-level", (e) => {
       const level = Number.isFinite(e.payload.level) ? e.payload.level : 0;
       const clamped = Math.max(0, Math.min(1, level));

@@ -33,7 +33,13 @@ import {
   type SttSetupPolicy,
 } from "@/lib/invoke";
 import { dictationRouteOptions } from "@/lib/dictationCatalogue";
-import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
+import {
+  cancelLocalModelDownload,
+  isCancelledDownload,
+  startLocalModelDownload,
+  useLocalModelDownloads,
+} from "@/lib/localModels";
+import { NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import { HotkeyPicker } from "@/components/HotkeyPicker";
@@ -82,15 +88,6 @@ interface DictationModelStatus {
   path: string;
 }
 
-// Payload of the shared `meeting-model-download` event (keyed by model name).
-interface DictationDownloadProgress {
-  name: string;
-  received: number;
-  total: number;
-  status: "downloading" | "done" | "cancelled" | "error";
-  error: string | null;
-}
-
 function formatSize(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
@@ -131,11 +128,9 @@ export function OnboardingFlow({
   // Mirror of dictationTried readable inside timers/listeners without re-subscribing.
   const dictationTriedRef = useRef(false);
   const [dictationModel, setDictationModel] = useState<DictationModelStatus | null>(null);
-  const [dictationDownload, setDictationDownload] = useState<DictationDownloadProgress | null>(null);
   const [sttPolicy, setSttPolicy] = useState<SttSetupPolicy | null>(null);
   const [desktopPrefs, setDesktopPrefsState] = useState<DesktopPrefs | null>(null);
   const [nemotronQ4Model, setNemotronQ4Model] = useState<DictationModelStatus | null>(null);
-  const [nemotronQ4Download, setNemotronQ4Download] = useState<DictationDownloadProgress | null>(null);
   const [dictationBusy, setDictationBusy] = useState(false);
   const [dictationError, setDictationError] = useState("");
   // Live "Try it" feedback so a failed first dictation is never a silent empty box.
@@ -238,47 +233,19 @@ export function OnboardingFlow({
     void refreshSttSetup();
   }, [refreshSttSetup]);
 
-  useEffect(() => {
-    const unlistenP = listen<DictationDownloadProgress>("meeting-model-download", (event) => {
-      const payload = event.payload;
-      // The event is shared across models (new model + VAD); only react to the
-      // new model so VAD's silent auto-fetch never shows in onboarding.
-      if (payload.name !== NEW_MODEL_FILE) return;
-      if (payload.status === "downloading") {
-        setDictationDownload(payload);
-        setDictationError("");
-      } else {
-        setDictationDownload(null);
-      }
-      if (payload.status === "done") {
-        void refreshDictationModel();
-      }
-      if (payload.status === "error") {
-        setDictationError(friendlyError(payload.error, "Model download failed."));
-      }
-    });
-    return () => {
-      void unlistenP.then((fn) => fn());
-    };
-  }, [refreshDictationModel]);
-
-  useEffect(() => {
-    const unlistenP = listen<DictationDownloadProgress>("nemotron-model-download", (event) => {
-      const payload = event.payload;
-      if (payload.name !== "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf") return;
-      if (payload.status === "downloading") {
-        setNemotronQ4Download(payload);
-        setDictationError("");
-      } else {
-        setNemotronQ4Download(null);
-      }
-      if (payload.status === "done") void refreshSttSetup();
-      if (payload.status === "error") setDictationError(friendlyError(payload.error, "Model download failed."));
-    });
-    return () => {
-      void unlistenP.then((fn) => fn());
-    };
-  }, [refreshSttSetup]);
+  // Onboarding installs exactly one model — this device's recommendation — so
+  // it reads that model's progress and ignores support artifacts (Silero VAD)
+  // and any other model entirely.
+  const modelDownloads = useLocalModelDownloads({
+    onDone: (model) => {
+      if (model !== sttPolicy?.local_model) return;
+      void (model === "oriserve" ? refreshDictationModel() : refreshSttSetup());
+    },
+    onError: (model, message) => {
+      if (model !== sttPolicy?.local_model) return;
+      setDictationError(friendlyError(message, "Model download failed."));
+    },
+  });
 
   useEffect(() => {
     if (resumeSynced.current) return;
@@ -622,30 +589,30 @@ export function OnboardingFlow({
     setDictationError("");
     setKeyError("");
     try {
-      if (sttPolicy?.local_model === "nemotron-q4") {
-        await invoke("download_nemotron_model", { variant: "q4" });
+      const model = sttPolicy?.local_model;
+      if (!model) throw new Error("No local model is assigned to this device.");
+      await startLocalModelDownload(model);
+      if (model === "nemotron-q4") {
         const status = await invoke<DictationModelStatus>("nemotron_model_status", { variant: "q4" });
         if (!status.installed) throw new Error("Nemotron Streaming 3.5 (Q4) did not install correctly. Try again.");
       } else {
-        await invoke("download_dictation_model");
         const status = await invoke<DictationModelStatus>("dictation_model_status");
         if (!status.installed) throw new Error("Oriserve Hinglish did not install correctly. Try again.");
       }
-      if (!sttPolicy?.local_model) throw new Error("No local model is assigned to this device.");
-      await chooseInstalledLocalModel(sttPolicy.local_model);
+      await chooseInstalledLocalModel(model);
       await refreshSttSetup();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg !== "cancelled") setDictationError(friendlyError(msg));
+      if (!isCancelledDownload(msg)) setDictationError(friendlyError(msg));
     } finally {
       setDictationBusy(false);
     }
   }, [refreshSttSetup, sttPolicy?.local_model]);
 
   const handleDictationCancel = useCallback(async () => {
-    await invoke("meeting_cancel_model_download", { name: NEW_MODEL_FILE }).catch(() => {});
-    setDictationDownload(null);
-  }, []);
+    if (!sttPolicy?.local_model) return;
+    await cancelLocalModelDownload(sttPolicy.local_model);
+  }, [sttPolicy?.local_model]);
 
   // Persist the picked hotkey immediately (applied live by the backend on
   // patch). No step advance — the picker sits on the hotkey step and Continue
@@ -1056,11 +1023,9 @@ export function OnboardingFlow({
     const localSelected = selectedOption.id === "local";
     const recommendedName = sttPolicy.local_model_name ?? NEW_MODEL_NAME;
     const recommendedSize = sttPolicy.local_model_size_hint ?? NEW_MODEL_SIZE_HINT;
-    const selectedDownload = sttPolicy.local_model === "nemotron-q4" ? nemotronQ4Download : dictationDownload;
+    const selectedDownload = sttPolicy.local_model ? modelDownloads[sttPolicy.local_model] : undefined;
     const selectedModel = sttPolicy.local_model === "nemotron-q4" ? nemotronQ4Model : dictationModel;
-    const downloadPct = selectedDownload && selectedDownload.total > 0
-      ? Math.min(100, Math.round((selectedDownload.received / selectedDownload.total) * 100))
-      : null;
+    const downloadPct = selectedDownload?.percent ?? null;
 
     return (
       <OnboardingShell

@@ -16,7 +16,10 @@ mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
 mod hud_manager;
+mod local_model_catalog;
+mod local_model_store;
 mod local_models;
+mod local_transcribe;
 mod meeting_engine;
 mod meeting_telemetry;
 mod nemotron; // optional experimental GGUF local-ASR provider; never used by Meetings
@@ -154,12 +157,30 @@ fn exit_after_shutdown_cleanup(code: i32) -> ! {
     std::process::exit(code)
 }
 
+/// Disable ggml's Metal residency sets so their teardown cannot assert.
+///
+/// This is a blunt guard: residency sets keep model buffers wired so the OS
+/// cannot page them out between utterances, so turning them off costs
+/// steady-state inference speed. It is retained because it must be decided
+/// before Metal initializes and it covers exit paths that never reach
+/// `RunEvent::Exit`. The proper teardown — dropping the model so the sets are
+/// empty — happens there, and Handy relies on that alone with residency left
+/// on. Set `GGML_METAL_NO_RESIDENCY=0` to A/B the performance difference.
 #[cfg(target_os = "macos")]
 fn configure_ggml_metal_shutdown_guard() {
-    if std::env::var_os("GGML_METAL_NO_RESIDENCY").is_none() {
-        // Must be set before whisper.cpp/ggml initializes Metal. Newer ggml
-        // residency-set teardown can assert during libc finalizers on app quit.
-        unsafe { std::env::set_var("GGML_METAL_NO_RESIDENCY", "1") };
+    let requested = std::env::var_os("GGML_METAL_NO_RESIDENCY");
+    // SAFETY: first statement in `main`, before any thread is spawned.
+    unsafe {
+        match requested.as_deref().and_then(std::ffi::OsStr::to_str) {
+            // ggml checks only whether the variable is *present*, so an explicit
+            // opt-in has to be removed — passing "0" through would disable
+            // residency sets exactly like every other value.
+            Some("0") => std::env::remove_var("GGML_METAL_NO_RESIDENCY"),
+            Some(_) => {}
+            // Must be set before whisper.cpp/ggml initializes Metal. Newer ggml
+            // residency-set teardown can assert during libc finalizers on app quit.
+            None => std::env::set_var("GGML_METAL_NO_RESIDENCY", "1"),
+        }
     }
 }
 
@@ -898,12 +919,13 @@ async fn stt_pre_transcript(
     wav: &[u8],
     language: &str,
     is_meeting: bool,
+    recording_id: Option<&str>,
 ) -> Result<dictation_stt::PreTranscript, String> {
     let started = std::time::Instant::now();
     let transcript = if is_meeting {
         dictation_stt::transcribe_meeting_wav_bytes(wav, language).await?
     } else {
-        dictation_stt::transcribe_wav_bytes(wav, language).await?
+        dictation_stt::transcribe_wav_bytes(wav, language, recording_id).await?
     };
     tracing::info!(
         "[finish] speech transcript ready in {}ms provider={} chars={} words={}",
@@ -4358,7 +4380,11 @@ fn do_start_recording_inner(
                 provider = dictation_stt::provider_name(),
                 "[speech] dictation audio drain started"
             );
-            whisper_dictation_stream::spawn_dictation_audio_drain(recording_id, chunk_recv);
+            whisper_dictation_stream::spawn_dictation_audio_drain(
+                app.clone(),
+                recording_id,
+                chunk_recv,
+            );
             return;
         }
     } else {
@@ -4377,6 +4403,7 @@ fn do_cancel_recording(
     reset_long_dictation_lock(&app);
     restore_speaker_suppression(&app, reason);
     recovery::clear();
+    local_transcribe::cancel_stream();
     PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
 
     if let Ok(mut route) = app.state::<RecordingRouteState>().0.lock() {
@@ -4603,9 +4630,9 @@ fn do_finish_recording(
             );
             Err("No speech detected — try speaking again.".to_string())
         } else if is_meeting {
-            stt_pre_transcript(&wav, &stt_language, true).await
+            stt_pre_transcript(&wav, &stt_language, true, None).await
         } else {
-            stt_pre_transcript(&wav, &stt_language, false).await
+            stt_pre_transcript(&wav, &stt_language, false, client_run_id.as_deref()).await
         };
 
         // The provider's errors are complete, actionable sentences (offline,
@@ -4630,6 +4657,19 @@ fn do_finish_recording(
                 return;
             }
         };
+
+        if app2
+            .try_state::<RecordingSessionState>()
+            .map(|s| Some(s.generation.load(Ordering::SeqCst)) != finish_generation)
+            .unwrap_or(false)
+        {
+            tracing::info!(
+                "[record] finish superseded during speech transcription — skipping backend handoff (run_id={})",
+                client_run_id.as_deref().unwrap_or("none"),
+            );
+            clear_long_dictation_finishing(&app2, "superseded_after_stt");
+            return;
+        }
 
         let screen_context = app2
             .try_state::<ScreenContextState>()
@@ -4708,6 +4748,7 @@ fn do_finish_recording(
             None,
             screen_context,
             None,
+            finish_generation,
             &app2,
             is_meeting,
             is_divo,
@@ -5093,6 +5134,7 @@ async fn recover_transcribe(ep: &BackendEndpoint, wav: Vec<u8>) -> Result<api::P
         None,
         None,
         false,
+        true,
         |_event: api::PolishEvent| {},
     )
     .await
@@ -5382,6 +5424,7 @@ async fn run_voice_polish(
     repair_mode: Option<String>,
     screen_context: Option<String>,
     message_polish_override: Option<bool>,
+    recording_generation: Option<u64>,
     app: &tauri::AppHandle,
     #[allow(unused_variables)] is_meeting: bool,
     is_divo: bool,
@@ -5400,13 +5443,18 @@ async fn run_voice_polish(
     // hotkey early by mistake and pressed it again to redo), the generation
     // bumps — and this now-superseded run must stop typing and skip its paste so
     // the abandoned take never gets injected into the focused app.
-    let run_generation = app
-        .try_state::<RecordingSessionState>()
-        .map(|s| s.generation.load(Ordering::SeqCst))
-        .unwrap_or(0);
-    let message_polish_mode = !suppress_local
-        && message_polish_override.unwrap_or_else(|| said_core::prefs::load().message_polish_mode);
-    let use_persistent_text_transport = !is_meeting
+    let run_generation = recording_generation.unwrap_or_else(|| {
+        app.try_state::<RecordingSessionState>()
+            .map(|s| s.generation.load(Ordering::SeqCst))
+            .unwrap_or(0)
+    });
+    let desktop_prefs = said_core::prefs::load();
+    let polish_enabled = suppress_local || repair_mode.is_some() || desktop_prefs.polish_enabled;
+    let message_polish_mode = polish_enabled
+        && !suppress_local
+        && message_polish_override.unwrap_or(desktop_prefs.message_polish_mode);
+    let use_persistent_text_transport = polish_enabled
+        && !is_meeting
         && api::supports_local_polish_websocket(&ep, backend::external_backend_url().is_some());
     tracing::debug!("[pipeline] target receives one paste after polish completes");
     let initial_field_read_t0 = std::time::Instant::now();
@@ -5672,6 +5720,7 @@ async fn run_voice_polish(
             repair_mode,
             screen_context,
             message_polish_mode,
+            polish_enabled,
             &mut on_polish_event,
         )
         .await
@@ -6560,7 +6609,7 @@ fn retry_recording_spawn(
         // The polish backend requires a pre_transcript, so an STT failure ends
         // the retry here with the provider's own actionable message instead of
         // a confusing backend 400.
-        let pre_transcript = match stt_pre_transcript(&wav, &stt_language, false).await {
+        let pre_transcript = match stt_pre_transcript(&wav, &stt_language, false, None).await {
             Ok(t) => Some(t),
             Err(message) => {
                 tracing::warn!("[retry] speech transcription failed: {message}");
@@ -6586,6 +6635,7 @@ fn retry_recording_spawn(
             Some("preserve_recall".into()),
             None, // no screen context for re-polish
             message_polish_mode,
+            None,
             &app2,
             false,
             false, // not a Divo turn
@@ -10494,6 +10544,9 @@ fn main() {
             nemotron::nemotron_model_status,
             nemotron::download_nemotron_model,
             nemotron::delete_nemotron_model,
+            local_model_store::download_local_model,
+            local_model_store::cancel_local_model_download,
+            local_transcribe::local_asr_runtime_status,
             local_models::local_model_inventory,
             local_models::choose_installed_local_model,
             local_models::remove_unused_local_dictation_models,
@@ -10604,6 +10657,15 @@ fn main() {
                 api.prevent_exit();
             }
             tauri::RunEvent::Exit => {
+                // Release the in-process ggml Metal model first. Its device is
+                // freed by a C++ static destructor that asserts its residency
+                // sets are empty, so a still-mapped model turns a clean quit
+                // into a SIGABRT. `exit_after_shutdown_cleanup` skips those
+                // finalizers as a backstop, but leaving the model mapped is the
+                // reason that backstop is load-bearing — drop it properly.
+                // (The whisper path needs no equivalent: it runs in a separate
+                // GPU worker process.)
+                local_transcribe::unload();
                 // Finalize any in-progress recording (valid WAV headers +
                 // fsync + recovery breadcrumb) and stop the job worker before
                 // tearing down the backend — otherwise an active recording is

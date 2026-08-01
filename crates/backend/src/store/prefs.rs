@@ -276,72 +276,58 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
 #[cfg(test)]
 mod tests {
     use super::{normalize_record_hotkey, normalize_selected_model, validate_polish_model_key};
+    use said_core::polish::model::DEFAULT_POLISH_MODEL_KEY;
 
     #[test]
-    fn normalizes_smart_model_aliases_to_deepinfra_gemma_4() {
-        assert_eq!(
-            normalize_selected_model("smart"),
-            "deepinfra-gemma-4-26b-a4b"
-        );
+    fn normalizes_smart_model_aliases_to_default() {
+        assert_eq!(normalize_selected_model("smart"), DEFAULT_POLISH_MODEL_KEY);
         assert_eq!(
             normalize_selected_model("maverick"),
-            "deepinfra-gemma-4-26b-a4b"
+            DEFAULT_POLISH_MODEL_KEY
         );
     }
 
     #[test]
     fn validate_replaces_retired_catalog_keys() {
-        assert_eq!(
-            validate_polish_model_key("phi4"),
-            "deepinfra-gemma-4-26b-a4b"
-        );
+        assert_eq!(validate_polish_model_key("phi4"), DEFAULT_POLISH_MODEL_KEY);
         assert_eq!(
             validate_polish_model_key("groq-scout"),
-            "deepinfra-gemma-4-26b-a4b"
+            DEFAULT_POLISH_MODEL_KEY
         );
     }
 
     #[test]
     fn normalize_replaces_retired_catalog_keys() {
-        assert_eq!(
-            normalize_selected_model("phi4"),
-            "deepinfra-gemma-4-26b-a4b"
-        );
+        assert_eq!(normalize_selected_model("phi4"), DEFAULT_POLISH_MODEL_KEY);
         assert_eq!(
             normalize_selected_model("groq-scout"),
-            "deepinfra-gemma-4-26b-a4b"
+            DEFAULT_POLISH_MODEL_KEY
         );
         assert_eq!(
             normalize_selected_model("groq-70b"),
-            "deepinfra-gemma-4-26b-a4b"
+            DEFAULT_POLISH_MODEL_KEY
         );
         assert_eq!(
             normalize_selected_model("legacy-provider-model"),
-            "deepinfra-gemma-4-26b-a4b"
+            DEFAULT_POLISH_MODEL_KEY
         );
     }
 
     #[test]
     fn normalizes_scout_alias_to_current_key() {
-        assert_eq!(
-            validate_polish_model_key("scout"),
-            "deepinfra-gemma-4-26b-a4b"
-        );
+        assert_eq!(validate_polish_model_key("scout"), DEFAULT_POLISH_MODEL_KEY);
     }
 
     #[test]
     fn normalizes_fast_model_aliases_to_current_key() {
-        assert_eq!(
-            normalize_selected_model("fast"),
-            "deepinfra-gemma-4-26b-a4b"
-        );
+        assert_eq!(normalize_selected_model("fast"), DEFAULT_POLISH_MODEL_KEY);
         assert_eq!(
             normalize_selected_model("llama-3.1-8b-instant"),
-            "deepinfra-gemma-4-26b-a4b"
+            DEFAULT_POLISH_MODEL_KEY
         );
         assert_eq!(
             normalize_selected_model("deepseek"),
-            "deepinfra-gemma-4-26b-a4b"
+            DEFAULT_POLISH_MODEL_KEY
         );
     }
 

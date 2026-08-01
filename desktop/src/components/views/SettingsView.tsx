@@ -575,6 +575,7 @@ export function SettingsView({
     sentry_disabled: false,
     update_channel: "stable",
     message_polish_mode: false,
+    polish_enabled: true,
     launch_at_login: false,
     beta_mode: false,
     browser_context_enabled: false,

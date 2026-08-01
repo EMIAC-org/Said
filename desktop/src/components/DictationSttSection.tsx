@@ -1,54 +1,37 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { Check, Cloud, Cpu, Download, HardDrive, Loader2, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, Cloud, Cpu, HardDrive, Loader2, Trash2 } from "lucide-react";
 import type { Preferences } from "../types";
 import {
   chooseInstalledLocalModel,
   deleteAllLocalSpeechModels,
   getDesktopPrefs,
   getLocalModelInventory,
+  getLocalAsrRuntimeStatus,
   getSttSetupPolicy,
-  invoke,
   removeUnusedLocalDictationModels,
   setDesktopPrefs,
   type LocalModelInventory,
+  type LocalModelInfo,
   type LocalModelKey,
+  type LocalAsrRuntimeStatus,
   type DictationRoute,
   type SttSetupPolicy,
 } from "../lib/invoke";
+import {
+  cancelLocalModelDownload,
+  isCancelledDownload,
+  startLocalModelDownload,
+  useLocalModelDownloads,
+} from "../lib/localModels";
 import { ErrorNotice } from "./ErrorNotice";
+import { LocalModelRow } from "./LocalModelRow";
 import { friendlyError } from "../lib/friendlyError";
 import { dictationRouteOptions } from "../lib/dictationCatalogue";
-
-interface DownloadProgress {
-  name: string;
-  received: number;
-  total: number;
-  status: "downloading" | "done" | "cancelled" | "error" | string;
-  error: string | null;
-}
 
 interface DictationSttSectionProps {
   prefs: Preferences | null;
   onPrefsUpdated: (prefs: Preferences) => void;
   platform: string;
-}
-
-function localModelCommand(model: LocalModelKey) {
-  if (model === "nemotron-q4") {
-    return {
-      download: "download_nemotron_model",
-      args: { variant: "q4" },
-      event: "nemotron-model-download",
-      eventName: "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
-    };
-  }
-  return {
-    download: "download_dictation_model",
-    args: undefined,
-    event: "meeting-model-download",
-    eventName: "ggml-oriserve-hinglish-fp16.bin",
-  };
 }
 
 function formatSize(bytes: number): string {
@@ -61,8 +44,11 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
   const [policy, setPolicy] = useState<SttSetupPolicy | null>(null);
   const [desktopPrefs, setDesktopPrefsState] = useState<Awaited<ReturnType<typeof getDesktopPrefs>> | null>(null);
   const [inventory, setInventory] = useState<LocalModelInventory | null>(null);
-  const [download, setDownload] = useState<DownloadProgress | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [runtime, setRuntime] = useState<LocalAsrRuntimeStatus | null>(null);
+  // Which model the user is currently acting on. Scoped to one model so a
+  // second model's row never renders this model's spinner.
+  const [acting, setActing] = useState<LocalModelKey | null>(null);
+  const [maintaining, setMaintaining] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
@@ -70,44 +56,32 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
 
   const refresh = useCallback(async () => {
     try {
-      const [nextPolicy, nextPrefs, nextInventory] = await Promise.all([
+      const [nextPolicy, nextPrefs, nextInventory, nextRuntime] = await Promise.all([
         getSttSetupPolicy(),
         getDesktopPrefs(),
         getLocalModelInventory(),
+        getLocalAsrRuntimeStatus(),
       ]);
       if (!mounted.current) return;
       setPolicy(nextPolicy);
       setDesktopPrefsState(nextPrefs);
       setInventory(nextInventory);
+      setRuntime(nextRuntime);
     } catch (cause) {
       if (mounted.current) setError(friendlyError(cause));
     }
   }, []);
+
+  const downloads = useLocalModelDownloads({
+    onDone: () => void refresh(),
+    onError: (_model, message) => setError(friendlyError(message)),
+  });
 
   useEffect(() => {
     mounted.current = true;
     void refresh();
     return () => { mounted.current = false; };
   }, [refresh]);
-
-  useEffect(() => {
-    const recommended = inventory?.recommended_model;
-    if (!recommended || inventory?.setup_kind !== "local_required") return;
-    const command = localModelCommand(recommended);
-    const unlisten = listen<DownloadProgress>(command.event, (event) => {
-      const progress = event.payload;
-      if (progress.name !== command.eventName) return;
-      if (progress.status === "downloading") {
-        setDownload(progress);
-        setError("");
-      } else {
-        setDownload(null);
-      }
-      if (progress.status === "done") void refresh();
-      if (progress.status === "error" && progress.error) setError(friendlyError(progress.error));
-    });
-    return () => { void unlisten.then((stop) => stop()); };
-  }, [inventory?.recommended_model, inventory?.setup_kind, refresh]);
 
   const selectRoute = useCallback(async (route: DictationRoute) => {
     if (!desktopPrefs || desktopPrefs.dictation_stt === route) return;
@@ -131,43 +105,60 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
     }
   }, [desktopPrefs, inventory, refresh]);
 
-  const downloadRecommended = useCallback(async () => {
-    const recommended = inventory?.recommended_model;
-    if (!recommended) return;
-    const command = localModelCommand(recommended);
-    setBusy(true);
+  const setPolishEnabled = useCallback(async (enabled: boolean) => {
+    if (!desktopPrefs || desktopPrefs.polish_enabled === enabled) return;
+    setError("");
+    const next = { ...desktopPrefs, polish_enabled: enabled };
+    setDesktopPrefsState(next);
+    try {
+      await setDesktopPrefs(next);
+      setNotice(enabled
+        ? "Polish is enabled for normal dictation."
+        : "Polish is off. AirNote will paste the speech transcript unchanged.");
+    } catch (cause) {
+      setDesktopPrefsState(desktopPrefs);
+      setError(friendlyError(cause));
+    }
+  }, [desktopPrefs]);
+
+  const installModel = useCallback(async (model: LocalModelInfo) => {
+    setActing(model.key);
     setError("");
     setNotice("");
     try {
-      await invoke(command.download, command.args);
-      await chooseInstalledLocalModel(recommended);
-      setNotice(`${policy?.local_model_name ?? "Recommended model"} is installed and selected.`);
-      await refresh();
+      await startLocalModelDownload(model.key);
+      await chooseInstalledLocalModel(model.key);
+      setNotice(`${model.name} is installed and selected for local dictation.`);
     } catch (cause) {
-      setError(friendlyError(cause));
+      const message = friendlyError(cause);
+      if (!isCancelledDownload(message)) setError(message);
     } finally {
-      setBusy(false);
+      if (mounted.current) setActing(null);
+      await refresh();
     }
-  }, [inventory?.recommended_model, policy?.local_model_name, refresh]);
+  }, [refresh]);
 
-  const useRecommended = useCallback(async () => {
-    const recommended = inventory?.recommended_model;
-    if (!recommended) return;
-    setBusy(true);
+  const useModel = useCallback(async (model: LocalModelInfo) => {
+    setActing(model.key);
     setError("");
+    setNotice("");
     try {
-      await chooseInstalledLocalModel(recommended);
-      setNotice(`${policy?.local_model_name ?? "Recommended model"} is selected.`);
-      await refresh();
+      await chooseInstalledLocalModel(model.key);
+      setNotice(`${model.name} is now used for local dictation.`);
     } catch (cause) {
       setError(friendlyError(cause));
     } finally {
-      setBusy(false);
+      if (mounted.current) setActing(null);
+      await refresh();
     }
-  }, [inventory?.recommended_model, policy?.local_model_name, refresh]);
+  }, [refresh]);
+
+  const cancelModel = useCallback(async (model: LocalModelInfo) => {
+    await cancelLocalModelDownload(model.key);
+  }, []);
 
   const removeUnused = useCallback(async () => {
-    setBusy(true);
+    setMaintaining(true);
     setError("");
     setNotice("");
     try {
@@ -175,17 +166,16 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
       setNotice(result.removed.length > 0
         ? `Removed ${result.removed.map((model) => model.name).join(", ")} and freed ${formatSize(result.freed_bytes)}.`
         : "No unused local dictation models were found.");
-      await refresh();
     } catch (cause) {
       setError(friendlyError(cause));
-      await refresh();
     } finally {
-      setBusy(false);
+      if (mounted.current) setMaintaining(false);
+      await refresh();
     }
   }, [refresh]);
 
   const deleteAll = useCallback(async () => {
-    setBusy(true);
+    setMaintaining(true);
     setError("");
     setNotice("");
     try {
@@ -194,24 +184,26 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
         ? `Deleted all local speech models and freed ${formatSize(result.freed_bytes)}.`
         : "No local speech models were installed.");
       setConfirmDeleteAll(false);
-      await refresh();
     } catch (cause) {
       setError(friendlyError(cause));
-      await refresh();
     } finally {
-      setBusy(false);
+      if (mounted.current) setMaintaining(false);
+      await refresh();
     }
   }, [refresh]);
 
+  // Recommended first, otherwise catalog order. One list, one row per model —
+  // the recommended model is a badge, not a second UI with its own progress.
+  const selectableModels = useMemo(() => {
+    const models = (inventory?.models ?? []).filter((model) => model.selectable);
+    return [...models].sort((left, right) => Number(right.recommended) - Number(left.recommended));
+  }, [inventory?.models]);
+
   if (!policy || !inventory || !desktopPrefs) return null;
 
-  const localSelected = desktopPrefs.dictation_stt === "local";
-  const recommended = inventory.models.find((model) => model.key === inventory.recommended_model);
   const active = inventory.models.find((model) => model.active_for_dictation);
   const installed = inventory.models.filter((model) => model.installed);
-  const progress = download && download.total > 0
-    ? Math.min(100, Math.round((download.received / download.total) * 100))
-    : null;
+  const busy = acting !== null || maintaining;
 
   return (
     <div className="panel overflow-hidden mb-7">
@@ -253,34 +245,52 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
           })}
         </div>
 
-        {/* Keep the recommended model recoverable even when the user is
-            temporarily on a cloud speech model. Deleting a local model must not
-            hide the one download action that restores this Mac's onboarding
-            recommendation. */}
-        {policy.setup_kind === "local_required" && recommended && (localSelected || !recommended.installed) && (
-          <div className="rounded-xl border px-4 py-3" style={{ borderColor: "hsl(var(--surface-3))" }} aria-live="polite">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[13px] font-medium text-foreground">{active?.name ?? recommended.name}</p>
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  {active && active.key !== recommended.key
-                    ? `${active.name} is your retained working model. ${recommended.name} remains recommended.`
-                    : recommended.installed
-                      ? "Installed and selected for local dictation."
-                      : `${recommended.size_hint} download required. AirNote will switch Dictation to local when it is ready.`}
-                </p>
-              </div>
-              {!recommended.installed ? (
-                <button type="button" className="btn-primary shrink-0" disabled={busy || progress !== null} onClick={() => void downloadRecommended()}>
-                  {busy || progress !== null ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                  {progress !== null ? `${progress}%` : `Download ${recommended.size_hint}`}
-                </button>
-              ) : active?.key !== recommended.key ? (
-                <button type="button" className="btn-primary shrink-0" disabled={busy} onClick={() => void useRecommended()}>
-                  {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Use recommended
-                </button>
-              ) : <span className="text-[11px] inline-flex items-center gap-1 text-primary"><Check size={13} /> Ready</span>}
+        <div className="rounded-xl border px-4 py-3 flex items-center justify-between gap-3" style={{ borderColor: "hsl(var(--surface-3))" }}>
+          <div>
+            <p className="text-[13px] font-medium text-foreground">Polish transcription</p>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              {desktopPrefs.polish_enabled
+                ? "Improve wording and formatting after speech recognition."
+                : "Paste the speech model's final transcript directly; works fully offline with a local model."}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={desktopPrefs.polish_enabled}
+            aria-label="Polish transcription"
+            onClick={() => void setPolishEnabled(!desktopPrefs.polish_enabled)}
+            className="relative h-6 w-11 shrink-0 rounded-full transition-colors"
+            style={{ background: desktopPrefs.polish_enabled ? "hsl(var(--primary))" : "hsl(var(--surface-4))" }}
+          >
+            <span className="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform" style={{ left: 2, transform: desktopPrefs.polish_enabled ? "translateX(20px)" : "translateX(0)" }} />
+          </button>
+        </div>
+
+        {selectableModels.length > 0 && (
+          <div className="rounded-xl border overflow-hidden" style={{ borderColor: "hsl(var(--surface-3))" }}>
+            <div className="px-4 py-3 border-b" style={{ borderColor: "hsl(var(--surface-3))" }}>
+              <p className="text-[13px] font-medium text-foreground">Local speech models</p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Install and compare models that run on this Mac. Using one switches Dictation to local; AirNote's cloud and meeting models are unaffected.
+              </p>
             </div>
+            {selectableModels.map((model, index) => (
+              <div
+                key={model.key}
+                style={index > 0 ? { borderTop: "1px solid hsl(var(--surface-3))" } : undefined}
+              >
+                <LocalModelRow
+                  model={model}
+                  download={downloads[model.key]}
+                  pending={acting === model.key}
+                  locked={busy && acting !== model.key}
+                  onInstall={(target) => void installModel(target)}
+                  onUse={(target) => void useModel(target)}
+                  onCancel={(target) => void cancelModel(target)}
+                />
+              </div>
+            ))}
           </div>
         )}
 
@@ -296,10 +306,16 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
               {installed.some((model) => model.required_for_meetings) && (
                 <p className="text-[11px] text-muted-foreground mt-1">Oriserve is protected during normal cleanup because local Meetings use it.</p>
               )}
+              {runtime?.loaded_model && (
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Loaded: {runtime.loaded_model} · {runtime.backend ?? "automatic backend"}{runtime.supports_streaming ? " · streaming capable" : " · batch"}{runtime.last_load_ms !== null ? ` · ${runtime.last_load_ms} ms load` : ""}
+                </p>
+              )}
+              {runtime?.last_error && <p className="text-[11px] text-destructive mt-1">Last local runtime error: {runtime.last_error}</p>}
             </div>
             {inventory.reclaimable_bytes > 0 && (
               <button type="button" className="btn-ghost shrink-0" disabled={busy} onClick={() => void removeUnused()}>
-                {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                {maintaining ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
                 Free {formatSize(inventory.reclaimable_bytes)}
               </button>
             )}
@@ -313,7 +329,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
                 <div className="flex justify-end gap-2 mt-3">
                   <button type="button" autoFocus className="btn-ghost" disabled={busy} onClick={() => setConfirmDeleteAll(false)}>Cancel</button>
                   <button type="button" className="btn-ghost text-destructive" disabled={busy} onClick={() => void deleteAll()}>
-                    {busy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Delete all models
+                    {maintaining ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Delete all models
                   </button>
                 </div>
               </div>

@@ -48,6 +48,11 @@ pub struct DesktopPrefs {
     #[serde(default)]
     pub message_polish_mode: bool,
 
+    /// Whether normal dictation should call the polish model. When disabled,
+    /// the verified STT transcript is persisted and pasted unchanged.
+    #[serde(default = "default_polish_enabled")]
+    pub polish_enabled: bool,
+
     /// When true, the desktop shell registers AirNote as a login item so it
     /// starts automatically when the user signs in.
     #[serde(default)]
@@ -66,9 +71,8 @@ pub struct DesktopPrefs {
     pub browser_context_enabled: bool,
 
     /// Dictation STT route. The desktop device policy owns valid values:
-    /// Apple Silicon can use `"local"` or
-    /// `"cloud-deepinfra-whisper-v3-turbo"`; Windows and Intel Macs are
-    /// locked to the hosted DeepInfra Whisper route.
+    /// Apple Silicon can use `"local"` or either supported cloud route;
+    /// Windows and Intel Macs are locked to cloud transcription.
     #[serde(default = "default_dictation_stt")]
     pub dictation_stt: String,
 
@@ -86,7 +90,11 @@ pub struct DesktopPrefs {
 }
 
 fn default_dictation_stt() -> String {
-    "local".into()
+    "cloud-elevenlabs-scribe-v2".into()
+}
+
+fn default_polish_enabled() -> bool {
+    true
 }
 
 fn default_local_stt_model() -> String {
@@ -103,6 +111,7 @@ impl Default for DesktopPrefs {
             sentry_disabled: false,
             update_channel: default_channel(),
             message_polish_mode: false,
+            polish_enabled: true,
             launch_at_login: false,
             beta_mode: false,
             browser_context_enabled: false,
@@ -129,9 +138,9 @@ pub fn load() -> DesktopPrefs {
     // The desktop policy resolves all legacy values on startup. Keep the
     // JSON reader tolerant so an old preferences file can always be opened.
     if prefs.dictation_stt == "cloud-nemotron-3.5" {
-        prefs.dictation_stt = "cloud-deepinfra-whisper-v3-turbo".into();
+        prefs.dictation_stt = default_dictation_stt();
     } else if prefs.dictation_stt == "hosted" || prefs.dictation_stt == "cloud-whisper-large-v3" {
-        prefs.dictation_stt = "local".into();
+        prefs.dictation_stt = default_dictation_stt();
     }
     prefs
 }
@@ -175,9 +184,10 @@ mod tests {
         assert!(!p.sentry_disabled);
         assert_eq!(p.update_channel, "stable");
         assert!(!p.message_polish_mode);
+        assert!(p.polish_enabled);
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
-        assert_eq!(p.dictation_stt, "local");
+        assert_eq!(p.dictation_stt, "cloud-elevenlabs-scribe-v2");
         assert_eq!(p.local_stt_model, "oriserve");
         assert_eq!(p.local_stt_compat_override, None);
 
@@ -186,6 +196,7 @@ mod tests {
         assert!(p.sentry_disabled);
         assert_eq!(p.update_channel, "stable");
         assert!(!p.message_polish_mode);
+        assert!(p.polish_enabled);
         assert!(!p.launch_at_login);
         assert!(!p.beta_mode);
         assert_eq!(p.local_stt_model, "oriserve");
@@ -198,6 +209,7 @@ mod tests {
             sentry_disabled: true,
             update_channel: "beta".into(),
             message_polish_mode: true,
+            polish_enabled: false,
             launch_at_login: true,
             beta_mode: true,
             browser_context_enabled: true,
@@ -210,6 +222,7 @@ mod tests {
         assert!(back.sentry_disabled);
         assert_eq!(back.update_channel, "beta");
         assert!(back.message_polish_mode);
+        assert!(!back.polish_enabled);
         assert!(back.launch_at_login);
         assert!(back.beta_mode);
         assert!(back.browser_context_enabled);

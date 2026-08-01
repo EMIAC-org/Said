@@ -203,6 +203,10 @@ const MIGRATIONS: &[Migration] = &[
         id: "045_deepseek_v4_flash_polish",
         sql: include_str!("../migrations/045_deepseek_v4_flash_polish.sql"),
     },
+    Migration {
+        id: "046_default_deepseek_v4_flash",
+        sql: include_str!("../migrations/046_default_deepseek_v4_flash.sql"),
+    },
 ];
 
 /// Connect to Postgres and apply the schema.

@@ -31,8 +31,8 @@ pub struct Mode {
 
 pub const MODES: &[Mode] = &[Mode {
     key: polish::model::DEFAULT_POLISH_MODEL_KEY,
-    label: "Gemma 4 26B A4B (DeepInfra)",
-    model: polish::model::DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
+    label: "DeepSeek V4 Flash (No reasoning)",
+    model: polish::model::DEEPSEEK_POLISH_MODEL_V4_FLASH,
     icon: "fast",
 }];
 

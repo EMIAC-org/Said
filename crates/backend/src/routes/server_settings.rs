@@ -306,10 +306,7 @@ mod tests {
         });
 
         let update = prefs_update_from_server_settings(&body).expect("update");
-        assert_eq!(
-            update.selected_model.as_deref(),
-            Some("deepinfra-gemma-4-26b-a4b")
-        );
+        assert_eq!(update.selected_model.as_deref(), Some("deepseek-v4-flash"));
         assert_eq!(update.output_language.as_deref(), Some("english"));
         assert_eq!(update.tone_preset.as_deref(), Some("professional"));
         assert_eq!(update.custom_prompt, Some(Some("keep it short".into())));

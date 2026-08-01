@@ -13,15 +13,32 @@ pub const WHISPER_SAMPLE_RATE: usize = 16_000;
 ///
 /// Steps: validate RIFF/WAVE → decode 16- or 32-bit PCM → downmix to mono →
 /// resample to 16 kHz if needed → [`said_core::preprocess::condition_16k`].
+///
+/// For whisper-family models only. Conformer/TDT models are trained on
+/// unprocessed capture and decode poorly through this chain — they use
+/// [`decode_16k`] instead.
 pub fn prepare(wav: &[u8]) -> Result<Vec<f32>, AsrError> {
+    let mut audio = decode_16k(wav)?;
+    said_core::preprocess::condition_16k(&mut audio);
+    Ok(audio)
+}
+
+/// Decode a WAV byte buffer to plain 16 kHz mono f32 samples, with no spectral
+/// conditioning: validate RIFF/WAVE → decode → downmix → resample.
+///
+/// This is what the model sees for every non-whisper local engine. The
+/// high-pass, RNNoise and loudness-normalization stages in
+/// [`said_core::preprocess::condition_16k`] were tuned for whisper's mel
+/// front-end; conformer/TDT models expect raw capture and can decode to nothing
+/// through them.
+pub fn decode_16k(wav: &[u8]) -> Result<Vec<f32>, AsrError> {
     if wav.len() <= 44 {
         return Err(AsrError::EmptyAudio);
     }
-    let mut audio = decode_to_mono_16k(wav)?;
+    let audio = decode_to_mono_16k(wav)?;
     if audio.is_empty() {
         return Err(AsrError::EmptyAudio);
     }
-    said_core::preprocess::condition_16k(&mut audio);
     Ok(audio)
 }
 

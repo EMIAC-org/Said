@@ -454,32 +454,32 @@ mod tests {
     use super::normalize_runtime_selected_model;
 
     #[test]
-    fn all_legacy_model_aliases_normalize_to_deepinfra_gemma() {
+    fn all_legacy_model_aliases_normalize_to_deepseek() {
         assert_eq!(
             normalize_runtime_selected_model("smart".into()),
-            "deepinfra-gemma-4-26b-a4b"
+            "deepseek-v4-flash"
         );
         assert_eq!(
             normalize_runtime_selected_model("maverick".into()),
-            "deepinfra-gemma-4-26b-a4b"
+            "deepseek-v4-flash"
         );
         assert_eq!(
             normalize_runtime_selected_model(
                 "meta-llama/llama-4-maverick-17b-128e-instruct".into()
             ),
-            "deepinfra-gemma-4-26b-a4b"
+            "deepseek-v4-flash"
         );
         assert_eq!(
             normalize_runtime_selected_model("meta-llama/llama-4-scout-17b-16e-instruct".into()),
-            "deepinfra-gemma-4-26b-a4b"
+            "deepseek-v4-flash"
         );
     }
 
     #[test]
-    fn normalizes_any_stale_model_to_deepinfra_gemma() {
+    fn normalizes_any_stale_model_to_deepseek() {
         assert_eq!(
             normalize_runtime_selected_model("anything-stale".into()),
-            "deepinfra-gemma-4-26b-a4b"
+            "deepseek-v4-flash"
         );
     }
 

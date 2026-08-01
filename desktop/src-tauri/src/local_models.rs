@@ -1,17 +1,17 @@
 //! Inventory and migration-safe lifecycle for local speech models.
 //!
-//! Hardware recommendation, active dictation choice, and Meetings dependencies
-//! are deliberately separate concepts here. Normal upgrades may remove only
-//! unused Nemotron variants; Oriserve remains protected because Meetings use it
-//! on every platform.
+//! Catalog-backed dictation models are generic. Oriserve remains a protected
+//! meeting dependency until that legacy Whisper artifact joins the verified
+//! catalog installer.
 
 use serde::Serialize;
 
 use said_core::prefs::DesktopPrefs;
 
-use crate::{dictation_stt, meeting_engine, nemotron, stt_policy};
-
-const NEMOTRON_Q8_PREF: &str = "nemotron-q8";
+use crate::{
+    dictation_stt, local_model_catalog, local_model_store, local_transcribe, meeting_engine,
+    stt_policy,
+};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LocalModelInfo {
@@ -24,7 +24,13 @@ pub struct LocalModelInfo {
     pub active_for_dictation: bool,
     pub required_for_meetings: bool,
     pub compatibility_candidate: bool,
+    pub selectable: bool,
     pub safe_to_remove: bool,
+    pub architecture: String,
+    pub languages: Vec<String>,
+    pub streaming: bool,
+    pub quantization: Option<String>,
+    pub license: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -51,126 +57,135 @@ pub struct LocalModelCleanupResult {
     pub freed_bytes: u64,
 }
 
-fn status_for(key: &str) -> Result<(bool, u64), String> {
-    match key {
-        stt_policy::ORISERVE_PREF => {
-            let status = meeting_engine::dictation_model_status();
-            Ok((status.installed, status.size_bytes))
-        }
-        stt_policy::NEMOTRON_Q4_PREF => {
-            let status = nemotron::nemotron_model_status("q4".into())?;
-            Ok((status.installed, status.size_bytes))
-        }
-        NEMOTRON_Q8_PREF => {
-            let status = nemotron::nemotron_model_status("q8".into())?;
-            Ok((status.installed, status.size_bytes))
-        }
-        _ => Err(format!("Unsupported local speech model: {key}")),
-    }
+fn canonical_local_model(value: &str) -> &str {
+    local_model_catalog::canonical_key(value)
 }
 
-fn model_info(
+fn status_for(key: &str) -> Result<(bool, u64), String> {
+    if key == stt_policy::ORISERVE_PREF {
+        let status = meeting_engine::dictation_model_status();
+        return Ok((status.installed, status.size_bytes));
+    }
+    let descriptor = local_model_catalog::find(key)
+        .ok_or_else(|| format!("Unsupported local speech model: {key}"))?;
+    Ok((
+        local_model_store::installed(descriptor),
+        local_model_store::installed_size(descriptor),
+    ))
+}
+
+fn model_flags(
     key: &str,
-    name: &str,
-    size_hint: &str,
     installed: bool,
-    size_bytes: u64,
+    policy: &stt_policy::SttSetupPolicy,
+    prefs: &DesktopPrefs,
+) -> (bool, bool, bool, bool, bool) {
+    let recommended = policy.local_pref() == Some(key);
+    let active = prefs.dictation_stt == stt_policy::LOCAL_PREF
+        && canonical_local_model(&prefs.local_stt_model) == key;
+    let selectable = stt_policy::supports_local_model(policy, key);
+    let compatible = installed && selectable;
+    let safe_to_remove = installed && key != stt_policy::ORISERVE_PREF && !active && !recommended;
+    (recommended, active, compatible, selectable, safe_to_remove)
+}
+
+fn oriserve_info(
+    status: (bool, u64),
     policy: &stt_policy::SttSetupPolicy,
     prefs: &DesktopPrefs,
 ) -> LocalModelInfo {
-    let recommended = policy.local_pref() == Some(key);
-    let active_for_dictation = prefs.dictation_stt == stt_policy::LOCAL_PREF
-        && canonical_local_model(&prefs.local_stt_model) == key;
-    let compatibility_candidate = policy.local_pref() == Some(stt_policy::NEMOTRON_Q4_PREF)
-        && matches!(key, stt_policy::ORISERVE_PREF | NEMOTRON_Q8_PREF)
-        && installed;
-    let safe_to_remove = installed
-        && matches!(key, stt_policy::NEMOTRON_Q4_PREF | NEMOTRON_Q8_PREF)
-        && !active_for_dictation
-        && !recommended;
+    let (installed, size_bytes) = status;
+    let (recommended, active, compatible, selectable, safe_to_remove) =
+        model_flags(stt_policy::ORISERVE_PREF, installed, policy, prefs);
     LocalModelInfo {
-        key: key.into(),
-        name: name.into(),
+        key: stt_policy::ORISERVE_PREF.into(),
+        name: "Oriserve Hinglish".into(),
         installed,
         size_bytes,
-        size_hint: size_hint.into(),
+        size_hint: "~148 MB".into(),
         recommended,
-        active_for_dictation,
-        required_for_meetings: key == stt_policy::ORISERVE_PREF,
-        compatibility_candidate,
+        active_for_dictation: active,
+        required_for_meetings: true,
+        compatibility_candidate: compatible,
+        selectable,
         safe_to_remove,
+        architecture: "whisper".into(),
+        languages: vec!["en".into(), "hi".into()],
+        streaming: false,
+        quantization: None,
+        license: None,
     }
 }
 
-fn canonical_local_model(value: &str) -> &str {
-    match value {
-        "nemotron" => NEMOTRON_Q8_PREF,
-        other => other,
+fn catalog_info(
+    descriptor: &local_model_catalog::LocalModelDescriptor,
+    status: (bool, u64),
+    policy: &stt_policy::SttSetupPolicy,
+    prefs: &DesktopPrefs,
+) -> LocalModelInfo {
+    let (installed, size_bytes) = status;
+    let (recommended, active, compatible, selectable, safe_to_remove) =
+        model_flags(descriptor.key, installed, policy, prefs);
+    LocalModelInfo {
+        key: descriptor.key.into(),
+        name: descriptor.name.into(),
+        installed,
+        size_bytes,
+        size_hint: descriptor.size_hint(),
+        recommended,
+        active_for_dictation: active,
+        required_for_meetings: false,
+        compatibility_candidate: compatible,
+        selectable,
+        safe_to_remove,
+        architecture: descriptor.architecture.into(),
+        languages: descriptor
+            .languages
+            .iter()
+            .map(|value| (*value).into())
+            .collect(),
+        streaming: descriptor.capabilities.streaming,
+        quantization: Some(descriptor.quantization.into()),
+        license: Some(descriptor.license.into()),
     }
 }
 
 fn inventory_for(
     policy: &stt_policy::SttSetupPolicy,
     prefs: &DesktopPrefs,
-    statuses: [(bool, u64); 3],
+    statuses: &[(String, bool, u64)],
 ) -> LocalModelInventory {
-    let [
-        (oriserve_installed, oriserve_size),
-        (q4_installed, q4_size),
-        (q8_installed, q8_size),
-    ] = statuses;
-    let models = vec![
-        model_info(
-            stt_policy::ORISERVE_PREF,
-            "Oriserve Hinglish",
-            "~148 MB",
-            oriserve_installed,
-            oriserve_size,
-            policy,
-            prefs,
-        ),
-        model_info(
-            stt_policy::NEMOTRON_Q4_PREF,
-            "Nemotron Streaming 3.5 (Q4)",
-            "~496 MB",
-            q4_installed,
-            q4_size,
-            policy,
-            prefs,
-        ),
-        model_info(
-            NEMOTRON_Q8_PREF,
-            "Nemotron Streaming 3.5 (Q8)",
-            "~751 MB",
-            q8_installed,
-            q8_size,
-            policy,
-            prefs,
-        ),
-    ];
+    let status = |key: &str| {
+        statuses
+            .iter()
+            .find(|(candidate, _, _)| candidate == key)
+            .map(|(_, installed, size)| (*installed, *size))
+            .unwrap_or((false, 0))
+    };
+    let mut models = vec![oriserve_info(
+        status(stt_policy::ORISERVE_PREF),
+        policy,
+        prefs,
+    )];
+    models.extend(
+        local_model_catalog::MODELS
+            .iter()
+            .map(|descriptor| catalog_info(descriptor, status(descriptor.key), policy, prefs)),
+    );
+
     let recommended_installed = models
         .iter()
         .any(|model| model.recommended && model.installed);
     let selected = canonical_local_model(&prefs.local_stt_model);
-    let selected_compatibility = models
+    let existing_compatible_model = models
         .iter()
-        .find(|model| model.key == selected && model.compatibility_candidate);
-    let existing_compatible_model = selected_compatibility
+        .find(|model| model.key == selected && model.compatibility_candidate && !model.recommended)
         .or_else(|| {
-            if recommended_installed {
-                None
-            } else {
+            (!recommended_installed).then(|| {
                 models
                     .iter()
-                    .find(|model| model.key == NEMOTRON_Q8_PREF && model.compatibility_candidate)
-            }
-        })
-        .or_else(|| {
-            if recommended_installed {
-                None
-            } else {
-                models.iter().find(|model| model.compatibility_candidate)
-            }
+                    .find(|model| model.compatibility_candidate && !model.recommended)
+            })?
         })
         .map(|model| model.key.clone());
     let reclaimable_bytes = models
@@ -193,20 +208,20 @@ fn inventory_for(
 pub fn local_model_inventory() -> Result<LocalModelInventory, String> {
     let policy = stt_policy::current();
     let prefs = stt_policy::normalize_prefs(said_core::prefs::load());
-    Ok(inventory_for(
-        policy,
-        &prefs,
-        [
-            status_for(stt_policy::ORISERVE_PREF)?,
-            status_for(stt_policy::NEMOTRON_Q4_PREF)?,
-            status_for(NEMOTRON_Q8_PREF)?,
-        ],
-    ))
+    let (oriserve_installed, oriserve_size) = status_for(stt_policy::ORISERVE_PREF)?;
+    let mut statuses = vec![(
+        stt_policy::ORISERVE_PREF.to_string(),
+        oriserve_installed,
+        oriserve_size,
+    )];
+    for descriptor in local_model_catalog::MODELS {
+        let (installed, size) = status_for(descriptor.key)?;
+        statuses.push((descriptor.key.to_string(), installed, size));
+    }
+    Ok(inventory_for(policy, &prefs, &statuses))
 }
 
-/// Select a verified installed model. Choosing the hardware recommendation
-/// clears compatibility intent; choosing an older supported model records the
-/// explicit decision so startup normalization cannot erase it.
+/// Select an installed model only after policy and integrity checks succeed.
 #[tauri::command]
 pub fn choose_installed_local_model(model: String) -> Result<LocalModelInventory, String> {
     let policy = stt_policy::current();
@@ -214,28 +229,30 @@ pub fn choose_installed_local_model(model: String) -> Result<LocalModelInventory
         return Err("Local dictation models are not selectable on this device.".into());
     }
     let model = canonical_local_model(&model).to_string();
+    if !stt_policy::supports_local_model(policy, &model) {
+        return Err("That model is not supported on this device.".into());
+    }
     let (installed, _) = status_for(&model)?;
     if !installed {
         return Err("That speech model is not fully installed yet.".into());
+    }
+    if let Some(descriptor) = local_model_catalog::find(&model) {
+        local_model_store::ensure_verified(descriptor)?;
     }
 
     let recommended = policy
         .local_pref()
         .ok_or_else(|| "This device has no local model recommendation.".to_string())?;
-    let compatibility = recommended == stt_policy::NEMOTRON_Q4_PREF
-        && matches!(model.as_str(), stt_policy::ORISERVE_PREF | NEMOTRON_Q8_PREF);
-    if model != recommended && !compatibility {
-        return Err("That model is not supported for local dictation on this device.".into());
-    }
-
+    let compatibility = model != recommended;
     let mut prefs = said_core::prefs::load();
     prefs.dictation_stt = stt_policy::LOCAL_PREF.into();
     prefs.local_stt_model = model.clone();
     prefs.local_stt_compat_override = compatibility.then_some(model);
     let prefs = stt_policy::normalize_prefs(prefs);
     said_core::prefs::save(&prefs)?;
+    local_transcribe::unload();
     std::thread::Builder::new()
-        .name("dictation-stt-migration-prewarm".into())
+        .name("dictation-stt-model-prewarm".into())
         .spawn(dictation_stt::prewarm)
         .ok();
     local_model_inventory()
@@ -246,18 +263,16 @@ pub fn remove_unused_local_dictation_models() -> Result<LocalModelCleanupResult,
     let inventory = local_model_inventory()?;
     let mut removed = Vec::new();
     for model in inventory.models.iter().filter(|model| model.safe_to_remove) {
-        let variant = if model.key == stt_policy::NEMOTRON_Q4_PREF {
-            "q4"
-        } else {
-            "q8"
-        };
-        nemotron::delete_nemotron_model(variant.into())?;
+        let descriptor = local_model_catalog::find(&model.key)
+            .ok_or_else(|| format!("Unknown catalog model: {}", model.key))?;
+        local_model_store::remove(descriptor)?;
         removed.push(RemovedLocalModel {
             key: model.key.clone(),
             name: model.name.clone(),
             size_bytes: model.size_bytes,
         });
     }
+    local_transcribe::unload();
     let freed_bytes = removed.iter().map(|model| model.size_bytes).sum();
     Ok(LocalModelCleanupResult {
         removed,
@@ -265,16 +280,16 @@ pub fn remove_unused_local_dictation_models() -> Result<LocalModelCleanupResult,
     })
 }
 
-/// Explicit advanced reset. Dictation is switched to a verified cloud route
-/// before any file is removed. Oriserve and Silero are included, so local
-/// Meetings will require a fresh download afterwards.
+/// Explicit advanced reset. Switch to a working cloud route before removing
+/// local artifacts. Oriserve and Silero are included, so Meetings require a
+/// fresh download afterwards.
 #[tauri::command]
 pub fn delete_all_local_speech_models() -> Result<LocalModelCleanupResult, String> {
     let previous = said_core::prefs::load();
     let policy = stt_policy::current();
     let mut cloud = previous.clone();
     if cloud.dictation_stt == stt_policy::LOCAL_PREF {
-        cloud.dictation_stt = stt_policy::CLOUD_DEEPINFRA_PREF.into();
+        cloud.dictation_stt = stt_policy::CLOUD_ELEVENLABS_PREF.into();
     }
     cloud.local_stt_compat_override = None;
     if let Some(recommended) = policy.local_pref() {
@@ -289,15 +304,15 @@ pub fn delete_all_local_speech_models() -> Result<LocalModelCleanupResult, Strin
 
     let inventory = local_model_inventory()?;
     let vad = meeting_engine::silero_vad_model_status();
-    nemotron::unload();
+    local_transcribe::unload();
     let mut removed = Vec::new();
-
     for model in inventory.models.iter().filter(|model| model.installed) {
-        match model.key.as_str() {
-            stt_policy::ORISERVE_PREF => meeting_engine::delete_dictation_model()?,
-            stt_policy::NEMOTRON_Q4_PREF => nemotron::delete_nemotron_model("q4".into())?,
-            NEMOTRON_Q8_PREF => nemotron::delete_nemotron_model("q8".into())?,
-            _ => continue,
+        if model.key == stt_policy::ORISERVE_PREF {
+            meeting_engine::delete_dictation_model()?;
+        } else if let Some(descriptor) = local_model_catalog::find(&model.key) {
+            local_model_store::remove(descriptor)?;
+        } else {
+            continue;
         }
         removed.push(RemovedLocalModel {
             key: model.key.clone(),
@@ -335,32 +350,27 @@ mod tests {
         stt_policy::policy_for("macos", "arm64", false, memory_gib * 1024 * 1024 * 1024)
     }
 
-    #[test]
-    fn high_memory_mac_can_continue_with_installed_oriserve() {
-        let policy = apple_policy(16);
-        let prefs = DesktopPrefs::default();
-        let inventory = inventory_for(&policy, &prefs, [(true, 148), (false, 0), (false, 0)]);
-        assert_eq!(
-            inventory.existing_compatible_model.as_deref(),
-            Some(stt_policy::ORISERVE_PREF)
-        );
-        assert!(!inventory.recommended_installed);
+    fn statuses(values: &[(&str, bool, u64)]) -> Vec<(String, bool, u64)> {
+        values
+            .iter()
+            .map(|(key, installed, size)| ((*key).into(), *installed, *size))
+            .collect()
     }
 
     #[test]
-    fn q8_is_preferred_as_existing_nemotron_compatibility_model() {
+    fn catalog_models_are_exposed_without_provider_specific_inventory_code() {
         let policy = apple_policy(16);
-        // v6 may already have overwritten the prior selection with the missing
-        // recommendation; inventory still recovers the installed Q8 artifact.
-        let prefs = DesktopPrefs {
-            local_stt_model: stt_policy::NEMOTRON_Q4_PREF.into(),
-            ..DesktopPrefs::default()
-        };
-        let inventory = inventory_for(&policy, &prefs, [(true, 148), (false, 0), (true, 751)]);
-        assert_eq!(
-            inventory.existing_compatible_model.as_deref(),
-            Some(NEMOTRON_Q8_PREF)
+        let prefs = DesktopPrefs::default();
+        let inventory = inventory_for(
+            &policy,
+            &prefs,
+            &statuses(&[(stt_policy::ORISERVE_PREF, true, 148)]),
         );
+        assert!(inventory.models.iter().any(|model| {
+            model.key == local_model_catalog::PARAKEET_Q8_PREF
+                && model.languages == ["en"]
+                && !model.streaming
+        }));
     }
 
     #[test]
@@ -370,54 +380,37 @@ mod tests {
             local_stt_model: stt_policy::NEMOTRON_Q4_PREF.into(),
             ..DesktopPrefs::default()
         };
-        let inventory = inventory_for(&policy, &prefs, [(true, 148), (true, 496), (true, 751)]);
-        let oriserve = inventory
-            .models
-            .iter()
-            .find(|model| model.key == stt_policy::ORISERVE_PREF)
-            .unwrap();
+        let inventory = inventory_for(
+            &policy,
+            &prefs,
+            &statuses(&[
+                (stt_policy::ORISERVE_PREF, true, 148),
+                (stt_policy::NEMOTRON_Q4_PREF, true, 496),
+                (local_model_catalog::NEMOTRON_Q8_PREF, true, 751),
+            ]),
+        );
+        let oriserve = &inventory.models[0];
         assert!(oriserve.required_for_meetings);
         assert!(!oriserve.safe_to_remove);
         assert_eq!(inventory.reclaimable_bytes, 751);
     }
 
     #[test]
-    fn eight_gib_mac_does_not_offer_heavy_compatibility_model() {
-        let policy = apple_policy(8);
-        let prefs = DesktopPrefs::default();
-        let inventory = inventory_for(&policy, &prefs, [(false, 0), (true, 496), (true, 751)]);
-        assert_eq!(inventory.existing_compatible_model, None);
-    }
-
-    #[test]
-    fn installed_recommendation_still_reports_selected_compatibility_choice() {
+    fn selected_parakeet_is_a_first_class_compatibility_choice() {
         let policy = apple_policy(16);
         let prefs = DesktopPrefs {
-            local_stt_model: stt_policy::ORISERVE_PREF.into(),
-            local_stt_compat_override: Some(stt_policy::ORISERVE_PREF.into()),
+            local_stt_model: local_model_catalog::PARAKEET_Q8_PREF.into(),
+            local_stt_compat_override: Some(local_model_catalog::PARAKEET_Q8_PREF.into()),
             ..DesktopPrefs::default()
         };
-        let inventory = inventory_for(&policy, &prefs, [(true, 148), (true, 496), (false, 0)]);
-        assert!(inventory.recommended_installed);
+        let inventory = inventory_for(
+            &policy,
+            &prefs,
+            &statuses(&[(local_model_catalog::PARAKEET_Q8_PREF, true, 731)]),
+        );
         assert_eq!(
             inventory.existing_compatible_model.as_deref(),
-            Some(stt_policy::ORISERVE_PREF)
+            Some(local_model_catalog::PARAKEET_Q8_PREF)
         );
-    }
-
-    #[test]
-    fn cloud_locked_devices_can_reclaim_nemotron_but_not_meetings_model() {
-        let policy = stt_policy::policy_for("windows", "x86_64", false, 16 * 1024 * 1024 * 1024);
-        let prefs = DesktopPrefs {
-            dictation_stt: stt_policy::CLOUD_DEEPINFRA_PREF.into(),
-            local_stt_model: stt_policy::NEMOTRON_Q4_PREF.into(),
-            ..DesktopPrefs::default()
-        };
-        let inventory = inventory_for(&policy, &prefs, [(true, 148), (true, 496), (true, 751)]);
-        assert_eq!(inventory.setup_kind, stt_policy::SetupKind::CloudLocked);
-        assert_eq!(inventory.reclaimable_bytes, 1_247);
-        assert!(!inventory.models[0].safe_to_remove);
-        assert!(inventory.models[1].safe_to_remove);
-        assert!(inventory.models[2].safe_to_remove);
     }
 }

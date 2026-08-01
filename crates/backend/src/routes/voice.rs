@@ -422,6 +422,7 @@ struct VoicePolishInput {
     repair_mode: Option<String>,
     screen_context: Option<String>,
     message_polish_mode: bool,
+    polish_enabled: bool,
     client_run_id: Option<String>,
     client_trace_json: Option<serde_json::Value>,
 }
@@ -601,6 +602,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
     let mut repair_mode: Option<String> = None;
     let mut screen_context: Option<String> = None;
     let mut message_polish_mode = false;
+    let mut polish_enabled = true;
     let mut client_run_id: Option<String> = None;
     let mut client_trace_json: Option<serde_json::Value> = None;
 
@@ -645,6 +647,13 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
                     .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
                     .unwrap_or(false);
             }
+            Some("polish_enabled") => {
+                polish_enabled = field
+                    .text()
+                    .await
+                    .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(true);
+            }
             Some("client_run_id") => {
                 client_run_id = field.text().await.ok().filter(|s| !s.trim().is_empty());
             }
@@ -668,7 +677,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
         .map(|t| t.split_whitespace().count())
         .unwrap_or(0);
     info!(
-        "[voice] multipart parsed in {}ms wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} pre_meta={} message_polish={} repair_mode={} screen_context_chars={} target_app_present={} client_run_id={}",
+        "[voice] multipart parsed in {}ms wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} pre_meta={} message_polish={} polish_enabled={} repair_mode={} screen_context_chars={} target_app_present={} client_run_id={}",
         parse_ms,
         wav_data.len(),
         pre_transcript.is_some(),
@@ -676,6 +685,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
         pre_words,
         pre_transcript_meta.is_some(),
         message_polish_mode,
+        polish_enabled,
         repair_mode.is_some(),
         screen_context
             .as_ref()
@@ -710,6 +720,7 @@ pub async fn polish(State(state): State<AppState>, mut multipart: Multipart) -> 
             repair_mode,
             screen_context,
             message_polish_mode,
+            polish_enabled,
             client_run_id,
             client_trace_json,
         },
@@ -745,6 +756,7 @@ pub async fn polish_transcript(
             repair_mode: None,
             screen_context: None,
             message_polish_mode: false,
+            polish_enabled: true,
             client_run_id: None,
             client_trace_json: None,
         },
@@ -1134,6 +1146,7 @@ async fn start_or_subscribe_ws_run(
             repair_mode: start.repair_mode,
             screen_context: start.screen_context,
             message_polish_mode: start.message_polish_mode,
+            polish_enabled: true,
             client_run_id: Some(run_id.clone()),
             client_trace_json: start.client_trace_json,
         },
@@ -2007,6 +2020,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         repair_mode,
         screen_context,
         message_polish_mode,
+        polish_enabled,
         client_run_id,
         client_trace_json,
     } = input;
@@ -2021,6 +2035,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             "wav_bytes": wav_data.len(),
             "pre_transcript_present": pre_transcript.is_some(),
             "message_polish": message_polish_mode,
+            "polish_enabled": polish_enabled,
             "repair_mode": repair_mode.is_some(),
             "screen_context_chars": screen_context.as_ref().map(|s| s.chars().count()).unwrap_or(0),
             "client_run_id": client_run_id.as_deref(),
@@ -2034,7 +2049,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         return StatusCode::BAD_REQUEST.into_response();
     }
     info!(
-        "[voice] input accepted wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} repair_mode={} screen_context_chars={} client_run_id={}",
+        "[voice] input accepted wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} polish_enabled={} repair_mode={} screen_context_chars={} client_run_id={}",
         wav_data.len(),
         pre_transcript.is_some(),
         pre_transcript
@@ -2046,6 +2061,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             .map(|t| t.split_whitespace().count())
             .unwrap_or(0),
         message_polish_mode,
+        polish_enabled,
         repair_mode.is_some(),
         screen_context
             .as_ref()
@@ -2089,7 +2105,9 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         .clone()
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let voice_run_mode = if message_polish_mode {
+    let voice_run_mode = if !polish_enabled {
+        "raw_transcript"
+    } else if message_polish_mode {
         "message_polish"
     } else if repair_mode.is_some() {
         "repair"
@@ -2180,8 +2198,11 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         pre_transcript.is_some(),
         message_polish_mode,
     );
-    let missing =
-        crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard);
+    let missing = if polish_enabled {
+        crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard)
+    } else {
+        Vec::new()
+    };
     if !missing.is_empty() {
         let message = "API keys required";
         let payload = voice_error_payload(
@@ -2349,6 +2370,113 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             local_meta.model,
             local_meta.origin,
         );
+
+        if !polish_enabled {
+            yield Ok(Event::default().event("status")
+                .data(json!({"phase": "finalizing", "transcript": stt_transcript_raw}).to_string()));
+
+            let recording_id = Uuid::new_v4().to_string();
+            let model_used = if local_meta.model.trim().is_empty() {
+                "local-stt".to_string()
+            } else {
+                local_meta.model.clone()
+            };
+            let output_language = local_meta.languages.first().cloned();
+            let total_ms = total_start.elapsed().as_millis() as i64;
+            let word_count = stt_transcript_raw.split_whitespace().count() as i64;
+            let pool2 = pool.clone();
+            let id2 = recording_id.clone();
+            let uid2 = user_id.clone();
+            let raw2 = stt_transcript_raw.clone();
+            let enriched2 = enriched_raw.clone();
+            let model2 = model_used.clone();
+            let target2 = target_app.clone();
+            let audio2 = saved_audio_id.clone();
+            let run_id2 = voice_run_id.clone();
+            let client_run2 = client_run_id.clone();
+            let inserted = tokio::task::spawn_blocking(move || {
+                let rec = InsertRecording {
+                    id: &id2,
+                    user_id: &uid2,
+                    transcript: &raw2,
+                    polished: &raw2,
+                    word_count,
+                    recording_seconds: if audio_seconds > 0.0 {
+                        audio_seconds
+                    } else {
+                        estimated_secs(word_count)
+                    },
+                    model_used: &model2,
+                    confidence: Some(stt_confidence),
+                    transcribe_ms: Some(transcribe_ms),
+                    embed_ms: Some(0),
+                    polish_ms: Some(0),
+                    target_app: target2.as_deref(),
+                    source: "voice",
+                    audio_id: audio2.as_deref(),
+                    enriched_transcript: Some(&enriched2),
+                    raw_transcript: Some(&raw2),
+                    local_corrected_transcript: None,
+                    polished_output: Some(&raw2),
+                    trace_json: None,
+                };
+                crate::observability::after_recording_insert(
+                    &pool2,
+                    &uid2,
+                    &rec,
+                    crate::observability::observability_extras(client_run2.as_deref()),
+                );
+                if insert_recording(&pool2, rec).is_some() {
+                    let _ = crate::store::voice_runs::mark_voice_run_completed(
+                        &pool2,
+                        &run_id2,
+                        &id2,
+                        None,
+                    );
+                    true
+                } else {
+                    false
+                }
+            })
+            .await
+            .unwrap_or(false);
+
+            if !inserted {
+                yield Ok(voice_run_failed_event(
+                    &pool,
+                    &voice_run_id,
+                    "could not persist local transcript",
+                    aid,
+                    Some("local_transcript_persist_failed"),
+                ));
+                return;
+            }
+
+            yield Ok(Event::default().event("done").data(
+                json!({
+                    "recording_id": recording_id,
+                    "transcript": stt_transcript_raw,
+                    "polished": stt_transcript_raw,
+                    "audio_id": saved_audio_id,
+                    "source": "voice",
+                    "target_app": target_app,
+                    "output_language": output_language,
+                    "model_used": model_used,
+                    "confidence": stt_confidence,
+                    "enriched_transcript": enriched_raw,
+                    "examples_used": 0,
+                    "latency_ms": {
+                        "transcribe": transcribe_ms,
+                        "embed": 0,
+                        "retrieve": 0,
+                        "polish": 0,
+                        "total": total_ms,
+                    }
+                })
+                .to_string(),
+            ));
+            return;
+        }
 
         if message_polish_mode {
             yield Ok(Event::default().event("status")
@@ -3897,7 +4025,8 @@ mod audio_tests {
 #[cfg(test)]
 mod polish_ws_tests {
     use super::{
-        PolishWsDeadlines, durable_ws_resume_event, forward_polish_sse_to_ws_with_deadlines,
+        PolishWsDeadlines, TranscriptMeta, TranscriptOrigin, durable_ws_resume_event,
+        forward_polish_sse_to_ws_with_deadlines,
     };
     use crate::{AppState, store, watchdog};
     use axum::{body::Body, response::Response};
@@ -3927,6 +4056,26 @@ mod polish_ws_tests {
             http_client: reqwest::Client::new(),
             watchdog: Arc::new(watchdog::WatchdogState::new()),
         }
+    }
+
+    fn one_second_silent_wav() -> Vec<u8> {
+        let samples = vec![0_u8; 16_000 * 2];
+        let mut wav = vec![0_u8; 44];
+        wav[0..4].copy_from_slice(b"RIFF");
+        wav[4..8].copy_from_slice(&(36_u32 + samples.len() as u32).to_le_bytes());
+        wav[8..12].copy_from_slice(b"WAVE");
+        wav[12..16].copy_from_slice(b"fmt ");
+        wav[16..20].copy_from_slice(&16_u32.to_le_bytes());
+        wav[20..22].copy_from_slice(&1_u16.to_le_bytes());
+        wav[22..24].copy_from_slice(&1_u16.to_le_bytes());
+        wav[24..28].copy_from_slice(&16_000_u32.to_le_bytes());
+        wav[28..32].copy_from_slice(&32_000_u32.to_le_bytes());
+        wav[32..34].copy_from_slice(&2_u16.to_le_bytes());
+        wav[34..36].copy_from_slice(&16_u16.to_le_bytes());
+        wav[36..40].copy_from_slice(b"data");
+        wav[40..44].copy_from_slice(&(samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&samples);
+        wav
     }
 
     #[test]
@@ -4008,6 +4157,75 @@ mod polish_ws_tests {
                 .and_then(serde_json::Value::as_str),
             Some("pong")
         );
+    }
+
+    #[tokio::test]
+    async fn polish_disabled_persists_audio_and_raw_transcript_before_done() {
+        let state = test_state();
+        store::users::update_enterprise_auth(
+            &state.pool,
+            &state.default_user_id,
+            "cloud-token",
+            "team",
+            None,
+            Some("https://control.example.test"),
+            None,
+        );
+        let pool = state.pool.clone();
+        let user_id = state.default_user_id.to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = crate::router_with_state(state);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let meta = TranscriptMeta {
+            enriched_transcript: "Hello from local speech.".into(),
+            confidence: 0.99,
+            mean_word_confidence: 0.99,
+            word_count: 4,
+            languages: vec!["en".into()],
+            model: "local:parakeet-q8.gguf".into(),
+            origin: TranscriptOrigin::DictationLocal,
+            duration_ms: 42,
+            ..TranscriptMeta::default()
+        };
+        let form = reqwest::multipart::Form::new()
+            .part(
+                "audio",
+                reqwest::multipart::Part::bytes(one_second_silent_wav())
+                    .file_name("recording.wav")
+                    .mime_str("audio/wav")
+                    .unwrap(),
+            )
+            .text("pre_transcript", "Hello from local speech.")
+            .text("pre_transcript_meta", serde_json::to_string(&meta).unwrap())
+            .text("polish_enabled", "false")
+            .text("client_run_id", "raw-run-1");
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/v1/voice/polish"))
+            .bearer_auth("test-secret")
+            .multipart(form)
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let body = response.text().await.unwrap();
+        assert!(body.contains("event: done"));
+        assert!(body.contains("Hello from local speech."));
+
+        let records = store::history::list_recordings(&pool, &user_id, 10, None);
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.transcript, "Hello from local speech.");
+        assert_eq!(record.polished, record.transcript);
+        assert_eq!(record.polish_ms, Some(0));
+        assert_eq!(record.model_used, "local:parakeet-q8.gguf");
+        let audio_id = record.audio_id.as_deref().expect("saved audio id");
+        let audio_path = super::audio_dir().join(format!("{audio_id}.wav"));
+        assert!(audio_path.exists());
+        let _ = std::fs::remove_file(audio_path);
     }
 
     #[tokio::test]

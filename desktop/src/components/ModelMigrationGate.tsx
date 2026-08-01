@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { ArrowRight, Check, Cloud, Cpu, Download, Loader2, Trash2 } from "lucide-react";
 import {
   chooseInstalledLocalModel,
   getDesktopPrefs,
   getLocalModelInventory,
   getSttSetupPolicy,
-  invoke,
   removeUnusedLocalDictationModels,
   type LocalModelInfo,
   type LocalModelInventory,
@@ -14,35 +12,15 @@ import {
   type DesktopPrefs,
   type SttSetupPolicy,
 } from "@/lib/invoke";
+import {
+  isCancelledDownload,
+  startLocalModelDownload,
+  useLocalModelDownloads,
+} from "@/lib/localModels";
 import { dictationRouteOption } from "@/lib/dictationCatalogue";
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import type { Platform } from "@/lib/hotkeys";
-
-interface DownloadProgress {
-  name: string;
-  received: number;
-  total: number;
-  status: "downloading" | "done" | "cancelled" | "error" | string;
-  error: string | null;
-}
-
-function commandFor(model: LocalModelKey) {
-  if (model === "nemotron-q4") {
-    return {
-      download: "download_nemotron_model",
-      args: { variant: "q4" },
-      event: "nemotron-model-download",
-      eventName: "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
-    };
-  }
-  return {
-    download: "download_dictation_model",
-    args: undefined,
-    event: "meeting-model-download",
-    eventName: "ggml-oriserve-hinglish-fp16.bin",
-  };
-}
 
 function formatSize(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -58,7 +36,6 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
   const [policy, setPolicy] = useState<SttSetupPolicy | null>(null);
   const [desktopPrefs, setDesktopPrefs] = useState<DesktopPrefs | null>(null);
   const [inventory, setInventory] = useState<LocalModelInventory | null>(null);
-  const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mounted = useRef(true);
@@ -87,24 +64,19 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
     return () => { mounted.current = false; };
   }, [refresh]);
 
-  useEffect(() => {
-    const recommended = inventory?.recommended_model;
-    if (!recommended || inventory?.setup_kind !== "local_required") return;
-    const command = commandFor(recommended);
-    const unlisten = listen<DownloadProgress>(command.event, (event) => {
-      const progress = event.payload;
-      if (progress.name !== command.eventName) return;
-      if (progress.status === "downloading") {
-        setDownload(progress);
-        setError("");
-      } else {
-        setDownload(null);
-      }
-      if (progress.status === "done") void refresh();
-      if (progress.status === "error" && progress.error) setError(friendlyError(progress.error));
-    });
-    return () => { void unlisten.then((stop) => stop()); };
-  }, [inventory?.recommended_model, inventory?.setup_kind, refresh]);
+  // The gate only ever installs this device's recommended model, so it renders
+  // that model's progress and ignores any other model's events.
+  const downloads = useLocalModelDownloads({
+    onDone: (model) => {
+      if (model === inventory?.recommended_model) void refresh();
+    },
+    onError: (model, message) => {
+      if (model === inventory?.recommended_model) setError(friendlyError(message));
+    },
+  });
+  const download = inventory?.recommended_model
+    ? downloads[inventory.recommended_model]
+    : undefined;
 
   const activateModel = useCallback(async (model: LocalModelKey, finishAfter: boolean) => {
     setBusy(true);
@@ -123,17 +95,16 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
   const startUpgrade = useCallback(async () => {
     const recommended = inventory?.recommended_model;
     if (!recommended) return;
-    const command = commandFor(recommended);
     setBusy(true);
     setError("");
     try {
-      await invoke(command.download, command.args);
+      await startLocalModelDownload(recommended);
       const next = await chooseInstalledLocalModel(recommended);
       if (mounted.current) setInventory(next);
       if (next.reclaimable_bytes === 0) onDone();
     } catch (cause) {
       const message = friendlyError(cause);
-      if (message.toLowerCase() !== "cancelled") setError(message);
+      if (!isCancelledDownload(message)) setError(message);
     } finally {
       setBusy(false);
     }
@@ -199,8 +170,8 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
   const existing = inventory.models.find((model) => model.key === inventory.existing_compatible_model);
   const recommendedActive = recommended?.active_for_dictation ?? false;
   const cleanupAvailable = recommendedActive && inventory.reclaimable_bytes > 0;
-  const pct = download && download.total > 0 ? Math.min(100, Math.round((download.received / download.total) * 100)) : null;
-  const downloading = pct !== null && !recommended?.installed;
+  const pct = download?.percent ?? null;
+  const downloading = download !== undefined && !recommended?.installed;
 
   let title = `Install ${recommended?.name ?? "your local speech model"}.`;
   let description = `AirNote selected ${recommended?.name ?? "a local model"} for this Mac.`;

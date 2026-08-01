@@ -1062,15 +1062,16 @@ export interface DesktopPrefs {
   sentry_disabled: boolean;
   update_channel: "stable" | "beta";
   message_polish_mode: boolean;
+  polish_enabled: boolean;
   launch_at_login: boolean;
   beta_mode: boolean;
   browser_context_enabled: boolean;
   /** Effective device route: local or a configured hosted STT provider. */
   dictation_stt: DictationRoute;
   /** Hardware-assigned local model. Meetings retain their own Oriserve path. */
-  local_stt_model: "oriserve" | "nemotron-q4" | "nemotron-q8";
+  local_stt_model: LocalModelKey;
   /** Explicit decision to keep an older installed model during an upgrade. */
-  local_stt_compat_override?: "oriserve" | "nemotron-q8" | null;
+  local_stt_compat_override?: LocalModelKey | null;
 }
 
 export interface SttSetupPolicy {
@@ -1083,7 +1084,7 @@ export interface SttSetupPolicy {
   local_model_size_hint: string | null;
 }
 
-export type LocalModelKey = "oriserve" | "nemotron-q4" | "nemotron-q8";
+export type LocalModelKey = "oriserve" | "parakeet-en-q8" | "nemotron-q4" | "nemotron-q8";
 
 export interface LocalModelInfo {
   key: LocalModelKey;
@@ -1095,7 +1096,13 @@ export interface LocalModelInfo {
   active_for_dictation: boolean;
   required_for_meetings: boolean;
   compatibility_candidate: boolean;
+  selectable: boolean;
   safe_to_remove: boolean;
+  architecture: string;
+  languages: string[];
+  streaming: boolean;
+  quantization: string | null;
+  license: string | null;
 }
 
 export interface LocalModelInventory {
@@ -1113,12 +1120,42 @@ export interface LocalModelCleanupResult {
   freed_bytes: number;
 }
 
+export interface LocalAsrRuntimeStatus {
+  selected_model: string | null;
+  loaded_model: string | null;
+  backend: string | null;
+  architecture: string | null;
+  streaming: boolean;
+  loading: boolean;
+  supports_streaming: boolean | null;
+  last_load_ms: number | null;
+  last_error: string | null;
+}
+
+export async function getLocalAsrRuntimeStatus(): Promise<LocalAsrRuntimeStatus> {
+  if (!isTauriRuntime()) {
+    return {
+      selected_model: null,
+      loaded_model: null,
+      backend: null,
+      architecture: null,
+      streaming: false,
+      loading: false,
+      supports_streaming: null,
+      last_load_ms: null,
+      last_error: null,
+    };
+  }
+  return tauriInvoke<LocalAsrRuntimeStatus>("local_asr_runtime_status");
+}
+
 export async function getDesktopPrefs(): Promise<DesktopPrefs> {
   if (!isTauriRuntime()) {
     return {
       sentry_disabled: false,
       update_channel: "stable",
       message_polish_mode: false,
+      polish_enabled: true,
       launch_at_login: false,
       beta_mode: false,
       browser_context_enabled: false,
@@ -1183,7 +1220,31 @@ export async function getLocalModelInventory(): Promise<LocalModelInventory> {
           active_for_dictation: true,
           required_for_meetings: true,
           compatibility_candidate: true,
+          selectable: true,
           safe_to_remove: false,
+          architecture: "whisper",
+          languages: ["en", "hi"],
+          streaming: false,
+          quantization: null,
+          license: null,
+        },
+        {
+          key: "parakeet-en-q8",
+          name: "Parakeet Unified EN 0.6B (Q8)",
+          installed: false,
+          size_bytes: 0,
+          size_hint: "~732 MB",
+          recommended: false,
+          active_for_dictation: false,
+          required_for_meetings: false,
+          compatibility_candidate: false,
+          selectable: true,
+          safe_to_remove: false,
+          architecture: "parakeet",
+          languages: ["en"],
+          streaming: false,
+          quantization: "Q8_0",
+          license: "cc-by-4.0",
         },
         {
           key: "nemotron-q4",
@@ -1195,7 +1256,13 @@ export async function getLocalModelInventory(): Promise<LocalModelInventory> {
           active_for_dictation: false,
           required_for_meetings: false,
           compatibility_candidate: false,
+          selectable: true,
           safe_to_remove: false,
+          architecture: "parakeet",
+          languages: ["en", "hi"],
+          streaming: true,
+          quantization: "Q4_K_M",
+          license: "nvidia-open-model-license",
         },
         {
           key: "nemotron-q8",
@@ -1207,7 +1274,13 @@ export async function getLocalModelInventory(): Promise<LocalModelInventory> {
           active_for_dictation: false,
           required_for_meetings: false,
           compatibility_candidate: false,
+          selectable: true,
           safe_to_remove: false,
+          architecture: "parakeet",
+          languages: ["en", "hi"],
+          streaming: true,
+          quantization: "Q8_0",
+          license: "nvidia-open-model-license",
         },
       ],
       reclaimable_bytes: 0,

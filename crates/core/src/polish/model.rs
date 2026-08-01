@@ -11,12 +11,13 @@ pub const GROQ_POLISH_MODEL_SMART_DEFAULT: &str = "llama-3.3-70b-versatile";
 
 /// Paid Gemma 4 26B A4B via DeepInfra's direct OpenAI-compatible API.
 pub const DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B: &str = "google/gemma-4-26B-A4B-it";
+pub const DEEPINFRA_POLISH_MODEL_KEY: &str = "deepinfra-gemma-4-26b-a4b";
 
 /// Fast, low-cost DeepSeek model with thinking disabled at request time.
 pub const DEEPSEEK_POLISH_MODEL_V4_FLASH: &str = "deepseek-v4-flash";
 
 /// Default production dictation-polish model.
-pub const DEFAULT_POLISH_MODEL_KEY: &str = "deepinfra-gemma-4-26b-a4b";
+pub const DEFAULT_POLISH_MODEL_KEY: &str = DEEPSEEK_POLISH_MODEL_V4_FLASH;
 
 /// One selectable polish model in the catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +35,7 @@ pub struct PolishModelSpec {
 /// Curated production catalog shared by preferences and runtime routing.
 pub const POLISH_MODEL_CATALOG: &[PolishModelSpec] = &[
     PolishModelSpec {
-        key: DEFAULT_POLISH_MODEL_KEY,
+        key: DEEPINFRA_POLISH_MODEL_KEY,
         label: "Gemma 4 26B A4B (DeepInfra)",
         provider: "deepinfra",
         model_id: DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B,
@@ -120,7 +121,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_selection_normalizes_to_gemma() {
+    fn legacy_selection_normalizes_to_default() {
         assert_eq!(validate_polish_model_key("smart"), DEFAULT_POLISH_MODEL_KEY);
         assert_eq!(
             validate_polish_model_key("anything-old"),
@@ -129,11 +130,19 @@ mod tests {
     }
 
     #[test]
-    fn default_route_is_paid_deepinfra_gemma() {
+    fn default_route_is_deepseek_v4_flash() {
         let route = resolve_polish_route("anything");
+        assert_eq!(route.provider, "deepseek");
+        assert_eq!(route.model, DEEPSEEK_POLISH_MODEL_V4_FLASH);
+        assert!(!route.reasoning_low);
+    }
+
+    #[test]
+    fn explicit_gemma_route_is_preserved() {
+        let route = resolve_polish_route(DEEPINFRA_POLISH_MODEL_KEY);
+        assert_eq!(route.key, DEEPINFRA_POLISH_MODEL_KEY);
         assert_eq!(route.provider, "deepinfra");
         assert_eq!(route.model, DEEPINFRA_POLISH_MODEL_GEMMA_4_26B_A4B);
-        assert!(!route.reasoning_low);
     }
 
     #[test]

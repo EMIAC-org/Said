@@ -75,26 +75,24 @@ fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> Desk
     if prefs.dictation_stt == LEGACY_CLOUD_OPENAI_PREF {
         prefs.dictation_stt = CLOUD_ELEVENLABS_PREF.to_string();
     } else if prefs.dictation_stt == LEGACY_CLOUD_NEMOTRON_PREF {
-        prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
+        prefs.dictation_stt = CLOUD_ELEVENLABS_PREF.to_string();
     }
 
     if policy.is_cloud_locked() {
         if !is_cloud_pref(&prefs.dictation_stt) {
-            prefs.dictation_stt = CLOUD_DEEPINFRA_PREF.to_string();
+            prefs.dictation_stt = CLOUD_ELEVENLABS_PREF.to_string();
         }
         prefs.local_stt_compat_override = None;
         return prefs;
     }
 
     // Apple Silicon offers local dictation plus the configured cloud routes.
-    // Every unknown legacy value becomes the local default.
+    // Every unknown legacy value becomes the cloud default.
     if prefs.dictation_stt != LOCAL_PREF && !is_cloud_pref(&prefs.dictation_stt) {
-        prefs.dictation_stt = LOCAL_PREF.to_string();
+        prefs.dictation_stt = CLOUD_ELEVENLABS_PREF.to_string();
     }
-    let compatibility_override = valid_compatibility_override(
-        prefs.local_stt_compat_override.as_deref(),
-        policy.local_pref(),
-    );
+    let compatibility_override =
+        valid_compatibility_override(prefs.local_stt_compat_override.as_deref(), policy);
     if let Some(model) = compatibility_override {
         prefs.local_stt_model = model.to_string();
         prefs.local_stt_compat_override = Some(model.to_string());
@@ -117,16 +115,26 @@ fn is_cloud_pref(pref: &str) -> bool {
 /// created to prevent.
 fn valid_compatibility_override<'a>(
     requested: Option<&'a str>,
-    recommended: Option<&str>,
+    policy: &SttSetupPolicy,
 ) -> Option<&'a str> {
-    if recommended != Some(NEMOTRON_Q4_PREF) {
-        return None;
+    let requested = requested.map(crate::local_model_catalog::canonical_key)?;
+    supports_local_model(policy, requested).then_some(requested)
+}
+
+/// Whether this hardware policy permits an explicit installed model choice.
+/// The catalog owns model facts; this policy owns product admission.
+pub fn supports_local_model(policy: &SttSetupPolicy, model: &str) -> bool {
+    if policy.is_cloud_locked() {
+        return false;
     }
-    match requested {
-        Some(ORISERVE_PREF) => Some(ORISERVE_PREF),
-        Some("nemotron") | Some("nemotron-q8") => Some("nemotron-q8"),
-        _ => None,
+    let model = crate::local_model_catalog::canonical_key(model);
+    if policy.local_pref() == Some(model) {
+        return true;
     }
+    // Eight-GB machines stay on the small meeting-safe model. Larger Apple
+    // Silicon machines may explicitly compare catalog models.
+    policy.total_memory_bytes > EIGHT_GIB
+        && (model == ORISERVE_PREF || crate::local_model_catalog::find(model).is_some())
 }
 
 /// Persist normalization at startup, before onboarding, Settings, or a hotkey
@@ -287,7 +295,7 @@ mod tests {
             },
             &policy,
         );
-        assert_eq!(normalized.dictation_stt, CLOUD_DEEPINFRA_PREF);
+        assert_eq!(normalized.dictation_stt, CLOUD_ELEVENLABS_PREF);
 
         let elevenlabs = normalize_prefs_for(
             DesktopPrefs {
@@ -311,7 +319,17 @@ mod tests {
     #[test]
     fn apple_silicon_keeps_cloud_selection_and_migrates_retired_routes() {
         let policy = policy_for("macos", "arm64", false, EIGHT_GIB + 1);
-        let local = normalize_prefs_for(DesktopPrefs::default(), &policy);
+        let defaults = normalize_prefs_for(DesktopPrefs::default(), &policy);
+        assert_eq!(defaults.dictation_stt, CLOUD_ELEVENLABS_PREF);
+        assert_eq!(defaults.local_stt_model, NEMOTRON_Q4_PREF);
+
+        let local = normalize_prefs_for(
+            DesktopPrefs {
+                dictation_stt: LOCAL_PREF.into(),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
         assert_eq!(local.dictation_stt, LOCAL_PREF);
         assert_eq!(local.local_stt_model, NEMOTRON_Q4_PREF);
 
@@ -350,7 +368,7 @@ mod tests {
             },
             &policy,
         );
-        assert_eq!(migrated.dictation_stt, CLOUD_DEEPINFRA_PREF);
+        assert_eq!(migrated.dictation_stt, CLOUD_ELEVENLABS_PREF);
     }
 
     #[test]
@@ -368,6 +386,29 @@ mod tests {
         assert_eq!(
             normalized.local_stt_compat_override.as_deref(),
             Some(ORISERVE_PREF)
+        );
+    }
+
+    #[test]
+    fn high_memory_apple_silicon_accepts_catalog_model_override() {
+        let policy = policy_for("macos", "arm64", false, EIGHT_GIB + 1);
+        let normalized = normalize_prefs_for(
+            DesktopPrefs {
+                local_stt_model: crate::local_model_catalog::PARAKEET_Q8_PREF.into(),
+                local_stt_compat_override: Some(
+                    crate::local_model_catalog::PARAKEET_Q8_PREF.into(),
+                ),
+                ..DesktopPrefs::default()
+            },
+            &policy,
+        );
+        assert_eq!(
+            normalized.local_stt_model,
+            crate::local_model_catalog::PARAKEET_Q8_PREF
+        );
+        assert_eq!(
+            normalized.local_stt_compat_override.as_deref(),
+            Some(crate::local_model_catalog::PARAKEET_Q8_PREF)
         );
     }
 
@@ -397,7 +438,7 @@ mod tests {
             },
             &policy,
         );
-        assert_eq!(normalized.dictation_stt, CLOUD_DEEPINFRA_PREF);
+        assert_eq!(normalized.dictation_stt, CLOUD_ELEVENLABS_PREF);
         assert_eq!(normalized.local_stt_compat_override, None);
     }
 }

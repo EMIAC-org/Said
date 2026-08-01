@@ -405,6 +405,7 @@ pub async fn stream_voice_polish<F>(
     repair_mode: Option<String>,
     screen_context: Option<String>,
     message_polish_mode: bool,
+    polish_enabled: bool,
     mut on_event: F,
 ) -> Result<PolishDone, String>
 where
@@ -433,7 +434,7 @@ where
     let client_run_id_label = client_run_id.as_deref().unwrap_or("none").to_string();
 
     info!(
-        "[api] voice/polish request start run_id={} wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} pre_meta={} message_polish={} repair_mode={} screen_context_chars={} target_app_present={}",
+        "[api] voice/polish request start run_id={} wav_bytes={} pre_transcript_present={} pre_chars={} pre_words={} pre_meta={} message_polish={} polish_enabled={} repair_mode={} screen_context_chars={} target_app_present={}",
         client_run_id_label,
         wav_bytes,
         has_pre_transcript,
@@ -441,6 +442,7 @@ where
         pre_transcript_words,
         has_pre_transcript_meta,
         message_polish_mode,
+        polish_enabled,
         has_repair_mode,
         screen_context_chars,
         has_target_app,
@@ -486,6 +488,7 @@ where
     if message_polish_mode {
         form = form.text("message_polish_mode", "true");
     }
+    form = form.text("polish_enabled", polish_enabled.to_string());
 
     let resp = client
         .post(&url)
