@@ -3544,10 +3544,24 @@ static DIVO_FOLLOWUP_PENDING: AtomicBool = AtomicBool::new(false);
 /// a brand-new chat. Captured from the hotkey crate at release, read at staging.
 static DIVO_NEW_CHAT_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// Monotonic capture counter, bumped once per recorder arm *before* the recorder
+/// is started. Work deferred by one capture (timers, watchdogs) reads this to tell
+/// whether a newer capture has since taken ownership of the recorder, so it never
+/// acts on a recording it did not arm.
+///
+/// `RecordingSessionState::generation` cannot serve this purpose: it is bumped
+/// well after `start_recording()` has already flipped the state machine to
+/// `Recording`, so between those two points a stale observer sees an armed
+/// recorder under an unchanged generation.
+static CAPTURE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
 /// Minimum time between consecutive finish→start cycles (ms).
-/// Prevents rapid Caps Lock taps from flooding the recording pipeline.
+/// Absorbs key-bounce double-fires from the event tap. Deliberately short: a
+/// press this closely spaced is nearly always hardware chatter, and anything
+/// longer silently swallows a genuine re-take, which is far more annoying than
+/// an occasional duplicate start (which `RECORDING_STARTING` already rejects).
 static LAST_FINISH_MS: AtomicU64 = AtomicU64::new(0);
-const MIN_CYCLE_GAP_MS: u64 = 300;
+const MIN_CYCLE_GAP_MS: u64 = 120;
 const QUEUED_FINISH_TIMEOUT_MS: u64 = 2_500;
 const QUEUED_FINISH_POLL_MS: u64 = 25;
 const RELEASE_MIC_CLEANUP_DELAY_MS: u64 = 850;
@@ -3884,18 +3898,39 @@ fn request_queued_finish(
     });
 }
 
+/// Safety net for a release whose finish never ran (the hotkey thread lost the
+/// shared lock, a panic ate the finish task): after a delay, if the recorder is
+/// still armed, finish it so the mic is not held open forever.
+///
+/// Must be called synchronously from the release handler, before any finish
+/// thread is spawned — it latches the capture epoch at that moment and refuses to
+/// touch the recorder once a newer capture owns it. Without that latch the timers
+/// fire blind and kill whatever recording happens to be active when they wake,
+/// which is exactly what a user doing a quick re-take is doing at +850ms/+2650ms.
 fn schedule_release_mic_cleanup(
     shared: Arc<Mutex<DesktopApp>>,
     app: tauri::AppHandle,
     back: Arc<Mutex<Option<BackendEndpoint>>>,
     reason: &'static str,
 ) {
+    let armed_epoch = CAPTURE_EPOCH.load(Ordering::SeqCst);
     std::thread::spawn(move || {
         for (attempt, delay_ms) in [
             (1usize, RELEASE_MIC_CLEANUP_DELAY_MS),
             (2usize, RELEASE_MIC_CLEANUP_RECHECK_MS),
         ] {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+
+            // A newer capture owns the recorder — whatever is armed now is not
+            // ours to finish, and our own capture is provably past its release.
+            let current_epoch = CAPTURE_EPOCH.load(Ordering::SeqCst);
+            if current_epoch != armed_epoch {
+                tracing::debug!(
+                    "[mic-cleanup] stood down — capture {armed_epoch} superseded by {current_epoch} (attempt={attempt} reason={reason})"
+                );
+                diag::breadcrumb(format!("mic_cleanup:superseded:{reason}:{attempt}"));
+                return;
+            }
 
             if app
                 .try_state::<LongDictationState>()
@@ -4047,6 +4082,11 @@ fn do_start_recording_inner(
         }
     }
 
+    // Claim the recorder for this capture *before* arming it. Any watchdog left
+    // over from an earlier capture now observes a newer epoch and stands down,
+    // instead of force-finishing a recording that is not the one it was armed for.
+    let capture_epoch = CAPTURE_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+
     let arm_started = std::time::Instant::now();
     diag::breadcrumb("start:lock_acquire");
     let (started, level_recv) = match lock_shared(shared, "start_recording") {
@@ -4068,7 +4108,7 @@ fn do_start_recording_inner(
     let snap = match started {
         Ok(snap) => {
             tracing::info!(
-                "[record] audio armed in {}ms",
+                "[record] audio armed in {}ms epoch={capture_epoch}",
                 arm_started.elapsed().as_millis()
             );
             snap
@@ -10110,6 +10150,17 @@ fn main() {
                                                 "release_during_start",
                                             );
                                         }
+                                    } else {
+                                        // Reached when the recorder is still armed from the
+                                        // previous take (the release tail pad has not run
+                                        // `begin_stop` yet) or the state could not be read.
+                                        // No branch owns this press, so it is lost — say so,
+                                        // rather than leaving a dead key with no explanation.
+                                        tracing::warn!(
+                                            "[hotkey] record press dropped — no handler for state={}",
+                                            current.map(|s| s.as_str()).unwrap_or("unreadable"),
+                                        );
+                                        diag::breadcrumb("record:press:dropped");
                                     }
                                 });
                             }
