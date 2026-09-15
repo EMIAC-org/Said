@@ -1084,7 +1084,7 @@ export interface SttSetupPolicy {
   local_model_size_hint: string | null;
 }
 
-export type LocalModelKey = "oriserve" | "parakeet-en-q8" | "nemotron-q4" | "nemotron-q8";
+export type LocalModelKey = "oriserve" | "oriserve-apex-q8" | "parakeet-en-q8" | "nemotron-q4" | "nemotron-q8";
 
 export interface LocalModelInfo {
   key: LocalModelKey;
@@ -1227,6 +1227,24 @@ export async function getLocalModelInventory(): Promise<LocalModelInventory> {
           streaming: false,
           quantization: null,
           license: null,
+        },
+        {
+          key: "oriserve-apex-q8",
+          name: "Oriserve Apex (Q8)",
+          installed: false,
+          size_bytes: 0,
+          size_hint: "~875 MB",
+          recommended: false,
+          active_for_dictation: false,
+          required_for_meetings: false,
+          compatibility_candidate: false,
+          selectable: true,
+          safe_to_remove: false,
+          architecture: "whisper",
+          languages: ["en", "hi"],
+          streaming: false,
+          quantization: "Q8_0",
+          license: "apache-2.0",
         },
         {
           key: "parakeet-en-q8",

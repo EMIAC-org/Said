@@ -7,12 +7,14 @@
 use serde::Serialize;
 
 pub const PARAKEET_Q8_PREF: &str = "parakeet-en-q8";
+pub const ORISERVE_APEX_Q8_PREF: &str = "oriserve-apex-q8";
 pub const NEMOTRON_Q4_PREF: &str = "nemotron-q4";
 pub const NEMOTRON_Q8_PREF: &str = "nemotron-q8";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeKind {
+    WhisperCpp,
     TranscribeCpp,
 }
 
@@ -85,8 +87,32 @@ impl LocalModelDescriptor {
 
 const HALF_GIB: u64 = 512 * 1024 * 1024;
 const ONE_GIB: u64 = 1024 * 1024 * 1024;
+const TWO_GIB: u64 = 2 * ONE_GIB;
 
 pub static MODELS: &[LocalModelDescriptor] = &[
+    LocalModelDescriptor {
+        key: ORISERVE_APEX_Q8_PREF,
+        name: "Oriserve Apex (Q8)",
+        family: "oriserve-apex",
+        architecture: "whisper",
+        runtime: RuntimeKind::WhisperCpp,
+        tier: ModelTier::Large,
+        languages: &["en", "hi"],
+        capabilities: ModelCapabilities {
+            streaming: false,
+            translate: false,
+            language_detection: false,
+        },
+        repository: "imYChaudhary22/zenvoice-hinglish-apex-ggml",
+        revision: "0c540ce8945ef96b2880f2d2c0d05ba419621171",
+        filename: "ggml-hindi2hinglish-apex-q8_0.bin",
+        quantization: "Q8_0",
+        size_bytes: 874_188_075,
+        sha256: "0b4324d2c1ad64f20883ee7fcd5d2bb0a8466287dc70d74bc47066200c28c719",
+        license: "apache-2.0",
+        attribution: "Oriserve Whisper Hindi2Hinglish Apex; Q8_0 GGML conversion by Zenvoice",
+        minimum_memory_bytes: TWO_GIB,
+    },
     LocalModelDescriptor {
         key: PARAKEET_Q8_PREF,
         name: "Parakeet Unified EN 0.6B (Q8)",
@@ -210,5 +236,14 @@ mod tests {
     #[test]
     fn legacy_nemotron_key_stays_q8_compatible() {
         assert_eq!(find("nemotron").unwrap().key, NEMOTRON_Q8_PREF);
+    }
+
+    #[test]
+    fn apex_q8_uses_the_whisper_runtime_and_pinned_artifact() {
+        let apex = find(ORISERVE_APEX_Q8_PREF).unwrap();
+        assert_eq!(apex.runtime, RuntimeKind::WhisperCpp);
+        assert_eq!(apex.size_bytes, 874_188_075);
+        assert_eq!(apex.quantization, "Q8_0");
+        assert!(apex.download_url().contains(apex.revision));
     }
 }

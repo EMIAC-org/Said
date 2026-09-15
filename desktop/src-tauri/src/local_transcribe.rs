@@ -131,8 +131,8 @@ pub fn selected_descriptor() -> Option<&'static LocalModelDescriptor> {
     local_model_catalog::find(&prefs.local_stt_model)
 }
 
-pub fn is_selected() -> bool {
-    selected_descriptor().is_some()
+pub fn selected_runtime() -> Option<local_model_catalog::RuntimeKind> {
+    selected_descriptor().map(|model| model.runtime)
 }
 
 pub fn selected_installed() -> bool {

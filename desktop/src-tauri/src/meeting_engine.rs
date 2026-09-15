@@ -14288,9 +14288,15 @@ fn dictation_whisper_language(pref_language: &str) -> String {
 pub fn resolve_dictation_local_asr_config(
     pref_language: &str,
 ) -> Result<DictationLocalAsrConfig, String> {
-    let model = selected_whisper_model_path().ok_or_else(|| {
-        "whisper.cpp model not found; install the local speech model from Settings".to_string()
-    })?;
+    let selected_catalog_model = crate::local_transcribe::selected_descriptor()
+        .filter(|model| model.runtime == crate::local_model_catalog::RuntimeKind::WhisperCpp);
+    let model = if let Some(descriptor) = selected_catalog_model {
+        crate::local_model_store::ensure_verified(descriptor)?
+    } else {
+        selected_whisper_model_path().ok_or_else(|| {
+            "whisper.cpp model not found; install the local speech model from Settings".to_string()
+        })?
+    };
 
     if !is_usable_whisper_model(&model) {
         return Err(format!(
@@ -14312,7 +14318,12 @@ pub fn resolve_dictation_local_asr_config(
 
     Ok(DictationLocalAsrConfig {
         model,
-        language: dictation_whisper_language(pref_language),
+        // Apex emits Latin-script Hinglish under Whisper's English token.
+        language: if selected_catalog_model.is_some() {
+            "en".to_string()
+        } else {
+            dictation_whisper_language(pref_language)
+        },
         max_context_tokens: env_i32_at_least(
             "AIRNOTE_MEETING_WHISPER_MAX_CONTEXT_TOKENS",
             DEFAULT_WHISPER_MAX_CONTEXT_TOKENS,

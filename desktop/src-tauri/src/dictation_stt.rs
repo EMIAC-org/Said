@@ -162,20 +162,19 @@ mod on_device {
     const WHISPER_NAME: &str = "on-device/whisper";
     const TRANSCRIBE_CPP_NAME: &str = "on-device/transcribe-cpp";
 
-    fn uses_catalog_model() -> bool {
-        crate::local_transcribe::is_selected()
+    fn selected_runtime() -> Option<crate::local_model_catalog::RuntimeKind> {
+        crate::local_transcribe::selected_runtime()
     }
 
     pub(super) fn name() -> &'static str {
-        if uses_catalog_model() {
-            TRANSCRIBE_CPP_NAME
-        } else {
-            WHISPER_NAME
+        match selected_runtime() {
+            Some(crate::local_model_catalog::RuntimeKind::TranscribeCpp) => TRANSCRIBE_CPP_NAME,
+            _ => WHISPER_NAME,
         }
     }
 
     pub(super) fn ready() -> bool {
-        if uses_catalog_model() {
+        if selected_runtime().is_some() {
             crate::local_transcribe::selected_installed()
         } else {
             super::model_installed() && super::runtime_ready()
@@ -184,10 +183,14 @@ mod on_device {
 
     /// Pre-load the whisper model so the first utterance skips the model load.
     pub(super) fn prewarm() {
-        if uses_catalog_model() {
-            crate::local_transcribe::prewarm();
-        } else {
-            crate::asr::prewarm_default_language();
+        match selected_runtime() {
+            Some(crate::local_model_catalog::RuntimeKind::TranscribeCpp) => {
+                crate::local_transcribe::prewarm()
+            }
+            Some(crate::local_model_catalog::RuntimeKind::WhisperCpp) | None => {
+                crate::asr::prewarm_default_language()
+            }
+            Some(_) => {}
         }
     }
 
@@ -196,7 +199,7 @@ mod on_device {
         language: &str,
         recording_id: Option<&str>,
     ) -> Result<PreTranscript, String> {
-        if uses_catalog_model() {
+        if selected_runtime() == Some(crate::local_model_catalog::RuntimeKind::TranscribeCpp) {
             if !crate::local_transcribe::selected_installed() {
                 return Err(format!(
                     "{} is selected but not installed. Download it in Settings → Speech recognition.",
@@ -247,7 +250,14 @@ mod on_device {
             });
         }
 
-        if !super::model_installed() {
+        if selected_runtime() == Some(crate::local_model_catalog::RuntimeKind::WhisperCpp) {
+            if !crate::local_transcribe::selected_installed() {
+                return Err(format!(
+                    "{} is selected but not installed. Download it in Settings → Speech recognition.",
+                    crate::local_transcribe::selected_model_name()
+                ));
+            }
+        } else if !super::model_installed() {
             return Err(
                 "Local speech model is required. Download the on-device model in Settings.".into(),
             );
