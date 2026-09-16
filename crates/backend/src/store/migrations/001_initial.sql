@@ -26,10 +26,8 @@ CREATE TABLE IF NOT EXISTS preferences (
     updated_at           INTEGER NOT NULL
 );
 
--- ── Rolling recording history ────────────────────────────────────────────────
--- Best-effort 1-day retention via the background sweep in main.rs (see
--- cleanup_old_recordings). The sweep rarely fires in short sessions, so rows
--- usually outlive a day — this table is NOT a durable store, don't treat it as one.
+-- ── Recording history ────────────────────────────────────────────────────────────
+-- Persists locally until the user explicitly deletes it.
 CREATE TABLE IF NOT EXISTS recordings (
     id                TEXT PRIMARY KEY,
     user_id           TEXT NOT NULL REFERENCES local_user(id) ON DELETE CASCADE,

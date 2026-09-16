@@ -306,6 +306,21 @@ export async function listHistory(limit = 50, before?: number): Promise<Recordin
   }
 }
 
+export interface RecordingAudioStorage {
+  total_bytes: number;
+  file_count: number;
+}
+
+/** Total disk space used by all locally saved dictation WAV files. */
+export async function getRecordingAudioStorage(): Promise<RecordingAudioStorage> {
+  if (!isTauriRuntime()) return { total_bytes: 0, file_count: 0 };
+  try {
+    return await tauriInvoke<RecordingAudioStorage>("get_recording_audio_storage");
+  } catch {
+    return { total_bytes: 0, file_count: 0 };
+  }
+}
+
 /** Resolve a stored `target_app` (bundle-id on macOS / exe path on Windows) to a
  *  `data:image/png;base64,…` icon URL. Cached in the backend; `null` if unknown. */
 export async function getAppIcon(appKey: string | null | undefined): Promise<string | null> {

@@ -9,11 +9,13 @@ import type { Recording } from "@/types";
 import {
   deleteRecording,
   getAppIcon,
+  getRecordingAudioStorage,
   downloadRecordingAudio as saveRecordingAudio,
   getRecordingAudioBytes,
   exportHistory,
   revealDownloadedFile,
 } from "@/lib/invoke";
+import type { RecordingAudioStorage } from "@/lib/invoke";
 import { friendlyError } from "@/lib/friendlyError";
 import {
   getHistoryCacheSnapshot,
@@ -48,6 +50,15 @@ function formatDuration(seconds: number | null | undefined): string {
   if (!seconds || seconds <= 0) return "";
   const s = Math.round(seconds);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function formatStorageSize(bytes: number): string {
+  if (bytes <= 0) return "0 MB";
+  const gigabytes = bytes / 1024 ** 3;
+  if (gigabytes >= 1) return `${gigabytes.toFixed(gigabytes >= 10 ? 0 : 1)} GB`;
+  const megabytes = bytes / 1024 ** 2;
+  if (megabytes < 0.1) return "<0.1 MB";
+  return `${megabytes.toFixed(megabytes >= 10 ? 0 : 1)} MB`;
 }
 
 /** Friendly model label. Maps known engines; else prettifies the raw id. */
@@ -598,8 +609,13 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
   const [exporting, setExporting] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [audioStorage, setAudioStorage] = useState<RecordingAudioStorage | null>(null);
   const { toasts, push, dismiss } = useToasts();
   const pendingDeletes = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; commit: () => void }>());
+
+  const refreshAudioStorage = useCallback(async () => {
+    setAudioStorage(await getRecordingAudioStorage());
+  }, []);
 
   const loadHistory = useCallback(async (soft = false) => {
     if (soft) setRefreshing(true);
@@ -607,11 +623,12 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
       const recs = await refreshHistoryCache({ limit: PAGE_SIZE, force: soft });
       setRecordings(recs);
       setHasMore(recs.length >= PAGE_SIZE);
+      await refreshAudioStorage();
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [refreshAudioStorage]);
 
   // Optimistic "load older": fetch the next page using the oldest loaded row as
   // the cursor and append it. Recordings come back newest-first, so the tail is
@@ -641,10 +658,11 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
       if (!cached || snapshot.stale) return;
       setRecordings((current) => mergeVisibleHistory(current, cached.slice(0, PAGE_SIZE)));
       setLoading(false);
+      void refreshAudioStorage();
     };
     sync();
     return subscribeHistoryCache(sync);
-  }, []);
+  }, [refreshAudioStorage]);
   useEffect(() => () => {
     stopSharedAudio();
     // Flush pending deletes so a delete made just before leaving still persists
@@ -691,7 +709,10 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
     const commit = () => {
       pendingDeletes.current.delete(rec.id);
       deleteRecording(rec.id)
-        .then(() => invalidateHistoryCache())
+        .then(() => {
+          invalidateHistoryCache();
+          void refreshAudioStorage();
+        })
         .catch(() => {
           invalidateHistoryCache();
           push({ kind: "error", title: "Couldn’t delete", sub: "It’s back in your history.", duration: 4000 });
@@ -724,6 +745,7 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
       pendingDeletes.current.delete("__all__");
       void Promise.allSettled(snapshot.map((r) => deleteRecording(r.id))).then((res) => {
         invalidateHistoryCache();
+        void refreshAudioStorage();
         const failed = res.filter((r) => r.status === "rejected").length;
         if (failed > 0) {
           push({ kind: "error", title: `Couldn’t delete ${failed} recording${failed !== 1 ? "s" : ""}`, sub: "Refreshing…", duration: 4000 });
@@ -799,6 +821,11 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
             <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
               {recordings.length} transcript{recordings.length !== 1 ? "s" : ""} · stored on this device
             </p>
+            {audioStorage && (
+              <p className="text-[12px] text-muted-foreground mt-1 tabular-nums">
+                Saved audio: {formatStorageSize(audioStorage.total_bytes)} · {audioStorage.file_count} WAV {audioStorage.file_count === 1 ? "file" : "files"}
+              </p>
+            )}
           </div>
           {recordings.length > 0 && (
             <div className="flex items-center gap-2 flex-shrink-0 mt-1">

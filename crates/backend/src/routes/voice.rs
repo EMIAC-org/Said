@@ -318,7 +318,7 @@ fn estimated_secs(word_count: i64) -> f64 {
     word_count as f64 * 60.0 / 130.0
 }
 
-/// Directory where WAV recordings are saved locally (1-day retention).
+/// Directory where WAV recordings are saved locally until the user deletes them.
 fn audio_dir() -> std::path::PathBuf {
     let base = dirs::data_local_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
@@ -334,48 +334,6 @@ fn save_audio(id: &str, data: &[u8]) -> Option<std::path::PathBuf> {
     std::fs::write(&path, data).ok()?;
     debug!("[voice] saved audio to {}", path.display());
     Some(path)
-}
-
-/// Delete ordinary WAV files older than 24 hours. Retryable failed runs keep
-/// their WAVs for 7 days so users can reprocess captured speech.
-pub fn cleanup_old_audio(pool: &crate::store::DbPool) {
-    let dir = audio_dir();
-    let now_ms = crate::store::now_ms();
-    let protected_cutoff_ms = now_ms - 7 * 86_400_000i64;
-    let protected: std::collections::HashSet<String> =
-        crate::store::voice_runs::retryable_failed_audio_ids(pool, protected_cutoff_ms)
-            .into_iter()
-            .collect();
-    let cutoff = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(86_400))
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        if modified < cutoff {
-            let audio_id = entry
-                .path()
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if protected.contains(&audio_id) {
-                debug!(
-                    "[voice] keeping retryable failed audio {}",
-                    entry.path().display()
-                );
-                continue;
-            }
-            let _ = std::fs::remove_file(entry.path());
-            debug!("[voice] deleted old audio {}", entry.path().display());
-        }
-    }
 }
 
 use crate::{
@@ -2070,7 +2028,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
         client_run_id.as_deref().unwrap_or("none"),
     );
 
-    // Save audio to disk (1-day retention) before exposing audio_id in history.
+    // Save audio to persistent local storage before exposing audio_id in history.
     // This costs only a few ms, and prevents UI play/download buttons from
     // pointing at a WAV file that failed to save.
     let audio_id = Uuid::new_v4().to_string();

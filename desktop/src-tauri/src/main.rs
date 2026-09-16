@@ -1399,6 +1399,36 @@ fn voice_audio_dir() -> std::path::PathBuf {
     base.join("VoicePolish").join("audio")
 }
 
+#[derive(Debug, Default, Serialize)]
+struct RecordingAudioStorage {
+    total_bytes: u64,
+    file_count: u64,
+}
+
+fn recording_audio_storage_in(dir: &std::path::Path) -> RecordingAudioStorage {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return RecordingAudioStorage::default();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
+            {
+                return None;
+            }
+            entry.metadata().ok().filter(|metadata| metadata.is_file())
+        })
+        .fold(RecordingAudioStorage::default(), |mut total, metadata| {
+            total.total_bytes = total.total_bytes.saturating_add(metadata.len());
+            total.file_count = total.file_count.saturating_add(1);
+            total
+        })
+}
+
 fn saved_voice_audio_path(audio_id: &str) -> Result<std::path::PathBuf, String> {
     uuid::Uuid::parse_str(audio_id).map_err(|_| "invalid saved audio id".to_string())?;
     Ok(voice_audio_dir().join(format!("{audio_id}.wav")))
@@ -6314,6 +6344,12 @@ async fn delete_recording(backend: State<'_, BackendState>, id: String) -> Resul
     api::delete_recording(&ep, &id).await
 }
 
+/// Total disk space used by every saved dictation WAV on this device.
+#[tauri::command]
+fn get_recording_audio_storage() -> RecordingAudioStorage {
+    recording_audio_storage_in(&voice_audio_dir())
+}
+
 /// Return the bearer-authed URL to stream a recording's WAV audio.
 /// The frontend fetches this URL with the Authorization header to get a blob.
 #[tauri::command]
@@ -10560,6 +10596,7 @@ fn main() {
             retry_recording,
             // Recording management
             delete_recording,
+            get_recording_audio_storage,
             get_recording_audio_url,
             get_recording_audio_bytes,
             download_recording_audio,
@@ -10735,6 +10772,29 @@ fn main() {
 }
 
 // ── Tests for the meaningful-edit gate ────────────────────────────────────────
+
+#[cfg(test)]
+mod recording_audio_storage_tests {
+    use super::recording_audio_storage_in;
+
+    #[test]
+    fn totals_all_saved_wav_files_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "airnote-audio-storage-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("first.wav"), [0_u8; 7]).unwrap();
+        std::fs::write(dir.join("second.WAV"), [0_u8; 11]).unwrap();
+        std::fs::write(dir.join("notes.txt"), [0_u8; 23]).unwrap();
+
+        let storage = recording_audio_storage_in(&dir);
+
+        assert_eq!(storage.file_count, 2);
+        assert_eq!(storage.total_bytes, 18);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
 
 #[cfg(test)]
 mod meaningful_edit_tests {

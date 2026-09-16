@@ -215,24 +215,6 @@ async fn async_main() {
 
     tokio::task::spawn_blocking(said_backend::tier2::warm_runtime_caches);
 
-    // ── Retention sweep (every 6 h): delete recordings + audio older than 1 day
-    // (failed-retryable audio is protected up to 7 days — see cleanup_old_audio).
-    // NOTE: the 6 h interval RESETS on every backend restart, so this only fires
-    // after 6 h of continuous uptime; short-lived sessions rarely trigger it.
-    {
-        let pool2 = pool.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
-            interval.tick().await; // skip first immediate tick
-            loop {
-                interval.tick().await;
-                said_backend::store::history::cleanup_old_recordings(&pool2);
-                said_backend::routes::voice::cleanup_old_audio(&pool2);
-                info!("[cleanup] 1-day recording + audio retention sweep complete");
-            }
-        });
-    }
-
     // ── Hourly metering report task ───────────────────────────────────────────
     {
         let pool3 = pool.clone();

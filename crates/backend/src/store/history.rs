@@ -1,8 +1,6 @@
+use super::{DbPool, now_ms};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use tracing::info;
-
-use super::{DbPool, now_ms};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recording {
@@ -236,29 +234,6 @@ pub fn list_site_usage(pool: &DbPool, user_id: &str) -> Vec<SiteUsage> {
     })
     .map(|rows| rows.flatten().collect())
     .unwrap_or_default()
-}
-
-/// Delete recordings older than 1 day.
-///
-/// Best-effort retention only. Driven by the 6 h sweep in `main.rs`, whose
-/// interval resets on every backend restart — so in normal per-session use
-/// (backend up for minutes, not hours) this rarely fires and recordings
-/// effectively persist. Do not rely on it as a guaranteed retention bound;
-/// anything that needs durable history should live in its own table.
-pub fn cleanup_old_recordings(pool: &DbPool) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let one_day_ms = 86_400_000i64;
-    let cutoff = now_ms() - one_day_ms;
-    match conn.execute(
-        "DELETE FROM recordings WHERE timestamp_ms < ?1",
-        params![cutoff],
-    ) {
-        Ok(n) if n > 0 => info!("cleaned up {n} old recordings (>1 day)"),
-        _ => {}
-    }
 }
 
 pub fn get_recording(pool: &DbPool, id: &str) -> Option<Recording> {
