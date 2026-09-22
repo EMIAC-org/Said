@@ -216,7 +216,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
           {policy.setup_kind === "cloud_locked"
-            ? "Cloud Whisper is fixed for dictation on this device. Local files are used only by Meetings."
+            ? "Cloud Whisper handles dictation on this device. No local model download is needed."
             : `This Mac recommends ${policy.local_model_name ?? "local speech recognition"}.`}
         </p>
       </div>

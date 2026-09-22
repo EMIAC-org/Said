@@ -581,20 +581,6 @@ export async function screenRecordingGranted(): Promise<boolean> {
   }
 }
 
-/**
- * Ensure Screen Recording (needed for meeting system-audio capture): prompts +
- * opens the pane if missing. Returns the resulting grant state (often false
- * until the app is relaunched).
- */
-export async function requestScreenRecording(): Promise<boolean> {
-  if (!isTauriRuntime()) return true;
-  try {
-    return await tauriInvoke<boolean>("request_screen_recording");
-  } catch {
-    return false;
-  }
-}
-
 /** Retry a recording by re-submitting its saved WAV. Result is auto-pasted. */
 export async function retryRecording(audioId: string): Promise<void> {
   if (!isTauriRuntime()) return;

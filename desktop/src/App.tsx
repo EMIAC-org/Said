@@ -30,7 +30,6 @@ import {
   sendNotification,
   requestInputMonitoring,
   requestMicrophone,
-  requestScreenRecording,
   submitEditFeedback,
   onVocabToast,
   deleteVocabularyTerm,
@@ -183,7 +182,6 @@ export default function App() {
   const [busy,        setBusy]        = useState(false);
   const [errorBanner, setErrorBanner] = useState<string>("");
   const [activeView,  setActiveView]  = useState<ActiveView>("dashboard");
-  // longer renders its own duplicate "ended" notes layout.
   const [inviteOpen,  setInviteOpen]  = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("models");
@@ -628,24 +626,6 @@ export default function App() {
     }
   }, [refreshPermissionsSoon]);
 
-  // ── Screen Recording (meeting system-audio capture) ───────────────────────
-  const handleScreenRecording = useCallback(async () => {
-    setErrorBanner("");
-    try {
-      await requestScreenRecording();
-      // macOS often only reflects a fresh grant after a delay/relaunch; re-read.
-      setTimeout(async () => {
-        try {
-          const next = await invoke("get_snapshot");
-          setSnapshot(next);
-        } catch { /* ignore */ }
-      }, 1000);
-      refreshPermissionsSoon();
-    } catch (err: unknown) {
-      setErrorBanner(err instanceof Error ? err.message : String(err));
-    }
-  }, [refreshPermissionsSoon]);
-
   const handleOnboardingFinish = useCallback(() => {
     setOnboardingComplete(true);
     try {
@@ -807,7 +787,6 @@ export default function App() {
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
         onMicrophone={handleMicrophone}
-        onScreenRecording={handleScreenRecording}
         performanceMonitorEnabled={performanceMonitorEnabled}
         onPerformanceMonitorChange={setPerformanceMonitor}
         onEnterpriseDisconnect={handleEnterpriseDisconnect}
