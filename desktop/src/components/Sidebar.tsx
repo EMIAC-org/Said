@@ -17,10 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/BrandMark";
 import { getPerformanceSnapshot, openExternal } from "@/lib/invoke";
-import {
-  getConnection,
-  isConnected as isEnterpriseConnected,
-} from "@/lib/enterprise";
+import { getConnection } from "@/lib/enterprise";
 import type { AppSnapshot, PerformanceSnapshot, ProcessPerf } from "@/types";
 
 // ── Nav item type ──────────────────────────────────────────────────────────────
@@ -41,14 +38,6 @@ const GENERAL_NAV: NavItem[] = [
   { id: "learnings",  label: "Learnings",  icon: <Sparkles        size={15} />, badge: "New" },
   { id: "buckets",    label: "Buckets",    icon: <Columns3        size={15} /> },
 ];
-
-// Divo is gated to approved EMIAC accounts. This only controls nav visibility —
-// the control-plane still enforces the same allowlist with a 403 on every call.
-const DIVO_ALLOWED_EMAILS = ["abhishek@emiactech.com", "shivam@emiactech.com"];
-function isDivoAllowed(): boolean {
-  const email = getConnection()?.email?.trim().toLowerCase();
-  return !!email && DIVO_ALLOWED_EMAILS.includes(email);
-}
 
 const GUIDE_URL = "https://airnote.emiactech.com/guide";
 
@@ -153,22 +142,6 @@ export function Sidebar({
             ))}
           </div>
         </section>
-
-        {/* Enterprise (only when connected) */}
-        {isEnterpriseConnected() && (
-          <section>
-            <p className="section-label px-3 mb-2">Enterprise</p>
-            <div className="space-y-0.5">
-              {isDivoAllowed() && (
-                <NavButton
-                  item={{ id: "divo", label: "Divo", icon: <Sparkles size={15} /> }}
-                  isActive={activeView === "divo"}
-                  onClick={() => !busy && onViewChange("divo")}
-                />
-              )}
-            </div>
-          </section>
-        )}
 
         {/* Spacer */}
         <div className="flex-1" />

@@ -15,7 +15,6 @@ import { HistoryView } from "@/components/views/HistoryView";
 import { LearningsView } from "@/components/views/LearningsView";
 import { BucketsView } from "@/components/views/BucketsView";
 import { VocabularyView } from "@/components/views/VocabularyView";
-import { DivoView } from "@/components/views/DivoView";
 import {
   invoke,
   onAppState,
@@ -34,7 +33,6 @@ import {
   requestScreenRecording,
   submitEditFeedback,
   onVocabToast,
-  divoSetCredentials,
   deleteVocabularyTerm,
   checkNotificationPermission,
   revealDownloadedFile,
@@ -64,8 +62,8 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "divo" | "settings";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "vocabulary", "learnings", "buckets", "divo", "settings"];
+export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "settings";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "vocabulary", "learnings", "buckets", "settings"];
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -388,18 +386,6 @@ export default function App() {
     setEnterpriseGate("required");
   }, []);
 
-  // Push the control-plane URL + session token to Rust so the Ctrl hold-to-talk
-  // Divo hotkey activates (and de-activates on disconnect). Re-runs whenever the
-  // enterprise connection state changes.
-  useEffect(() => {
-    if (enterpriseGate === "connected") {
-      const conn = getConnection();
-      void divoSetCredentials(conn?.serverUrl ?? "", conn?.jwt ?? "");
-    } else {
-      void divoSetCredentials("", "");
-    }
-  }, [enterpriseGate]);
-
   useEffect(() => {
     let alive = true;
     checkNotificationPermission().then((p) => {
@@ -416,9 +402,9 @@ export default function App() {
   }, []);
 
   // Safety net for a stuck "transcribing"/"polishing" banner. The banner clears
-  // only on an idle/done/error event; if one is ever missed (e.g. a quick Divo
-  // Ctrl tap whose cancel teardown didn't reach the webview), force-clear it so
-  // the UI can never wedge. The timer resets on every status/token change, so it
+  // only on an idle/done/error event; if one is ever missed (e.g. a cancel
+  // teardown that didn't reach the webview), force-clear it so the UI can never
+  // wedge. The timer resets on every status/token change, so it
   // never fires during an active stream — only after activity has truly stopped.
   useEffect(() => {
     if (!statusPhase) return;
@@ -804,7 +790,6 @@ export default function App() {
                 {activeView === "vocabulary" && <VocabularyView />}
                 {activeView === "learnings"  && <LearningsView />}
                 {activeView === "buckets"    && <BucketsView />}
-                {activeView === "divo" && <DivoView platform={snapshot?.platform} />}
                 {/* Settings is now a modal — opened via setSettingsOpen */}
               </div>
             </main>

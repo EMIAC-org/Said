@@ -104,11 +104,6 @@
   .card-row { display: flex; gap: 6px; }
   .chip { flex: 0 0 auto; height: 24px; padding: 0 10px; border-radius: 8px; font: 600 11px/1 inherit; display:inline-flex; align-items:center; color: var(--fg); background: hsl(0 0% 100% / 0.07); box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.08); cursor: pointer; }
   .chip:hover { background: hsl(0 0% 100% / 0.12); }
-  .prog { height: 4px; border-radius: 999px; background: hsl(0 0% 100% / 0.1); overflow: hidden; }
-  .prog > i { display: block; height: 100%; width: 42%; border-radius: 999px; background: var(--primary); animation: indet 1.4s ease-in-out infinite; }
-  @keyframes indet { 0%{margin-left:-42%} 100%{margin-left:100%} }
-  .steps { font-size: 11px; color: var(--fg-muted); display: flex; flex-direction: column; gap: 3px; }
-  .steps .done { color: var(--ok); }
 
   /* ── Catalog ── */
   h2.sec { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted); margin: 30px 0 12px; }
@@ -151,12 +146,10 @@
   <div class="cat" data-cat="learn"></div>
   <h2 class="sec">System &amp; updates</h2>
   <div class="cat" data-cat="system"></div>
-  <h2 class="sec">Divo agent (Ctrl hold-to-talk)</h2>
-  <div class="cat" data-cat="divo"></div>
 
   <div class="note">
     <b>Responsive sizing:</b> after each render the pill reads <code>inner.scrollWidth</code> / <code>scrollHeight</code> and animates <code>width</code>/<code>height</code> to fit — the same content-driven measure the real HUD already does in <code>pillSize()</code> + <code>resize_status_bar()</code>, just expressed as a smooth capsule morph instead of a step resize.<br>
-    <b>Scope:</b> pure visual layer. Every state machine, event listener, and the card prompts (review / recovered / update / Divo) keep their logic — only the shell (waveform, capsule shape, morph transition, icon+text rows) is reskinned. Notch untouched, as asked.
+    <b>Scope:</b> pure visual layer. Every state machine, event listener, and the card prompts (review / recovered / update) keep their logic — only the shell (waveform, capsule shape, morph transition, icon+text rows) is reskinned. Notch untouched, as asked.
   </div>
 </div>
 
@@ -172,8 +165,6 @@
     spark: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 2.6 8.6 6.4 4.8 7.7l3.8 1.3 1.3 3.8 1.3-3.8 3.8-1.3-3.8-1.3z"/><path d="M18 10l-1 2.5L14.5 14 17 15l1 2.5 1-2.5 2.5-1L19 12.5z"/></svg>',
     dl:    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>',
     move:  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9 2 12l3 3"/><path d="m9 5 3-3 3 3"/><path d="m15 19-3 3-3-3"/><path d="m19 9 3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/></svg>',
-    clock: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
-    send:  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5 21 11l-6.5 6.5"/><path d="M21 11H3"/></svg>',
   };
 
   // ── Waveform math ──
@@ -223,25 +214,7 @@
     problem_ambiguous:{ cat:"system", label:"Ambiguous project", card:true, tint:"warn", html:
       '<div class="card-head"><span class="dot warn"></span><span class="title">Ambiguous project match</span><span class="x">✕</span></div>'
       +'<div class="card-body">Pick the project context to continue.</div>'
-      +'<div class="card-row"><span class="chip">AirNote</span><span class="chip">Control-plane</span><span class="chip">Divo</span></div>' },
-
-    // divo
-    divo_min:     { cat:"divo", label:"Divo working (min)", html:'<span class="spinner"></span><span class="txt muted">Divo is working…</span>' },
-    divo_ready:   { cat:"divo", label:"Divo ready badge", tint:"accent", html:'<span class="glyph pri">'+I.spark+'</span><span class="txt"><b>Divo</b> (1)</span>' },
-    divo_streaming:{ cat:"divo", label:"Divo streaming", card:true, tint:"accent", html:
-      '<div class="card-head"><span class="spinner"></span><span class="title">Sending to Divo…</span></div>'
-      +'<div class="prog"><i></i></div>'
-      +'<div class="steps"><span class="done">✓ Read thread history</span><span class="done">✓ Fetched invoice</span><span>▶ Drafting reply…</span></div>' },
-    divo_stage:   { cat:"divo", label:"Divo stage (review)", card:true, html:
-      '<div class="card-head"><span class="glyph pri">'+I.spark+'</span><span class="title">Send to Divo</span><span class="x">✕</span></div>'
-      +'<div class="card-body quote">“Reply to Rahul that the Kraków demo is ready.”</div>'
-      +'<div class="card-row"><button class="btn pri" style="height:26px">'+I.send+' Send</button><button class="btn" style="height:26px">✎ Edit / route</button></div>' },
-    divo_answer:  { cat:"divo", label:"Divo answer", card:true, html:
-      '<div class="card-head"><span class="glyph pri">'+I.spark+'</span><span class="title">Divo</span><span class="x">✕</span></div>'
-      +'<div class="card-body">Done — replied to Rahul in <b>#krakow-demo</b> and marked the invoice paid.</div>'
-      +'<div class="card-row"><button class="btn" style="height:26px">'+I.clip+' Copy</button></div>' },
-    divo_pending: { cat:"divo", label:"Divo pending", tint:"warn", html:'<span class="glyph warn">'+I.clock+'</span><span class="txt">Pending approval in Lark</span>' },
-    divo_error:   { cat:"divo", label:"Divo error", tint:"err", html:'<span class="glyph warn">'+I.warn+'</span><span class="txt err">Divo couldn’t finish</span><button class="btn">'+I.retry+'Retry</button>' },
+      +'<div class="card-row"><span class="chip">AirNote</span><span class="chip">Control-plane</span><span class="chip">Website</span></div>' },
   };
 
   const pill = document.getElementById("pill");

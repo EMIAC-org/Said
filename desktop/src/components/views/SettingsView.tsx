@@ -1258,7 +1258,7 @@ export function SettingsView({
             description={
               developerSettings.enabled
                 ? "On — problem requests use their own isolated solve flow."
-                : "Off — normal dictation, polish, retry, Divo, and meetings stay unchanged."
+                : "Off — normal dictation, polish, retry, and meetings stay unchanged."
             }
             action={
               <button
