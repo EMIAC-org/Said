@@ -9441,7 +9441,6 @@ fn main() {
                 // transcribing so the pipeline self-heals. Runs off-thread to keep
                 // startup responsive; best-effort and self-contained.
                 {
-                    let recovery_handle = app.handle().clone();
                     std::thread::Builder::new()
                         .name("meeting-recovery".to_string())
                         .spawn(move || {
@@ -9458,9 +9457,12 @@ fn main() {
                             // first real utterance avoids setup costs (macOS:
                             // model load; Windows: key check + HTTP client).
                             dictation_stt::prewarm();
-                            recovery_handle
-                                .state::<meeting_engine::MeetingEngineState>()
-                                .requeue_interrupted_meetings();
+                            // Interrupted meetings are deliberately NOT re-queued.
+                            // Meetings left the product, so a re-run would spend
+                            // CPU and the whisper engine right after launch —
+                            // exactly when the first dictation wants them — to
+                            // produce a transcript nothing can display. The audio
+                            // itself is still repaired above, so nothing is lost.
                         })
                         .ok();
                 }
