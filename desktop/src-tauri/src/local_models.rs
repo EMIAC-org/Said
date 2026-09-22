@@ -62,15 +62,16 @@ pub struct LocalModelCleanupResult {
 fn status_for(key: &str) -> Result<(bool, u64), String> {
     match key {
         stt_policy::CLARIO_41H_PREF => {
+            // `installed` already requires the marker: a bare file is the
+            // pre-release Oriserve model sitting at this path.
             let status = meeting_engine::dictation_model_status();
-            // A file with no marker is the pre-release Oriserve model sitting at
-            // this path, not the current model.
-            let is_current = status.installed && dictation_model::read_marker().is_some();
+            let is_current = status.installed;
             Ok((is_current, if is_current { status.size_bytes } else { 0 }))
         }
         stt_policy::ORISERVE_PREF => {
             let status = meeting_engine::dictation_model_status();
-            let is_legacy = status.installed && dictation_model::read_marker().is_none();
+            let is_legacy = meeting_engine::dictation_model_file_present()
+                && dictation_model::read_marker().is_none();
             Ok((is_legacy, if is_legacy { status.size_bytes } else { 0 }))
         }
         stt_policy::NEMOTRON_Q4_PREF => {

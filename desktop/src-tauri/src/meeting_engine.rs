@@ -13825,33 +13825,44 @@ pub struct DictationModelStatus {
     pub path: String,
 }
 
+/// A complete-looking model file at the dictation path, current or retired.
+/// Callers that must tell the two apart pair this with the marker.
+pub fn dictation_model_file_present() -> bool {
+    dictation_model_is_installed(&said_core::paths::whisper_model_path())
+}
+
+/// `installed` means the *current* model: a verified install leaves a marker
+/// beside the file. The retired Oriserve model sits at the same path with no
+/// marker, and onboarding must not skip the download because of it.
 #[tauri::command]
 pub fn dictation_model_status() -> DictationModelStatus {
     let path = said_core::paths::whisper_model_path();
     let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     DictationModelStatus {
-        installed: dictation_model_is_installed(&path),
+        installed: dictation_model_is_installed(&path)
+            && crate::dictation_model::read_marker().is_some(),
         size_bytes,
         path: path.to_string_lossy().to_string(),
     }
 }
 
-/// Remove the on-device dictation model file (frees ~148 MB). Idempotent.
+/// Remove the on-device dictation model file (frees ~141 MB). Idempotent.
 #[tauri::command]
 pub fn delete_dictation_model() -> Result<(), String> {
+    // There is one local model, so local dictation always depends on this file.
+    // (This used to compare the selection against Oriserve, which stopped
+    // matching anything once selections were normalised to the new model.)
     let prefs = said_core::prefs::load();
-    if prefs.dictation_stt == crate::stt_policy::LOCAL_PREF
-        && prefs.local_stt_model == crate::stt_policy::ORISERVE_PREF
-    {
+    if prefs.dictation_stt == crate::stt_policy::LOCAL_PREF {
         return Err(
-            "Switch dictation to Cloud Nemotron before removing the active Oriserve model."
-                .to_string(),
+            "Switch dictation to cloud speech before removing the on-device model.".to_string(),
         );
     }
     let path = said_core::paths::whisper_model_path();
     if path.is_file() {
         fs::remove_file(&path).map_err(|e| format!("couldn't delete model: {e}"))?;
     }
+    crate::dictation_model::clear_marker();
     let part = path.with_extension("bin.part");
     let _ = fs::remove_file(part);
     Ok(())
@@ -13876,8 +13887,13 @@ pub fn reclaim_old_models() -> Result<WhisperModelCleanupResult, String> {
 /// This is also the refresh path. A machine upgrading from an older release has
 /// the retired Oriserve model sitting at this exact filename, and it is close
 /// enough in size to pass any "looks installed" check — so `dictation_model`'s
-/// marker, not the file, decides whether the copy on disk is current. When it
-/// is not, the old file is deleted first rather than resumed into.
+/// marker, not the file, decides whether the copy on disk is current.
+///
+/// The old file is never deleted up front. The new one downloads to a staging
+/// file beside it, is checksummed there, and only then renamed over the old
+/// one. Until that rename the previous model keeps dictation working, so a
+/// dropped connection or a server outage leaves the user exactly where they
+/// were instead of with no model at all.
 ///
 /// Streams progress on the shared `meeting-model-download` event. Idempotent.
 /// Auto-fetches the Silero VAD model afterwards if missing.
@@ -13905,17 +13921,13 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
             "[meeting_engine] replacing a {state:?} dictation model with {}",
             descriptor.revision
         );
-        // Drop the marker first. If the download dies halfway, the next launch
-        // must still see "not current" rather than trusting a marker that now
-        // describes a file which is no longer there.
-        crate::dictation_model::clear_marker();
     }
-    if dest.is_file() {
-        fs::remove_file(&dest)
-            .map_err(|e| format!("couldn't remove the previous speech model: {e}"))?;
-    }
-    let part = dest.with_extension("bin.part");
-    let _ = fs::remove_file(&part);
+    // Leftovers from an interrupted attempt. Never resumed into: they may be
+    // part of a different revision.
+    let staged = dir.join(format!("{name}.new"));
+    let _ = fs::remove_file(&staged);
+    let _ = fs::remove_file(dir.join(format!("{name}.part")));
+    let _ = fs::remove_file(dest.with_extension("bin.part"));
     {
         let mut inflight = model_downloads_inflight()
             .lock()
@@ -13932,8 +13944,16 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
     let name_task = name.clone();
     let url_task = descriptor.url.clone();
     let size_task = descriptor.size_bytes;
+    let staged_task = staged.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        download_whisper_model_blocking(&app_dl, &name_task, &url_task, size_task, &dir, &dest)
+        download_whisper_model_blocking(
+            &app_dl,
+            &name_task,
+            &url_task,
+            size_task,
+            &dir,
+            &staged_task,
+        )
     })
     .await
     .map_err(|e| format!("download task failed: {e}"))?;
@@ -13948,10 +13968,19 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
     // Prove the bytes before declaring the model installed. A truncated or
     // mangled download that happens to land near the right size would otherwise
     // be loaded by whisper.cpp and fail in a far less obvious place.
+    // Whatever happens below, the previous model at `dest` has not been touched.
     if result.is_ok() {
-        let model_path = said_core::paths::whisper_model_path();
-        match crate::dictation_model::sha256_of(&model_path) {
+        match crate::dictation_model::sha256_of(&staged) {
             Ok(actual) if actual == descriptor.sha256 => {
+                // One rename on the same volume: the model path always holds a
+                // complete model, old or new, never a half-written one.
+                fs::rename(&staged, &dest).map_err(|e| {
+                    let _ = fs::remove_file(&staged);
+                    format!("couldn't install the new speech model: {e}")
+                })?;
+                // A failure here leaves the new file with the old (or no)
+                // marker, which reads as "not current": the next launch
+                // downloads again rather than trusting an unproven file.
                 crate::dictation_model::write_marker(&descriptor)?;
                 tracing::info!(
                     "[meeting_engine] installed dictation model {} ({})",
@@ -13960,8 +13989,7 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
                 );
             }
             Ok(actual) => {
-                let _ = fs::remove_file(&model_path);
-                crate::dictation_model::clear_marker();
+                let _ = fs::remove_file(&staged);
                 tracing::error!(
                     "[meeting_engine] dictation model checksum mismatch: expected {} got {actual}",
                     descriptor.sha256
@@ -13972,8 +14000,7 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
                 );
             }
             Err(e) => {
-                let _ = fs::remove_file(&model_path);
-                crate::dictation_model::clear_marker();
+                let _ = fs::remove_file(&staged);
                 return Err(format!("couldn't verify the downloaded speech model: {e}"));
             }
         }
