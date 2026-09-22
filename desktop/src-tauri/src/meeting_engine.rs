@@ -15417,21 +15417,29 @@ mod tests {
         );
     }
 
+    /// Nemotron Q4 was the recommendation for Apple Silicon Macs above 8 GB.
+    /// AirNote now ships one local model for every machine, so no policy can
+    /// select Q4 any more and this branch is dead on every platform.
     #[test]
-    fn meetings_follow_the_onboarding_local_model_recommendation() {
-        let high_memory_apple_silicon =
-            crate::stt_policy::policy_for("macos", "arm64", false, 9 * 1024 * 1024 * 1024);
-        let eight_gib_apple_silicon =
-            crate::stt_policy::policy_for("macos", "arm64", false, 8 * 1024 * 1024 * 1024);
-        let windows =
-            crate::stt_policy::policy_for("windows", "x86_64", false, 32 * 1024 * 1024 * 1024);
-        let intel_mac =
-            crate::stt_policy::policy_for("macos", "x86_64", false, 32 * 1024 * 1024 * 1024);
-
-        assert!(meeting_policy_uses_nemotron_q4(&high_memory_apple_silicon));
-        assert!(!meeting_policy_uses_nemotron_q4(&eight_gib_apple_silicon));
-        assert!(!meeting_policy_uses_nemotron_q4(&windows));
-        assert!(!meeting_policy_uses_nemotron_q4(&intel_mac));
+    fn no_policy_recommends_nemotron_q4_any_more() {
+        for (platform, arch, memory_gib) in [
+            ("macos", "arm64", 9),
+            ("macos", "arm64", 8),
+            ("macos", "arm64", 64),
+            ("windows", "x86_64", 32),
+            ("macos", "x86_64", 32),
+        ] {
+            let policy = crate::stt_policy::policy_for(
+                platform,
+                arch,
+                false,
+                memory_gib * 1024 * 1024 * 1024,
+            );
+            assert!(
+                !meeting_policy_uses_nemotron_q4(&policy),
+                "{platform}/{arch} at {memory_gib} GiB should not select Q4"
+            );
+        }
     }
 
     #[test]

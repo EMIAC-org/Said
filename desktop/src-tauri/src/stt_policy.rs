@@ -15,10 +15,16 @@ use said_core::prefs::DesktopPrefs;
 pub const CLOUD_DEEPINFRA_PREF: &str = "cloud-deepinfra-whisper-v3-turbo";
 const LEGACY_CLOUD_NEMOTRON_PREF: &str = "cloud-nemotron-3.5";
 pub const LOCAL_PREF: &str = "local";
+
+/// The one local dictation model AirNote ships. Every Apple Silicon Mac gets
+/// this regardless of memory: it is a whisper-base fine-tune at ~141 MB, so the
+/// memory tiering the previous models needed no longer applies.
+pub const CLARIO_41H_PREF: &str = "clario-hinglish-41h";
+
+/// Retired models. Kept as constants only so `local_models` can recognise and
+/// reclaim what older installs left on disk; nothing selects them any more.
 pub const ORISERVE_PREF: &str = "oriserve";
 pub const NEMOTRON_Q4_PREF: &str = "nemotron-q4";
-
-const EIGHT_GIB: u64 = 8 * 1024 * 1024 * 1024;
 
 /// What AirNote can expose for dictation on this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -87,38 +93,16 @@ fn normalize_prefs_for(mut prefs: DesktopPrefs, policy: &SttSetupPolicy) -> Desk
     } else if prefs.dictation_stt != CLOUD_DEEPINFRA_PREF {
         prefs.dictation_stt = LOCAL_PREF.to_string();
     }
-    let compatibility_override = valid_compatibility_override(
-        prefs.local_stt_compat_override.as_deref(),
-        policy.local_pref(),
-    );
-    if let Some(model) = compatibility_override {
+
+    // There is one local model now, so there is nothing to choose between and
+    // no compatibility escape hatch to honour. Any stored model name — Oriserve,
+    // either Nemotron, or a compatibility override written by an older release —
+    // collapses to the current model.
+    prefs.local_stt_compat_override = None;
+    if let Some(model) = policy.local_pref() {
         prefs.local_stt_model = model.to_string();
-        prefs.local_stt_compat_override = Some(model.to_string());
-    } else {
-        prefs.local_stt_compat_override = None;
-        if let Some(model) = policy.local_pref() {
-            prefs.local_stt_model = model.to_string();
-        }
     }
     prefs
-}
-
-/// Compatibility overrides exist only for high-memory Apple Silicon machines
-/// whose recommended model is Q4. Eight-GB machines remain pinned to Oriserve;
-/// accepting Q4/Q8 there would reintroduce the memory failures this policy was
-/// created to prevent.
-fn valid_compatibility_override<'a>(
-    requested: Option<&'a str>,
-    recommended: Option<&str>,
-) -> Option<&'a str> {
-    if recommended != Some(NEMOTRON_Q4_PREF) {
-        return None;
-    }
-    match requested {
-        Some(ORISERVE_PREF) => Some(ORISERVE_PREF),
-        Some("nemotron") | Some("nemotron-q8") => Some("nemotron-q8"),
-        _ => None,
-    }
 }
 
 /// Persist normalization at startup, before onboarding, Settings, or a hotkey
@@ -177,24 +161,18 @@ pub(crate) fn policy_for(
         ) || rosetta_translated);
 
     if apple_silicon {
-        // An 8 GB M-series Mac always receives Oriserve. Q4 starts strictly
-        // above that threshold, per the product policy.
-        let q4 = total_memory_bytes > EIGHT_GIB;
+        // One model for every Apple Silicon Mac. The previous 8 GB / above-8 GB
+        // split existed because Nemotron Q4 was too heavy for small machines;
+        // the current model is a ~141 MB whisper-base fine-tune, comfortable on
+        // the smallest supported Mac, so the tiering has no reason to exist.
         return SttSetupPolicy {
             platform: platform.to_string(),
             cpu_family: "apple_silicon".to_string(),
             total_memory_bytes,
             setup_kind: SetupKind::LocalRequired,
-            local_model: Some(if q4 { NEMOTRON_Q4_PREF } else { ORISERVE_PREF }.to_string()),
-            local_model_name: Some(
-                if q4 {
-                    "Nemotron Streaming 3.5 (Q4)"
-                } else {
-                    "Oriserve Hinglish"
-                }
-                .to_string(),
-            ),
-            local_model_size_hint: Some(if q4 { "~496 MB" } else { "~148 MB" }.to_string()),
+            local_model: Some(CLARIO_41H_PREF.to_string()),
+            local_model_name: Some("AirNote Hinglish (41h)".to_string()),
+            local_model_size_hint: Some("~141 MB".to_string()),
         };
     }
 
@@ -235,6 +213,8 @@ fn macos_rosetta_translated() -> bool {
 mod tests {
     use super::*;
 
+    const EIGHT_GIB: u64 = 8 * 1024 * 1024 * 1024;
+
     #[test]
     fn windows_is_always_hosted_deepinfra() {
         let policy = policy_for("windows", "x86_64", false, 64 * EIGHT_GIB);
@@ -253,19 +233,22 @@ mod tests {
     fn rosetta_is_still_classified_as_apple_silicon() {
         let policy = policy_for("macos", "x86_64", true, 16 * 1024 * 1024 * 1024);
         assert_eq!(policy.cpu_family, "apple_silicon");
-        assert_eq!(policy.local_model.as_deref(), Some(NEMOTRON_Q4_PREF));
+        assert_eq!(policy.local_model.as_deref(), Some(CLARIO_41H_PREF));
     }
 
+    /// The memory tiers are gone. An 8 GB Mac and a 64 GB Mac now receive the
+    /// same model, which is the whole point of the single-model release.
     #[test]
-    fn eight_gib_apple_silicon_uses_oriserve() {
-        let policy = policy_for("macos", "arm64", false, EIGHT_GIB);
-        assert_eq!(policy.local_model.as_deref(), Some(ORISERVE_PREF));
-    }
-
-    #[test]
-    fn more_than_eight_gib_apple_silicon_uses_q4() {
-        let policy = policy_for("macos", "aarch64", false, EIGHT_GIB + 1);
-        assert_eq!(policy.local_model.as_deref(), Some(NEMOTRON_Q4_PREF));
+    fn every_apple_silicon_mac_gets_the_same_model_regardless_of_memory() {
+        for memory in [4 * EIGHT_GIB / 8, EIGHT_GIB, EIGHT_GIB + 1, 64 * EIGHT_GIB] {
+            let policy = policy_for("macos", "arm64", false, memory);
+            assert_eq!(
+                policy.local_model.as_deref(),
+                Some(CLARIO_41H_PREF),
+                "memory {memory} should not change the model"
+            );
+            assert_eq!(policy.setup_kind, SetupKind::LocalRequired);
+        }
     }
 
     #[test]
@@ -280,6 +263,7 @@ mod tests {
             &policy,
         );
         assert_eq!(normalized.dictation_stt, CLOUD_DEEPINFRA_PREF);
+        assert_eq!(normalized.local_stt_compat_override, None);
     }
 
     #[test]
@@ -287,7 +271,7 @@ mod tests {
         let policy = policy_for("macos", "arm64", false, EIGHT_GIB + 1);
         let local = normalize_prefs_for(DesktopPrefs::default(), &policy);
         assert_eq!(local.dictation_stt, LOCAL_PREF);
-        assert_eq!(local.local_stt_model, NEMOTRON_Q4_PREF);
+        assert_eq!(local.local_stt_model, CLARIO_41H_PREF);
 
         let cloud = normalize_prefs_for(
             DesktopPrefs {
@@ -297,63 +281,38 @@ mod tests {
             &policy,
         );
         assert_eq!(cloud.dictation_stt, CLOUD_DEEPINFRA_PREF);
-        assert_eq!(cloud.local_stt_model, NEMOTRON_Q4_PREF);
-
-        let migrated = normalize_prefs_for(
-            DesktopPrefs {
-                dictation_stt: LEGACY_CLOUD_NEMOTRON_PREF.into(),
-                ..DesktopPrefs::default()
-            },
-            &policy,
-        );
-        assert_eq!(migrated.dictation_stt, CLOUD_DEEPINFRA_PREF);
     }
 
+    /// Every existing user is upgrading from a release that stored Oriserve,
+    /// Nemotron Q4/Q8, or a compatibility override. All of them must land on
+    /// the current model rather than a name nothing can download any more.
     #[test]
-    fn high_memory_apple_silicon_preserves_valid_compatibility_override() {
-        let policy = policy_for("macos", "arm64", false, EIGHT_GIB + 1);
-        let normalized = normalize_prefs_for(
-            DesktopPrefs {
-                local_stt_model: ORISERVE_PREF.into(),
-                local_stt_compat_override: Some(ORISERVE_PREF.into()),
-                ..DesktopPrefs::default()
-            },
-            &policy,
-        );
-        assert_eq!(normalized.local_stt_model, ORISERVE_PREF);
-        assert_eq!(
-            normalized.local_stt_compat_override.as_deref(),
-            Some(ORISERVE_PREF)
-        );
-    }
-
-    #[test]
-    fn eight_gib_mac_rejects_memory_heavy_override() {
+    fn every_retired_model_selection_migrates_to_the_current_one() {
         let policy = policy_for("macos", "arm64", false, EIGHT_GIB);
-        let normalized = normalize_prefs_for(
-            DesktopPrefs {
-                local_stt_model: "nemotron-q8".into(),
-                local_stt_compat_override: Some("nemotron-q8".into()),
-                ..DesktopPrefs::default()
-            },
-            &policy,
-        );
-        assert_eq!(normalized.local_stt_model, ORISERVE_PREF);
-        assert_eq!(normalized.local_stt_compat_override, None);
-    }
-
-    #[test]
-    fn cloud_locked_devices_clear_local_compatibility_override() {
-        let policy = policy_for("windows", "x86_64", false, 2 * EIGHT_GIB);
-        let normalized = normalize_prefs_for(
-            DesktopPrefs {
-                local_stt_model: "nemotron-q8".into(),
-                local_stt_compat_override: Some("nemotron-q8".into()),
-                ..DesktopPrefs::default()
-            },
-            &policy,
-        );
-        assert_eq!(normalized.dictation_stt, CLOUD_DEEPINFRA_PREF);
-        assert_eq!(normalized.local_stt_compat_override, None);
+        for stored in [
+            ORISERVE_PREF,
+            NEMOTRON_Q4_PREF,
+            "nemotron-q8",
+            "nemotron",
+            "",
+        ] {
+            let normalized = normalize_prefs_for(
+                DesktopPrefs {
+                    dictation_stt: LOCAL_PREF.into(),
+                    local_stt_model: stored.into(),
+                    local_stt_compat_override: Some(ORISERVE_PREF.into()),
+                    ..DesktopPrefs::default()
+                },
+                &policy,
+            );
+            assert_eq!(
+                normalized.local_stt_model, CLARIO_41H_PREF,
+                "stored selection {stored:?} should migrate"
+            );
+            assert_eq!(
+                normalized.local_stt_compat_override, None,
+                "compatibility overrides no longer exist"
+            );
+        }
     }
 }

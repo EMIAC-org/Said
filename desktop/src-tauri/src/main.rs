@@ -10,6 +10,7 @@ mod chaos; // env-gated fault injection for torture-testing the resilience paths
 mod desktop;
 mod developer_context;
 mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostics
+mod dictation_model; // which local dictation model is current, and what is on disk
 mod dictation_stt;
 mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
