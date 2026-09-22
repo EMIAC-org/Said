@@ -15,9 +15,6 @@ import { HistoryView } from "@/components/views/HistoryView";
 import { LearningsView } from "@/components/views/LearningsView";
 import { BucketsView } from "@/components/views/BucketsView";
 import { VocabularyView } from "@/components/views/VocabularyView";
-import { MeetingsView } from "@/components/views/MeetingsView";
-import { DivoView } from "@/components/views/DivoView";
-import { LiveMeetingView } from "@/components/views/LiveMeetingView";
 import {
   invoke,
   onAppState,
@@ -33,10 +30,8 @@ import {
   sendNotification,
   requestInputMonitoring,
   requestMicrophone,
-  requestScreenRecording,
   submitEditFeedback,
   onVocabToast,
-  divoSetCredentials,
   deleteVocabularyTerm,
   checkNotificationPermission,
   revealDownloadedFile,
@@ -66,8 +61,8 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "meetings" | "divo" | "settings" | "live-meeting";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "vocabulary", "learnings", "buckets", "meetings", "divo", "settings", "live-meeting"];
+export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "settings";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "vocabulary", "learnings", "buckets", "settings"];
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -187,12 +182,6 @@ export default function App() {
   const [busy,        setBusy]        = useState(false);
   const [errorBanner, setErrorBanner] = useState<string>("");
   const [activeView,  setActiveView]  = useState<ActiveView>("dashboard");
-  const [liveMeetingId, setLiveMeetingId] = useState<string | null>(null);
-  // When a live meeting ends we navigate to the Meetings page and focus the
-  // just-ended meeting so its post-processing (transcribe → clean → summarize)
-  // is shown there. This is the single post-meeting surface — LiveMeetingView no
-  // longer renders its own duplicate "ended" notes layout.
-  const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
   const [inviteOpen,  setInviteOpen]  = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("models");
@@ -395,18 +384,6 @@ export default function App() {
     setEnterpriseGate("required");
   }, []);
 
-  // Push the control-plane URL + session token to Rust so the Ctrl hold-to-talk
-  // Divo hotkey activates (and de-activates on disconnect). Re-runs whenever the
-  // enterprise connection state changes.
-  useEffect(() => {
-    if (enterpriseGate === "connected") {
-      const conn = getConnection();
-      void divoSetCredentials(conn?.serverUrl ?? "", conn?.jwt ?? "");
-    } else {
-      void divoSetCredentials("", "");
-    }
-  }, [enterpriseGate]);
-
   useEffect(() => {
     let alive = true;
     checkNotificationPermission().then((p) => {
@@ -423,9 +400,9 @@ export default function App() {
   }, []);
 
   // Safety net for a stuck "transcribing"/"polishing" banner. The banner clears
-  // only on an idle/done/error event; if one is ever missed (e.g. a quick Divo
-  // Ctrl tap whose cancel teardown didn't reach the webview), force-clear it so
-  // the UI can never wedge. The timer resets on every status/token change, so it
+  // only on an idle/done/error event; if one is ever missed (e.g. a cancel
+  // teardown that didn't reach the webview), force-clear it so the UI can never
+  // wedge. The timer resets on every status/token change, so it
   // never fires during an active stream — only after activity has truly stopped.
   useEffect(() => {
     if (!statusPhase) return;
@@ -533,7 +510,7 @@ export default function App() {
     // Tray menu → navigate to Settings
     const unsubNav = onNavSettings((section) => {
       setSettingsSection(
-        section && ["appearance", "writing", "hotkeys", "models", "meeting", "developer", "notifications", "permissions", "enterprise", "debug", "about"].includes(section)
+        section && ["appearance", "writing", "hotkeys", "models", "developer", "notifications", "permissions", "enterprise", "debug", "about"].includes(section)
           ? (section as SettingsSectionId)
           : "models",
       );
@@ -649,24 +626,6 @@ export default function App() {
     }
   }, [refreshPermissionsSoon]);
 
-  // ── Screen Recording (meeting system-audio capture) ───────────────────────
-  const handleScreenRecording = useCallback(async () => {
-    setErrorBanner("");
-    try {
-      await requestScreenRecording();
-      // macOS often only reflects a fresh grant after a delay/relaunch; re-read.
-      setTimeout(async () => {
-        try {
-          const next = await invoke("get_snapshot");
-          setSnapshot(next);
-        } catch { /* ignore */ }
-      }, 1000);
-      refreshPermissionsSoon();
-    } catch (err: unknown) {
-      setErrorBanner(err instanceof Error ? err.message : String(err));
-    }
-  }, [refreshPermissionsSoon]);
-
   const handleOnboardingFinish = useCallback(() => {
     setOnboardingComplete(true);
     try {
@@ -682,6 +641,11 @@ export default function App() {
     markMigrationDone();
     setMigrationDone(MIGRATION_VERSION);
   }, []);
+
+  // Closed for this session without finishing (kept the old model, or chose
+  // cloud for now). Not stamped, so the next launch picks the update up again.
+  const [migrationDismissed, setMigrationDismissed] = useState(false);
+  const handleMigrationDismiss = useCallback(() => setMigrationDismissed(true), []);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   const handleViewChange = useCallback((view: string) => {
@@ -749,9 +713,8 @@ export default function App() {
   // Keep the restored application visible beneath the required v6 speech setup.
   // The gate itself owns hardware detection and model verification, so this
   // condition must remain version-based rather than assuming one local model.
-  const showPostUpdateGate = migrationDone < MIGRATION_VERSION;
+  const showPostUpdateGate = migrationDone < MIGRATION_VERSION && !migrationDismissed;
 
-  const liveMeetingActive = activeView === "live-meeting" && !!liveMeetingId;
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
   return (
@@ -762,24 +725,7 @@ export default function App() {
       aria-hidden={showPostUpdateGate || undefined}
     >
 
-      {liveMeetingActive ? (
-        <div className="min-w-0 flex-1">
-          <LiveMeetingView
-            meetingId={liveMeetingId}
-            onBack={() => setActiveView("meetings")}
-            onEnded={(id) => {
-              // Just hand the just-ended meeting to the Meetings page and switch to
-              // it. The actual stop is fired by LiveMeetingView.handleLeave (the
-              // `meeting/request-stop` event + the stop_session invoke, both of which
-              // reach Rust now that the pill IPC deadlock is fixed). No deferred stop
-              // needed here — that was a debugging backstop for the old deadlock.
-              setFocusMeetingId(id);
-              setActiveView("meetings");
-            }}
-          />
-        </div>
-      ) : (
-        <>
+      <>
           {/* ── Sidebar — full height left column ────────── */}
           <Sidebar
             snapshot={snapshotWithHistory}
@@ -824,27 +770,11 @@ export default function App() {
                 {activeView === "vocabulary" && <VocabularyView />}
                 {activeView === "learnings"  && <LearningsView />}
                 {activeView === "buckets"    && <BucketsView />}
-                {activeView === "meetings"   && (
-                  <MeetingsView
-                    focusMeetingId={focusMeetingId}
-                    onFocusConsumed={() => setFocusMeetingId(null)}
-                    onOpenWorkspaces={() => {
-                      setSettingsSection("enterprise");
-                      setSettingsOpen(true);
-                    }}
-                    onJoinMeeting={(id) => {
-                      setLiveMeetingId(id);
-                      setActiveView("live-meeting");
-                    }}
-                  />
-                )}
-                {activeView === "divo" && <DivoView platform={snapshot?.platform} />}
                 {/* Settings is now a modal — opened via setSettingsOpen */}
               </div>
             </main>
           </div>
         </>
-      )}
 
       {/* ── Invite team modal (overlays everything) ────── */}
       <InviteTeamModal open={inviteOpen} onClose={() => setInviteOpen(false)} />
@@ -857,7 +787,6 @@ export default function App() {
         onAccessibility={handleAccessibility}
         onInputMonitoring={handleInputMonitoring}
         onMicrophone={handleMicrophone}
-        onScreenRecording={handleScreenRecording}
         performanceMonitorEnabled={performanceMonitorEnabled}
         onPerformanceMonitorChange={setPerformanceMonitor}
         onEnterpriseDisconnect={handleEnterpriseDisconnect}
@@ -966,6 +895,7 @@ export default function App() {
     {showPostUpdateGate && (
       <ModelMigrationGate
         onDone={handleMigrationDone}
+        onDismiss={handleMigrationDismiss}
         platform={(snapshot?.platform ?? "macos") as "macos" | "windows" | "linux"}
       />
     )}

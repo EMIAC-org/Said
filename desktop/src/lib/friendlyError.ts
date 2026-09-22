@@ -85,7 +85,7 @@ export function classifyError(raw: unknown, fallback = "Something went wrong. Pl
     };
   }
   if (
-    /network|connection|connect|dns|resolve|unreachable|refused|reset|fetch|socket|tls|ssl|502|503|504|http 5\d\d/.test(
+    /network|connection|connect|dns|resolve|unreachable|couldn't reach|could not reach|error sending request|refused|reset|fetch|socket|tls|ssl|502|503|504|http 5\d\d/.test(
       e,
     )
   ) {
@@ -94,7 +94,7 @@ export function classifyError(raw: unknown, fallback = "Something went wrong. Pl
       action: { label: "Try again", kind: "retry" },
     };
   }
-  if (/sha-?256|integrity|corrupt|checksum|hash mismatch/.test(e)) {
+  if (/sha-?256|integrity|corrupt|checksum|hash mismatch|damaged in transit/.test(e)) {
     return {
       message: "The download was corrupted — re-download to fix it.",
       action: { label: "Re-download", kind: "retry" },

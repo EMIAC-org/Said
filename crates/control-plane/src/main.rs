@@ -67,17 +67,14 @@ struct Cli {
     #[arg(long, env = "DEEPINFRA_API_KEY", default_value = "")]
     deepinfra_api_key: String,
 
+    /// Hugging Face token for the private dictation-model repository. Used
+    /// only to mint short-lived signed CDN URLs; never sent to a client.
+    #[arg(long, env = "HF_TOKEN", default_value = "")]
+    hf_token: String,
+
     /// Legacy gateway key fallback for server-runtime polish latency probes
     #[arg(long, env = "GATEWAY_API_KEY", default_value = "")]
     gateway_api_key: String,
-
-    /// Divo agent backend base URL (AirNote ⇄ Divo proxy target)
-    #[arg(
-        long,
-        env = "DIVO_BASE_URL",
-        default_value = "https://divo.outreachdeal.com"
-    )]
-    divo_base_url: String,
 
     /// Secret used to encrypt runtime/BYOK provider credentials at rest.
     #[arg(long, env = "RUNTIME_CREDENTIALS_KEY", default_value = "")]
@@ -168,8 +165,9 @@ async fn main() {
         openai_api_key: cli.openai_api_key,
         groq_api_key,
         deepinfra_api_key: cli.deepinfra_api_key,
+        hf_token: cli.hf_token,
+        model_url_cache: routes::models::new_cache(),
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
-        divo_base_url: cli.divo_base_url,
         runtime_credentials_key: cli.runtime_credentials_key,
         runtime_cipher,
         deepseek_api_key,

@@ -22,7 +22,7 @@ interface DownloadProgress {
   name: string;
   received: number;
   total: number;
-  status: "downloading" | "done" | "cancelled" | "error" | string;
+  status: "downloading" | "verifying" | "done" | "cancelled" | "error" | string;
   error: string | null;
 }
 
@@ -32,19 +32,16 @@ interface DictationSttSectionProps {
   platform: string;
 }
 
-function localModelCommand(model: LocalModelKey) {
-  if (model === "nemotron-q4") {
-    return {
-      download: "download_nemotron_model",
-      args: { variant: "q4" },
-      event: "nemotron-model-download",
-      eventName: "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
-    };
-  }
+/** There is one local model, so this no longer branches. It stays a function
+ *  because callers pass the inventory's key through and the shape is used in
+ *  several places. */
+function localModelCommand(_model: LocalModelKey) {
   return {
     download: "download_dictation_model",
     args: undefined,
     event: "meeting-model-download",
+    // Unchanged filename: the current model installs over the old one at the
+    // same path, so progress events still carry this name.
     eventName: "ggml-oriserve-hinglish-fp16.bin",
   };
 }
@@ -95,7 +92,9 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
     const unlisten = listen<DownloadProgress>(command.event, (event) => {
       const progress = event.payload;
       if (progress.name !== command.eventName) return;
-      if (progress.status === "downloading") {
+      // Keep the bar up through "verifying" so the Download button cannot
+      // reappear between the last byte and the swap.
+      if (progress.status === "downloading" || progress.status === "verifying") {
         setDownload(progress);
         setError("");
       } else {
@@ -217,7 +216,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
         <p className="text-[13px] font-medium text-foreground">Speech recognition</p>
         <p className="text-[12px] text-muted-foreground mt-0.5">
           {policy.setup_kind === "cloud_locked"
-            ? "Cloud Whisper is fixed for dictation on this device. Local files are used only by Meetings."
+            ? "Cloud Whisper handles dictation on this device. No local model download is needed."
             : `This Mac recommends ${policy.local_model_name ?? "local speech recognition"}.`}
         </p>
       </div>
@@ -310,7 +309,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
                   : "No local speech models are installed."}
               </p>
               {installed.some((model) => model.required_for_meetings) && (
-                <p className="text-[11px] text-muted-foreground mt-1">Oriserve is protected during normal cleanup because local Meetings use it.</p>
+                <p className="text-[11px] text-muted-foreground mt-1">Older speech models are removed automatically once the current one is installed.</p>
               )}
             </div>
             {inventory.reclaimable_bytes > 0 && (
@@ -325,7 +324,7 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
             {confirmDeleteAll ? (
               <div role="alertdialog" aria-labelledby="delete-models-title">
                 <p id="delete-models-title" className="text-[12px] font-medium text-foreground">Delete every local speech model?</p>
-                <p className="text-[11px] text-muted-foreground mt-1">Dictation will switch to Cloud Whisper. Local Meetings will require Oriserve to be downloaded again.</p>
+                <p className="text-[11px] text-muted-foreground mt-1">Dictation will switch to Cloud Whisper. The local model can be downloaded again at any time.</p>
                 <div className="flex justify-end gap-2 mt-3">
                   <button type="button" autoFocus className="btn-ghost" disabled={busy} onClick={() => setConfirmDeleteAll(false)}>Cancel</button>
                   <button type="button" className="btn-ghost text-destructive" disabled={busy} onClick={() => void deleteAll()}>

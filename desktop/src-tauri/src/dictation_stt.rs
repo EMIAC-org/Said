@@ -158,79 +158,25 @@ mod on_device {
     use super::PreTranscript;
 
     const WHISPER_NAME: &str = "on-device/whisper";
-    const NEMOTRON_NAME: &str = "on-device/nemotron";
 
-    fn uses_nemotron() -> bool {
-        crate::nemotron::is_selected()
-    }
-
+    // Dictation has one local engine. Nemotron was selectable in earlier
+    // releases and is not any more; routing on the stored model name let a
+    // stale preference (written by an older build sharing this prefs file)
+    // send dictation to a model that is no longer installed.
     pub(super) fn name() -> &'static str {
-        if uses_nemotron() {
-            NEMOTRON_NAME
-        } else {
-            WHISPER_NAME
-        }
+        WHISPER_NAME
     }
 
     pub(super) fn ready() -> bool {
-        if uses_nemotron() {
-            crate::nemotron::selected_installed()
-        } else {
-            super::model_installed() && super::runtime_ready()
-        }
+        super::model_installed() && super::runtime_ready()
     }
 
     /// Pre-load the whisper model so the first utterance skips the model load.
     pub(super) fn prewarm() {
-        if uses_nemotron() {
-            crate::nemotron::prewarm();
-        } else {
-            crate::asr::prewarm_default_language();
-        }
+        crate::asr::prewarm_default_language();
     }
 
     pub(super) async fn transcribe(wav: &[u8], language: &str) -> Result<PreTranscript, String> {
-        if uses_nemotron() {
-            if !crate::nemotron::selected_installed() {
-                return Err(
-                    "Nemotron is selected but not installed. Download it in Settings → Speech recognition."
-                        .into(),
-                );
-            }
-
-            let wav = wav.to_vec();
-            let language = language.to_string();
-            let output = tokio::task::spawn_blocking(move || {
-                crate::nemotron::transcribe_wav_bytes(&wav, &language)
-            })
-            .await
-            .map_err(|error| format!("Nemotron speech worker failed: {error}"))??;
-            let word_count = output.transcript.split_whitespace().count();
-            tracing::info!(
-                duration_ms = output.duration_ms,
-                language = output.language.as_deref().unwrap_or("unreported"),
-                model = crate::nemotron::selected_model_name(),
-                "[dictation_stt] Nemotron local ASR complete"
-            );
-            return Ok(PreTranscript {
-                transcript: output.transcript.clone(),
-                meta: TranscriptMeta {
-                    enriched_transcript: output.transcript,
-                    confidence: 1.0,
-                    mean_word_confidence: 1.0,
-                    low_confidence_count: 0,
-                    word_count,
-                    languages: output.language.into_iter().collect(),
-                    model: format!("local:{}", crate::nemotron::selected_model_file()),
-                    provider: "local_nemotron".to_string(),
-                    path: "local_batch".to_string(),
-                    duration_ms: output.duration_ms,
-                    origin: TranscriptOrigin::DictationLocal,
-                    ..TranscriptMeta::default()
-                },
-            });
-        }
-
         if !super::model_installed() {
             return Err(
                 "Local speech model is required. Download the on-device model in Settings.".into(),

@@ -43,9 +43,11 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         openai_api_key: String::new(),
                         groq_api_key: String::new(),
                         deepinfra_api_key: String::new(),
+                        // Background jobs never serve model downloads.
+                        hf_token: String::new(),
+                        model_url_cache: crate::routes::models::new_cache(),
                         diagnostics_rate_limit:
                             routes::diagnostics::DiagnosticsRateLimiter::default(),
-                        divo_base_url: String::new(),
                         runtime_credentials_key: String::new(),
                         runtime_cipher: None,
                         deepseek_api_key: String::new(),

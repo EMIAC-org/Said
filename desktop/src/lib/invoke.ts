@@ -581,20 +581,6 @@ export async function screenRecordingGranted(): Promise<boolean> {
   }
 }
 
-/**
- * Ensure Screen Recording (needed for meeting system-audio capture): prompts +
- * opens the pane if missing. Returns the resulting grant state (often false
- * until the app is relaunched).
- */
-export async function requestScreenRecording(): Promise<boolean> {
-  if (!isTauriRuntime()) return true;
-  try {
-    return await tauriInvoke<boolean>("request_screen_recording");
-  } catch {
-    return false;
-  }
-}
-
 /** Retry a recording by re-submitting its saved WAV. Result is auto-pasted. */
 export async function retryRecording(audioId: string): Promise<void> {
   if (!isTauriRuntime()) return;
@@ -1087,10 +1073,11 @@ export interface DesktopPrefs {
   browser_context_enabled: boolean;
   /** Enforced device route: local or hosted DeepInfra Whisper. */
   dictation_stt: "local" | "cloud-deepinfra-whisper-v3-turbo";
-  /** Hardware-assigned local model. Meetings retain their own Oriserve path. */
-  local_stt_model: "oriserve" | "nemotron-q4" | "nemotron-q8";
-  /** Explicit decision to keep an older installed model during an upgrade. */
-  local_stt_compat_override?: "oriserve" | "nemotron-q8" | null;
+  /** The local model. Older installs may still store a retired key; Rust
+   *  normalises it to the current model on load. */
+  local_stt_model: LocalModelKey;
+  /** Retired: kept so older prefs files still deserialize. Always null now. */
+  local_stt_compat_override?: LocalModelKey | null;
 }
 
 export interface SttSetupPolicy {
@@ -1098,12 +1085,19 @@ export interface SttSetupPolicy {
   cpu_family: "apple_silicon" | "intel" | "windows_or_other";
   total_memory_bytes: number;
   setup_kind: "cloud_locked" | "local_required";
-  local_model: "oriserve" | "nemotron-q4" | null;
+  local_model: "clario-hinglish-41h" | null;
   local_model_name: string | null;
   local_model_size_hint: string | null;
 }
 
-export type LocalModelKey = "oriserve" | "nemotron-q4" | "nemotron-q8";
+/** The model AirNote ships, plus the retired ones an upgrading machine may
+ *  still have on disk. Only the first can be selected; the rest exist so the
+ *  inventory can offer to reclaim their space. */
+export type LocalModelKey =
+  | "clario-hinglish-41h"
+  | "oriserve"
+  | "nemotron-q4"
+  | "nemotron-q8";
 
 export interface LocalModelInfo {
   key: LocalModelKey;
@@ -1143,7 +1137,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       beta_mode: false,
       browser_context_enabled: false,
       dictation_stt: "local",
-      local_stt_model: "oriserve",
+      local_stt_model: "clario-hinglish-41h",
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
@@ -1176,9 +1170,9 @@ export async function getSttSetupPolicy(): Promise<SttSetupPolicy> {
       cpu_family: "apple_silicon",
       total_memory_bytes: 16 * 1024 * 1024 * 1024,
       setup_kind: "local_required",
-      local_model: "nemotron-q4",
-      local_model_name: "Nemotron Streaming 3.5 (Q4)",
-      local_model_size_hint: "~496 MB",
+      local_model: "clario-hinglish-41h",
+      local_model_name: "AirNote Hinglish (41h)",
+      local_model_size_hint: "~141 MB",
     };
   }
   return tauriInvoke<SttSetupPolicy>("get_stt_setup_policy");
@@ -1186,31 +1180,21 @@ export async function getSttSetupPolicy(): Promise<SttSetupPolicy> {
 
 export async function getLocalModelInventory(): Promise<LocalModelInventory> {
   if (!isTauriRuntime()) {
+    // Browser preview: an existing user mid-upgrade — the retired model is
+    // still on disk and the current one has not been installed yet.
     return {
       setup_kind: "local_required",
-      recommended_model: "nemotron-q4",
-      selected_model: "oriserve",
+      recommended_model: "clario-hinglish-41h",
+      selected_model: "clario-hinglish-41h",
       recommended_installed: false,
-      existing_compatible_model: "oriserve",
+      existing_compatible_model: null,
       models: [
         {
-          key: "oriserve",
-          name: "Oriserve Hinglish",
-          installed: true,
-          size_bytes: 148_000_000,
-          size_hint: "~148 MB",
-          recommended: false,
-          active_for_dictation: true,
-          required_for_meetings: true,
-          compatibility_candidate: true,
-          safe_to_remove: false,
-        },
-        {
-          key: "nemotron-q4",
-          name: "Nemotron Streaming 3.5 (Q4)",
+          key: "clario-hinglish-41h",
+          name: "AirNote Hinglish (41h)",
           installed: false,
           size_bytes: 0,
-          size_hint: "~496 MB",
+          size_hint: "~141 MB",
           recommended: true,
           active_for_dictation: false,
           required_for_meetings: false,
@@ -1218,11 +1202,11 @@ export async function getLocalModelInventory(): Promise<LocalModelInventory> {
           safe_to_remove: false,
         },
         {
-          key: "nemotron-q8",
-          name: "Nemotron Streaming 3.5 (Q8)",
-          installed: false,
-          size_bytes: 0,
-          size_hint: "~751 MB",
+          key: "oriserve",
+          name: "Oriserve Hinglish (retired)",
+          installed: true,
+          size_bytes: 148_000_000,
+          size_hint: "~148 MB",
           recommended: false,
           active_for_dictation: false,
           required_for_meetings: false,
@@ -1400,161 +1384,6 @@ export async function openLogFolder(): Promise<void> {
   if (!isTauriRuntime()) return;
   return tauriInvoke<void>("open_log_folder");
 }
-
-// ── Divo (Ctrl hold-to-talk → agent) ──────────────────────────────────────────
-
-export type DivoStatusPayload = {
-  liveLabel?: string;
-  progressPct?: number;
-  phase?: string;
-  plan?: { status: string; title: string; subtitle?: string }[];
-};
-export type DivoToolPayload = {
-  phase: "start" | "end";
-  name: string;
-  family?: string | null;
-  verb?: string | null;
-  past?: string | null;
-  ok?: boolean;
-  callId?: string | null;
-};
-
-/** Push the control-plane URL + session token to Rust (enables the Ctrl hotkey). */
-export async function divoSetCredentials(serverUrl: string, token: string): Promise<void> {
-  if (!isTauriRuntime()) return;
-  try {
-    await tauriInvoke("divo_set_credentials", { serverUrl, token });
-  } catch (e) {
-    console.warn("[divo] set_credentials failed", e);
-  }
-}
-
-/** Panel "Speak follow-up" — press-and-hold record on the active thread. */
-export async function divoFollowupBegin(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  try {
-    await tauriInvoke("divo_followup_begin");
-  } catch (e) {
-    console.warn("[divo] followup_begin failed", e);
-  }
-}
-export async function divoFollowupEnd(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  try {
-    await tauriInvoke("divo_followup_end");
-  } catch (e) {
-    console.warn("[divo] followup_end failed", e);
-  }
-}
-
-/** Recover the latest assistant answer for a thread (post-disconnect / approval). */
-export async function divoFetchThread(threadId: string): Promise<string | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<string | null>("divo_fetch_thread", { threadId });
-  } catch (e) {
-    console.warn("[divo] fetch_thread failed", e);
-    return null;
-  }
-}
-
-// ── Divo chats (in-app history + HUD chat router) ─────────────────────────────
-
-export type DivoThreadSummary = {
-  id: string;
-  title: string;
-  createdAt?: string;
-  updatedAt?: string;
-  lastMessageAt?: string | null;
-  preview?: string;
-};
-
-export type DivoMessage = {
-  id: string;
-  threadId: string;
-  role: "user" | "assistant";
-  content: string;
-  createdAt: string;
-};
-
-export type DivoThreadDetail = {
-  id: string;
-  title: string;
-  createdAt?: string;
-  updatedAt?: string;
-  lastMessageAt?: string | null;
-  messages: DivoMessage[];
-};
-
-/** Send a reviewed instruction to a chat (`threadId`) or a new one (`null`). */
-export async function divoSend(message: string, threadId: string | null): Promise<void> {
-  if (!isTauriRuntime()) return;
-  try {
-    await tauriInvoke("divo_send", { message, threadId });
-  } catch (e) {
-    console.warn("[divo] send failed", e);
-  }
-}
-
-/** List the user's AirNote Divo chats (most recent first). */
-export async function divoListThreads(): Promise<DivoThreadSummary[]> {
-  if (!isTauriRuntime()) return [];
-  try {
-    const res = await tauriInvoke<{ data?: { threads?: DivoThreadSummary[] } }>("divo_list_threads");
-    return res?.data?.threads ?? [];
-  } catch (e) {
-    console.warn("[divo] list_threads failed", e);
-    return [];
-  }
-}
-
-/** Fetch a full thread (all messages) for the in-app conversation pane. */
-export async function divoThreadMessages(threadId: string): Promise<DivoThreadDetail | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    const res = await tauriInvoke<{ data?: DivoThreadDetail }>("divo_thread_messages", { threadId });
-    return res?.data ?? null;
-  } catch (e) {
-    console.warn("[divo] thread_messages failed", e);
-    return null;
-  }
-}
-
-/** Mark a chat as active (Ctrl continues it), or clear it (`null` → next Ctrl = new). */
-export async function divoSetActiveThread(threadId: string | null): Promise<void> {
-  if (!isTauriRuntime()) return;
-  try {
-    await tauriInvoke("divo_set_active_thread", { threadId });
-  } catch (e) {
-    console.warn("[divo] set_active_thread failed", e);
-  }
-}
-
-function divoListener<T>(event: string, handler: (p: T) => void): () => void {
-  if (!isTauriRuntime()) return () => {};
-  let unsub: () => void = () => {};
-  listen<T>(event, (e) => handler(e.payload)).then((fn) => {
-    unsub = fn;
-  });
-  return () => unsub();
-}
-
-export const onDivoStarted = (h: (p: { followup: boolean }) => void) =>
-  divoListener("divo-started", h);
-export const onDivoMeta = (h: (p: { threadId: string }) => void) =>
-  divoListener("divo-meta", h);
-export const onDivoStatus = (h: (p: DivoStatusPayload) => void) =>
-  divoListener("divo-status", h);
-export const onDivoThinking = (h: (p: { text: string }) => void) =>
-  divoListener("divo-thinking", h);
-export const onDivoTool = (h: (p: DivoToolPayload) => void) =>
-  divoListener("divo-tool", h);
-export const onDivoDone = (h: (p: { content: string; threadId: string | null }) => void) =>
-  divoListener("divo-done", h);
-export const onDivoError = (h: (p: { message: string }) => void) =>
-  divoListener("divo-error", h);
-export const onDivoPending = (h: (p: { message: string }) => void) =>
-  divoListener("divo-pending", h);
 
 // ── Server migration ──────────────────────────────────────────────────────────
 

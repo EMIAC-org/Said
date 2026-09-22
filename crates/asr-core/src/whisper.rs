@@ -95,7 +95,26 @@ pub struct Transcribed {
 
 struct Loaded {
     model_path: PathBuf,
+    /// Which file was loaded, not just where. A model update replaces the file
+    /// at the same path, and matching on the path alone would keep serving the
+    /// old weights until the app restarts.
+    stamp: Option<FileStamp>,
     ctx: WhisperContext,
+}
+
+/// Size and modification time — enough to notice a file swapped in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(FileStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
 }
 
 /// A whisper.cpp engine pinned to one [`Device`], keeping its model warm across
@@ -121,7 +140,9 @@ impl WhisperEngine {
 
     #[must_use]
     pub fn is_loaded_for(&self, model: &Path) -> bool {
-        self.loaded.as_ref().is_some_and(|l| l.model_path == model)
+        self.loaded
+            .as_ref()
+            .is_some_and(|l| l.model_path == model && l.stamp == file_stamp(model))
     }
 
     /// Whether any model is currently resident (used for idle-unload logging).
@@ -165,6 +186,7 @@ impl WhisperEngine {
 
         self.loaded = Some(Loaded {
             model_path: cfg.model.clone(),
+            stamp: file_stamp(&cfg.model),
             ctx,
         });
         Ok(load_ms)
@@ -430,6 +452,29 @@ fn decode_threads(profile: DecodeProfile) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_replaced_at_the_same_path_gets_a_new_stamp() {
+        let path = std::env::temp_dir().join(format!("asr-stamp-{}.bin", std::process::id()));
+        std::fs::write(&path, b"old model").unwrap();
+        let before = file_stamp(&path);
+
+        // What a model update does: write elsewhere, then rename over the old file.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let staged = path.with_extension("bin.new");
+        std::fs::write(&staged, b"the new, different model").unwrap();
+        std::fs::rename(&staged, &path).unwrap();
+        let after = file_stamp(&path);
+
+        let _ = std::fs::remove_file(&path);
+        assert!(before.is_some());
+        assert_ne!(before, after, "a swapped file must not look already loaded");
+    }
+
+    #[test]
+    fn a_missing_model_has_no_stamp() {
+        assert_eq!(file_stamp(Path::new("/definitely/not/here.bin")), None);
+    }
 
     #[test]
     fn audio_ctx_scales_with_clip_and_stays_in_bounds() {

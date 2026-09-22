@@ -275,6 +275,7 @@ fn make_test_prefs() -> Preferences {
         edit_capture: true,
         polish_text_hotkey: "".to_string(),
         record_hotkey: "".to_string(),
+        polish_enabled: true,
         learning_enabled: true,
         server_runtime_enabled: false,
         server_audio_runtime_enabled: false,

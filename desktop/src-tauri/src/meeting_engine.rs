@@ -13468,7 +13468,7 @@ struct ModelDownloadProgress {
     name: String,
     received: u64,
     total: u64,
-    status: String, // "downloading" | "done" | "cancelled" | "error"
+    status: String, // "downloading" | "verifying" | "done" | "cancelled" | "error"
     error: Option<String>,
 }
 
@@ -13781,7 +13781,15 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
     let name_for_task = name.clone();
     let app_dl = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        download_whisper_model_blocking(&app_dl, &name_for_task, &url, total_hint, &dir, &dest)
+        download_whisper_model_blocking(
+            &app_dl,
+            &name_for_task,
+            &url,
+            total_hint,
+            &dir,
+            &dest,
+            "done",
+        )
     })
     .await
     .map_err(|e| format!("download task failed: {e}"))?;
@@ -13825,33 +13833,44 @@ pub struct DictationModelStatus {
     pub path: String,
 }
 
+/// A complete-looking model file at the dictation path, current or retired.
+/// Callers that must tell the two apart pair this with the marker.
+pub fn dictation_model_file_present() -> bool {
+    dictation_model_is_installed(&said_core::paths::whisper_model_path())
+}
+
+/// `installed` means the *current* model: a verified install leaves a marker
+/// beside the file. The retired Oriserve model sits at the same path with no
+/// marker, and onboarding must not skip the download because of it.
 #[tauri::command]
 pub fn dictation_model_status() -> DictationModelStatus {
     let path = said_core::paths::whisper_model_path();
     let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     DictationModelStatus {
-        installed: dictation_model_is_installed(&path),
+        installed: dictation_model_is_installed(&path)
+            && crate::dictation_model::read_marker().is_some(),
         size_bytes,
         path: path.to_string_lossy().to_string(),
     }
 }
 
-/// Remove the on-device dictation model file (frees ~148 MB). Idempotent.
+/// Remove the on-device dictation model file (frees ~141 MB). Idempotent.
 #[tauri::command]
 pub fn delete_dictation_model() -> Result<(), String> {
+    // There is one local model, so local dictation always depends on this file.
+    // (This used to compare the selection against Oriserve, which stopped
+    // matching anything once selections were normalised to the new model.)
     let prefs = said_core::prefs::load();
-    if prefs.dictation_stt == crate::stt_policy::LOCAL_PREF
-        && prefs.local_stt_model == crate::stt_policy::ORISERVE_PREF
-    {
+    if prefs.dictation_stt == crate::stt_policy::LOCAL_PREF {
         return Err(
-            "Switch dictation to Cloud Nemotron before removing the active Oriserve model."
-                .to_string(),
+            "Switch dictation to cloud speech before removing the on-device model.".to_string(),
         );
     }
     let path = said_core::paths::whisper_model_path();
     if path.is_file() {
         fs::remove_file(&path).map_err(|e| format!("couldn't delete model: {e}"))?;
     }
+    crate::dictation_model::clear_marker();
     let part = path.with_extension("bin.part");
     let _ = fs::remove_file(part);
     Ok(())
@@ -13867,28 +13886,56 @@ pub fn reclaim_old_models() -> Result<WhisperModelCleanupResult, String> {
     Ok(result)
 }
 
-/// Download the fp16 dictation model into `whisper_model_path()`. Streams with
-/// progress on the shared `meeting-model-download` event. Idempotent. Auto-fetches
-/// the Silero VAD model afterwards if missing (the native path gates on it).
+/// Install the current dictation model into `whisper_model_path()`.
+///
+/// The URL is no longer a constant. The model lives in a private repository, so
+/// the control plane is asked for a short-lived signed URL on every call and
+/// the token never reaches this process.
+///
+/// This is also the refresh path. A machine upgrading from an older release has
+/// the retired Oriserve model sitting at this exact filename, and it is close
+/// enough in size to pass any "looks installed" check — so `dictation_model`'s
+/// marker, not the file, decides whether the copy on disk is current.
+///
+/// The old file is never deleted up front. The new one downloads to a staging
+/// file beside it, is checksummed there, and only then renamed over the old
+/// one. Until that rename the previous model keeps dictation working, so a
+/// dropped connection or a server outage leaves the user exactly where they
+/// were instead of with no model at all.
+///
+/// Streams progress on the shared `meeting-model-download` event. Idempotent.
+/// Auto-fetches the Silero VAD model afterwards if missing.
 #[tauri::command]
 pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
+    let descriptor = crate::dictation_model::fetch_descriptor().await?;
+    let state = crate::dictation_model::state_for(&descriptor);
+    if !state.needs_download() {
+        return Ok(()); // current model already installed — idempotent
+    }
+
     let dest = said_core::paths::whisper_model_path();
     let name = dest
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("ggml-oriserve-hinglish-fp16.bin")
+        .unwrap_or("ggml-dictation-model.bin")
         .to_string();
     let dir = dest
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| said_core::paths::data_dir().join("models"));
-    if dictation_model_is_installed(&dest) {
-        return Ok(()); // already installed — idempotent
+
+    if state.needs_cleanup() {
+        tracing::info!(
+            "[meeting_engine] replacing a {state:?} dictation model with {}",
+            descriptor.revision
+        );
     }
-    if dest.is_file() {
-        fs::remove_file(&dest)
-            .map_err(|e| format!("couldn't remove incomplete speech model: {e}"))?;
-    }
+    // Leftovers from an interrupted attempt. Never resumed into: they may be
+    // part of a different revision.
+    let staged = dir.join(format!("{name}.new"));
+    let _ = fs::remove_file(&staged);
+    let _ = fs::remove_file(dir.join(format!("{name}.part")));
+    let _ = fs::remove_file(dest.with_extension("bin.part"));
     {
         let mut inflight = model_downloads_inflight()
             .lock()
@@ -13903,14 +13950,18 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
 
     let app_dl = app.clone();
     let name_task = name.clone();
+    let url_task = descriptor.url.clone();
+    let size_task = descriptor.size_bytes;
+    let staged_task = staged.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         download_whisper_model_blocking(
             &app_dl,
             &name_task,
-            DICTATION_MODEL_URL,
-            DICTATION_MODEL_SIZE_HINT,
+            &url_task,
+            size_task,
             &dir,
-            &dest,
+            &staged_task,
+            "verifying",
         )
     })
     .await
@@ -13922,6 +13973,63 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
     if let Ok(mut cancels) = model_download_cancels().lock() {
         cancels.remove(&name);
     }
+
+    // Prove the bytes before declaring the model installed. A truncated or
+    // mangled download that happens to land near the right size would otherwise
+    // be loaded by whisper.cpp and fail in a far less obvious place.
+    // Whatever happens below, the previous model at `dest` has not been touched.
+    if result.is_ok() {
+        match crate::dictation_model::sha256_of(&staged) {
+            Ok(actual) if actual == descriptor.sha256 => {
+                // One rename on the same volume: the model path always holds a
+                // complete model, old or new, never a half-written one.
+                fs::rename(&staged, &dest).map_err(|e| {
+                    let _ = fs::remove_file(&staged);
+                    format!("couldn't install the new speech model: {e}")
+                })?;
+                // A failure here leaves the new file with the old (or no)
+                // marker, which reads as "not current": the next launch
+                // downloads again rather than trusting an unproven file.
+                crate::dictation_model::write_marker(&descriptor)?;
+                tracing::info!(
+                    "[meeting_engine] installed dictation model {} ({})",
+                    descriptor.key,
+                    descriptor.revision
+                );
+                emit_dictation_install_status(&app, &name, &descriptor, "done", None);
+            }
+            Ok(actual) => {
+                let _ = fs::remove_file(&staged);
+                tracing::error!(
+                    "[meeting_engine] dictation model checksum mismatch: expected {} got {actual}",
+                    descriptor.sha256
+                );
+                let message =
+                    "The downloaded speech model was damaged in transit. Please try again.";
+                emit_dictation_install_status(
+                    &app,
+                    &name,
+                    &descriptor,
+                    "error",
+                    Some(message.to_string()),
+                );
+                return Err(message.to_string());
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&staged);
+                let message = format!("couldn't verify the downloaded speech model: {e}");
+                emit_dictation_install_status(
+                    &app,
+                    &name,
+                    &descriptor,
+                    "error",
+                    Some(message.clone()),
+                );
+                return Err(message);
+            }
+        }
+    }
+
     if result.is_ok() && !silero_vad_model_installed() {
         let app_auto = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -13933,6 +14041,33 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
     result
 }
 
+/// Final progress event for the dictation model, sent after the checksum and
+/// swap rather than when the bytes land.
+fn emit_dictation_install_status(
+    app: &AppHandle,
+    name: &str,
+    descriptor: &crate::dictation_model::DictationModelDescriptor,
+    status: &str,
+    error: Option<String>,
+) {
+    emit_main(
+        app,
+        MODEL_DOWNLOAD_EVENT,
+        ModelDownloadProgress {
+            name: name.to_string(),
+            received: descriptor.size_bytes,
+            total: descriptor.size_bytes,
+            status: status.to_string(),
+            error,
+        },
+    );
+}
+
+/// `finished_status` is the progress status sent once the bytes are on disk.
+/// Most callers send "done". The dictation model sends "verifying" because its
+/// checksum and swap still follow, and emits "done" itself once the model is
+/// really installed — listeners refresh on "done", and refreshing earlier
+/// shows the pre-install state with nothing to correct it.
 fn download_whisper_model_blocking(
     app: &AppHandle,
     name: &str,
@@ -13940,6 +14075,7 @@ fn download_whisper_model_blocking(
     total_hint: u64,
     dir: &Path,
     dest: &Path,
+    finished_status: &str,
 ) -> Result<(), String> {
     use std::io::{Read, Write};
 
@@ -14029,7 +14165,7 @@ fn download_whisper_model_blocking(
         ));
     }
     fs::rename(&part, dest).map_err(|e| fail(&part, received, total, format!("finalize: {e}")))?;
-    emit(received, total, "done", None);
+    emit(received, total, finished_status, None);
     Ok(())
 }
 
@@ -14201,6 +14337,7 @@ pub async fn meeting_download_silero_vad_model(app: AppHandle) -> Result<(), Str
             SILERO_VAD_SIZE_HINT,
             &dir,
             &dest,
+            "done",
         )
     })
     .await
@@ -15417,21 +15554,29 @@ mod tests {
         );
     }
 
+    /// Nemotron Q4 was the recommendation for Apple Silicon Macs above 8 GB.
+    /// AirNote now ships one local model for every machine, so no policy can
+    /// select Q4 any more and this branch is dead on every platform.
     #[test]
-    fn meetings_follow_the_onboarding_local_model_recommendation() {
-        let high_memory_apple_silicon =
-            crate::stt_policy::policy_for("macos", "arm64", false, 9 * 1024 * 1024 * 1024);
-        let eight_gib_apple_silicon =
-            crate::stt_policy::policy_for("macos", "arm64", false, 8 * 1024 * 1024 * 1024);
-        let windows =
-            crate::stt_policy::policy_for("windows", "x86_64", false, 32 * 1024 * 1024 * 1024);
-        let intel_mac =
-            crate::stt_policy::policy_for("macos", "x86_64", false, 32 * 1024 * 1024 * 1024);
-
-        assert!(meeting_policy_uses_nemotron_q4(&high_memory_apple_silicon));
-        assert!(!meeting_policy_uses_nemotron_q4(&eight_gib_apple_silicon));
-        assert!(!meeting_policy_uses_nemotron_q4(&windows));
-        assert!(!meeting_policy_uses_nemotron_q4(&intel_mac));
+    fn no_policy_recommends_nemotron_q4_any_more() {
+        for (platform, arch, memory_gib) in [
+            ("macos", "arm64", 9),
+            ("macos", "arm64", 8),
+            ("macos", "arm64", 64),
+            ("windows", "x86_64", 32),
+            ("macos", "x86_64", 32),
+        ] {
+            let policy = crate::stt_policy::policy_for(
+                platform,
+                arch,
+                false,
+                memory_gib * 1024 * 1024 * 1024,
+            );
+            assert!(
+                !meeting_policy_uses_nemotron_q4(&policy),
+                "{platform}/{arch} at {memory_gib} GiB should not select Q4"
+            );
+        }
     }
 
     #[test]

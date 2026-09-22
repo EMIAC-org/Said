@@ -2,8 +2,8 @@ import AirNoteShared
 import SwiftUI
 
 /// Switch the active workspace (org), mirroring the desktop's workspace switcher
-/// (enterprise.ts activateWorkspace / deactivateWorkspace). Meetings and Divo
-/// require an active workspace; personal mode uses your own account runtime.
+/// (enterprise.ts activateWorkspace / deactivateWorkspace). Meetings require an
+/// active workspace; personal mode uses your own account runtime.
 struct WorkspaceSwitcherView: View {
     @EnvironmentObject private var env: AppEnvironment
 
@@ -20,7 +20,7 @@ struct WorkspaceSwitcherView: View {
                 } header: {
                     Text("Mode")
                 } footer: {
-                    Text("Meetings and Divo require an active workspace. Personal mode uses your own account runtime.")
+                    Text("Meetings require an active workspace. Personal mode uses your own account runtime.")
                 }
 
                 Section {

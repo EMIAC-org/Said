@@ -29,6 +29,10 @@ pub struct Preferences {
     pub record_hotkey: String,
     #[serde(default = "default_learning_enabled")]
     pub learning_enabled: bool,
+    /// Global polish switch. Defaults on, matching the backend column, so a
+    /// backend that predates it keeps polishing.
+    #[serde(default = "default_polish_enabled")]
+    pub polish_enabled: bool,
     #[serde(default)]
     pub server_runtime_enabled: bool,
     #[serde(default)]
@@ -49,6 +53,10 @@ pub struct Preferences {
 
 fn default_llm_provider() -> String {
     "gateway".to_string()
+}
+
+fn default_polish_enabled() -> bool {
+    true
 }
 
 fn default_learning_enabled() -> bool {
@@ -77,6 +85,8 @@ pub struct PrefsUpdate {
     pub record_hotkey: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub learning_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polish_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_runtime_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

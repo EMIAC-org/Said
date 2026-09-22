@@ -97,7 +97,6 @@ Swift protocol for compatibility but is not sent by Rust today.
   `reposition` are emitted by the HUD but not yet routed in `handle_notch_action`.
 - **Hover-open recents:** the `recents` state renders when Rust sends it; the
   idle-hover trigger + history feed is not wired.
-- **Divo** agent panels are intentionally out of scope (separate surface).
 
 Design reference: `boring.notch/` (cloned, gitignored). Interactive HTML mock:
 `design-previews/notch-hud-preview.html`.
