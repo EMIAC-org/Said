@@ -1103,7 +1103,14 @@ export interface SttSetupPolicy {
   local_model_size_hint: string | null;
 }
 
-export type LocalModelKey = "oriserve" | "nemotron-q4" | "nemotron-q8";
+/** The model AirNote ships, plus the retired ones an upgrading machine may
+ *  still have on disk. Only the first can be selected; the rest exist so the
+ *  inventory can offer to reclaim their space. */
+export type LocalModelKey =
+  | "clario-hinglish-41h"
+  | "oriserve"
+  | "nemotron-q4"
+  | "nemotron-q8";
 
 export interface LocalModelInfo {
   key: LocalModelKey;

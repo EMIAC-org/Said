@@ -19,7 +19,11 @@
 //   v7 → inventories already-downloaded models before changing selection,
 //        offers existing users Continue or Upgrade, and protects the Oriserve
 //        Meetings dependency during normal cleanup.
-export const MIGRATION_VERSION = 7;
+//   v8 → one local model for every Apple Silicon Mac. The gate no longer asks:
+//        it replaces whatever older model is installed and reclaims the rest,
+//        because nothing can load the retired models any more so there is no
+//        rollback left to offer.
+export const MIGRATION_VERSION = 8;
 
 const STORAGE_KEY = "said:migration-done";
 
