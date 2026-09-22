@@ -2985,11 +2985,8 @@ struct SttRuntimeInfo {
     whisper_installed: bool,
     whisper_ready: bool,
     whisper_vad_installed: bool,
-    /// Selected local ASR implementation: "oriserve", "nemotron-q4", or
-    /// "nemotron-q8". Legacy "nemotron" remains Q8-compatible.
+    /// The local speech model key, normalised to the current model.
     local_stt_model: String,
-    /// Whether the selected optional Nemotron model is fully present on disk.
-    nemotron_installed: bool,
 }
 
 #[tauri::command]
@@ -3007,7 +3004,6 @@ async fn get_stt_runtime(backend: State<'_, BackendState>) -> Result<SttRuntimeI
         whisper_ready,
         whisper_vad_installed,
         local_stt_model: desktop_prefs.local_stt_model,
-        nemotron_installed: nemotron::selected_installed(),
     };
 
     if let Ok(ep) = get_endpoint(&backend) {

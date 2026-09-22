@@ -72,8 +72,6 @@ export interface SttRuntimeInfo {
   whisper_vad_installed: boolean;
   /** Selected implementation when dictation is local. */
   local_stt_model: string;
-  /** Whether the policy-selected optional Nemotron model is installed. */
-  nemotron_installed: boolean;
 }
 
 export interface Preferences {
