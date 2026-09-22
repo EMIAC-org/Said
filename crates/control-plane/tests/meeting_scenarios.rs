@@ -53,7 +53,6 @@ impl TestServer {
             hf_token: String::new(),
             model_url_cache: routes::models::new_cache(),
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
-            divo_base_url: String::new(),
             runtime_credentials_key: "test-runtime-credentials-key".into(),
             runtime_cipher: None,
             deepseek_api_key: String::new(),

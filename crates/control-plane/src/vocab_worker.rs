@@ -48,7 +48,6 @@ pub fn start_vocab_aggregation_worker(db: PgPool) {
                         model_url_cache: crate::routes::models::new_cache(),
                         diagnostics_rate_limit:
                             routes::diagnostics::DiagnosticsRateLimiter::default(),
-                        divo_base_url: String::new(),
                         runtime_credentials_key: String::new(),
                         runtime_cipher: None,
                         deepseek_api_key: String::new(),

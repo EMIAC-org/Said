@@ -86,8 +86,6 @@ pub struct AppState {
     /// Caches the signed model URL so a launch spike costs one HF call.
     pub model_url_cache: routes::models::SignedUrlCache,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
-    /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
-    pub divo_base_url: String,
     /// Secret used to encrypt BYOK provider credentials before storing them.
     pub runtime_credentials_key: String,
     /// AES-256-GCM cipher derived once at startup from `runtime_credentials_key`
@@ -219,10 +217,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/lark/start", get(routes::lark_auth::start))
         .route("/v1/auth/lark/callback", get(routes::lark_auth::callback))
         .route("/v1/auth/lark/refresh", post(routes::lark_auth::refresh))
-        // Divo agent proxy (attaches the account's Lark token, streams SSE back)
-        .route("/v1/divo/chat", post(routes::divo::chat))
-        .route("/v1/divo/threads", get(routes::divo::list_threads))
-        .route("/v1/divo/threads/:id", get(routes::divo::thread))
         .route(
             "/v1/runtime/voice/polish",
             post(routes::runtime::voice_polish),

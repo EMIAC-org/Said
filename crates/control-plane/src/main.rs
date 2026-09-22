@@ -76,14 +76,6 @@ struct Cli {
     #[arg(long, env = "GATEWAY_API_KEY", default_value = "")]
     gateway_api_key: String,
 
-    /// Divo agent backend base URL (AirNote ⇄ Divo proxy target)
-    #[arg(
-        long,
-        env = "DIVO_BASE_URL",
-        default_value = "https://divo.outreachdeal.com"
-    )]
-    divo_base_url: String,
-
     /// Secret used to encrypt runtime/BYOK provider credentials at rest.
     #[arg(long, env = "RUNTIME_CREDENTIALS_KEY", default_value = "")]
     runtime_credentials_key: String,
@@ -176,7 +168,6 @@ async fn main() {
         hf_token: cli.hf_token,
         model_url_cache: routes::models::new_cache(),
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
-        divo_base_url: cli.divo_base_url,
         runtime_credentials_key: cli.runtime_credentials_key,
         runtime_cipher,
         deepseek_api_key,

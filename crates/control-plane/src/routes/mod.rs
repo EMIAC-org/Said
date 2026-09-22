@@ -2,7 +2,6 @@ pub mod auth;
 pub mod bugs;
 pub mod clients;
 pub mod diagnostics;
-pub mod divo;
 pub mod guest;
 pub mod health;
 pub mod lark_auth;
