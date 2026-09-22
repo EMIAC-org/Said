@@ -80,6 +80,11 @@ pub struct AppState {
     pub groq_api_key: String,
     /// DeepInfra API key for production server-runtime polish (DEEPINFRA_API_KEY).
     pub deepinfra_api_key: String,
+    /// Hugging Face token used only to mint signed download URLs for the
+    /// private dictation model. Never sent to a client.
+    pub hf_token: String,
+    /// Caches the signed model URL so a launch spike costs one HF call.
+    pub model_url_cache: routes::models::SignedUrlCache,
     pub diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter,
     /// Base URL of the Divo agent backend (e.g. https://divo.outreachdeal.com).
     pub divo_base_url: String,
@@ -191,6 +196,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/report-bug", get(report_bug_page))
         // Public
         .route("/v1/health", get(routes::health::handler))
+        .route("/v1/models/dictation", get(routes::models::dictation))
         .route("/v1/auth/signup", post(routes::auth::signup))
         .route("/v1/auth/login", post(routes::auth::login))
         .route("/v1/auth/desktop-email", post(routes::auth::desktop_email))
