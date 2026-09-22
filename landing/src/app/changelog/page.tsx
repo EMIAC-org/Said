@@ -12,7 +12,6 @@ import {
   History,
   LayoutDashboard,
   Mic2,
-  Radio,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -28,55 +27,55 @@ export const metadata: Metadata = {
 };
 
 const latest = {
-  version: "2.4.5",
-  date: "Jul 18, 2026",
-  title: "Direct streaming. More reliable dictation.",
+  version: "2.5.0",
+  date: "Sep 23, 2026",
+  title: "A better Hinglish model. A simpler AirNote.",
   intro:
-    "AirNote 2.4.5 is the current stable macOS release. Polished dictation now reaches your focused app as it streams, while the desktop app and server safely recover from interrupted output. The current Windows release is 2.4.4.",
+    "AirNote 2.5.0 is the current stable macOS release. Every Apple Silicon Mac now dictates with a new on-device Hinglish model, polish can be switched off, and the app is focused entirely on dictation. The current Windows release is 2.4.4.",
   sections: [
     {
-      id: "streaming",
-      eyebrow: "#Direct Streaming",
-      title: "See your dictation arrive as it is polished",
-      icon: Radio,
-      body: [
-        "AirNote now sends polished dictation into the focused app as the provider streams it, so the result no longer waits for a separate final insertion step.",
-        "If a stream is interrupted or its final result differs, AirNote reconciles the recording safely instead of duplicating the text.",
-      ],
-      bullets: [
-        "Direct streamed insertion",
-        "No duplicate final paste",
-        "Safe interrupted-stream recovery",
-      ],
-    },
-    {
-      id: "reliability",
-      eyebrow: "#Reliable Dictation",
-      title: "A steadier speech-to-text path",
+      id: "model",
+      eyebrow: "#On-device speech",
+      title: "A new Hinglish speech model on every Mac",
       icon: Mic2,
       body: [
-        "The desktop speech path uses the current DeepInfra Whisper integration, with resilient handling for slow responses, retries, and recovery after an app restart.",
-        "AirNote keeps your normal dictation path focused on the model’s output while preserving the meeting and background-processing workflows separately.",
+        "AirNote now uses a single on-device speech model trained on 41 hours of Hinglish speech. Every Apple Silicon Mac gets the same model, whatever its memory, so an 8 GB MacBook Air dictates as well as a Mac Studio.",
+        "Updating is automatic. AirNote downloads the new model (about 141 MB), checks it, and only then replaces the old one. If the download is interrupted, your existing model keeps working and AirNote tries again later.",
       ],
       bullets: [
-        "Improved speech-service resilience",
-        "Clearer failure recovery",
-        "Separate meeting processing",
+        "One Hinglish model for every Apple Silicon Mac",
+        "Verified before it replaces your current model",
+        "Keep dictating while it downloads",
       ],
     },
     {
-      id: "visibility",
-      eyebrow: "#Meetings & Visibility",
-      title: "Clearer operational insight",
-      icon: Video,
+      id: "polish",
+      eyebrow: "#Polish switch",
+      title: "Choose when AirNote polishes",
+      icon: Sparkles,
       body: [
-        "Meeting telemetry now maintains durable, ordered delivery so activity remains correctly attributed across workspaces and recovers cleanly after interruptions.",
-        "The admin experience makes dictation and meeting usage easier to inspect, including explicit no-AI-usage and retryable-error states.",
+        "A new switch in Settings → Models turns polish off. AirNote then types exactly what you said, straight from the speech model, without sending it for cleanup.",
+        "Hinglish still comes out in Roman script. With polish off, the words you've taught AirNote, punctuation and filler removal are not applied, and Settings says so.",
       ],
       bullets: [
-        "Durable meeting telemetry",
-        "Cross-workspace attribution protection",
-        "Clear admin reporting states",
+        "One switch in Settings → Models",
+        "Raw transcript, pasted as spoken",
+        "Hinglish stays in Roman script",
+      ],
+    },
+    {
+      id: "focus",
+      eyebrow: "#A focused app",
+      title: "Dictation, and only dictation",
+      icon: ShieldCheck,
+      body: [
+        "Meetings and the Divo assistant have been removed, so AirNote no longer asks for Screen Recording permission and no longer does meeting work in the background at launch.",
+        "Tap-to-talk now works on Fn and other modifier keys, alongside hold-to-talk, and a bug that could stop a new recording right after the previous one has been fixed.",
+      ],
+      bullets: [
+        "No Screen Recording permission",
+        "Tap or hold your dictation key",
+        "More reliable back-to-back recordings",
       ],
     },
   ],
@@ -84,41 +83,53 @@ const latest = {
 
 const noteGroups = [
   {
-    title: "Direct streaming",
+    title: "Speech model",
     count: 3,
     items: [
-      "Polished text now arrives in the focused app as it streams.",
-      "Removed the delayed post-model insertion path for normal dictation.",
-      "Added safe reconciliation for interrupted or divergent streams.",
+      "New 41-hour Hinglish on-device model for every Apple Silicon Mac.",
+      "The model updates itself and is checked before it replaces the old one.",
+      "An interrupted download leaves your current model working.",
     ],
   },
   {
-    title: "Reliability",
+    title: "Dictation",
     count: 3,
     items: [
-      "Improved recovery from slow or interrupted speech-service responses.",
-      "Kept normal dictation model output direct and predictable.",
-      "Preserved separate processing for meetings and background services.",
+      "Added a switch to turn polish off in Settings → Models.",
+      "Tap-to-talk now works on Fn and modifier keys, alongside hold-to-talk.",
+      "Fixed a new recording being stopped right after the previous one ended.",
     ],
   },
   {
-    title: "Meetings & visibility",
+    title: "A simpler app",
     count: 3,
     items: [
-      "Protected cross-workspace meeting telemetry attribution.",
-      "Kept blocked events from starving the outbox.",
-      "Added clearer admin usage and retryable-error states.",
+      "Removed Meetings and the Divo assistant.",
+      "AirNote no longer requests Screen Recording permission.",
+      "No more background meeting processing at launch.",
     ],
   },
 ];
 
 const releaseDownloads = [
   {
-    version: "2.4.5",
-    date: "Jul 18, 2026",
+    version: "2.5.0",
+    date: "Sep 23, 2026",
     title: "Latest stable for macOS",
     downloads: [
       { platform: "Mac", label: "Mac DMG", href: downloads.mac.latestDmg },
+    ],
+  },
+  {
+    version: "2.4.5",
+    date: "Jul 18, 2026",
+    title: "Previous macOS release",
+    downloads: [
+      {
+        platform: "Mac",
+        label: "Mac DMG",
+        href: "https://airnote.emiactech.com/releases/2.4.5/AirNote_2.4.5_aarch64.dmg",
+      },
     ],
   },
   {
