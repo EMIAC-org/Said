@@ -196,7 +196,10 @@ mod tests {
     fn a_fresh_entry_is_served_from_cache() {
         let cache = new_cache();
         store(&cache, "https://cdn.example/signed");
-        assert_eq!(cached(&cache).as_deref(), Some("https://cdn.example/signed"));
+        assert_eq!(
+            cached(&cache).as_deref(),
+            Some("https://cdn.example/signed")
+        );
     }
 
     #[test]
