@@ -2342,6 +2342,60 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
 
         // ── STEP 5: LLM polish ───────────────────────────────────────────────────
         let enforce_roman_hinglish = prefs.output_language == "hinglish";
+
+        // Polish turned off in Settings: paste the transcript as spoken. The
+        // script guard still runs — turning off rewriting is not a request to
+        // start emitting Devanagari at a user who asked for Hinglish.
+        //
+        // Note what this necessarily gives up. Vocabulary corrections are
+        // applied *by* the model from the hints Tier 2 collects, not before it
+        // (see the Tier 2 comment above), so a user's learned names and jargon
+        // stop being applied here, along with punctuation and filler removal.
+        // Only `number_format::apply`, which already ran pre-LLM, survives.
+        // The Settings copy says so; this is not a silent downgrade.
+        if !prefs.polish_enabled {
+            let raw = if enforce_roman_hinglish {
+                let t = if script::contains_devanagari(&resolved_transcript) {
+                    script::enforce_roman_hinglish(&resolved_transcript)
+                } else {
+                    resolved_transcript.clone()
+                };
+                script::strip_non_latin_scripts(&t)
+            } else {
+                resolved_transcript.clone()
+            };
+            let total_ms = total_start.elapsed().as_millis() as i64;
+            info!("[voice] polish disabled — pasting the transcript unmodified");
+            let _ = crate::store::voice_runs::mark_voice_run_completed_unlinked(
+                &pool,
+                &voice_run_id,
+            );
+            yield Ok(Event::default().event("done").data(
+                json!({
+                    "recording_id": Uuid::new_v4().to_string(),
+                    "transcript":   resolved_transcript,
+                    "audio_id":     saved_audio_id,
+                    "source":       "voice",
+                    "target_app":   target_app,
+                    "output_language": prefs.output_language,
+                    "enriched_transcript": enriched_raw,
+                    "polished":     raw,
+                    "model_used":   "polish_disabled",
+                    "confidence":   stt_confidence,
+                    "latency_ms": {
+                        "transcribe": transcribe_ms,
+                        "embed":      embed_ms,
+                        "retrieve":   0,
+                        "polish":     0,
+                        "total":      total_ms,
+                    },
+                    "examples_used": 0,
+                })
+                .to_string()
+            ));
+            return;
+        }
+
         let llm_start = Instant::now();
         let (llm_result, actual_model_used, server_runtime_trace) = if crate::store::prefs::server_runtime_forced() {
             yield Ok(Event::default().event("status")

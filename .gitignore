@@ -84,3 +84,6 @@ desktop/src-tauri/binaries/airnote-asr-gpu-*
 /desktop/*.log
 crates/asr-gpu-worker/*.log
 todos.md
+
+# Local reference clones of other projects — not part of AirNote.
+reference-*/

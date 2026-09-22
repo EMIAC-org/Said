@@ -97,6 +97,7 @@ const MIGRATION_063: &str = include_str!("migrations/063_vocab_card_fts.sql");
 const MIGRATION_064: &str = include_str!("migrations/064_telemetry_speech_provider.sql");
 const MIGRATION_065: &str = include_str!("migrations/065_telemetry_speech_identity.sql");
 const MIGRATION_066: &str = include_str!("migrations/066_meeting_observability_outbox.sql");
+const MIGRATION_067: &str = include_str!("migrations/067_polish_enabled.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -818,6 +819,44 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 66")
             .expect("failed to set user_version to 66");
     }
+
+    if version < 67 {
+        info!("running migration 067_polish_enabled");
+        // Two guards, both load-bearing.
+        //
+        // `preferences` can legitimately be absent: a database recovering from
+        // a partial or repaired migration reaches this point with tables still
+        // missing, and an unguarded ALTER TABLE would panic the backend on
+        // startup rather than letting the later repair pass rebuild it.
+        //
+        // The column can also already exist if an earlier attempt added it and
+        // died before bumping user_version, and ALTER TABLE would abort on that
+        // too.
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preferences')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        let already_present: bool = table_exists
+            && conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('preferences') WHERE name = 'polish_enabled'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(false);
+        if table_exists && !already_present {
+            conn.execute_batch(MIGRATION_067)
+                .expect("migration 067 failed adding polish_enabled");
+        } else if !table_exists {
+            warn!("migration 067 skipped: preferences table is absent");
+        }
+        conn.execute_batch("PRAGMA user_version = 67")
+            .expect("failed to set user_version to 67");
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -1103,7 +1142,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 66);
+        assert_eq!(version, 67);
 
         for table in [
             "tier2_policy_weights",
@@ -1192,7 +1231,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 66);
+        assert_eq!(version, 67);
         let identity: (String, String, String) = conn
             .query_row(
                 "SELECT speech_provider, speech_model, speech_path
@@ -1233,7 +1272,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 66);
+        assert_eq!(version, 67);
         assert_eq!(table_exists, 1);
     }
 }

@@ -468,6 +468,7 @@ mod tests {
             edit_capture: true,
             polish_text_hotkey: "cmd+shift+p".into(),
             record_hotkey: "caps_lock".into(),
+            polish_enabled: true,
             learning_enabled: true,
             server_runtime_enabled: true,
             server_audio_runtime_enabled: false,

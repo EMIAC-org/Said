@@ -43,6 +43,9 @@ pub struct Preferences {
     pub polish_text_hotkey: String,
     pub record_hotkey: String,
     pub learning_enabled: bool,
+    /// Global polish switch. When false the local transcript is pasted without
+    /// an LLM pass. Defaults true so existing users are unaffected.
+    pub polish_enabled: bool,
     pub server_runtime_enabled: bool,
     pub server_audio_runtime_enabled: bool,
     pub updated_at: i64,
@@ -68,6 +71,7 @@ pub struct PrefsUpdate {
     pub polish_text_hotkey: Option<String>,
     pub record_hotkey: Option<String>,
     pub learning_enabled: Option<bool>,
+    pub polish_enabled: Option<bool>,
     pub server_runtime_enabled: Option<bool>,
     pub server_audio_runtime_enabled: Option<bool>,
     // API keys — Some(None) = clear; None = don't touch; Some(Some(s)) = set
@@ -100,7 +104,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 output_language, auto_paste, edit_capture, polish_text_hotkey, record_hotkey,
                 learning_enabled, server_runtime_enabled, 0 AS server_audio_runtime_enabled, updated_at,
                 gateway_api_key, gemini_api_key, llm_provider,
-                groq_api_key, deepinfra_api_key
+                groq_api_key, deepinfra_api_key, polish_enabled
          FROM preferences WHERE user_id = ?1",
         params![user_id],
         |row| {
@@ -136,6 +140,7 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
                 },
                 groq_api_key: row.get(17)?,
                 deepinfra_api_key: row.get(18)?,
+                polish_enabled: row.get::<_, i64>(19)? != 0,
             })
         },
     )
@@ -210,6 +215,13 @@ pub fn update_prefs(pool: &DbPool, user_id: &str, update: PrefsUpdate) -> Option
             params![v, now, user_id],
         )
         .ok()?;
+    }
+    if let Some(v) = update.polish_enabled {
+        conn.execute(
+            "UPDATE preferences SET polish_enabled = ?1, updated_at = ?2 WHERE user_id = ?3",
+            params![v as i64, now_ms(), user_id],
+        )
+        .ok();
     }
     if let Some(v) = update.learning_enabled {
         conn.execute(

@@ -67,6 +67,7 @@ fn prefs(output_language: &str, custom_prompt: Option<&str>) -> Preferences {
         server_runtime_enabled: false,
         server_audio_runtime_enabled: false,
         gemini_api_key: None,
+        polish_enabled: true,
         learning_enabled: true,
         gateway_api_key: None,
         groq_api_key: None,

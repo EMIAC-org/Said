@@ -1013,6 +1013,47 @@ export function SettingsView({
         <div className="mb-7">
           <p className="section-label px-1 mb-2.5">Writing Style</p>
 
+          {/* Global polish switch. Everything below it only applies while polish
+              is on, which is why it sits first. */}
+          <div className="panel p-4 mb-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[12px] font-semibold text-foreground">Polish my dictation</p>
+                <p className="text-[11px] text-muted-foreground leading-snug mt-1">
+                  {prefs?.polish_enabled === false
+                    ? "Off — AirNote types exactly what you said. Your learned words, punctuation and filler removal are not applied."
+                    : "On — AirNote cleans up punctuation, filler words and applies the words you've taught it."}
+                </p>
+              </div>
+              <button
+                role="switch"
+                aria-checked={prefs?.polish_enabled !== false}
+                aria-label="Polish my dictation"
+                onClick={() => patch({ polish_enabled: prefs?.polish_enabled === false })}
+                className="shrink-0 mt-0.5 rounded-full transition-all"
+                style={{
+                  width: 38,
+                  height: 22,
+                  padding: 2,
+                  background: prefs?.polish_enabled !== false
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--surface-4))",
+                  boxShadow: "inset 0 0 0 1px hsl(var(--border))",
+                }}
+              >
+                <span
+                  className="block rounded-full transition-transform"
+                  style={{
+                    width: 18,
+                    height: 18,
+                    background: "hsl(var(--background))",
+                    transform: prefs?.polish_enabled !== false ? "translateX(16px)" : "translateX(0)",
+                  }}
+                />
+              </button>
+            </div>
+          </div>
+
           {/* Tone pill grid */}
           <div className="panel p-4 mb-3">
             <p className="text-[12px] font-semibold text-foreground mb-3">Tone Preset</p>

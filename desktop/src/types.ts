@@ -88,6 +88,8 @@ export interface Preferences {
   polish_text_hotkey: string;
   record_hotkey:      string;
   learning_enabled:   boolean;
+  /** Global polish switch. Off pastes the raw transcript with no LLM pass. */
+  polish_enabled:     boolean;
   server_runtime_enabled: boolean;
   server_audio_runtime_enabled: boolean;
   // API keys stored in SQLite — never leave the device
@@ -110,6 +112,7 @@ export interface PrefsUpdate {
   polish_text_hotkey?: string;
   record_hotkey?:      string;
   learning_enabled?:   boolean;
+  polish_enabled?:     boolean;
   server_runtime_enabled?: boolean;
   server_audio_runtime_enabled?: boolean;
   // API keys — set to null to clear
