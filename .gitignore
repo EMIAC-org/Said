@@ -83,3 +83,4 @@ desktop/src-tauri/binaries/airnote-asr-gpu-*
 /*.log
 /desktop/*.log
 crates/asr-gpu-worker/*.log
+todos.md

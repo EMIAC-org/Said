@@ -15,9 +15,7 @@ import { HistoryView } from "@/components/views/HistoryView";
 import { LearningsView } from "@/components/views/LearningsView";
 import { BucketsView } from "@/components/views/BucketsView";
 import { VocabularyView } from "@/components/views/VocabularyView";
-import { MeetingsView } from "@/components/views/MeetingsView";
 import { DivoView } from "@/components/views/DivoView";
-import { LiveMeetingView } from "@/components/views/LiveMeetingView";
 import {
   invoke,
   onAppState,
@@ -66,8 +64,8 @@ import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
 import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
 import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "meetings" | "divo" | "settings" | "live-meeting";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "vocabulary", "learnings", "buckets", "meetings", "divo", "settings", "live-meeting"];
+export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "divo" | "settings";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "vocabulary", "learnings", "buckets", "divo", "settings"];
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -187,12 +185,7 @@ export default function App() {
   const [busy,        setBusy]        = useState(false);
   const [errorBanner, setErrorBanner] = useState<string>("");
   const [activeView,  setActiveView]  = useState<ActiveView>("dashboard");
-  const [liveMeetingId, setLiveMeetingId] = useState<string | null>(null);
-  // When a live meeting ends we navigate to the Meetings page and focus the
-  // just-ended meeting so its post-processing (transcribe → clean → summarize)
-  // is shown there. This is the single post-meeting surface — LiveMeetingView no
   // longer renders its own duplicate "ended" notes layout.
-  const [focusMeetingId, setFocusMeetingId] = useState<string | null>(null);
   const [inviteOpen,  setInviteOpen]  = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("models");
@@ -533,7 +526,7 @@ export default function App() {
     // Tray menu → navigate to Settings
     const unsubNav = onNavSettings((section) => {
       setSettingsSection(
-        section && ["appearance", "writing", "hotkeys", "models", "meeting", "developer", "notifications", "permissions", "enterprise", "debug", "about"].includes(section)
+        section && ["appearance", "writing", "hotkeys", "models", "developer", "notifications", "permissions", "enterprise", "debug", "about"].includes(section)
           ? (section as SettingsSectionId)
           : "models",
       );
@@ -751,7 +744,6 @@ export default function App() {
   // condition must remain version-based rather than assuming one local model.
   const showPostUpdateGate = migrationDone < MIGRATION_VERSION;
 
-  const liveMeetingActive = activeView === "live-meeting" && !!liveMeetingId;
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
   return (
@@ -762,24 +754,7 @@ export default function App() {
       aria-hidden={showPostUpdateGate || undefined}
     >
 
-      {liveMeetingActive ? (
-        <div className="min-w-0 flex-1">
-          <LiveMeetingView
-            meetingId={liveMeetingId}
-            onBack={() => setActiveView("meetings")}
-            onEnded={(id) => {
-              // Just hand the just-ended meeting to the Meetings page and switch to
-              // it. The actual stop is fired by LiveMeetingView.handleLeave (the
-              // `meeting/request-stop` event + the stop_session invoke, both of which
-              // reach Rust now that the pill IPC deadlock is fixed). No deferred stop
-              // needed here — that was a debugging backstop for the old deadlock.
-              setFocusMeetingId(id);
-              setActiveView("meetings");
-            }}
-          />
-        </div>
-      ) : (
-        <>
+      <>
           {/* ── Sidebar — full height left column ────────── */}
           <Sidebar
             snapshot={snapshotWithHistory}
@@ -824,27 +799,12 @@ export default function App() {
                 {activeView === "vocabulary" && <VocabularyView />}
                 {activeView === "learnings"  && <LearningsView />}
                 {activeView === "buckets"    && <BucketsView />}
-                {activeView === "meetings"   && (
-                  <MeetingsView
-                    focusMeetingId={focusMeetingId}
-                    onFocusConsumed={() => setFocusMeetingId(null)}
-                    onOpenWorkspaces={() => {
-                      setSettingsSection("enterprise");
-                      setSettingsOpen(true);
-                    }}
-                    onJoinMeeting={(id) => {
-                      setLiveMeetingId(id);
-                      setActiveView("live-meeting");
-                    }}
-                  />
-                )}
                 {activeView === "divo" && <DivoView platform={snapshot?.platform} />}
                 {/* Settings is now a modal — opened via setSettingsOpen */}
               </div>
             </main>
           </div>
         </>
-      )}
 
       {/* ── Invite team modal (overlays everything) ────── */}
       <InviteTeamModal open={inviteOpen} onClose={() => setInviteOpen(false)} />

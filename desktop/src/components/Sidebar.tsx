@@ -12,7 +12,6 @@ import {
   HardDrive,
   Server,
   Zap,
-  Video,
   Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -155,16 +154,11 @@ export function Sidebar({
           </div>
         </section>
 
-        {/* Enterprise — Meetings (only when connected) */}
+        {/* Enterprise (only when connected) */}
         {isEnterpriseConnected() && (
           <section>
             <p className="section-label px-3 mb-2">Enterprise</p>
             <div className="space-y-0.5">
-              <NavButton
-                item={{ id: "meetings", label: "Meetings", icon: <Video size={15} /> }}
-                isActive={activeView === "meetings"}
-                onClick={() => !busy && onViewChange("meetings")}
-              />
               {isDivoAllowed() && (
                 <NavButton
                   item={{ id: "divo", label: "Divo", icon: <Sparkles size={15} /> }}
