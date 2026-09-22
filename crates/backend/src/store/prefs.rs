@@ -144,6 +144,14 @@ pub fn get_prefs(pool: &DbPool, user_id: &str) -> Option<Preferences> {
             })
         },
     )
+    .map_err(|e| {
+        // A missing row is normal before first save. Anything else is a
+        // schema or storage fault that otherwise surfaces only as a bare 500
+        // from /v1/voice with nothing in the log to say why.
+        if !matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+            tracing::warn!("[prefs] couldn't read preferences: {e}");
+        }
+    })
     .ok()
 }
 

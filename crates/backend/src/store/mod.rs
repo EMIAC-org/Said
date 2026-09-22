@@ -923,6 +923,15 @@ fn repair_schema_gaps(pool: &DbPool) {
         "llm_provider TEXT NOT NULL DEFAULT 'gateway'",
     );
     add_column_if_missing(&conn, "preferences", "groq_api_key", "groq_api_key TEXT");
+    // A parked dev branch shipped a different migration 067, so a database
+    // that ran it sits at user_version 67 without this column. Every prefs
+    // read then fails and each dictation ends in a 500.
+    add_column_if_missing(
+        &conn,
+        "preferences",
+        "polish_enabled",
+        "polish_enabled INTEGER NOT NULL DEFAULT 1",
+    );
     add_column_if_missing(
         &conn,
         "preferences",
