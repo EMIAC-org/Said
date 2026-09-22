@@ -19,6 +19,13 @@ pub const DEEPSEEK_POLISH_MODEL_V4_FLASH: &str = "deepseek-v4-flash";
 /// Default production dictation-polish model.
 pub const DEFAULT_POLISH_MODEL_KEY: &str = DEEPSEEK_POLISH_MODEL_V4_FLASH;
 
+/// Pinned on-device English transcript cleanup model.
+pub const S1_MINI_MODEL_KEY: &str = "s1-mini-q4";
+pub const S1_MINI_FILENAME: &str = "s1-mini-q4_k_m.gguf";
+pub const S1_MINI_REVISION: &str = "34add00a48a2e5d24e5a4ee5405a99620a3a240c";
+pub const S1_MINI_SIZE_BYTES: u64 = 484_219_808;
+pub const S1_MINI_SHA256: &str = "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634";
+
 /// One selectable polish model in the catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PolishModelSpec {
@@ -34,6 +41,14 @@ pub struct PolishModelSpec {
 
 /// Curated production catalog shared by preferences and runtime routing.
 pub const POLISH_MODEL_CATALOG: &[PolishModelSpec] = &[
+    PolishModelSpec {
+        key: S1_MINI_MODEL_KEY,
+        label: "S1-mini by Superwhisper (Local, English)",
+        provider: "s1_mini",
+        model_id: "superwhisper/s1-mini",
+        reasoning_low: false,
+        beta_only: false,
+    },
     PolishModelSpec {
         key: DEEPINFRA_POLISH_MODEL_KEY,
         label: "Gemma 4 26B A4B (DeepInfra)",

@@ -14,6 +14,7 @@ import { invoke, type LocalModelKey } from "./invoke";
 
 /** Progress event emitted by the verified catalog installer. */
 const CATALOG_EVENT = "local-model-download";
+export type DownloadModelKey = LocalModelKey | "s1-mini-q4";
 /** Progress event emitted by the legacy meeting downloader (Oriserve + VAD). */
 const MEETING_EVENT = "meeting-model-download";
 /** The only meeting-downloader artifact that is also a dictation model. */
@@ -29,7 +30,7 @@ export type LocalModelDownloadStatus =
 
 /** Raw payload shape shared by both progress events. */
 interface RawDownloadProgress {
-  model?: LocalModelKey | null;
+  model?: DownloadModelKey | null;
   name: string;
   received: number;
   total: number;
@@ -38,7 +39,7 @@ interface RawDownloadProgress {
 }
 
 export interface LocalModelDownload {
-  model: LocalModelKey;
+  model: DownloadModelKey;
   status: LocalModelDownloadStatus | string;
   received: number;
   total: number;
@@ -47,7 +48,7 @@ export interface LocalModelDownload {
   error: string | null;
 }
 
-export type LocalModelDownloads = Partial<Record<LocalModelKey, LocalModelDownload>>;
+export type LocalModelDownloads = Partial<Record<DownloadModelKey, LocalModelDownload>>;
 
 interface LocalModelTransport {
   download: { command: string; args?: Record<string, unknown> };
@@ -59,7 +60,7 @@ interface LocalModelTransport {
  * that whisper artifact; catalog models use the checksum-verified installer.
  * This function is the only place that distinction is allowed to exist.
  */
-export function localModelTransport(model: LocalModelKey): LocalModelTransport {
+export function localModelTransport(model: DownloadModelKey): LocalModelTransport {
   if (model === "oriserve") {
     return {
       download: { command: "download_dictation_model" },
@@ -76,19 +77,19 @@ export function localModelTransport(model: LocalModelKey): LocalModelTransport {
  * The model a progress event belongs to, or `null` for artifacts that are not
  * selectable dictation models (the meeting downloader also reports Silero VAD).
  */
-export function downloadOwner(progress: RawDownloadProgress): LocalModelKey | null {
+export function downloadOwner(progress: RawDownloadProgress): DownloadModelKey | null {
   if (progress.model) return progress.model;
   return progress.name === ORISERVE_ARTIFACT ? "oriserve" : null;
 }
 
 /** Resolves when the model is installed and verified; rejects on cancel. */
-export async function startLocalModelDownload(model: LocalModelKey): Promise<void> {
+export async function startLocalModelDownload(model: DownloadModelKey): Promise<void> {
   const { download } = localModelTransport(model);
   await invoke(download.command, download.args);
 }
 
 /** Best effort: a cancel that loses its race is not worth an error banner. */
-export async function cancelLocalModelDownload(model: LocalModelKey): Promise<void> {
+export async function cancelLocalModelDownload(model: DownloadModelKey): Promise<void> {
   const { cancel } = localModelTransport(model);
   await invoke(cancel.command, cancel.args).catch(() => {});
 }
@@ -98,7 +99,7 @@ export function isCancelledDownload(message: string): boolean {
   return /cancell?ed/i.test(message);
 }
 
-function toDownload(progress: RawDownloadProgress, model: LocalModelKey): LocalModelDownload {
+function toDownload(progress: RawDownloadProgress, model: DownloadModelKey): LocalModelDownload {
   return {
     model,
     status: progress.status,
@@ -119,8 +120,8 @@ function toDownload(progress: RawDownloadProgress, model: LocalModelKey): LocalM
  * inline closures without resubscribing (and dropping events) on every render.
  */
 export function useLocalModelDownloads(handlers?: {
-  onDone?: (model: LocalModelKey) => void;
-  onError?: (model: LocalModelKey, message: string) => void;
+  onDone?: (model: DownloadModelKey) => void;
+  onError?: (model: DownloadModelKey, message: string) => void;
 }): LocalModelDownloads {
   const [downloads, setDownloads] = useState<LocalModelDownloads>({});
   const latest = useRef(handlers);
@@ -131,6 +132,7 @@ export function useLocalModelDownloads(handlers?: {
     const stops: UnlistenFn[] = [];
 
     const handle = (progress: RawDownloadProgress) => {
+      if (disposed) return;
       const model = downloadOwner(progress);
       if (!model) return;
       const active = (ACTIVE_STATUSES as readonly string[]).includes(progress.status);

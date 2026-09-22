@@ -17,6 +17,7 @@ pub mod phonetics;
 pub mod polish_dispatch;
 pub mod promotion_gate;
 pub mod prompt;
+pub mod s1_mini;
 pub mod script;
 pub mod stream_safety;
 pub mod vocab_retrieval;

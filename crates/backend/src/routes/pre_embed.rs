@@ -30,7 +30,7 @@ pub async fn handler(State(state): State<AppState>, Json(body): Json<PreEmbedBod
         state.default_user_id.as_str(),
     )
     .await
-    .map(|p| p.learning_enabled)
+    .map(|p| p.learning_enabled && p.selected_model != said_core::polish::model::S1_MINI_MODEL_KEY)
     .unwrap_or(true);
     if !learning_enabled || crate::legacy_learning::audit_only_legacy_mutations() {
         debug!("[pre-embed] skipped — user learning disabled");
@@ -53,7 +53,9 @@ pub async fn handler(State(state): State<AppState>, Json(body): Json<PreEmbedBod
         let Some(prefs) = crate::get_prefs_cached(&prefs_cache, &pool, &user_id).await else {
             return;
         };
-        if !prefs.learning_enabled {
+        if !prefs.learning_enabled
+            || prefs.selected_model == said_core::polish::model::S1_MINI_MODEL_KEY
+        {
             debug!("[pre-embed] skipped — learning disabled");
             return;
         }

@@ -223,39 +223,45 @@ pub fn local_model_inventory() -> Result<LocalModelInventory, String> {
 
 /// Select an installed model only after policy and integrity checks succeed.
 #[tauri::command]
-pub fn choose_installed_local_model(model: String) -> Result<LocalModelInventory, String> {
-    let policy = stt_policy::current();
-    if policy.is_cloud_locked() {
-        return Err("Local dictation models are not selectable on this device.".into());
-    }
-    let model = canonical_local_model(&model).to_string();
-    if !stt_policy::supports_local_model(policy, &model) {
-        return Err("That model is not supported on this device.".into());
-    }
-    let (installed, _) = status_for(&model)?;
-    if !installed {
-        return Err("That speech model is not fully installed yet.".into());
-    }
-    if let Some(descriptor) = local_model_catalog::find(&model) {
-        local_model_store::ensure_verified(descriptor)?;
-    }
+pub async fn choose_installed_local_model(model: String) -> Result<LocalModelInventory, String> {
+    // Hashing weights and releasing the old native model must not freeze the
+    // window while Settings shows a pending selection.
+    tauri::async_runtime::spawn_blocking(move || {
+        let policy = stt_policy::current();
+        if policy.is_cloud_locked() {
+            return Err("Local dictation models are not selectable on this device.".into());
+        }
+        let model = canonical_local_model(&model).to_string();
+        if !stt_policy::supports_local_model(policy, &model) {
+            return Err("That model is not supported on this device.".into());
+        }
+        let (installed, _) = status_for(&model)?;
+        if !installed {
+            return Err("That speech model is not fully installed yet.".into());
+        }
+        if let Some(descriptor) = local_model_catalog::find(&model) {
+            local_model_store::ensure_verified(descriptor)?;
+        }
 
-    let recommended = policy
-        .local_pref()
-        .ok_or_else(|| "This device has no local model recommendation.".to_string())?;
-    let compatibility = model != recommended;
-    let mut prefs = said_core::prefs::load();
-    prefs.dictation_stt = stt_policy::LOCAL_PREF.into();
-    prefs.local_stt_model = model.clone();
-    prefs.local_stt_compat_override = compatibility.then_some(model);
-    let prefs = stt_policy::normalize_prefs(prefs);
-    said_core::prefs::save(&prefs)?;
-    local_transcribe::unload();
-    std::thread::Builder::new()
-        .name("dictation-stt-model-prewarm".into())
-        .spawn(dictation_stt::prewarm)
-        .ok();
-    local_model_inventory()
+        let recommended = policy
+            .local_pref()
+            .ok_or_else(|| "This device has no local model recommendation.".to_string())?;
+        let compatibility = model != recommended;
+        let mut prefs = said_core::prefs::load();
+        prefs.dictation_stt = stt_policy::LOCAL_PREF.into();
+        prefs.local_stt_model = model.clone();
+        prefs.local_stt_compat_override = compatibility.then_some(model);
+        let prefs = stt_policy::normalize_prefs(prefs);
+        said_core::prefs::save(&prefs)?;
+        local_transcribe::unload();
+        std::thread::Builder::new()
+            .name("dictation-stt-model-prewarm".into())
+            .spawn(dictation_stt::prewarm)
+            .ok();
+        local_model_inventory()
+    })
+    .await
+    .map_err(|error| format!("Could not switch speech model: {error}"))?
 }
 
 #[tauri::command]

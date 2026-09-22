@@ -50,7 +50,7 @@ const SECTION_SUBTITLES: Record<SettingsSection, string> = {
   "appearance":    "Theme, and how the dashboard surfaces your activity.",
   "writing":       "Advanced voice prompt controls.",
   "hotkeys":       "Choose the key AirNote listens for while you speak.",
-  "models":        "Dictation speed, quality, and ChatGPT connection.",
+  "models":        "Choose speech recognition, text cleanup, and local downloads.",
   "developer":     "Project context for the optional Problem Command.",
   "notifications": "Control which status bar alerts you see.",
   "permissions":   "Accessibility, input monitoring, notifications.",

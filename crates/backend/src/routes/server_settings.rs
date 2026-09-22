@@ -154,7 +154,14 @@ pub async fn pull_and_apply_server_settings(state: &AppState) -> Result<i64, (St
         version,
     );
 
-    if let Some(update) = prefs_update_from_server_settings(&body) {
+    if let Some(mut update) = prefs_update_from_server_settings(&body) {
+        // A downloaded local model is a device choice. Cloud sync must not
+        // silently replace it with a hosted model on the next refresh.
+        if crate::store::prefs::get_prefs(&state.pool, &uid)
+            .is_some_and(|p| p.selected_model == said_core::polish::model::S1_MINI_MODEL_KEY)
+        {
+            update.selected_model = None;
+        }
         if update_prefs(&state.pool, &uid, update).is_some() {
             invalidate_prefs_cache(&state.prefs_cache).await;
             info!("[server-settings] applied cross-device prefs from server version={version}");
@@ -258,7 +265,7 @@ pub async fn push_cross_device_settings_to_server(
     };
 
     let url = format!("{}/v1/runtime/settings", base.trim_end_matches('/'));
-    let body = json!({
+    let mut body = json!({
         "selected_model":               selected_model,
         "output_language":              output_language,
         "tone_preset":                  tone_preset,
@@ -269,6 +276,11 @@ pub async fn push_cross_device_settings_to_server(
         "server_runtime_enabled":       server_runtime_enabled,
         "server_audio_runtime_enabled": server_audio_runtime_enabled,
     });
+    if selected_model == said_core::polish::model::S1_MINI_MODEL_KEY {
+        body.as_object_mut()
+            .expect("settings object")
+            .remove("selected_model");
+    }
 
     if let Err(e) = cp_client::with_org_context(
         state

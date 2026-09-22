@@ -16,6 +16,7 @@ pub const NEMOTRON_Q8_PREF: &str = "nemotron-q8";
 pub enum RuntimeKind {
     WhisperCpp,
     TranscribeCpp,
+    LlamaCpp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -88,6 +89,31 @@ impl LocalModelDescriptor {
 const HALF_GIB: u64 = 512 * 1024 * 1024;
 const ONE_GIB: u64 = 1024 * 1024 * 1024;
 const TWO_GIB: u64 = 2 * ONE_GIB;
+
+/// Separate from MODELS so a text model never appears as a speech recognizer.
+pub static S1_MINI: LocalModelDescriptor = LocalModelDescriptor {
+    key: said_core::polish::model::S1_MINI_MODEL_KEY,
+    name: "S1-mini by Superwhisper",
+    family: "s1-mini",
+    architecture: "qwen3",
+    runtime: RuntimeKind::LlamaCpp,
+    tier: ModelTier::Small,
+    languages: &["en"],
+    capabilities: ModelCapabilities {
+        streaming: false,
+        translate: false,
+        language_detection: false,
+    },
+    repository: "superwhisper/s1-mini-GGUF",
+    revision: said_core::polish::model::S1_MINI_REVISION,
+    filename: said_core::polish::model::S1_MINI_FILENAME,
+    quantization: "Q4_K_M",
+    size_bytes: said_core::polish::model::S1_MINI_SIZE_BYTES,
+    sha256: said_core::polish::model::S1_MINI_SHA256,
+    license: "Apache-2.0 with S1-mini naming clause",
+    attribution: "S1-mini by Superwhisper; derived from Qwen3-0.6B",
+    minimum_memory_bytes: ONE_GIB,
+};
 
 pub static MODELS: &[LocalModelDescriptor] = &[
     LocalModelDescriptor {

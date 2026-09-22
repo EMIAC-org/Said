@@ -86,7 +86,7 @@ pub fn ensure_verified(model: &LocalModelDescriptor) -> Result<PathBuf, String> 
     let path = model_path(model);
     if !installed(model) {
         return Err(format!(
-            "{} is not installed. Download it in Settings → Speech recognition.",
+            "{} is not installed. Download it in Settings → Models.",
             model.name
         ));
     }
@@ -164,8 +164,27 @@ pub fn remove(model: &LocalModelDescriptor) -> Result<u64, String> {
 
 #[tauri::command]
 pub async fn download_local_model(app: AppHandle, model: String) -> Result<(), String> {
-    let descriptor = local_model_catalog::find(&model)
-        .ok_or_else(|| format!("Unknown local speech model: {model}"))?;
+    let descriptor = if model == said_core::polish::model::S1_MINI_MODEL_KEY {
+        let directory = said_core::paths::data_dir()
+            .join("models")
+            .join("s1-mini-license");
+        fs::create_dir_all(&directory)
+            .map_err(|e| format!("Cannot create S1-mini notices: {e}"))?;
+        fs::write(
+            directory.join("LICENSE"),
+            include_str!("../resources/licenses/s1-mini/LICENSE"),
+        )
+        .map_err(|e| format!("Cannot save S1-mini license: {e}"))?;
+        fs::write(
+            directory.join("NOTICE"),
+            include_str!("../resources/licenses/s1-mini/NOTICE"),
+        )
+        .map_err(|e| format!("Cannot save S1-mini notice: {e}"))?;
+        Some(&local_model_catalog::S1_MINI)
+    } else {
+        local_model_catalog::find(&model)
+    }
+    .ok_or_else(|| format!("Unknown local speech model: {model}"))?;
     if installed(descriptor) {
         return tauri::async_runtime::spawn_blocking(move || {
             ensure_verified(descriptor).map(|_| ())
@@ -174,6 +193,12 @@ pub async fn download_local_model(app: AppHandle, model: String) -> Result<(), S
         .map_err(|error| format!("Local model verification task failed: {error}"))?;
     }
     download_model(&app, descriptor).await
+}
+
+#[tauri::command]
+pub fn get_s1_mini_status() -> serde_json::Value {
+    let model = &local_model_catalog::S1_MINI;
+    serde_json::json!({ "installed": installed(model), "size_bytes": model.size_bytes })
 }
 
 #[tauri::command]
@@ -245,6 +270,9 @@ async fn download_model(
     ];
     let mut last_error = None;
     for (source, url, attempts) in sources {
+        if source == "mirror" && !model.repository.starts_with("handy-computer/") {
+            continue;
+        }
         for attempt in 1..=attempts {
             if cancelled.cancelled.load(Ordering::Acquire) {
                 emit(app, model, installed_size(model), "cancelled", None);

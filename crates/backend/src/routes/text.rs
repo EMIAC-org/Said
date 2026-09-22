@@ -134,7 +134,9 @@ pub async fn polish(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let missing = crate::routes::key_guard::missing_text_api_keys(&pool, &user_id, prefs_for_guard);
-    if !missing.is_empty() {
+    if prefs_for_guard.selected_model != said_core::polish::model::S1_MINI_MODEL_KEY
+        && !missing.is_empty()
+    {
         return crate::routes::key_guard::missing_api_keys_response(missing);
     }
     let (word_corrections_cached, _stt_replacement_rules) =
@@ -158,6 +160,23 @@ pub async fn polish(
         yield Ok(Event::default().event("status")
             .data(json!({"phase": "polishing", "transcript": transcript}).to_string()));
 
+        let is_formatter = tone_override.as_deref() == Some("format");
+        let local_polish = prefs.selected_model == said_core::polish::model::S1_MINI_MODEL_KEY;
+        let (llm_result, resolved_transcript, embed_ms, examples_used, actual_model_used) = if local_polish {
+            let tone = tone_override.clone().unwrap_or_else(|| prefs.tone_preset.clone());
+            match crate::llm::s1_mini::polish(transcript.clone(), tone).await {
+                Ok(result) => {
+                    yield Ok(Event::default().event("token")
+                        .data(json!({"token": result.polished}).to_string()));
+                    (result, transcript.clone(), 0_i64, 0_usize, "s1_mini:superwhisper/s1-mini".to_string())
+                }
+                Err(error) => {
+                    yield Ok(Event::default().event("error")
+                        .data(llm_error_payload(&error, error.clone()).to_string()));
+                    return;
+                }
+            }
+        } else {
         // 1. Embed transcript + retrieve RAG examples
         let gemini_key = prefs.gemini_api_key.clone()
             .or_else(|| std::env::var("GEMINI_API_KEY").ok())
@@ -182,7 +201,6 @@ pub async fn polish(
 
         // 2. Word corrections — formatter and normal polish both get them;
         //    other tray tones (professional, casual, etc.) don't need them.
-        let is_formatter = tone_override.as_deref() == Some("format");
         let word_corrections = if tone_override.is_none() || is_formatter {
             word_corrections_cached
         } else {
@@ -388,6 +406,9 @@ pub async fn polish(
         }
 
 
+            (llm_result, resolved_transcript, embed_ms, examples_used, actual_model_used)
+        };
+
         let total_ms     = total_start.elapsed().as_millis() as i64;
         let recording_id = Uuid::new_v4().to_string();
         let word_count   = llm_result.polished.split_whitespace().count() as i64;
@@ -437,7 +458,9 @@ pub async fn polish(
                 "audio_id":     null,
                 "source":       "text",
                 "target_app":   target_app,
-                "output_language": if is_formatter {
+                "output_language": if local_polish {
+                    "english"
+                } else if is_formatter {
                     &prefs.output_language
                 } else if tone_override.is_some() {
                     "english"

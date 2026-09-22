@@ -69,7 +69,7 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
   -DWHISPER_BUILD_EXAMPLES=ON \
   -DCMAKE_OSX_ARCHITECTURES="$OSX_ARCH" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOY_TARGET" >/dev/null
-cmake --build "$BUILD_DIR" --target whisper-cli --config Release -j "$(sysctl -n hw.ncpu)" >/dev/null
+cmake --build "$BUILD_DIR" --target whisper-cli --config Release -j "${CMAKE_BUILD_PARALLEL_LEVEL:-${CARGO_BUILD_JOBS:-$(sysctl -n hw.ncpu)}}" >/dev/null
 
 BUILT="$BUILD_DIR/bin/whisper-cli"
 [ -x "$BUILT" ] || fail "whisper-cli not produced at $BUILT"

@@ -1410,6 +1410,8 @@ mod imp {
 
     fn pbcopy(text: &str) {
         if let Ok(mut child) = Command::new("pbcopy")
+            // GUI launches can inherit MacRoman defaults; stdin is UTF-8.
+            .env("LC_ALL", "en_US.UTF-8")
             .stdin(std::process::Stdio::piped())
             .spawn()
         {
@@ -1422,6 +1424,7 @@ mod imp {
 
     fn pbpaste() -> String {
         Command::new("pbpaste")
+            .env("LC_ALL", "en_US.UTF-8")
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default()

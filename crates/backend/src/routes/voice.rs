@@ -1392,6 +1392,18 @@ pub async fn repair_transcript(
     let user_id = state.default_user_id.as_str().to_string();
     let pool = state.pool.clone();
     let prefs_opt = crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await;
+    if prefs_opt
+        .as_ref()
+        .is_some_and(|p| p.selected_model == said_core::polish::model::S1_MINI_MODEL_KEY)
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "message": "S1-mini supports cleanup only. Select a cloud polish model to use Repair.",
+                "error_code": "local_repair_unsupported",
+            })),
+        ).into_response();
+    }
     let http_client = state.http_client.clone();
 
     let stream = async_stream::stream! {
@@ -2329,23 +2341,56 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             local_meta.origin,
         );
 
-        if !polish_enabled {
+        let local_polish = polish_enabled
+            && prefs.selected_model == said_core::polish::model::S1_MINI_MODEL_KEY;
+        if !polish_enabled || local_polish {
+            // Complete through the existing durable local-result path before any
+            // cloud polish, embeddings, or prompt-context requests.
+            let (final_text, polish_ms) = if local_polish {
+                yield Ok(Event::default().event("status")
+                    .data(json!({"phase": "polishing", "transcript": stt_transcript_raw}).to_string()));
+                let inference = crate::llm::s1_mini::polish(stt_transcript_raw.clone(), prefs.tone_preset.clone());
+                tokio::pin!(inference);
+                let result = loop {
+                    tokio::select! {
+                        result = &mut inference => break result,
+                        _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                            // Model verification/first load can exceed the local
+                            // WebSocket idle deadline on slower machines.
+                            yield Ok(Event::default().event("status")
+                                .data(json!({"phase": "polishing"}).to_string()));
+                        }
+                    }
+                };
+                match result {
+                    Ok(result) => (result.polished, result.polish_ms as i64),
+                    Err(error) => {
+                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, error, aid, Some("local_polish_failed")));
+                        return;
+                    }
+                }
+            } else {
+                (stt_transcript_raw.clone(), 0)
+            };
             yield Ok(Event::default().event("status")
                 .data(json!({"phase": "finalizing", "transcript": stt_transcript_raw}).to_string()));
 
             let recording_id = Uuid::new_v4().to_string();
-            let model_used = if local_meta.model.trim().is_empty() {
+            let model_used = if local_polish {
+                "s1_mini:superwhisper/s1-mini".to_string()
+            } else if local_meta.model.trim().is_empty() {
                 "local-stt".to_string()
             } else {
                 local_meta.model.clone()
             };
-            let output_language = local_meta.languages.first().cloned();
+            let output_language = if local_polish { Some("english".to_string()) } else { local_meta.languages.first().cloned() };
             let total_ms = total_start.elapsed().as_millis() as i64;
-            let word_count = stt_transcript_raw.split_whitespace().count() as i64;
+            let word_count = final_text.split_whitespace().count() as i64;
             let pool2 = pool.clone();
             let id2 = recording_id.clone();
             let uid2 = user_id.clone();
             let raw2 = stt_transcript_raw.clone();
+            let final2 = final_text.clone();
             let enriched2 = enriched_raw.clone();
             let model2 = model_used.clone();
             let target2 = target_app.clone();
@@ -2357,7 +2402,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     id: &id2,
                     user_id: &uid2,
                     transcript: &raw2,
-                    polished: &raw2,
+                    polished: &final2,
                     word_count,
                     recording_seconds: if audio_seconds > 0.0 {
                         audio_seconds
@@ -2368,14 +2413,14 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                     confidence: Some(stt_confidence),
                     transcribe_ms: Some(transcribe_ms),
                     embed_ms: Some(0),
-                    polish_ms: Some(0),
+                    polish_ms: Some(polish_ms),
                     target_app: target2.as_deref(),
                     source: "voice",
                     audio_id: audio2.as_deref(),
                     enriched_transcript: Some(&enriched2),
                     raw_transcript: Some(&raw2),
                     local_corrected_transcript: None,
-                    polished_output: Some(&raw2),
+                    polished_output: Some(&final2),
                     trace_json: None,
                 };
                 crate::observability::after_recording_insert(
@@ -2414,7 +2459,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 json!({
                     "recording_id": recording_id,
                     "transcript": stt_transcript_raw,
-                    "polished": stt_transcript_raw,
+                    "polished": final_text,
                     "audio_id": saved_audio_id,
                     "source": "voice",
                     "target_app": target_app,
@@ -2427,7 +2472,7 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                         "transcribe": transcribe_ms,
                         "embed": 0,
                         "retrieve": 0,
-                        "polish": 0,
+                        "polish": polish_ms,
                         "total": total_ms,
                     }
                 })

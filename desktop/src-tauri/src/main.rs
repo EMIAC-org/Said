@@ -6565,6 +6565,7 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let mut child = std::process::Command::new("pbcopy")
+            .env("LC_ALL", "en_US.UTF-8")
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("pbcopy failed to start: {e}"))?;
@@ -8091,7 +8092,10 @@ fn capture_edit_anchor(
 #[cfg(target_os = "macos")]
 async fn read_clipboard_text_readonly() -> Option<String> {
     let read = tokio::task::spawn_blocking(|| {
-        let output = std::process::Command::new("pbpaste").output().ok()?;
+        let output = std::process::Command::new("pbpaste")
+            .env("LC_ALL", "en_US.UTF-8")
+            .output()
+            .ok()?;
         if !output.status.success() {
             return None;
         }
@@ -10633,6 +10637,7 @@ fn main() {
             nemotron::download_nemotron_model,
             nemotron::delete_nemotron_model,
             local_model_store::download_local_model,
+            local_model_store::get_s1_mini_status,
             local_model_store::cancel_local_model_download,
             local_transcribe::local_asr_runtime_status,
             local_models::local_model_inventory,

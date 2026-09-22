@@ -37,6 +37,20 @@ pub async fn patch_prefs(
     State(state): State<AppState>,
     Json(update): Json<PrefsUpdate>,
 ) -> Result<Json<Preferences>, StatusCode> {
+    let switching_to_cloud = update
+        .selected_model
+        .as_deref()
+        .is_some_and(|model| model != said_core::polish::model::S1_MINI_MODEL_KEY);
+    if update.selected_model.as_deref() == Some(said_core::polish::model::S1_MINI_MODEL_KEY) {
+        let path = said_core::paths::data_dir()
+            .join("models")
+            .join(said_core::polish::model::S1_MINI_FILENAME);
+        if !std::fs::metadata(path)
+            .is_ok_and(|m| m.is_file() && m.len() == said_core::polish::model::S1_MINI_SIZE_BYTES)
+        {
+            return Err(StatusCode::PRECONDITION_FAILED);
+        }
+    }
     let provider_key_updated = update.gateway_api_key.is_some()
         || update.gemini_api_key.is_some()
         || update.groq_api_key.is_some()
@@ -74,6 +88,9 @@ pub async fn patch_prefs(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     // Gap 3: invalidate cache so next request re-reads fresh prefs
     invalidate_prefs_cache(&state.prefs_cache).await;
+    if switching_to_cloud {
+        tokio::task::spawn_blocking(crate::llm::s1_mini::unload);
+    }
     info!(
         "[patch_prefs] after update: llm_provider={:?}",
         prefs.llm_provider
