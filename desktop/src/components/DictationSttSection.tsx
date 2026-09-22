@@ -22,7 +22,7 @@ interface DownloadProgress {
   name: string;
   received: number;
   total: number;
-  status: "downloading" | "done" | "cancelled" | "error" | string;
+  status: "downloading" | "verifying" | "done" | "cancelled" | "error" | string;
   error: string | null;
 }
 
@@ -92,7 +92,9 @@ export function DictationSttSection({ prefs: _prefs, onPrefsUpdated: _onPrefsUpd
     const unlisten = listen<DownloadProgress>(command.event, (event) => {
       const progress = event.payload;
       if (progress.name !== command.eventName) return;
-      if (progress.status === "downloading") {
+      // Keep the bar up through "verifying" so the Download button cannot
+      // reappear between the last byte and the swap.
+      if (progress.status === "downloading" || progress.status === "verifying") {
         setDownload(progress);
         setError("");
       } else {

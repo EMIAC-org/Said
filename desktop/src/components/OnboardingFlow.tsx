@@ -85,7 +85,7 @@ interface DictationDownloadProgress {
   name: string;
   received: number;
   total: number;
-  status: "downloading" | "done" | "cancelled" | "error";
+  status: "downloading" | "verifying" | "done" | "cancelled" | "error";
   error: string | null;
 }
 

@@ -22,7 +22,7 @@ interface DownloadProgress {
   name: string;
   received: number;
   total: number;
-  status: "downloading" | "done" | "cancelled" | "error" | string;
+  status: "downloading" | "verifying" | "done" | "cancelled" | "error" | string;
   error: string | null;
 }
 
@@ -106,8 +106,8 @@ export function ModelMigrationGate({
       } else {
         setDownload(null);
       }
-      // "done" means the bytes arrived; the checksum and swap still follow.
-      setVerifying(progress.status === "done");
+      // "verifying": the bytes arrived; the checksum and swap still follow.
+      setVerifying(progress.status === "verifying");
       if (progress.status === "error" && progress.error) setError(friendlyError(progress.error));
     });
     return () => { void unlisten.then((stop) => stop()); };

@@ -13468,7 +13468,7 @@ struct ModelDownloadProgress {
     name: String,
     received: u64,
     total: u64,
-    status: String, // "downloading" | "done" | "cancelled" | "error"
+    status: String, // "downloading" | "verifying" | "done" | "cancelled" | "error"
     error: Option<String>,
 }
 
@@ -13781,7 +13781,7 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
     let name_for_task = name.clone();
     let app_dl = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        download_whisper_model_blocking(&app_dl, &name_for_task, &url, total_hint, &dir, &dest)
+        download_whisper_model_blocking(&app_dl, &name_for_task, &url, total_hint, &dir, &dest, "done")
     })
     .await
     .map_err(|e| format!("download task failed: {e}"))?;
@@ -13953,6 +13953,7 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
             size_task,
             &dir,
             &staged_task,
+            "verifying",
         )
     })
     .await
@@ -13987,6 +13988,7 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
                     descriptor.key,
                     descriptor.revision
                 );
+                emit_dictation_install_status(&app, &name, &descriptor, "done", None);
             }
             Ok(actual) => {
                 let _ = fs::remove_file(&staged);
@@ -13994,14 +13996,28 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
                     "[meeting_engine] dictation model checksum mismatch: expected {} got {actual}",
                     descriptor.sha256
                 );
-                return Err(
-                    "The downloaded speech model was damaged in transit. Please try again."
-                        .to_string(),
+                let message =
+                    "The downloaded speech model was damaged in transit. Please try again.";
+                emit_dictation_install_status(
+                    &app,
+                    &name,
+                    &descriptor,
+                    "error",
+                    Some(message.to_string()),
                 );
+                return Err(message.to_string());
             }
             Err(e) => {
                 let _ = fs::remove_file(&staged);
-                return Err(format!("couldn't verify the downloaded speech model: {e}"));
+                let message = format!("couldn't verify the downloaded speech model: {e}");
+                emit_dictation_install_status(
+                    &app,
+                    &name,
+                    &descriptor,
+                    "error",
+                    Some(message.clone()),
+                );
+                return Err(message);
             }
         }
     }
@@ -14017,6 +14033,33 @@ pub async fn download_dictation_model(app: AppHandle) -> Result<(), String> {
     result
 }
 
+/// Final progress event for the dictation model, sent after the checksum and
+/// swap rather than when the bytes land.
+fn emit_dictation_install_status(
+    app: &AppHandle,
+    name: &str,
+    descriptor: &crate::dictation_model::DictationModelDescriptor,
+    status: &str,
+    error: Option<String>,
+) {
+    emit_main(
+        app,
+        MODEL_DOWNLOAD_EVENT,
+        ModelDownloadProgress {
+            name: name.to_string(),
+            received: descriptor.size_bytes,
+            total: descriptor.size_bytes,
+            status: status.to_string(),
+            error,
+        },
+    );
+}
+
+/// `finished_status` is the progress status sent once the bytes are on disk.
+/// Most callers send "done". The dictation model sends "verifying" because its
+/// checksum and swap still follow, and emits "done" itself once the model is
+/// really installed — listeners refresh on "done", and refreshing earlier
+/// shows the pre-install state with nothing to correct it.
 fn download_whisper_model_blocking(
     app: &AppHandle,
     name: &str,
@@ -14024,6 +14067,7 @@ fn download_whisper_model_blocking(
     total_hint: u64,
     dir: &Path,
     dest: &Path,
+    finished_status: &str,
 ) -> Result<(), String> {
     use std::io::{Read, Write};
 
@@ -14113,7 +14157,7 @@ fn download_whisper_model_blocking(
         ));
     }
     fs::rename(&part, dest).map_err(|e| fail(&part, received, total, format!("finalize: {e}")))?;
-    emit(received, total, "done", None);
+    emit(received, total, finished_status, None);
     Ok(())
 }
 
@@ -14285,6 +14329,7 @@ pub async fn meeting_download_silero_vad_model(app: AppHandle) -> Result<(), Str
             SILERO_VAD_SIZE_HINT,
             &dir,
             &dest,
+            "done",
         )
     })
     .await
