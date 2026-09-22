@@ -2366,13 +2366,72 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             };
             let total_ms = total_start.elapsed().as_millis() as i64;
             info!("[voice] polish disabled — pasting the transcript unmodified");
-            let _ = crate::store::voice_runs::mark_voice_run_completed_unlinked(
-                &pool,
-                &voice_run_id,
-            );
+
+            // Persist exactly like the polished path does, before `done`.
+            // Skipping this left polish-off dictations out of History entirely:
+            // no text, no target app, and a server row with zero words.
+            let recording_id = Uuid::new_v4().to_string();
+            let word_count = raw.split_whitespace().count() as i64;
+            let inserted = {
+                let pool2 = pool.clone();
+                let id2 = recording_id.clone();
+                let uid2 = user_id.clone();
+                let t2 = resolved_transcript.clone();
+                let p2 = raw.clone();
+                let ta2 = target_app.clone();
+                let conf = stt_confidence;
+                let t_ms = transcribe_ms;
+                let e_ms = embed_ms;
+                let aid2 = saved_audio_id.clone();
+                let enr2 = enriched_raw.clone();
+                let raw2 = stt_transcript_raw.clone();
+                let crid2 = client_run_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    let rec = InsertRecording {
+                        id: &id2, user_id: &uid2,
+                        transcript: &t2, polished: &p2,
+                        word_count,
+                        recording_seconds: if audio_secs > 0.0 { audio_secs } else { estimated_secs(word_count) },
+                        model_used: "polish_disabled",
+                        confidence: Some(conf),
+                        transcribe_ms: Some(t_ms),
+                        embed_ms: Some(e_ms),
+                        polish_ms: Some(0),
+                        target_app: ta2.as_deref(),
+                        source: "voice",
+                        audio_id: aid2.as_deref(),
+                        enriched_transcript: Some(&enr2),
+                        raw_transcript: Some(&raw2),
+                        local_corrected_transcript: Some(&p2),
+                        polished_output: Some(&p2),
+                        trace_json: None,
+                    };
+                    crate::observability::after_recording_insert(
+                        &pool2,
+                        &uid2,
+                        &rec,
+                        crate::observability::observability_extras(crid2.as_deref()),
+                    );
+                    insert_recording(&pool2, rec).is_some()
+                }).await.unwrap_or(false)
+            };
+            if inserted {
+                let _ = crate::store::voice_runs::mark_voice_run_completed(
+                    &pool,
+                    &voice_run_id,
+                    &recording_id,
+                    None,
+                );
+            } else {
+                warn!("[voice] failed to insert polish-disabled recording history row");
+                let _ = crate::store::voice_runs::mark_voice_run_completed_unlinked(
+                    &pool,
+                    &voice_run_id,
+                );
+            }
             yield Ok(Event::default().event("done").data(
                 json!({
-                    "recording_id": Uuid::new_v4().to_string(),
+                    "recording_id": recording_id,
                     "transcript":   resolved_transcript,
                     "audio_id":     saved_audio_id,
                     "source":       "voice",
