@@ -24,7 +24,6 @@ pub const VK_2: u32 = 0x32;
 pub const VK_3: u32 = 0x33;
 pub const VK_4: u32 = 0x34;
 pub const VK_5: u32 = 0x35;
-pub const VK_N: u32 = 0x4E;
 pub const VK_V: u32 = 0x56;
 pub const VK_R: u32 = 0x52;
 pub const VK_LWIN: u32 = 0x5B;
@@ -112,47 +111,6 @@ pub enum ShortcutAction {
     Hud(HudShortcutAction),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-pub struct DivoSnapshot {
-    pub is_down: bool,
-    pub tainted: bool,
-    pub started: bool,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum DivoEffect {
-    None,
-    StartTimer,
-    MarkNewChat,
-    MarkTainted,
-    Release,
-    Cancel,
-    ClearTap,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct DivoDecision {
-    pub next: DivoSnapshot,
-    pub effect: DivoEffect,
-    pub swallow: bool,
-    pub bump_generation: bool,
-}
-
-impl DivoDecision {
-    fn none(state: DivoSnapshot) -> Self {
-        Self {
-            next: state,
-            effect: DivoEffect::None,
-            swallow: false,
-            bump_generation: false,
-        }
-    }
-}
-
-/// Match the macOS Divo hold delay. Kept in the pure module so the behavior has
-/// one tested contract across platform plumbing.
-pub const DIVO_HOLD_DELAY_MS: u64 = 280;
-
 /// Map a Win32 wparam value to an [`EvtKind`].
 pub fn wparam_to_kind(wparam: u32) -> EvtKind {
     if wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN {
@@ -203,84 +161,6 @@ pub fn classify(vk: u32, kind: EvtKind, target: Option<u32>, was_down: bool) -> 
             fire_release: was_down,
         },
         EvtKind::Other => HookAction::PassThrough,
-    }
-}
-
-pub fn is_control_vk(vk: u32) -> bool {
-    matches!(vk, VK_CONTROL | VK_LCONTROL | VK_RCONTROL)
-}
-
-pub fn classify_divo_event(
-    vk: u32,
-    kind: EvtKind,
-    enabled: bool,
-    state: DivoSnapshot,
-) -> DivoDecision {
-    if !enabled {
-        return DivoDecision::none(state);
-    }
-
-    match kind {
-        EvtKind::KeyDown if is_control_vk(vk) => {
-            if state.is_down {
-                return DivoDecision::none(state);
-            }
-            DivoDecision {
-                next: DivoSnapshot {
-                    is_down: true,
-                    tainted: false,
-                    started: false,
-                },
-                effect: DivoEffect::StartTimer,
-                swallow: false,
-                bump_generation: true,
-            }
-        }
-        EvtKind::KeyDown if state.is_down => {
-            if vk == VK_N {
-                DivoDecision {
-                    next: state,
-                    effect: DivoEffect::MarkNewChat,
-                    swallow: true,
-                    bump_generation: false,
-                }
-            } else {
-                DivoDecision {
-                    next: DivoSnapshot {
-                        tainted: true,
-                        ..state
-                    },
-                    effect: DivoEffect::MarkTainted,
-                    swallow: false,
-                    bump_generation: false,
-                }
-            }
-        }
-        EvtKind::KeyUp if is_control_vk(vk) && state.is_down => {
-            let mut next = DivoSnapshot {
-                is_down: false,
-                started: false,
-                ..state
-            };
-            let effect = if state.started {
-                if state.tainted {
-                    next.tainted = false;
-                    DivoEffect::Cancel
-                } else {
-                    DivoEffect::Release
-                }
-            } else {
-                next.tainted = false;
-                DivoEffect::ClearTap
-            };
-            DivoDecision {
-                next,
-                effect,
-                swallow: false,
-                bump_generation: true,
-            }
-        }
-        _ => DivoDecision::none(state),
     }
 }
 
@@ -387,130 +267,6 @@ mod tests {
         assert_eq!(target_vk(RecordHotkey::CapsLock), Some(VK_CAPITAL));
         assert_eq!(target_vk(RecordHotkey::RightOption), Some(VK_RMENU));
         assert_eq!(target_vk(RecordHotkey::Function), None);
-    }
-
-    #[test]
-    fn divo_classifier_ignores_events_when_disabled() {
-        let state = DivoSnapshot::default();
-        assert_eq!(
-            classify_divo_event(VK_CONTROL, EvtKind::KeyDown, false, state),
-            DivoDecision::none(state)
-        );
-    }
-
-    #[test]
-    fn divo_control_keydown_starts_delayed_hold_once() {
-        let state = DivoSnapshot::default();
-        assert_eq!(
-            classify_divo_event(VK_LCONTROL, EvtKind::KeyDown, true, state),
-            DivoDecision {
-                next: DivoSnapshot {
-                    is_down: true,
-                    tainted: false,
-                    started: false,
-                },
-                effect: DivoEffect::StartTimer,
-                swallow: false,
-                bump_generation: true,
-            }
-        );
-
-        let down = DivoSnapshot {
-            is_down: true,
-            ..DivoSnapshot::default()
-        };
-        assert_eq!(
-            classify_divo_event(VK_RCONTROL, EvtKind::KeyDown, true, down),
-            DivoDecision::none(down)
-        );
-    }
-
-    #[test]
-    fn divo_quick_control_tap_clears_without_callbacks() {
-        let down = DivoSnapshot {
-            is_down: true,
-            ..DivoSnapshot::default()
-        };
-        assert_eq!(
-            classify_divo_event(VK_CONTROL, EvtKind::KeyUp, true, down),
-            DivoDecision {
-                next: DivoSnapshot::default(),
-                effect: DivoEffect::ClearTap,
-                swallow: false,
-                bump_generation: true,
-            }
-        );
-    }
-
-    #[test]
-    fn divo_ctrl_n_records_new_chat_and_swallows_key() {
-        let down = DivoSnapshot {
-            is_down: true,
-            started: true,
-            ..DivoSnapshot::default()
-        };
-        assert_eq!(
-            classify_divo_event(VK_N, EvtKind::KeyDown, true, down),
-            DivoDecision {
-                next: down,
-                effect: DivoEffect::MarkNewChat,
-                swallow: true,
-                bump_generation: false,
-            }
-        );
-    }
-
-    #[test]
-    fn divo_other_key_while_down_taints_without_swallowing() {
-        let down = DivoSnapshot {
-            is_down: true,
-            started: true,
-            ..DivoSnapshot::default()
-        };
-        assert_eq!(
-            classify_divo_event(VK_V, EvtKind::KeyDown, true, down),
-            DivoDecision {
-                next: DivoSnapshot {
-                    tainted: true,
-                    ..down
-                },
-                effect: DivoEffect::MarkTainted,
-                swallow: false,
-                bump_generation: false,
-            }
-        );
-    }
-
-    #[test]
-    fn divo_release_after_started_hold_fires_release_or_cancel() {
-        let clean = DivoSnapshot {
-            is_down: true,
-            started: true,
-            tainted: false,
-        };
-        assert_eq!(
-            classify_divo_event(VK_RCONTROL, EvtKind::KeyUp, true, clean),
-            DivoDecision {
-                next: DivoSnapshot::default(),
-                effect: DivoEffect::Release,
-                swallow: false,
-                bump_generation: true,
-            }
-        );
-
-        let tainted = DivoSnapshot {
-            tainted: true,
-            ..clean
-        };
-        assert_eq!(
-            classify_divo_event(VK_RCONTROL, EvtKind::KeyUp, true, tainted),
-            DivoDecision {
-                next: DivoSnapshot::default(),
-                effect: DivoEffect::Cancel,
-                swallow: false,
-                bump_generation: true,
-            }
-        );
     }
 
     #[test]

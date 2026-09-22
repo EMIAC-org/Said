@@ -12,7 +12,6 @@ mod developer_context;
 mod diag; // lock-holder + breadcrumb instrumentation for stuck-state diagnostics
 mod dictation_model; // which local dictation model is current, and what is on disk
 mod dictation_stt;
-mod divo; // Ctrl hold-to-talk → Divo agent bridge (SSE proxy via control-plane)
 mod echo_gate;
 mod enterprise_oauth;
 mod favicon; // direct /favicon.ico fetch + cache for the Insights "Sites" section
@@ -940,8 +939,6 @@ struct PerformanceState(Mutex<sysinfo::System>);
 enum RecordingRoute {
     Normal,
     Meeting,
-    /// Ctrl hold-to-talk: transcribe + polish, then send to Divo instead of pasting.
-    Divo,
     /// Developer Problem Command: transcribe, resolve local project context, solve, final-paste only.
     Problem,
 }
@@ -1123,9 +1120,9 @@ struct StatusBarPlacementActive(AtomicBool);
 
 /// Whether the status bar should currently accept mouse clicks. Single source of
 /// truth so every native show/tune re-applies the real state instead of hardcoding
-/// click-through: a `present` while the HUD is already interactive (e.g.
-/// divo_streaming → divo_ready) would otherwise silently re-disable clicks, since
-/// the frontend only re-asserts interactivity when the flag actually changes.
+/// click-through: a `present` while the HUD is already interactive (e.g. an
+/// actionable prompt re-presented) would otherwise silently re-disable clicks,
+/// since the frontend only re-asserts interactivity when the flag actually changes.
 struct StatusBarInteractive(AtomicBool);
 
 /// Active dictation session id + generation for stale-result guards and logging.
@@ -2792,7 +2789,7 @@ fn set_status_bar_persistent(
     if persistent {
         // The hold keeps the panel visible past idle syncs. Interactivity is a
         // separate concern set by the caller: actionable prompts (updates, the
-        // Divo answer) want clicks; a passive run (Divo streaming) stays
+        // problem-ambiguous card) want clicks; a passive status stays
         // click-through so it never steals a click from the user's app. Apply it
         // from Rust immediately rather than relying on a later React effect.
         set_status_bar_interactive_state(&app, interactive.unwrap_or(true));
@@ -3329,34 +3326,6 @@ fn toggle_recording(
     }
 }
 
-/// Panel "Speak follow-up" (press-and-hold): start a Divo-routed recording that,
-/// on release, is sent as a follow-up on the active thread rather than a new task.
-#[tauri::command]
-fn divo_followup_begin(state: State<'_, SharedApp>, app: tauri::AppHandle) -> Result<(), String> {
-    let current = state.0.lock().map_err(|_| "lock failed")?.state;
-    if current == desktop::AppState::Idle {
-        DIVO_START_PENDING.store(true, Ordering::SeqCst);
-        DIVO_FOLLOWUP_PENDING.store(true, Ordering::SeqCst);
-        DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
-        do_start_recording(&state.0, &app);
-    }
-    Ok(())
-}
-
-/// Release of the panel follow-up button — finish recording and send to Divo.
-#[tauri::command]
-fn divo_followup_end(
-    state: State<'_, SharedApp>,
-    backend: State<'_, BackendState>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let current = state.0.lock().map_err(|_| "lock failed")?.state;
-    if current == desktop::AppState::Recording {
-        do_finish_recording(Arc::clone(&state.0), app.clone(), Arc::clone(&backend.0));
-    }
-    Ok(())
-}
-
 #[tauri::command]
 fn developer_problem_begin(
     state: State<'_, SharedApp>,
@@ -3461,18 +3430,9 @@ static RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
 static HOTKEY_START_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static FINISH_AFTER_START: AtomicBool = AtomicBool::new(false);
 static HOTKEY_FINISH_RETRY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
-/// Set by the Ctrl press (or the panel follow-up command) right before
-/// `do_start_recording`, consumed there to route the turn to Divo.
-static DIVO_START_PENDING: AtomicBool = AtomicBool::new(false);
 /// Set by the Developer Command trigger right before `do_start_recording`,
 /// consumed there to route the turn to the isolated Problem flow.
 static PROBLEM_START_PENDING: AtomicBool = AtomicBool::new(false);
-/// Distinguishes a spoken follow-up (continue the current thread) from a fresh
-/// Ctrl press (new task). Consumed in `do_finish_recording`'s Divo branch.
-static DIVO_FOLLOWUP_PENDING: AtomicBool = AtomicBool::new(false);
-/// Set on release when the capture was a Ctrl+N hold — the staged turn defaults to
-/// a brand-new chat. Captured from the hotkey crate at release, read at staging.
-static DIVO_NEW_CHAT_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Minimum time between consecutive finish→start cycles (ms).
 /// Prevents rapid Caps Lock taps from flooding the recording pipeline.
@@ -3932,7 +3892,6 @@ fn do_start_recording_inner(
     if RECORDING_STARTING.swap(true, Ordering::SeqCst) {
         diag::breadcrumb("record:start:skip_in_flight");
         tracing::info!("[record] start skipped — another start already in progress");
-        DIVO_START_PENDING.store(false, Ordering::SeqCst);
         PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
         return;
     }
@@ -3949,7 +3908,6 @@ fn do_start_recording_inner(
         );
         FINISH_AFTER_START.store(false, Ordering::SeqCst);
         RECORDING_STARTING.store(false, Ordering::SeqCst);
-        DIVO_START_PENDING.store(false, Ordering::SeqCst);
         PROBLEM_START_PENDING.store(false, Ordering::SeqCst);
         return;
     }
@@ -4053,9 +4011,7 @@ fn do_start_recording_inner(
 
     {
         let (_, run_id) = app.state::<RecordingSessionState>().begin();
-        let route = if DIVO_START_PENDING.swap(false, Ordering::SeqCst) {
-            RecordingRoute::Divo
-        } else if PROBLEM_START_PENDING.swap(false, Ordering::SeqCst) {
+        let route = if PROBLEM_START_PENDING.swap(false, Ordering::SeqCst) {
             RecordingRoute::Problem
         } else {
             app.try_state::<MeetingModeState>()
@@ -4072,7 +4028,6 @@ fn do_start_recording_inner(
             *route_state = Some(route);
         }
         let mode = match route {
-            RecordingRoute::Divo => "divo",
             RecordingRoute::Problem => "developer_problem",
             RecordingRoute::Meeting => "meeting",
             RecordingRoute::Normal if said_core::prefs::load().message_polish_mode => {
@@ -4488,7 +4443,6 @@ fn do_finish_recording(
         .and_then(|mut route| route.take())
         .unwrap_or(RecordingRoute::Normal);
     let is_meeting = recording_route == RecordingRoute::Meeting;
-    let is_divo = recording_route == RecordingRoute::Divo;
     let is_problem = recording_route == RecordingRoute::Problem;
     let meeting_generation_at_stop = if is_meeting {
         app.try_state::<MeetingModeState>()
@@ -4662,7 +4616,6 @@ fn do_finish_recording(
             None,
             &app2,
             is_meeting,
-            is_divo,
         )
         .await;
 
@@ -4681,95 +4634,6 @@ fn do_finish_recording(
                 client_run_id.as_deref().unwrap_or("none"),
             );
             clear_long_dictation_finishing(&app2, "superseded_finish");
-            return;
-        }
-
-        if is_divo {
-            // Divo turn: reset the desktop recording state (capture is done), then
-            // hand the polished instruction to the Divo bridge. The Divo SSE drives
-            // the HUD from here via `divo-*` events — no paste, no edit-watcher.
-            let (snap, instruction, err) = {
-                let mut d = match shared2.lock() {
-                    Ok(g) => g,
-                    Err(_) => {
-                        emit_voice_error_quiet(&app2, "Recording interrupted");
-                        recovery::clear();
-                        return;
-                    }
-                };
-                match result {
-                    Ok(done) => {
-                        let text = done.polished.clone();
-                        (
-                            d.finish_ok(ProcessSummary {
-                                transcript: done.transcript.clone(),
-                                polished: done.polished,
-                                model: done.model_used,
-                                confidence: done.confidence.unwrap_or(0.0),
-                                transcribe_ms: done.latency_ms.transcribe as u64,
-                                polish_ms: done.latency_ms.polish as u64,
-                            }),
-                            Some(text),
-                            None,
-                        )
-                    }
-                    Err(ref e) => (
-                        d.finish_err(strip_voice_error_already_emitted(e).to_string()),
-                        None,
-                        Some(e.clone()),
-                    ),
-                }
-            };
-            sync_tray(&app2, &snap);
-            emit_app_state(&app2, &snap);
-
-            // Default routing for the staged turn: Ctrl+N forces a new chat;
-            // otherwise we continue the active thread if there is one (the HUD lets
-            // the user override either way via the chat router).
-            let new_chat = DIVO_NEW_CHAT_PENDING.swap(false, Ordering::SeqCst);
-            let _ = DIVO_FOLLOWUP_PENDING.swap(false, Ordering::SeqCst);
-            let current_thread = app2.state::<divo::DivoState>().current_thread();
-            match (instruction, err) {
-                (Some(text), _) if !text.trim().is_empty() => {
-                    // Don't auto-send. Stage the polished transcript so the user
-                    // can review/edit it, pick a target chat, and press Send (or
-                    // cancel). The Send button invokes `divo_send`.
-                    tracing::info!(
-                        "[divo] staging instruction for review ({} chars, new_chat={new_chat}, current_thread={:?})",
-                        text.len(),
-                        current_thread.as_deref()
-                    );
-                    let _ = app2.emit(
-                        "divo-stage",
-                        serde_json::json!({
-                            "text": text,
-                            "newChat": new_chat,
-                            "currentThreadId": current_thread,
-                        }),
-                    );
-                }
-                (Some(_), _) => {
-                    // Empty transcript (e.g. a stray Ctrl tap with no speech) — don't
-                    // bother Divo, and keep the HUD quiet.
-                    tracing::info!("[divo] empty instruction — not sending to Divo");
-                }
-                (None, Some(e)) if !is_voice_error_already_emitted(&e) => {
-                    tracing::warn!("[divo] transcription failed before send: {e}");
-                    let _ = app2.emit(
-                        "divo-error",
-                        serde_json::json!({ "message": humanize_error(&e) }),
-                    );
-                }
-                (None, Some(e)) => {
-                    tracing::debug!(
-                        "[divo] transcription failure already reported through voice-error: {}",
-                        strip_voice_error_already_emitted(&e)
-                    );
-                }
-                _ => {}
-            }
-            recovery::clear();
-            clear_long_dictation_finishing(&app2, "divo_done");
             return;
         }
 
@@ -5345,17 +5209,16 @@ async fn run_voice_polish_sse(
     screen_context: Option<String>,
     message_polish_override: Option<bool>,
     app: &tauri::AppHandle,
-    #[allow(unused_variables)] is_meeting: bool,
-    is_divo: bool,
+    is_meeting: bool,
 ) -> Result<api::PolishDone, String> {
     let ep = {
         let lock = back_arc.lock().map_err(|_| "backend lock failed")?;
         lock.clone().ok_or("backend not started")?
     };
 
-    // Meeting capture AND Divo turns both suppress all local output (no live
-    // typing, no paste, no focused-field read) — they only need the polished text.
-    let suppress_local = is_meeting || is_divo;
+    // Meeting capture suppresses all local output (no live typing, no paste,
+    // no focused-field read) — it only needs the polished text.
+    let suppress_local = is_meeting;
     let app_clone = app.clone();
     // Snapshot this run's recording generation. If the user starts a NEW
     // recording while this one is still processing (e.g. they released the
@@ -5539,10 +5402,7 @@ async fn run_voice_polish_sse(
                     ""
                 };
                 tracing::info!("[pipeline] polished text: \"{preview}{suffix}\"");
-                // For Divo turns the Divo bridge drives the HUD — don't flash "Done".
-                if !is_divo {
-                    emit_voice_done(&app_clone, done, event_client_run_id.as_deref());
-                }
+                emit_voice_done(&app_clone, done, event_client_run_id.as_deref());
             }
             api::PolishEvent::Error {
                 message,
@@ -5724,7 +5584,7 @@ async fn run_voice_polish_sse(
             client_run_id.as_deref().unwrap_or("none"),
         );
     } else if suppress_local {
-        tracing::info!("[main] meeting/divo mode — skipping paste for polished chunk");
+        tracing::info!("[main] meeting mode — skipping paste for polished chunk");
     } else if !live_typed_text.is_empty() {
         if live_typed_text == done.polished {
             tracing::info!(
@@ -5772,9 +5632,8 @@ async fn run_voice_polish_sse(
     }
 
     // Always store latest result so the paste-latest hotkey can re-paste it any time.
-    // Divo instructions are commands, not dictation output — never store them.
     // A superseded run is abandoned — don't make its text the paste-latest target.
-    if !is_divo && !superseded && !done.polished.is_empty() {
+    if !superseded && !done.polished.is_empty() {
         if let Ok(mut g) = app.state::<LatestResult>().0.lock() {
             *g = Some(done.polished.clone());
         }
@@ -5812,54 +5671,49 @@ async fn run_voice_polish_sse(
     } else {
         format!("Press {} to paste anywhere", paste_latest_hotkey_label())
     };
-    // Divo turns never produce a paste — the Divo bridge owns the HUD from here.
-    if !is_divo {
-        tracing::debug!("[main] voice-output status={output_status}");
-        let _ = app.emit(
-            "voice-output",
-            serde_json::json!({
-                "status": output_status,
-                "message": output_message,
-                "run_id": client_run_id.as_deref(),
-            }),
-        );
-    }
+    tracing::debug!("[main] voice-output status={output_status}");
+    let _ = app.emit(
+        "voice-output",
+        serde_json::json!({
+            "status": output_status,
+            "message": output_message,
+            "run_id": client_run_id.as_deref(),
+        }),
+    );
 
-    if !is_divo {
-        let mut paste_trace = said_core::dictation_trace::DictationTrace::default();
-        paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "desktop.final_insert",
-            component: "desktop",
-            function: "insert_text_prefer_direct",
-            output: Some(done.polished.as_str()),
-            reason: Some("desktop inserted the final server output once"),
-            risk: Some("paste_insert"),
-            metadata: serde_json::json!({
-                "output_pasted": output_pasted,
-                "used_clipboard_fallback": used_clipboard_fallback,
-                "output_status": output_status,
-                "initial_field_readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
-                "message_polish": message_polish_mode,
-                "suppress_local": suppress_local,
-                "superseded": superseded,
-            }),
-            ..Default::default()
-        });
-        paste_trace.set_summary_field("paste_success", serde_json::json!(output_pasted));
-        paste_trace.set_summary_field("output_status", serde_json::json!(output_status));
-        let trace_ep = ep.clone();
-        let trace_recording_id = done.recording_id.clone();
-        let trace_value = paste_trace.into_value();
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) =
-                api::patch_dictation_trace(&trace_ep, &trace_recording_id, trace_value).await
-            {
-                tracing::warn!(
-                    "[observability] dictation paste trace patch failed recording_id={trace_recording_id}: {e}"
-                );
-            }
-        });
-    }
+    let mut paste_trace = said_core::dictation_trace::DictationTrace::default();
+    paste_trace.add_stage(said_core::dictation_trace::TraceStageInput {
+        stage: "desktop.final_insert",
+        component: "desktop",
+        function: "insert_text_prefer_direct",
+        output: Some(done.polished.as_str()),
+        reason: Some("desktop inserted the final server output once"),
+        risk: Some("paste_insert"),
+        metadata: serde_json::json!({
+            "output_pasted": output_pasted,
+            "used_clipboard_fallback": used_clipboard_fallback,
+            "output_status": output_status,
+            "initial_field_readable": initial_field_text.as_ref().is_some_and(|s| !s.is_empty()),
+            "message_polish": message_polish_mode,
+            "suppress_local": suppress_local,
+            "superseded": superseded,
+        }),
+        ..Default::default()
+    });
+    paste_trace.set_summary_field("paste_success", serde_json::json!(output_pasted));
+    paste_trace.set_summary_field("output_status", serde_json::json!(output_status));
+    let trace_ep = ep.clone();
+    let trace_recording_id = done.recording_id.clone();
+    let trace_value = paste_trace.into_value();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) =
+            api::patch_dictation_trace(&trace_ep, &trace_recording_id, trace_value).await
+        {
+            tracing::warn!(
+                "[observability] dictation paste trace patch failed recording_id={trace_recording_id}: {e}"
+            );
+        }
+    });
 
     if let Some(run_id) = client_run_id.as_deref() {
         if let Err(e) = api::mark_voice_run_paste(&ep, run_id, output_pasted).await {
@@ -5871,9 +5725,7 @@ async fn run_voice_polish_sse(
                 output_pasted,
             );
         }
-        let mode = if is_divo {
-            "divo"
-        } else if is_meeting {
+        let mode = if is_meeting {
             "meeting"
         } else if message_polish_mode {
             "message_polish"
@@ -6584,7 +6436,6 @@ fn retry_recording_spawn(
             message_polish_mode,
             &app2,
             false,
-            false, // not a Divo turn
         )
         .await;
 
@@ -10288,119 +10139,6 @@ fn main() {
                         }),
                     );
 
-                    // ── Ctrl hold-to-talk → Divo (independent of the record hotkey) ──
-                    {
-                        let shared_dp = Arc::clone(&app.state::<SharedApp>().0);
-                        let shared_dr = Arc::clone(&app.state::<SharedApp>().0);
-                        let shared_dc = Arc::clone(&app.state::<SharedApp>().0);
-                        let back_dp = Arc::clone(&app.state::<BackendState>().0);
-                        let back_dr = Arc::clone(&app.state::<BackendState>().0);
-                        let app_dp = app.handle().clone();
-                        let app_dr = app.handle().clone();
-                        let app_dc = app.handle().clone();
-                        hotkey::register_divo_hotkey_callbacks(
-                            // press → start a Divo-routed recording
-                            Arc::new(move || {
-                                let shared = Arc::clone(&shared_dp);
-                                let app_h = app_dp.clone();
-                                let back = Arc::clone(&back_dp);
-                                HOTKEY_START_IN_FLIGHT.store(true, Ordering::SeqCst);
-                                std::thread::spawn(move || {
-                                    struct HotkeyStartGuard;
-                                    impl Drop for HotkeyStartGuard {
-                                        fn drop(&mut self) {
-                                            HOTKEY_START_IN_FLIGHT.store(false, Ordering::SeqCst);
-                                        }
-                                    }
-                                    // _guard lives outside guard_panics so the in-flight
-                                    // flag is cleared on drop even if the body panics.
-                                    let _guard = HotkeyStartGuard;
-                                    guard_panics("divo.start", move || {
-                                        let current = hotkey_current_state(&shared, "divo start");
-                                        if current == Some(desktop::AppState::Idle) {
-                                            DIVO_START_PENDING.store(true, Ordering::SeqCst);
-                                            DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
-                                            DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
-                                            do_start_recording(&shared, &app_h);
-                                            if FINISH_AFTER_START.load(Ordering::SeqCst) {
-                                                request_queued_finish(
-                                                    shared,
-                                                    app_h,
-                                                    back,
-                                                    "divo_release_during_start",
-                                                );
-                                            }
-                                        }
-                                    });
-                                });
-                            }),
-                            // release → finish & send to Divo
-                            Arc::new(move || {
-                                let shared = Arc::clone(&shared_dr);
-                                let app_h = app_dr.clone();
-                                let back = Arc::clone(&back_dr);
-                                schedule_release_mic_cleanup(
-                                    Arc::clone(&shared),
-                                    app_h.clone(),
-                                    Arc::clone(&back),
-                                    "divo_hotkey_release",
-                                );
-                                std::thread::spawn(move || {
-                                    guard_panics("divo.finish", move || {
-                                        // Capture the Ctrl+N intent now, before the async
-                                        // transcription, so the staged turn knows whether
-                                        // to default to a new chat.
-                                        DIVO_NEW_CHAT_PENDING
-                                            .store(hotkey::divo_take_new_chat(), Ordering::SeqCst);
-                                        let current = hotkey_current_state(&shared, "divo finish");
-                                        if current == Some(desktop::AppState::Recording) {
-                                            FINISH_AFTER_START.store(false, Ordering::SeqCst);
-                                            do_finish_recording(shared, app_h, back);
-                                        } else if (current == Some(desktop::AppState::Idle)
-                                            || current.is_none())
-                                            && (HOTKEY_START_IN_FLIGHT.load(Ordering::SeqCst)
-                                                || RECORDING_STARTING.load(Ordering::SeqCst))
-                                        {
-                                            request_queued_finish(
-                                                shared,
-                                                app_h,
-                                                back,
-                                                "divo_release_before_start",
-                                            );
-                                        }
-                                    });
-                                });
-                            }),
-                            // cancel → a shortcut (Ctrl+C etc.) tainted the hold; drop it
-                            Arc::new(move || {
-                                let shared = Arc::clone(&shared_dc);
-                                let app_h = app_dc.clone();
-                                std::thread::spawn(move || {
-                                    guard_panics("divo.cancel", move || {
-                                        DIVO_START_PENDING.store(false, Ordering::SeqCst);
-                                        DIVO_FOLLOWUP_PENDING.store(false, Ordering::SeqCst);
-                                        DIVO_NEW_CHAT_PENDING.store(false, Ordering::SeqCst);
-                                        let _ = hotkey::divo_take_new_chat();
-                                        let current = hotkey_current_state(&shared, "divo cancel");
-                                        if current == Some(desktop::AppState::Recording) {
-                                            do_cancel_recording(shared, app_h, "divo ctrl shortcut");
-                                        }
-                                    });
-                                });
-                            }),
-                        );
-                        // Stays disabled until the webview pushes valid Divo credentials —
-                        // except in local dev-direct mode, where we force it on so the
-                        // feature can be exercised without a control-plane connection.
-                        let divo_direct = std::env::var("AIRNOTE_DIVO_DIRECT")
-                            .map(|s| !s.trim().is_empty())
-                            .unwrap_or(false);
-                        hotkey::set_divo_hotkey_enabled(divo_direct);
-                        if divo_direct {
-                            tracing::info!("[divo] dev-direct mode — Ctrl hotkey force-enabled");
-                        }
-                    }
-
                     let app_long = app.handle().clone();
                     let shared_long = Arc::clone(&app.state::<SharedApp>().0);
                     let long_pending = Arc::clone(&app.state::<LongDictationState>().pending_lock);
@@ -10527,7 +10265,6 @@ fn main() {
         .manage(ScreenContextState(Mutex::new(None)))
         .manage(RecordingRouteState(Mutex::new(None)))
         .manage(PendingProblemState(Mutex::new(None)))
-        .manage(divo::DivoState::new())
         .manage(PerformanceState(Mutex::new(sysinfo::System::new_all())))
         .manage(TrayCache(Mutex::new(TrayCacheInner::default())))
         .manage(LatestResult(std::sync::Arc::new(Mutex::new(None))))
@@ -10548,14 +10285,6 @@ fn main() {
             bootstrap,
             get_snapshot,
             chaos_inject,
-            divo::divo_set_credentials,
-            divo::divo_fetch_thread,
-            divo::divo_send,
-            divo::divo_list_threads,
-            divo::divo_thread_messages,
-            divo::divo_set_active_thread,
-            divo_followup_begin,
-            divo_followup_end,
             developer_context::developer_get_settings,
             developer_context::developer_save_settings,
             developer_context::developer_match_context,
