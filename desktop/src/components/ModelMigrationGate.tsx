@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { ArrowRight, Check, Cloud, Cpu, Loader2 } from "lucide-react";
 import {
   chooseInstalledLocalModel,
+  getDesktopPrefs,
   getLocalModelInventory,
   getSttSetupPolicy,
   invoke,
   removeUnusedLocalDictationModels,
+  setDesktopPrefs,
   type LocalModelInfo,
   type LocalModelInventory,
   type SttSetupPolicy,
@@ -14,6 +16,7 @@ import {
 import { friendlyError } from "@/lib/friendlyError";
 import { ErrorNotice } from "./ErrorNotice";
 import type { Platform } from "@/lib/hotkeys";
+import { NEW_MODEL_FILE, NEW_MODEL_NAME, NEW_MODEL_SIZE_HINT } from "@/lib/onDeviceModel";
 
 interface DownloadProgress {
   name: string;
@@ -27,30 +30,44 @@ interface DownloadProgress {
  *  event. It stayed a lookup table while three models existed; there is one now. */
 const DOWNLOAD_COMMAND = "download_dictation_model";
 const DOWNLOAD_EVENT = "meeting-model-download";
-/** Progress events carry the destination filename, which is unchanged — the new
- *  model installs over the old one at the same path. */
-const DOWNLOAD_EVENT_NAME = "ggml-oriserve-hinglish-fp16.bin";
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  return `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
-}
+/** The retired model's inventory key. Its file still loads, so a machine that
+ *  has it can keep dictating while the new one downloads. */
+const LEGACY_MODEL_KEY = "oriserve";
+const CLOUD_ROUTE = "cloud-deepinfra-whisper-v3-turbo";
 
 /**
  * Required speech-setup update, run once per migration version.
  *
- * AirNote ships one local model now, so there is nothing for the user to choose
- * and nothing to keep as a rollback — an older model cannot be selected any
- * more. The gate therefore starts the download itself and reports progress
- * rather than asking permission. Rust replaces the previous file in place and
- * verifies the checksum before the model counts as installed.
+ * AirNote ships one local model now, so there is nothing for the user to choose.
+ * The gate starts the download itself and reports progress. Rust downloads to a
+ * staging file and only swaps it in after the checksum passes, so the previous
+ * model keeps working until the new one is proven.
+ *
+ * The gate never traps anyone. A user who still has the older model can carry
+ * on with it and let the download finish in the background. A user with no
+ * model at all can cancel, or fall back to cloud speech. Either way the
+ * migration is only stamped done after the new model is installed, so the next
+ * launch tries again by itself.
  */
-export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: () => void; platform: Platform }) {
+export function ModelMigrationGate({
+  onDone,
+  onDismiss,
+  platform: _platform,
+}: {
+  /** The new model is installed: never show this again. */
+  onDone: () => void;
+  /** Close for this session only; the next launch retries. */
+  onDismiss: () => void;
+  platform: Platform;
+}) {
   const [policy, setPolicy] = useState<SttSetupPolicy | null>(null);
   const [inventory, setInventory] = useState<LocalModelInventory | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [busy, setBusy] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState("");
+  const [stopped, setStopped] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const mounted = useRef(true);
   /** Guards the auto-start so a re-render, or a refresh triggered by a progress
    *  event, cannot launch a second download of the same file. */
@@ -82,26 +99,32 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
     if (inventory?.setup_kind !== "local_required") return;
     const unlisten = listen<DownloadProgress>(DOWNLOAD_EVENT, (event) => {
       const progress = event.payload;
-      if (progress.name !== DOWNLOAD_EVENT_NAME) return;
+      if (progress.name !== NEW_MODEL_FILE) return;
       if (progress.status === "downloading") {
         setDownload(progress);
         setError("");
       } else {
         setDownload(null);
       }
-      if (progress.status === "done") void refresh();
+      // "done" means the bytes arrived; the checksum and swap still follow.
+      setVerifying(progress.status === "done");
       if (progress.status === "error" && progress.error) setError(friendlyError(progress.error));
     });
     return () => { void unlisten.then((stop) => stop()); };
-  }, [inventory?.setup_kind, refresh]);
+  }, [inventory?.setup_kind]);
 
   /** Download the current model, select it, and clear out anything an older
    *  release left behind. Retired files are removed without asking: nothing can
-   *  load them any more, so keeping them is lost disk, not a rollback. */
+   *  load them any more, so keeping them is lost disk, not a rollback.
+   *
+   *  This keeps running after the gate is dismissed ("Continue in background"),
+   *  which is why the success path does not bail out on unmount: the migration
+   *  must still be stamped once the model is really there. */
   const install = useCallback(async () => {
     const recommended = inventory?.recommended_model;
     if (!recommended) return;
     setBusy(true);
+    setStopped(false);
     setError("");
     try {
       await invoke(DOWNLOAD_COMMAND, undefined);
@@ -109,19 +132,39 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
       if (next.reclaimable_bytes > 0) {
         await removeUnusedLocalDictationModels();
       }
-      if (!mounted.current) return;
-      await refresh();
       onDone();
     } catch (cause) {
+      if (!mounted.current) return;
       const message = friendlyError(cause);
-      // A cancel is a user action, not a failure worth shouting about. Reopen
-      // the door so a retry can start a fresh attempt.
-      started.current = false;
-      if (message.toLowerCase() !== "cancelled") setError(message);
+      if (message.toLowerCase() === "cancelled") setStopped(true);
+      else setError(message);
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current) {
+        setBusy(false);
+        setVerifying(false);
+      }
     }
-  }, [inventory?.recommended_model, onDone, refresh]);
+  }, [inventory?.recommended_model, onDone]);
+
+  const cancel = useCallback(async () => {
+    await invoke("meeting_cancel_model_download", { name: NEW_MODEL_FILE }).catch(() => {});
+  }, []);
+
+  /** Only offered when there is no model at all. Dictation works right away on
+   *  cloud speech; the next launch installs the model and switches back. */
+  const useCloudForNow = useCallback(async () => {
+    setSwitching(true);
+    setError("");
+    try {
+      const prefs = await getDesktopPrefs();
+      await setDesktopPrefs({ ...prefs, dictation_stt: CLOUD_ROUTE });
+      onDismiss();
+    } catch (cause) {
+      if (mounted.current) setError(friendlyError(cause));
+    } finally {
+      if (mounted.current) setSwitching(false);
+    }
+  }, [onDismiss]);
 
   // Start as soon as we know what this machine needs. An already-current model
   // means there is nothing to do and the gate closes on its own.
@@ -129,12 +172,11 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
     if (!inventory || inventory.setup_kind !== "local_required") return;
     if (started.current || busy) return;
     const recommended = inventory.models.find((model) => model.key === inventory.recommended_model);
+    started.current = true;
     if (recommended?.installed && recommended.active_for_dictation && inventory.reclaimable_bytes === 0) {
-      started.current = true;
       onDone();
       return;
     }
-    started.current = true;
     void install();
   }, [inventory, busy, install, onDone]);
 
@@ -178,15 +220,35 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
   }
 
   const recommended = inventory.models.find((model) => model.key === inventory.recommended_model) as LocalModelInfo | undefined;
+  // The retired Oriserve file still loads, so dictation keeps working on it
+  // while the new model downloads. That decides what the way out looks like.
+  const hasWorkingModel = inventory.models.some((model) => model.key === LEGACY_MODEL_KEY && model.installed);
   const pct = download && download.total > 0 ? Math.min(100, Math.round((download.received / download.total) * 100)) : null;
-  const reclaiming = recommended?.installed && inventory.reclaimable_bytes > 0;
+  const failed = !busy && (Boolean(error) || stopped);
+  const modelLabel = `${recommended?.name ?? NEW_MODEL_NAME} · ${recommended?.size_hint ?? NEW_MODEL_SIZE_HINT}`;
 
-  const title = recommended?.installed
-    ? "Finishing up."
-    : `Updating your speech model.`;
-  const description = recommended?.installed
-    ? `Freeing ${formatSize(inventory.reclaimable_bytes)} from speech models AirNote no longer uses.`
-    : `AirNote is installing ${recommended?.name ?? "the current model"} for this Mac. This replaces the older model and takes a moment.`;
+  let title: string;
+  let description: string;
+  if (failed) {
+    title = stopped ? "Update paused." : "Couldn’t finish the update.";
+    description = hasWorkingModel
+      ? "Nothing changed. You’re still on your current speech model, and AirNote will try again the next time it opens."
+      : "Dictation needs a speech model. Try again, or use cloud speech for now and AirNote will install the model the next time it opens.";
+  } else if (recommended?.installed) {
+    title = "Finishing up.";
+    description = "Removing speech models AirNote no longer uses.";
+  } else {
+    title = "Updating your speech model.";
+    description = hasWorkingModel
+      ? `AirNote is installing ${recommended?.name ?? NEW_MODEL_NAME}, a sharper Hinglish model. Your current model keeps working until the new one is ready.`
+      : `AirNote is installing ${recommended?.name ?? NEW_MODEL_NAME} for on-device dictation. It’s a one-time download.`;
+  }
+
+  let status: ReactNode;
+  if (failed) status = null;
+  else if (recommended?.installed && !busy) status = <span className="mig-ready"><Check size={12} /> Installed</span>;
+  else if (verifying) status = <span className="mig-ready"><Loader2 size={12} className="animate-spin" /> Verifying…</span>;
+  else status = <span className="mig-ready"><Loader2 size={12} className="animate-spin" /> {pct !== null ? `${pct}%` : "Starting…"}</span>;
 
   return (
     <div className="mig-overlay" role="dialog" aria-modal="true" aria-labelledby="model-migration-title">
@@ -196,17 +258,32 @@ export function ModelMigrationGate({ onDone, platform: _platform }: { onDone: ()
         <p className="mig-desc">{description}</p>
         <div className="mig-model" aria-live="polite">
           <div className="mig-model-row">
-            <span className="mig-model-left"><span className="mig-model-ico"><Cpu size={13} /></span><span className="mig-model-name">{recommended?.name} · {recommended?.size_hint}</span></span>
-            {recommended?.installed && !reclaiming
-              ? <span className="mig-ready"><Check size={12} /> Installed</span>
-              : <span className="mig-ready"><Loader2 size={12} className="animate-spin" /> {pct !== null ? `${pct}%` : "Working…"}</span>}
+            <span className="mig-model-left"><span className="mig-model-ico"><Cpu size={13} /></span><span className="mig-model-name">{modelLabel}</span></span>
+            {status}
           </div>
-          {pct !== null && <div className="mig-bar"><div style={{ width: `${Math.max(4, pct)}%` }} /></div>}
-          <ErrorNotice error={error} onRetry={() => void install()} className="mt-2" />
+          {!failed && pct !== null && <div className="mig-bar"><div style={{ width: `${Math.max(4, pct)}%` }} /></div>}
+          {failed && error && <ErrorNotice error={error} className="mt-2" />}
         </div>
 
-        {/* No actions while this runs itself. A failure is the only thing the
-            user can act on, and ErrorNotice above already offers the retry. */}
+        <div className="mig-actions">
+          {failed && (
+            <button onClick={() => void install()} className="btn-primary btn-lg w-full">Try again</button>
+          )}
+          {failed && hasWorkingModel && (
+            <button onClick={onDismiss} className="btn-ghost w-full">Continue with current model</button>
+          )}
+          {failed && !hasWorkingModel && (
+            <button onClick={() => void useCloudForNow()} disabled={switching} className="btn-ghost w-full">
+              <Cloud size={13} /> {switching ? "Switching…" : "Use cloud speech for now"}
+            </button>
+          )}
+          {!failed && busy && hasWorkingModel && (
+            <button onClick={onDismiss} className="btn-ghost w-full">Continue in background</button>
+          )}
+          {!failed && busy && !hasWorkingModel && !verifying && (
+            <button onClick={() => void cancel()} className="btn-ghost w-full">Cancel</button>
+          )}
+        </div>
       </div>
     </div>
   );

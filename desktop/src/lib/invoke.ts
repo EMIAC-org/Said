@@ -1087,10 +1087,11 @@ export interface DesktopPrefs {
   browser_context_enabled: boolean;
   /** Enforced device route: local or hosted DeepInfra Whisper. */
   dictation_stt: "local" | "cloud-deepinfra-whisper-v3-turbo";
-  /** Hardware-assigned local model. Meetings retain their own Oriserve path. */
-  local_stt_model: "oriserve" | "nemotron-q4" | "nemotron-q8";
-  /** Explicit decision to keep an older installed model during an upgrade. */
-  local_stt_compat_override?: "oriserve" | "nemotron-q8" | null;
+  /** The local model. Older installs may still store a retired key; Rust
+   *  normalises it to the current model on load. */
+  local_stt_model: LocalModelKey;
+  /** Retired: kept so older prefs files still deserialize. Always null now. */
+  local_stt_compat_override?: LocalModelKey | null;
 }
 
 export interface SttSetupPolicy {
@@ -1098,7 +1099,7 @@ export interface SttSetupPolicy {
   cpu_family: "apple_silicon" | "intel" | "windows_or_other";
   total_memory_bytes: number;
   setup_kind: "cloud_locked" | "local_required";
-  local_model: "oriserve" | "nemotron-q4" | null;
+  local_model: "clario-hinglish-41h" | null;
   local_model_name: string | null;
   local_model_size_hint: string | null;
 }
@@ -1150,7 +1151,7 @@ export async function getDesktopPrefs(): Promise<DesktopPrefs> {
       beta_mode: false,
       browser_context_enabled: false,
       dictation_stt: "local",
-      local_stt_model: "oriserve",
+      local_stt_model: "clario-hinglish-41h",
     };
   }
   return tauriInvoke<DesktopPrefs>("get_desktop_prefs");
@@ -1183,9 +1184,9 @@ export async function getSttSetupPolicy(): Promise<SttSetupPolicy> {
       cpu_family: "apple_silicon",
       total_memory_bytes: 16 * 1024 * 1024 * 1024,
       setup_kind: "local_required",
-      local_model: "nemotron-q4",
-      local_model_name: "Nemotron Streaming 3.5 (Q4)",
-      local_model_size_hint: "~496 MB",
+      local_model: "clario-hinglish-41h",
+      local_model_name: "AirNote Hinglish (41h)",
+      local_model_size_hint: "~141 MB",
     };
   }
   return tauriInvoke<SttSetupPolicy>("get_stt_setup_policy");
@@ -1193,31 +1194,21 @@ export async function getSttSetupPolicy(): Promise<SttSetupPolicy> {
 
 export async function getLocalModelInventory(): Promise<LocalModelInventory> {
   if (!isTauriRuntime()) {
+    // Browser preview: an existing user mid-upgrade — the retired model is
+    // still on disk and the current one has not been installed yet.
     return {
       setup_kind: "local_required",
-      recommended_model: "nemotron-q4",
-      selected_model: "oriserve",
+      recommended_model: "clario-hinglish-41h",
+      selected_model: "clario-hinglish-41h",
       recommended_installed: false,
-      existing_compatible_model: "oriserve",
+      existing_compatible_model: null,
       models: [
         {
-          key: "oriserve",
-          name: "Oriserve Hinglish",
-          installed: true,
-          size_bytes: 148_000_000,
-          size_hint: "~148 MB",
-          recommended: false,
-          active_for_dictation: true,
-          required_for_meetings: true,
-          compatibility_candidate: true,
-          safe_to_remove: false,
-        },
-        {
-          key: "nemotron-q4",
-          name: "Nemotron Streaming 3.5 (Q4)",
+          key: "clario-hinglish-41h",
+          name: "AirNote Hinglish (41h)",
           installed: false,
           size_bytes: 0,
-          size_hint: "~496 MB",
+          size_hint: "~141 MB",
           recommended: true,
           active_for_dictation: false,
           required_for_meetings: false,
@@ -1225,11 +1216,11 @@ export async function getLocalModelInventory(): Promise<LocalModelInventory> {
           safe_to_remove: false,
         },
         {
-          key: "nemotron-q8",
-          name: "Nemotron Streaming 3.5 (Q8)",
-          installed: false,
-          size_bytes: 0,
-          size_hint: "~751 MB",
+          key: "oriserve",
+          name: "Oriserve Hinglish (retired)",
+          installed: true,
+          size_bytes: 148_000_000,
+          size_hint: "~148 MB",
           recommended: false,
           active_for_dictation: false,
           required_for_meetings: false,

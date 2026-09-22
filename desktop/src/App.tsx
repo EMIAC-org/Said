@@ -676,6 +676,11 @@ export default function App() {
     setMigrationDone(MIGRATION_VERSION);
   }, []);
 
+  // Closed for this session without finishing (kept the old model, or chose
+  // cloud for now). Not stamped, so the next launch picks the update up again.
+  const [migrationDismissed, setMigrationDismissed] = useState(false);
+  const handleMigrationDismiss = useCallback(() => setMigrationDismissed(true), []);
+
   // ── Navigation ─────────────────────────────────────────────────────────────
   const handleViewChange = useCallback((view: string) => {
     // Settings is now a modal — intercept the route and open the modal instead
@@ -742,7 +747,7 @@ export default function App() {
   // Keep the restored application visible beneath the required v6 speech setup.
   // The gate itself owns hardware detection and model verification, so this
   // condition must remain version-based rather than assuming one local model.
-  const showPostUpdateGate = migrationDone < MIGRATION_VERSION;
+  const showPostUpdateGate = migrationDone < MIGRATION_VERSION && !migrationDismissed;
 
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
@@ -926,6 +931,7 @@ export default function App() {
     {showPostUpdateGate && (
       <ModelMigrationGate
         onDone={handleMigrationDone}
+        onDismiss={handleMigrationDismiss}
         platform={(snapshot?.platform ?? "macos") as "macos" | "windows" | "linux"}
       />
     )}

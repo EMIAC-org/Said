@@ -99,8 +99,8 @@ function formatSize(bytes: number): string {
 const STEPS = ONBOARDING_STEP_IDS;
 
 // All desktop platforms get the same high-level onboarding order. The speech
-// recognition step reads the shared device policy before rendering: live
-// Nemotron on Windows/Intel, required local setup on Apple Silicon.
+// recognition step reads the shared device policy before rendering: cloud
+// Whisper on Windows/Intel, the one local model on Apple Silicon.
 function visibleStepsFor(): Step[] {
   return [...STEPS];
 }
@@ -131,8 +131,6 @@ export function OnboardingFlow({
   const [dictationModel, setDictationModel] = useState<DictationModelStatus | null>(null);
   const [dictationDownload, setDictationDownload] = useState<DictationDownloadProgress | null>(null);
   const [sttPolicy, setSttPolicy] = useState<SttSetupPolicy | null>(null);
-  const [nemotronQ4Model, setNemotronQ4Model] = useState<DictationModelStatus | null>(null);
-  const [nemotronQ4Download, setNemotronQ4Download] = useState<DictationDownloadProgress | null>(null);
   const [dictationBusy, setDictationBusy] = useState(false);
   const [dictationError, setDictationError] = useState("");
   // Live "Try it" feedback so a failed first dictation is never a silent empty box.
@@ -213,19 +211,13 @@ export function OnboardingFlow({
       const policy = await getSttSetupPolicy();
       setSttPolicy(policy);
       if (policy.setup_kind === "cloud_locked") return policy;
-      if (policy.local_model === "nemotron-q4") {
-        const status = await invoke<DictationModelStatus>("nemotron_model_status", { variant: "q4" });
-        setNemotronQ4Model(status);
-        if (status.installed) onLocalModelReady?.();
-      } else {
-        await refreshDictationModel();
-      }
+      await refreshDictationModel();
       return policy;
     } catch (e) {
       setDictationError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [onLocalModelReady, refreshDictationModel]);
+  }, [refreshDictationModel]);
 
   useEffect(() => {
     void refreshSttSetup();
@@ -256,24 +248,6 @@ export function OnboardingFlow({
   }, [refreshDictationModel]);
 
   useEffect(() => {
-    const unlistenP = listen<DictationDownloadProgress>("nemotron-model-download", (event) => {
-      const payload = event.payload;
-      if (payload.name !== "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf") return;
-      if (payload.status === "downloading") {
-        setNemotronQ4Download(payload);
-        setDictationError("");
-      } else {
-        setNemotronQ4Download(null);
-      }
-      if (payload.status === "done") void refreshSttSetup();
-      if (payload.status === "error") setDictationError(friendlyError(payload.error, "Model download failed."));
-    });
-    return () => {
-      void unlistenP.then((fn) => fn());
-    };
-  }, [refreshSttSetup]);
-
-  useEffect(() => {
     if (resumeSynced.current) return;
     if (!snapshot) return;
     resumeSynced.current = true;
@@ -292,9 +266,9 @@ export function OnboardingFlow({
   }, [authMode]);
 
   const dictationModelInstalled = dictationModel?.installed ?? false;
-  const localModelInstalled = sttPolicy?.local_model === "nemotron-q4"
-    ? (nemotronQ4Model?.installed ?? false)
-    : dictationModelInstalled;
+  // One local model now. `installed` means the current one: the retired model
+  // that an older release left at the same path does not count.
+  const localModelInstalled = dictationModelInstalled;
   const permsReady = micGranted && (isWindows || (accGranted && imGranted));
   const stepIndex = visStepIndex(step);
 
@@ -587,14 +561,10 @@ export function OnboardingFlow({
     setDictationError("");
     setKeyError("");
     try {
-      if (sttPolicy?.local_model === "nemotron-q4") {
-        await invoke("download_nemotron_model", { variant: "q4" });
-        const status = await invoke<DictationModelStatus>("nemotron_model_status", { variant: "q4" });
-        if (!status.installed) throw new Error("Nemotron Streaming 3.5 (Q4) did not install correctly. Try again.");
-      } else {
-        await invoke("download_dictation_model");
-        const status = await invoke<DictationModelStatus>("dictation_model_status");
-        if (!status.installed) throw new Error("Oriserve Hinglish did not install correctly. Try again.");
+      await invoke("download_dictation_model");
+      const status = await invoke<DictationModelStatus>("dictation_model_status");
+      if (!status.installed) {
+        throw new Error(`${sttPolicy?.local_model_name ?? NEW_MODEL_NAME} did not install correctly. Try again.`);
       }
       if (!sttPolicy?.local_model) throw new Error("No local model is assigned to this device.");
       await chooseInstalledLocalModel(sttPolicy.local_model);
@@ -605,7 +575,7 @@ export function OnboardingFlow({
     } finally {
       setDictationBusy(false);
     }
-  }, [refreshSttSetup, sttPolicy?.local_model]);
+  }, [refreshSttSetup, sttPolicy?.local_model, sttPolicy?.local_model_name]);
 
   const handleDictationCancel = useCallback(async () => {
     await invoke("meeting_cancel_model_download", { name: NEW_MODEL_FILE }).catch(() => {});
@@ -979,8 +949,8 @@ export function OnboardingFlow({
   }
 
   // ── Step 4: Speech recognition setup ─────────────────────────────────────
-  // The shared device policy either confirms live Nemotron or requires its
-  // assigned local model before dictation can run.
+  // The shared device policy either confirms cloud Whisper or requires the
+  // local model before dictation can run.
   if (step === "keys") {
     // Do not let a transient bridge delay fall back to a guessed model. The
     // policy is the contract; setup waits until it is known or asks to retry.
@@ -996,7 +966,7 @@ export function OnboardingFlow({
             : "This takes a moment."}
           brandTagline="AirNote selects one reliable speech route for this device."
           brandKicker="Speech setup"
-          brandQuote="Your processor and memory determine the local setup when one is needed."
+          brandQuote="Apple Silicon Macs run speech on-device. Intel Macs and Windows use cloud speech."
           topRight={<span>{stepLabel(step)}</span>}
           onBack={goBack}
           {...navProps}
@@ -1018,8 +988,8 @@ export function OnboardingFlow({
     const cloudLocked = sttPolicy?.setup_kind === "cloud_locked";
     const recommendedName = sttPolicy?.local_model_name ?? NEW_MODEL_NAME;
     const recommendedSize = sttPolicy?.local_model_size_hint ?? NEW_MODEL_SIZE_HINT;
-    const selectedDownload = sttPolicy?.local_model === "nemotron-q4" ? nemotronQ4Download : dictationDownload;
-    const selectedModel = sttPolicy?.local_model === "nemotron-q4" ? nemotronQ4Model : dictationModel;
+    const selectedDownload = dictationDownload;
+    const selectedModel = dictationModel;
     const downloadPct = selectedDownload && selectedDownload.total > 0
       ? Math.min(100, Math.round((selectedDownload.received / selectedDownload.total) * 100))
       : null;
@@ -1104,7 +1074,7 @@ export function OnboardingFlow({
               </span>
             </div>
             <p className="text-[11.5px] text-muted-foreground leading-relaxed mb-3">
-              AirNote selected this model from your Mac’s processor and RAM. It is the required
+              Every Apple Silicon Mac runs this model on-device. It is the required
               local setup for dictation and avoids cloud speech usage by default.
             </p>
             <DictationModelCard
@@ -1117,7 +1087,7 @@ export function OnboardingFlow({
               error={dictationError}
               onDownload={() => void handleDictationDownload()}
               onCancel={() => void handleDictationCancel()}
-              canCancel={sttPolicy?.local_model !== "nemotron-q4"}
+              canCancel
             />
 
             <button
