@@ -310,6 +310,17 @@ fn merge_local_only_recordings(
 }
 
 fn merge_local_metadata(server: &mut Recording, local: &Recording) {
+    // A server row can exist with no text at all — the run was registered but
+    // the words never reached the server (a polish-off dictation, for one).
+    // An empty server row must never hide text the device actually recorded.
+    if server.polished.trim().is_empty() && !local.polished.trim().is_empty() {
+        server.transcript = local.transcript.clone();
+        server.polished = local.polished.clone();
+        server.word_count = local.word_count;
+        if server.model_used == "server_runtime" {
+            server.model_used = local.model_used.clone();
+        }
+    }
     if server.audio_id.is_none() {
         server.audio_id = local.audio_id.clone();
     }
@@ -447,6 +458,30 @@ mod tests {
         server.target_app = Some("com.apple.Notes".to_string());
         merge_local_metadata(&mut server, &local);
         assert_eq!(server.target_app.as_deref(), Some("com.apple.Notes"));
+    }
+
+    #[test]
+    fn local_text_fills_an_empty_server_row_but_never_overwrites_server_text() {
+        let mut server = server_row_to_recording(runtime_row(), "default");
+        let mut local = server.clone();
+        local.transcript = "kya dikkat ho gayi bhai".to_string();
+        local.polished = "Kya dikkat ho gayi bhai?".to_string();
+        local.word_count = 5;
+        local.model_used = "polish_disabled".to_string();
+
+        server.transcript = String::new();
+        server.polished = String::new();
+        server.word_count = 0;
+        server.model_used = "server_runtime".to_string();
+        merge_local_metadata(&mut server, &local);
+        assert_eq!(server.polished, "Kya dikkat ho gayi bhai?");
+        assert_eq!(server.word_count, 5);
+        assert_eq!(server.model_used, "polish_disabled");
+
+        let mut server = server_row_to_recording(runtime_row(), "default");
+        let original = server.polished.clone();
+        merge_local_metadata(&mut server, &local);
+        assert_eq!(server.polished, original, "server text stays authoritative");
     }
 }
 

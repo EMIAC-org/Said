@@ -54,6 +54,7 @@ function formatDuration(seconds: number | null | undefined): string {
 function formatModel(model: string | null | undefined): string {
   if (!model) return "";
   const m = model.toLowerCase();
+  if (m === "polish_disabled") return "Polish off";
   if (m.includes("oriserve")) return "Hinglish (Oriserve)";
   if (m.includes("whisper")) return "Whisper";
   if (m.includes("groq") || m.includes("llama")) return "Groq";
