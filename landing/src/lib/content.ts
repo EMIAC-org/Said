@@ -3,9 +3,9 @@
 
 export const downloads = {
   mac: {
-    latestVersion: "2.4.5",
+    latestVersion: "2.5.0",
     latestDmg:
-      "https://airnote.emiactech.com/releases/2.4.5/AirNote_2.4.5_aarch64.dmg",
+      "https://airnote.emiactech.com/releases/2.5.0/AirNote_2.5.0_aarch64.dmg",
   },
   windows: {
     latestVersion: "2.4.4",
@@ -185,15 +185,6 @@ export const features = {
       title: "Clipboard integration.",
       body: "No copy-paste step in the middle of your flow.",
       tagline: "Cleaned text lands where your cursor is.",
-    },
-    {
-      id: "meeting",
-      accent: "cyan",
-      icon: "Users",
-      visual: "MeetingCallVisual",
-      title: "Meeting assistant.",
-      body: "Focus on the conversation while Airnote takes notes.",
-      tagline: "Record and digest meetings effortlessly.",
     },
   ],
   // Small callout row beneath — icon + title + 2-line body + optional badge.
