@@ -623,9 +623,6 @@ public protocol MobileGatewayClient {
     func listOrgMembers(orgID: String) async throws -> [OrgMember]
     func addOrgMember(orgID: String, email: String, role: String) async throws -> OrgMember
     func setMemberRole(orgID: String, accountID: String, role: String) async throws -> OrgMember
-    func divoListThreads() async throws -> [DivoThreadSummary]
-    func divoThread(id: String) async throws -> DivoThread
-    func divoChat(message: String, threadID: String?) async throws -> DivoChatResult
     /// Rewrite arbitrary text into a chosen tone/language via the (text-in) runtime
     /// voice-polish engine. `tonePreset == nil` falls back to the account's saved tone.
     func rewriteText(_ text: String, tonePreset: String?, outputLanguage: String, screenContext: String?, safeVocabTerms: [String]) async throws -> String
@@ -761,9 +758,6 @@ public struct PreviewMobileGatewayClient: MobileGatewayClient {
     public func setMemberRole(orgID: String, accountID: String, role: String) async throws -> OrgMember {
         OrgMember(id: "preview", accountId: accountID, email: "preview@airnote.app", role: role, larkName: nil)
     }
-    public func divoListThreads() async throws -> [DivoThreadSummary] { [] }
-    public func divoThread(id: String) async throws -> DivoThread { DivoThread(id: id, title: "Preview", messages: []) }
-    public func divoChat(message: String, threadID: String?) async throws -> DivoChatResult { DivoChatResult(content: "Preview answer.", threadID: threadID ?? "preview") }
     public func rewriteText(_ text: String, tonePreset: String?, outputLanguage: String, screenContext: String?, safeVocabTerms: [String]) async throws -> String { "Polished: \(text)" }
     public func openaiConnect() async throws -> OpenAIConnectInfo { OpenAIConnectInfo(authUrl: "https://chatgpt.com/", codeVerifier: "preview", state: "preview") }
     public func openaiComplete(code: String, codeVerifier: String) async throws {}
@@ -993,89 +987,6 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
     private struct SetRoleBody: Encodable { let role: String }
     private struct MemberEnvelope: Decodable { let member: OrgMember }
 
-    // MARK: Divo (SSE chat; server-gated to approved accounts)
-
-    public func divoListThreads() async throws -> [DivoThreadSummary] {
-        let url = baseURL.appendingPathComponent("v1/divo/threads")
-        var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        c?.queryItems = [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "pageSize", value: "30")]
-        var urlRequest = URLRequest(url: c?.url ?? url)
-        urlRequest.httpMethod = "GET"
-        authorize(&urlRequest)
-        let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(data, response: response)
-        return try decoder.decode(DivoThreadsEnvelope.self, from: data).data.threads
-    }
-
-    public func divoThread(id: String) async throws -> DivoThread {
-        let url = baseURL.appendingPathComponent("v1/divo/threads/\(id)")
-        var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        c?.queryItems = [URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "pageSize", value: "50")]
-        var urlRequest = URLRequest(url: c?.url ?? url)
-        urlRequest.httpMethod = "GET"
-        authorize(&urlRequest)
-        let (data, response) = try await session.data(for: urlRequest)
-        try Self.validate(data, response: response)
-        return try decoder.decode(DivoThreadEnvelope.self, from: data).data
-    }
-
-    public func divoChat(message: String, threadID: String?) async throws -> DivoChatResult {
-        var req = URLRequest(url: baseURL.appendingPathComponent("v1/divo/chat"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        req.timeoutInterval = 120
-        req.httpBody = try encoder.encode(DivoChatBody(requestId: RequestId.make(), message: message, threadId: threadID, mode: "high"))
-        authorize(&req)
-        let (bytes, response) = try await session.bytes(for: req)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw GatewayError.from(status: http.statusCode, code: nil,
-                                    message: http.statusCode == 403 ? "Divo is limited to approved accounts, and needs Lark sign-in." : nil)
-        }
-        var event = ""
-        var dataLines: [String] = []
-        var content: String?
-        var thread = threadID
-        // Dispatch a buffered SSE event; returns true if the stream should end.
-        func dispatch() throws -> Bool {
-            defer { event = ""; dataLines = [] }
-            let dataStr = dataLines.joined(separator: "\n")
-            guard !dataStr.isEmpty else { return false }
-            let obj = (try? JSONSerialization.jsonObject(with: Data(dataStr.utf8))) as? [String: Any]
-            switch event {
-            case "error":
-                throw GatewayError.server(status: 0, code: nil, message: (obj?["message"] as? String) ?? "Divo error")
-            case "done":
-                if let msg = obj?["message"] as? [String: Any] {
-                    content = msg["content"] as? String
-                    thread = (msg["threadId"] as? String) ?? thread
-                }
-            case "meta":
-                thread = (obj?["threadId"] as? String) ?? thread
-            default:
-                break
-            }
-            return event == "done"
-        }
-        for try await line in bytes.lines {
-            if line.isEmpty {
-                if try dispatch() { break }
-                continue
-            }
-            if line.hasPrefix(":") { continue }
-            if line.hasPrefix("event:") {
-                event = String(line.dropFirst("event:".count)).trimmingCharacters(in: .whitespaces)
-            } else if line.hasPrefix("data:"), dataLines.count < 512 {
-                dataLines.append(String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces))
-            }
-        }
-        // Flush a final event that arrived at EOF without a trailing blank line
-        // (SSE spec dispatches on end-of-stream) so a successful answer isn't lost.
-        _ = try dispatch()
-        guard let content, !content.isEmpty else { throw GatewayError.invalidResponse }
-        return DivoChatResult(content: content, threadID: thread)
-    }
-
     public func rewriteText(_ text: String, tonePreset: String?, outputLanguage: String, screenContext: String?, safeVocabTerms: [String]) async throws -> String {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/runtime/voice/polish"))
         req.httpMethod = "POST"
@@ -1115,18 +1026,6 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
         }
     }
     private struct RewriteResponse: Decodable { let output: String }
-
-    private struct DivoThreadsEnvelope: Decodable {
-        let data: ThreadsData
-        struct ThreadsData: Decodable { let threads: [DivoThreadSummary] }
-    }
-    private struct DivoThreadEnvelope: Decodable { let data: DivoThread }
-    private struct DivoChatBody: Encodable {
-        var requestId: String
-        var message: String
-        var threadId: String?
-        var mode: String
-    }
 
     private struct CreateMeetingBody: Encodable {
         var title: String
@@ -1433,11 +1332,11 @@ public final class HTTPMobileGatewayClient: MobileGatewayClient {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         // Scope the active workspace to ONLY the org-aware endpoints (meetings,
-        // divo, orgs). Account-scoped endpoints (runtime/voice/settings/history/
+        // orgs). Account-scoped endpoints (runtime/voice/settings/history/
         // credentials/learning) must NOT carry it, or the server would org-scope
         // personal data — so the header is gated on the request path.
         if let org = SharedStore.activeOrgID, !org.isEmpty, let path = request.url?.path,
-           path.contains("/v1/meetings") || path.contains("/v1/orgs") || path.contains("/v1/divo") {
+           path.contains("/v1/meetings") || path.contains("/v1/orgs") {
             request.setValue(org, forHTTPHeaderField: "X-AirNote-Org-Id")
         }
     }

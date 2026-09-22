@@ -212,7 +212,7 @@ public enum SharedStore {
 
     /// The active workspace (org) id, or nil for personal mode. Read by the
     /// gateway client to send the `X-AirNote-Org-Id` header on org-scoped
-    /// endpoints (meetings, divo). Lives in the App Group so the keyboard's
+    /// endpoints (meetings). Lives in the App Group so the keyboard's
     /// client carries the same workspace.
     public static var activeOrgID: String? {
         get { string(Key.activeOrgID) }

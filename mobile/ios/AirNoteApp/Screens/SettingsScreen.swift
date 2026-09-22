@@ -114,13 +114,10 @@ struct SettingsScreen: View {
             NavigationLink(destination: MeetingsScreen()) {
                 Label("Meetings", systemImage: "person.2.wave.2")
             }
-            NavigationLink(destination: DivoScreen()) {
-                Label("Divo — AI chat", systemImage: "sparkles")
-            }
         } header: {
             Text("Enterprise")
         } footer: {
-            Text("Meetings and Divo for \(env.activeOrg?.name ?? "your workspace").")
+            Text("Meetings for \(env.activeOrg?.name ?? "your workspace").")
         }
     }
 
