@@ -12,6 +12,10 @@
 // macOS dev machines too. The Win32 plumbing in `imp_windows` consumes this.
 pub mod win_hotkey;
 
+// Tap-to-talk alongside hold-to-talk, shared by the macOS and Windows hooks.
+pub mod tap_latch;
+pub use tap_latch::reset_tap_latch;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordHotkey {
     CapsLock,
@@ -737,6 +741,37 @@ mod imp {
     }
 
     static mut HOLD_STATE: Option<HoldState> = None;
+
+    /// Record-hotkey down for keys that report only down/up. Caps Lock does
+    /// not come through here: macOS toggles it, which already gives tap mode.
+    fn latched_press(s: &HoldState, label: &str) {
+        let now = std::time::Instant::now();
+        match crate::tap_latch::with_latch(|latch| latch.press(now)) {
+            crate::tap_latch::LatchAction::Start => {
+                tracing::info!("[hotkey] {label} down → start recording");
+                (s.on_press)();
+            }
+            crate::tap_latch::LatchAction::Finish => {
+                tracing::info!("[hotkey] {label} tapped again → process");
+                (s.on_release)();
+            }
+            crate::tap_latch::LatchAction::Ignore => {}
+        }
+    }
+
+    fn latched_release(s: &HoldState, label: &str) {
+        let now = std::time::Instant::now();
+        match crate::tap_latch::with_latch(|latch| latch.release(now)) {
+            crate::tap_latch::LatchAction::Finish => {
+                tracing::info!("[hotkey] {label} released → process");
+                (s.on_release)();
+            }
+            crate::tap_latch::LatchAction::Ignore => {
+                tracing::info!("[hotkey] {label} released (tap or finishing tap)");
+            }
+            crate::tap_latch::LatchAction::Start => {}
+        }
+    }
     static mut HOLD_TAP: ffi::CFMachPortRef = std::ptr::null_mut();
 
     unsafe extern "C" fn hold_tap_callback(
@@ -755,6 +790,7 @@ mod imp {
                 if let Some(ref mut s) = HOLD_STATE {
                     s.is_down = false;
                 }
+                crate::tap_latch::reset_tap_latch();
                 event
             },
         }
@@ -769,6 +805,9 @@ mod imp {
                 let kc = ffi::CGEventGetIntegerValueField(event, ffi::K_CG_KEYBOARD_EVENT_KEYCODE);
                 let _fl = ffi::CGEventGetFlags(event);
                 tracing::trace!("[hotkey] HOLD tap keydown kc={kc} flags={_fl:#010x}");
+                // A key pressed while the record hotkey is held makes that
+                // press a shortcut, never a tap (see `tap_latch`).
+                crate::tap_latch::with_latch(|latch| latch.other_key());
 
                 if check_and_fire_paste(event) {
                     return std::ptr::null_mut(); // suppress Ctrl+Cmd+V system action
@@ -820,12 +859,10 @@ mod imp {
                         if keycode == ffi::KC_RIGHT_OPTION {
                             if right_alt_on && !s.is_down {
                                 s.is_down = true;
-                                tracing::info!("[hotkey] Right Option held → start recording");
-                                (s.on_press)();
+                                latched_press(s, "Right Option");
                             } else if !right_alt_on && s.is_down {
                                 s.is_down = false;
-                                tracing::info!("[hotkey] Right Option released → process");
-                                (s.on_release)();
+                                latched_release(s, "Right Option");
                             }
                         }
                     }
@@ -834,12 +871,10 @@ mod imp {
                         if keycode == ffi::KC_FUNCTION {
                             if fn_on && !s.is_down {
                                 s.is_down = true;
-                                tracing::info!("[hotkey] Fn held → start recording");
-                                (s.on_press)();
+                                latched_press(s, "Fn");
                             } else if !fn_on && s.is_down {
                                 s.is_down = false;
-                                tracing::info!("[hotkey] Fn released → process");
-                                (s.on_release)();
+                                latched_release(s, "Fn");
                             }
                         }
                     }
@@ -855,12 +890,10 @@ mod imp {
                         if keycode == mac_keycode {
                             if mod_on && !s.is_down {
                                 s.is_down = true;
-                                tracing::info!("[hotkey] modifier held → start recording");
-                                (s.on_press)();
+                                latched_press(s, "modifier");
                             } else if !mod_on && s.is_down {
                                 s.is_down = false;
-                                tracing::info!("[hotkey] modifier released → process");
-                                (s.on_release)();
+                                latched_release(s, "modifier");
                             }
                         }
                     }

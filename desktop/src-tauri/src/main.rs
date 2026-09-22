@@ -4277,6 +4277,9 @@ fn do_cancel_recording(
     reason: &'static str,
 ) {
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
+    // A cancelled recording must not leave a tap latched, or the next press
+    // would try to finish it instead of starting a new one.
+    hotkey::reset_tap_latch();
     reset_long_dictation_lock(&app);
     restore_speaker_suppression(&app, reason);
     recovery::clear();
@@ -4330,6 +4333,9 @@ fn do_finish_recording(
     back_arc: Arc<Mutex<Option<BackendEndpoint>>>,
 ) {
     diag::breadcrumb("record:finish:enter");
+    // Every finish ends any tap latch: the hotkey's own second tap has already
+    // cleared it, but a time limit or an app-side stop has not.
+    hotkey::reset_tap_latch();
     FINISH_AFTER_START.store(false, Ordering::SeqCst);
     LAST_FINISH_MS.store(now_ms_desktop(), Ordering::SeqCst);
     clear_long_dictation_recording_lock(&app);

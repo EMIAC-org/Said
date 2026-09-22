@@ -190,6 +190,13 @@ unsafe fn hook_proc_inner(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT 
     let mods = current_modifiers();
     let record_hotkey = current_record_hotkey();
 
+    // A key pressed while the record hotkey is held makes that press a
+    // shortcut, never a tap (see `tap_latch`). Checked before the shortcut
+    // and long-dictation handlers, which return early.
+    if matches!(kind, crate::win_hotkey::EvtKind::KeyDown) && Some(vk) != target_vk(record_hotkey) {
+        crate::tap_latch::with_latch(|latch| latch.other_key());
+    }
+
     if classify_long_dictation(
         vk,
         kind,
@@ -217,17 +224,31 @@ unsafe fn hook_proc_inner(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT 
             fire_press,
             fire_release,
         } => {
+            // Windows swallows every record hotkey, Caps Lock included, so
+            // none of them toggle on their own; the tap latch gives all of
+            // them tap-to-talk alongside hold-to-talk.
+            let now = std::time::Instant::now();
+            let mut action = crate::tap_latch::LatchAction::Ignore;
             if fire_press {
                 IS_DOWN.store(true, Ordering::Relaxed);
-                if let Some(cb) = ON_PRESS.get() {
-                    cb();
-                }
+                action = crate::tap_latch::with_latch(|latch| latch.press(now));
             }
             if fire_release {
                 IS_DOWN.store(false, Ordering::Relaxed);
-                if let Some(cb) = ON_RELEASE.get() {
-                    cb();
+                action = crate::tap_latch::with_latch(|latch| latch.release(now));
+            }
+            match action {
+                crate::tap_latch::LatchAction::Start => {
+                    if let Some(cb) = ON_PRESS.get() {
+                        cb();
+                    }
                 }
+                crate::tap_latch::LatchAction::Finish => {
+                    if let Some(cb) = ON_RELEASE.get() {
+                        cb();
+                    }
+                }
+                crate::tap_latch::LatchAction::Ignore => {}
             }
             LRESULT(1)
         }
