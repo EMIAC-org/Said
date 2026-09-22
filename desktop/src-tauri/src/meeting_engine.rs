@@ -13781,7 +13781,15 @@ pub async fn meeting_download_whisper_model(app: AppHandle, name: String) -> Res
     let name_for_task = name.clone();
     let app_dl = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        download_whisper_model_blocking(&app_dl, &name_for_task, &url, total_hint, &dir, &dest, "done")
+        download_whisper_model_blocking(
+            &app_dl,
+            &name_for_task,
+            &url,
+            total_hint,
+            &dir,
+            &dest,
+            "done",
+        )
     })
     .await
     .map_err(|e| format!("download task failed: {e}"))?;
