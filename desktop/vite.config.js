@@ -9,11 +9,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *  app. Only in `--mode mock`, so no other build ever references them. */
 const mockPreview = {
   name: "airnote-mock-preview",
-  transformIndexHtml: (html) =>
-    html.replace(
-      '<script type="module" src="/src/main.tsx"></script>',
-      '<script type="module" src="/src/dev/mock/index.ts"></script>\n    $&',
-    ),
+  // head-prepend puts it ahead of main.tsx; module scripts run in document order.
+  transformIndexHtml: () => [
+    { tag: "script", attrs: { type: "module", src: "/src/dev/mock/index.ts" }, injectTo: "head-prepend" },
+  ],
 };
 
 export default defineConfig(({ mode }) => ({
