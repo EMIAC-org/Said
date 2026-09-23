@@ -7,10 +7,10 @@
 ## What This Project Is
 
 **AirNote** is a macOS + Windows voice dictation app that polishes speech in real-time using an LLM.
-Hold Caps Lock, speak, release — AirNote transcribes locally, polishes text, and types it into any focused app in English, Hindi, Hinglish, or whatever mix comes out of your mouth.
+Hold your hotkey (Fn, Caps Lock or a modifier), speak, release — AirNote transcribes locally, polishes text, and types it into any focused app in English, Hindi, Hinglish, or whatever mix comes out of your mouth.
 
 Core runtime (platform-specific code paths shown):
-1. Caps Lock triggers `hotkey` crate
+1. The dictation hotkey (Fn / Globe, Caps Lock, or a single modifier) triggers the `hotkey` crate
    - macOS: `CGEventTap` (Input Monitoring permission)
    - Windows: `WH_KEYBOARD_LL` low-level keyboard hook (no permission required)
 2. `recorder` captures audio via `cpal` (CoreAudio on macOS, WASAPI on Windows, 16 kHz PCM)
@@ -86,7 +86,7 @@ cd desktop && npm ci              # reinstall deps
 ## Repository Structure
 
 ```
-/crates/hotkey        global Caps Lock listener (CGEventTap)
+/crates/hotkey        global hotkey listener (CGEventTap): Fn, Caps Lock or a modifier
 /crates/recorder      CoreAudio capture at 16 kHz
 /crates/core          shared transcript metadata + polish helpers
 /crates/paster        HID typing into focused field + 30s edit watch

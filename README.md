@@ -6,7 +6,7 @@
 
 ### *Voice dictation for macOS that actually understands the way you speak.*
 
-Hold Caps Lock. Speak. Release. Said types polished text into any app —
+Hold your key. Speak. Release. Said types polished text into any app —
 in English, Hindi, Hinglish, or whatever mix comes out of your mouth.
 
 <br />
@@ -44,8 +44,8 @@ Download the signed AirNote DMG from the [latest release](https://github.com/EMI
 
 After install:
 
-- **Hold Caps Lock** to dictate. Release to type polished text into the focused window. The Caps Lock toggle never fires — Said suppresses the OS-level toggle while the app is running (so you don't accidentally end up in ALL CAPS).
-- Caps Lock not your preference? **Settings → Hold key → Right Alt**.
+- **Pick your key** during setup: Fn / Globe, Caps Lock, or any single modifier (left or right ⌘, ⌃, ⌥, ⇧). Change it any time under **Settings → Hotkeys**.
+- **Hold it** to dictate and release to type polished text into the focused window. Caps Lock works as a tap instead: tap to start, tap to send, and its caps toggle is suppressed while Said runs.
 - No permission prompts on Windows — `WH_KEYBOARD_LL` and `SendInput` work for non-elevated apps without setup.
 
 Windows known limitations in v3.0:
@@ -160,8 +160,8 @@ Receipts in code, not marketing — see [`script.rs`](crates/backend/src/llm/scr
 ## How it works
 
 ```
-   Caps Lock           local whisper.cpp           Groq / Codex
-   ─────────           ─────────────────           ────────────
+   your hotkey         local whisper.cpp           Groq / Codex
+   ───────────         ─────────────────           ────────────
    hold to record  ──► local transcript ──► polish (LLM, streaming)
                                                     │
                                                     ▼
@@ -182,7 +182,7 @@ Receipts in code, not marketing — see [`script.rs`](crates/backend/src/llm/scr
 
 Six components, all in this repo:
 
-- [**`crates/hotkey`**](crates/hotkey) — global Caps Lock listener (CGEventTap), hold-to-talk or push-to-toggle.
+- [**`crates/hotkey`**](crates/hotkey) — global hotkey listener (CGEventTap) for Fn, Caps Lock or a modifier key, hold-to-talk or tap-to-toggle.
 - [**`crates/recorder`**](crates/recorder) — CoreAudio/WASAPI capture at 16 kHz.
 - [**`crates/core`**](crates/core) — shared speech transcript metadata and polish helpers.
 - [**`crates/backend`**](crates/backend) — local Axum daemon. SQLite (20 migrations), 7 vocabulary-related tables, 256-d embeddings, the learning pipeline, prefs.
@@ -206,18 +206,18 @@ After install:
    ```
    Microphone, Accessibility, Input Monitoring. Said never phones home; everything except the LLM call lives on your machine.
 
-Now hold Caps Lock anywhere on your Mac and speak.
+Now hold your key (Fn, or whichever you picked) anywhere on your Mac and speak.
 
 <details>
-<summary>Why Caps Lock?</summary>
+<summary>Which key should I use?</summary>
 
-Three reasons:
+Any single key you can press without looking works. The picker offers:
 
-1. **It's the largest unused key on a Mac.** Easy to find by feel.
-2. **Hold-to-talk doesn't conflict with shortcuts.** Anything that starts with ⌘, ⌥, ⌃ stays free.
-3. **The toggle behavior is suppressed when held > 200 ms.** Tap it and it still toggles caps; hold it and it dictates. You don't lose the key.
+1. **Fn / Globe**, held while you speak.
+2. **Caps Lock**, as a tap to start and a tap to send. Its caps toggle is suppressed while dictating.
+3. **A modifier on its own** (left or right ⌘, ⌃, ⌥, ⇧), held while you speak.
 
-If you'd rather use a different key, switch the hotkey under Settings or in [`crates/hotkey/src/lib.rs`](crates/hotkey/src/lib.rs).
+Switch it under Settings → Hotkeys, or see [`crates/hotkey/src/lib.rs`](crates/hotkey/src/lib.rs).
 
 </details>
 
@@ -260,7 +260,7 @@ Most settings live in the desktop app under **Settings**. The interesting ones:
 - **Output language** — `english`, `hindi`, `hinglish`, `auto`. `hinglish` is the default.
 - **Polish provider** — Codex (free, via your ChatGPT account), Groq (fastest), Gemini direct, OpenAI direct.
 - **Tone preset** — neutral, professional, casual, assertive, concise, or a custom prompt.
-- **Hotkey** — Caps Lock hold or toggle, with optional alternates.
+- **Hotkey** — Fn / Globe, Caps Lock or any single modifier; hold to talk, or tap to start and stop.
 - **Vocabulary** — review what Said has learned, edit terms, force-promote a word.
 
 For headless / CLI users, the same settings live in `~/Library/Application Support/Said/`.
