@@ -30,6 +30,10 @@ const KNOWN_APP_NAMES: Record<string, string> = {
   "com.apple.Terminal": "Terminal",
   "com.spotify.client": "Spotify",
   "com.linear.app": "Linear",
+  "com.linear": "Linear",
+  "notion.id": "Notion",
+  "net.whatsapp.WhatsApp": "WhatsApp",
+  "com.todesktop.230313mzl4w4u92": "Cursor",
   "com.discord.Discord": "Discord",
   "com.zoom.us": "Zoom",
 };

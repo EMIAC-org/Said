@@ -6,6 +6,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Recording } from "@/types";
+import { appDisplayName, fallbackAppName, useAppIdentity } from "@/components/AppIcon";
 import {
   deleteRecording,
   getAppIcon,
@@ -67,8 +68,7 @@ function formatSourceApp(target: string | null | undefined): string {
   if (!target || !target.trim()) return "This device";
   const t = target.trim();
   if (t.includes(" ") || !t.includes(".")) return t; // already a friendly name
-  const seg = t.split(".").pop() ?? t;               // com.tinyspeck.slack → slack
-  return seg.charAt(0).toUpperCase() + seg.slice(1);
+  return fallbackAppName(t);                         // com.tinyspeck.slackmacgap → Slack
 }
 
 /** Build a friendly WAV filename: "airnote-2026-05-03-1430-12-words.wav". */
@@ -410,7 +410,9 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
   const orig = originalText(recording);
   const hasRawStt = Boolean((recording.raw_transcript ?? "").trim());
   const hasOriginal = orig.length > 0 && (hasRawStt || orig !== fullText);
-  const source = formatSourceApp(recording.target_app);
+  // The app's real name (from macOS) once resolved; the bundle-id guess until then.
+  const identity = useAppIdentity(recording.target_app);
+  const source = recording.target_app?.trim() ? appDisplayName(recording.target_app, identity) : formatSourceApp(recording.target_app);
   const model = formatModel(recording.model_used);
   const duration = formatDuration(recording.recording_seconds);
 
