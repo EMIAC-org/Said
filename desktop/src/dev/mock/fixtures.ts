@@ -289,9 +289,24 @@ export const siteUsage: SiteUsageRow[] = [
   { host: "linear.app", target_app: "com.google.Chrome", count: 4, last_used_ms: Date.now() - DAY },
 ];
 
+/** macOS's own category for the app (LSApplicationCategoryType, prettified),
+ *  which is what the real `get_app_identity` returns — not the AirNote bucket. */
+const MAC_CATEGORY: Record<string, string> = {
+  "com.tinyspeck.slackmacgap": "Business",
+  "net.whatsapp.WhatsApp": "Social Networking",
+  "com.linear": "Productivity",
+  "notion.id": "Productivity",
+  "com.todesktop.230313mzl4w4u92": "Developer Tools",
+  "com.apple.Terminal": "Utilities",
+  "com.apple.mail": "Productivity",
+  "com.google.Chrome": "Productivity",
+  "com.microsoft.VSCode": "Developer Tools",
+  "com.apple.Notes": "Productivity",
+};
+
 export function appIdentity(key: string): AppIdentity | null {
-  const app = MOCK_APPS[key];
-  return app ? { key, name: app.name, category: app.category, icon: null } : null;
+  const app = MOCK_APPS[key] as { name: string; icon?: string } | undefined;
+  return app ? { key, name: app.name, category: MAC_CATEGORY[key] ?? null, icon: app.icon ?? null } : null;
 }
 
 /** A rounded-square letter tile in the app's brand colour, so lists that show
