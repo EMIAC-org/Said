@@ -528,6 +528,12 @@
       inset 0 1px 0 hsl(0 0% 100% / 0.14),
       0 2px 8px hsl(209 100% 20% / 0.22);
   }
+  [data-theme="light"] .btn-primary:disabled {
+    background: hsl(var(--surface-4));
+    color: hsl(var(--muted-foreground));
+    box-shadow: none;
+    cursor: not-allowed;
+  }
   [data-theme="light"] .btn-ghost:hover {
     background: hsl(216 15% 94%);
     box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
@@ -1266,6 +1272,44 @@
     color: hsl(var(--foreground));
     box-shadow: inset 0 0 0 1px hsl(var(--border));
   }
+
+  [data-theme="light"] .seg { background: hsl(var(--surface-2)); }
+  [data-theme="light"] .seg > button[aria-selected="true"],
+  [data-theme="light"] .seg > button[data-active="true"] {
+    background: hsl(0 0% 100%);
+    box-shadow: 0 0 0 1px hsl(var(--border)), 0 1px 2px hsl(216 20% 10% / 0.06);
+  }
+
+  /* ── Text field with a leading icon (search, quick add) ─────────────── */
+  .field {
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    border-radius: 10px;
+    background: hsl(var(--input));
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
+    transition: box-shadow 0.15s ease;
+  }
+  .field:focus-within {
+    box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.6), 0 0 0 3px hsl(var(--primary) / 0.12);
+  }
+  .field input { flex: 1; min-width: 0; background: transparent; outline: none; color: hsl(var(--foreground)); }
+  .field input::placeholder { color: hsl(var(--muted-foreground) / 0.8); }
+
+  /* ── Vocabulary — one hairline panel, divided rows, a column header:
+        the site's table rhythm instead of a stack of cards. ─────────────── */
+  .vocab-list {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .vocab-list-head {
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--surface-2) / 0.6);
+  }
+  .vocab-row { transition: background-color 0.12s ease; }
+  .vocab-row + .vocab-row { border-top: 1px solid hsl(var(--border)); }
+  .vocab-row:hover { background: hsl(var(--foreground) / 0.025); }
+  .vocab-row[data-flash] { background: hsl(var(--primary) / 0.08); }
 
   /* ── Live token blinking caret ──────────────────────────────────── */
   .caret-blink {

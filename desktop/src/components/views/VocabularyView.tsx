@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen, Sparkles, Star, Trash2, Search, X, Plus, Check, AlertTriangle,
-  Pencil, ChevronDown, Undo2, RotateCw, Wand2, ArrowRight,
+  Pencil, ChevronDown, Undo2, RotateCw, RotateCcw, ArrowRight,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -193,15 +193,28 @@ function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: numbe
   );
 }
 
-// ── Source anchor (colored icon box) ──────────────────────────────────────────
+// ── Where a term came from (shown in the status dot's tooltip) ──────────────
 
-const SOURCE_ANCHOR: Record<KnownSource, { icon: React.ReactNode; bg: string; fg: string; title: string }> = {
-  starred: { icon: <Star size={15} fill="currentColor" />, bg: "hsl(var(--chip-amber-bg))", fg: "hsl(var(--chip-amber-fg))", title: "You pinned this word" },
-  manual:  { icon: <Pencil size={14} />,                    bg: "hsl(var(--chip-blue-bg))",  fg: "hsl(var(--chip-blue-fg))",  title: "You added this word yourself" },
-  auto:    { icon: <Sparkles size={14} />,                  bg: "hsl(var(--chip-mint-bg))",  fg: "hsl(var(--chip-mint-fg))",  title: "Learned automatically from your corrections" },
+const SOURCE_TITLE: Record<KnownSource, string> = {
+  starred: "You pinned this word",
+  manual: "You added this word yourself",
+  auto: "Learned automatically from your corrections",
 };
 
-// ── Single term card ──────────────────────────────────────────────────────────
+/** Status is a dot, not a chip: the section heading already says what the
+ *  group is, so the row only has to say which one it is. */
+const STATUS_DOT: Record<StatusKey, string> = {
+  correcting: "hsl(var(--chip-lime-fg))",
+  starred: "hsl(var(--chip-amber-fg))",
+  glossary: "hsl(var(--primary))",
+  idle: "hsl(var(--muted-foreground) / 0.45)",
+};
+
+/** Column widths shared by the header and every row, so numbers line up down
+ *  the list like a table. */
+const COL = { fixes: "w-[84px]", used: "w-[68px]", last: "w-[72px]", actions: "w-[88px]" };
+
+// ── Single term row ───────────────────────────────────────────────────────────
 
 interface RowProps {
   info: TermInfo;
@@ -213,114 +226,85 @@ interface RowProps {
   onEdit: (row: VocabRow) => void;
 }
 
+function RowAction({ title, onClick, danger, children }: { title: string; onClick: () => void; danger?: boolean; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={title}
+      aria-label={title}
+      className={`w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground transition-colors hover:bg-[hsl(var(--foreground)/0.06)] ${danger ? "hover:text-[hsl(var(--destructive))]" : "hover:text-foreground"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
 function VocabRowItem({ info, flash, expanded, onToggleExpand, onStar, onDelete, onEdit }: RowProps) {
   const { row, fixes, activeFixes, status } = info;
   const isStarred = row.source === "starred";
-  const a = SOURCE_ANCHOR[normalizeSource(row.source)];
   const st = STATUS_META[status];
   const hasFixes = fixes.length > 0;
+  const type = typeLabel(row.term_type);
+  const last = relativeTime(row.last_used);
 
   return (
-    <div
-      className="vocab-card group relative rounded-xl transition-colors"
-      style={flash
-        ? { boxShadow: "inset 0 0 0 1px hsl(var(--primary) / 0.5)", background: "hsl(var(--primary) / 0.10)" }
-        : { boxShadow: "inset 0 0 0 1px hsl(var(--border))", background: "hsl(var(--surface-1))" }}
-      onMouseEnter={(e) => { if (!flash) e.currentTarget.style.background = "hsl(var(--surface-2))"; }}
-      onMouseLeave={(e) => { if (!flash) e.currentTarget.style.background = "hsl(var(--surface-1))"; }}
-    >
-      <div className="flex items-center gap-3 px-4 py-3 cursor-pointer" onClick={() => onEdit(row)}>
-        {/* Source anchor */}
-        <div className="w-8 h-8 flex-shrink-0 rounded-lg flex items-center justify-center" style={{ background: a.bg, color: a.fg }} title={a.title}>
-          {a.icon}
+    <div className="vocab-row group" data-flash={flash || undefined}>
+      <div className="flex items-center gap-3 pl-4 pr-2 min-h-[46px] cursor-pointer" onClick={() => onEdit(row)}>
+        <span
+          className="w-[7px] h-[7px] rounded-full flex-shrink-0"
+          style={{ background: STATUS_DOT[status] }}
+          title={`${st.label}: ${st.blurb}. ${SOURCE_TITLE[normalizeSource(row.source)]}.`}
+        />
+        <div className="flex-1 min-w-0 flex items-center gap-2">
+          <span className="text-[13.5px] font-medium text-foreground truncate">{row.term}</span>
+          {isStarred && <Star size={11} fill="currentColor" className="flex-shrink-0" style={{ color: "hsl(var(--chip-amber-fg))" }} aria-label="Pinned" />}
+          {type && <span className="text-[12px] text-muted-foreground truncate">{type}</span>}
         </div>
 
-        {/* Term + status */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[14px] text-foreground font-medium">{row.term}</span>
-            {typeLabel(row.term_type) && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))" }}>
-                {typeLabel(row.term_type)}
-              </span>
-            )}
-            {isStarred && status !== "starred" && (
-              <Star size={11} fill="currentColor" style={{ color: "hsl(var(--chip-amber-fg))" }} />
-            )}
-          </div>
-          <div className="flex items-center gap-2 mt-1 text-[11px] flex-wrap">
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold" style={{ background: st.bg, color: st.color }} title={st.blurb}>
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: st.color }} />
-              {st.label}
-            </span>
-            {hasFixes && (
+        <div className="flex items-center flex-shrink-0 text-[12px] text-muted-foreground tabular-nums">
+          <span className={`${COL.fixes} flex justify-end`}>
+            {hasFixes ? (
               <button
                 onClick={(e) => { e.stopPropagation(); onToggleExpand(row.term); }}
-                className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors font-medium"
+                aria-expanded={expanded}
+                className="inline-flex items-center gap-1 -mr-1 px-1.5 py-0.5 rounded-md text-foreground hover:bg-[hsl(var(--foreground)/0.06)] transition-colors"
               >
-                {activeFixes > 0 ? `${activeFixes} fix${activeFixes !== 1 ? "es" : ""}` : `${fixes.length} pending`}
-                <ChevronDown size={11} style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
+                {activeFixes > 0 ? activeFixes : `${fixes.length} pending`}
+                <ChevronDown size={12} className="text-muted-foreground" style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
               </button>
-            )}
-            {row.use_count > 0 && <><span className="text-muted-foreground opacity-40">·</span><span className="text-muted-foreground tabular-nums">used {row.use_count}×</span></>}
-            {relativeTime(row.last_used) && <><span className="text-muted-foreground opacity-40">·</span><span className="text-muted-foreground">{relativeTime(row.last_used)}</span></>}
-          </div>
+            ) : <span className="opacity-50">—</span>}
+          </span>
+          <span className={`${COL.used} text-right`}>{row.use_count > 0 ? `${row.use_count}×` : <span className="opacity-50">—</span>}</span>
+          <span className={`${COL.last} text-right`}>{last || <span className="opacity-50">—</span>}</span>
         </div>
 
-        {/* Hover actions */}
-        <div className={`flex-shrink-0 flex items-center gap-0.5 transition-opacity ${isStarred ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
-          <button
-            onClick={(e) => { e.stopPropagation(); onStar(row); }}
-            title={isStarred ? "Unpin — stop biasing cloud STT" : "Pin — bias cloud STT toward this word"}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
-            style={{ color: isStarred ? "hsl(var(--chip-amber-fg))" : "hsl(var(--muted-foreground))" }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-          >
+        <div className={`${COL.actions} flex-shrink-0 flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity`}>
+          <RowAction title={isStarred ? "Unpin" : "Pin — keep this word prominent for speech and polish"} onClick={() => onStar(row)}>
             <Star size={13} fill={isStarred ? "currentColor" : "none"} />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onEdit(row); }}
-            title="Edit details"
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
-            style={{ color: "hsl(var(--muted-foreground))" }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-          >
+          </RowAction>
+          <RowAction title="Edit details" onClick={() => onEdit(row)}>
             <Pencil size={12.5} />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(row); }}
-            title="Delete term (and its learned fixes)"
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
-            style={{ color: "hsl(var(--muted-foreground))" }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; e.currentTarget.style.color = "hsl(var(--destructive))"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "hsl(var(--muted-foreground))"; }}
-          >
+          </RowAction>
+          <RowAction title="Delete term and its learned fixes" onClick={() => onDelete(row)} danger>
             <Trash2 size={13} />
-          </button>
+          </RowAction>
         </div>
       </div>
 
-      {/* Expanded: the real learned corrections */}
+      {/* Expanded: the real learned corrections, heard → written */}
       {expanded && hasFixes && (
-        <div className="px-4 pb-3 pt-0.5">
-          <div className="rounded-lg overflow-hidden" style={{ background: "hsl(var(--surface-4) / 0.5)", boxShadow: "inset 0 0 0 1px hsl(var(--border))" }}>
-            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground px-3 pt-2 pb-1">
-              Learned fixes — STT mishearing → corrected
-            </p>
+        <div className="pl-[34px] pr-4 pb-3">
+          <div className="rounded-lg py-1" style={{ background: "hsl(var(--surface-2))", boxShadow: "inset 0 0 0 1px hsl(var(--border))" }}>
             {fixes.map((f, i) => (
-              <div key={f.transcript_form + i} className="flex items-center gap-2 px-3 py-1.5 text-[12px]" style={i > 0 ? { borderTop: "1px solid hsl(var(--border))" } : undefined}>
-                <span className="font-mono text-muted-foreground line-through decoration-[hsl(2_70%_60%)]/50">{f.transcript_form}</span>
+              <div key={f.transcript_form + i} className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
+                <span className="text-muted-foreground line-through decoration-[hsl(var(--muted-foreground)/0.5)]">{f.transcript_form}</span>
                 <ArrowRight size={11} className="text-muted-foreground flex-shrink-0" />
-                <span className="font-mono text-foreground font-medium">{f.correct_form}</span>
+                <span className="text-foreground font-medium">{f.correct_form}</span>
                 <span className="flex-1" />
-                {f.use_count > 0 && <span className="text-[10px] text-muted-foreground tabular-nums">{f.use_count}×</span>}
                 {!f.active && (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold" style={{ background: "hsl(var(--surface-3))", color: "hsl(var(--muted-foreground))" }} title="Not yet approved — won't fire until confirmed">
-                    pending
-                  </span>
+                  <span className="text-[11px] text-muted-foreground" title="Not yet approved — won’t fire until confirmed">pending</span>
                 )}
+                {f.use_count > 0 && <span className="text-[11px] text-muted-foreground tabular-nums w-10 text-right">{f.use_count}×</span>}
               </div>
             ))}
           </div>
@@ -330,17 +314,34 @@ function VocabRowItem({ info, flash, expanded, onToggleExpand, onStar, onDelete,
   );
 }
 
-// ── Section wrapper ───────────────────────────────────────────────────────────
+// ── List + section ────────────────────────────────────────────────────────────
+
+function VocabList({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="vocab-list">
+      <div className="vocab-list-head flex items-center gap-3 pl-4 pr-2 h-8 text-[11px] font-medium text-muted-foreground">
+        <span className="flex-1 pl-[19px]">Word</span>
+        <span className={`${COL.fixes} text-right`}>Fixes</span>
+        <span className={`${COL.used} text-right`}>Used</span>
+        <span className={`${COL.last} text-right`}>Last used</span>
+        <span className={COL.actions} />
+      </div>
+      {children}
+    </div>
+  );
+}
 
 function Section({ label, count, hint, children }: { label: string; count: number; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="mb-6">
-      <div className="flex items-center justify-between mb-2.5 px-1">
-        <span className="section-label">{label}{hint && <span className="ml-2 font-normal normal-case tracking-normal text-muted-foreground/70">{hint}</span>}</span>
-        <span className="text-[10px] text-muted-foreground tabular-nums">{count}</span>
+    <section className="mb-7">
+      <div className="flex items-baseline justify-between gap-3 mb-2.5 px-1">
+        <h2 className="text-[13px] font-semibold text-foreground">
+          {label}<span className="ml-1.5 font-normal text-muted-foreground tabular-nums">{count}</span>
+        </h2>
+        {hint && <span className="text-[12px] text-muted-foreground">{hint}</span>}
       </div>
-      <div className="space-y-2">{children}</div>
-    </div>
+      <VocabList>{children}</VocabList>
+    </section>
   );
 }
 
@@ -395,8 +396,8 @@ function VocabDetailModal({
   }, [handleSave, onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }} onClick={onClose}>
-      <div className="w-[460px] max-h-[86vh] overflow-auto rounded-xl" style={{ background: "hsl(var(--surface-1))", border: "1px solid hsl(var(--surface-3))", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }} onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "hsl(var(--foreground) / 0.22)", backdropFilter: "blur(6px)" }} onClick={onClose}>
+      <div className="w-[460px] max-h-[86vh] overflow-auto rounded-2xl" style={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", boxShadow: "var(--shadow-pop)" }} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="px-5 pt-5 pb-3 flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -514,13 +515,13 @@ function SortDropdown({ value, onChange }: { value: SortKey; onChange: (v: SortK
   return (
     <div ref={ref} className="relative">
       <button onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 px-3 h-8 rounded-lg text-[12px] font-medium transition-colors"
-        style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--foreground))", boxShadow: "inset 0 0 0 1px hsl(var(--border))" }}>
+        className="flex items-center gap-1.5 px-3 h-8 rounded-lg text-[12px] font-medium text-foreground transition-colors hover:bg-[hsl(var(--foreground)/0.04)]"
+        style={{ boxShadow: "inset 0 0 0 1px hsl(var(--glass-stroke-strong))" }}>
         {current}<ChevronDown size={13} className="text-muted-foreground" />
       </button>
       {open && (
-        <div className="absolute right-0 top-9 z-40 rounded-xl py-1.5 px-1.5 min-w-[150px]"
-          style={{ background: "hsl(var(--surface-1))", border: "1px solid hsl(var(--surface-3))", boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }}>
+        <div className="absolute right-0 top-9 z-40 rounded-xl py-1.5 px-1.5 min-w-[160px]"
+          style={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", boxShadow: "var(--shadow-pop)" }}>
           {SORT_OPTIONS.map((o) => (
             <button key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
               className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[12.5px] rounded-lg transition-colors"
@@ -547,19 +548,14 @@ function StatusChips({ value, counts, onChange }: {
     { value: "idle", label: "Idle" },
   ];
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="seg" role="tablist" aria-label="Filter by status">
       {chips.map((c) => {
-        const active = value === c.value;
         if (c.value !== "all" && counts[c.value] === 0) return null;
         return (
-          <button key={c.value} onClick={() => onChange(c.value)}
-            className="px-2.5 h-8 rounded-lg text-[12px] font-medium transition-colors tabular-nums"
-            style={{
-              background: active ? "hsl(var(--primary) / 0.14)" : "hsl(var(--surface-4))",
-              color: active ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
-              boxShadow: active ? "inset 0 0 0 1px hsl(var(--primary) / 0.35)" : "inset 0 0 0 1px hsl(var(--border))",
-            }}>
-            {c.label} <span className="opacity-60">{counts[c.value]}</span>
+          <button key={c.value} role="tab" aria-selected={value === c.value} data-active={value === c.value}
+            onClick={() => onChange(c.value)}
+            className="px-2.5 h-[24px] text-[12px] tabular-nums">
+            {c.label} <span className="font-normal opacity-60">{counts[c.value]}</span>
           </button>
         );
       })}
@@ -571,14 +567,13 @@ function StatusChips({ value, counts, onChange }: {
 
 function VocabularySkeleton() {
   return (
-    <div className="space-y-2">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 rounded-xl px-4 py-3" style={{ boxShadow: "inset 0 0 0 1px hsl(var(--border))", background: "hsl(var(--surface-1))" }}>
-          <Skeleton className="w-8 h-8 rounded-lg flex-shrink-0" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-3" style={{ width: `${55 - i * 6}%` }} />
-            <Skeleton className="h-2.5 w-1/4" />
-          </div>
+    <div className="vocab-list">
+      {Array.from({ length: 7 }).map((_, i) => (
+        <div key={i} className="vocab-row flex items-center gap-3 pl-4 pr-4 h-[46px]">
+          <Skeleton className="w-[7px] h-[7px] rounded-full flex-shrink-0" />
+          <Skeleton className="h-3" style={{ width: `${34 - i * 3}%` }} />
+          <span className="flex-1" />
+          <Skeleton className="h-2.5 w-24" />
         </div>
       ))}
     </div>
@@ -843,16 +838,15 @@ export function VocabularyView() {
           </div>
           {rows.length > 0 && (
             <button onClick={() => setShowResetConfirm(true)}
-              className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-md transition-colors flex-shrink-0"
-              style={{ color: "hsl(var(--destructive))", background: "hsl(var(--destructive) / 0.1)", border: "1px solid hsl(var(--destructive) / 0.2)" }}>
-              <Trash2 size={12} /> Reset learning
+              className="flex items-center gap-1.5 mt-2 text-[12px] font-medium px-2.5 h-8 rounded-lg text-muted-foreground hover:text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive)/0.06)] transition-colors flex-shrink-0">
+              <RotateCcw size={12.5} /> Reset learning
             </button>
           )}
         </div>
 
         {/* ── Add a word ── */}
         <div className="flex items-center gap-2 mb-2">
-          <div className="flex items-center gap-2 flex-1 px-3 h-10 rounded-xl" style={{ background: "hsl(var(--surface-4))", boxShadow: "inset 0 0 0 1px hsl(var(--border))" }}>
+          <div className="field flex-1 h-10">
             <Plus size={15} className="text-muted-foreground flex-shrink-0" />
             <input
               value={addValue}
@@ -860,7 +854,7 @@ export function VocabularyView() {
               onChange={(e) => setAddValue(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") void handleAdd(); }}
               placeholder="Add a name, brand or word AirNote keeps getting wrong…"
-              className="flex-1 bg-transparent outline-none text-[13px] text-foreground placeholder:text-muted-foreground/70"
+              className="text-[13px]"
             />
             {addValue.length > 0 && (
               <span className={`text-[10px] tabular-nums ${addValue.trim().length > MAX_TERM_LEN ? "text-[hsl(var(--destructive))]" : "text-muted-foreground/60"}`}>
@@ -869,14 +863,12 @@ export function VocabularyView() {
             )}
           </div>
           <button onClick={() => void handleAdd()} disabled={!addValue.trim() || adding}
-            className="px-4 h-10 rounded-xl text-[13px] font-semibold text-white transition-opacity flex-shrink-0"
-            style={{ background: "hsl(var(--accent-violet))", opacity: !addValue.trim() || adding ? 0.5 : 1 }}>
+            className="btn-primary flex-shrink-0" style={{ height: 40, minWidth: 72 }}>
             {adding ? "Adding…" : "Add"}
           </button>
         </div>
-        <p className="text-[11px] text-muted-foreground/70 mb-5 flex items-center gap-1.5 px-1">
-          <Wand2 size={11} />
-          Most words land here on their own — AirNote learns a fix each time you correct it while dictating.
+        <p className="text-[12px] text-muted-foreground mb-7 px-1">
+          Most words land here on their own. AirNote learns a fix each time you correct one while dictating.
         </p>
 
         {/* ── Reset confirm ── */}
@@ -909,8 +901,8 @@ export function VocabularyView() {
         ) : empty ? (
           <div className="flex items-center justify-center py-16">
             <div className="text-center px-8">
-              <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: "hsl(var(--primary) / 0.15)" }}>
-                <BookOpen size={20} style={{ color: "hsl(var(--chip-lime-fg))" }} />
+              <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: "hsl(var(--primary) / 0.1)" }}>
+                <BookOpen size={20} style={{ color: "hsl(var(--primary))" }} />
               </div>
               <p className="text-[14px] font-semibold text-foreground mb-1">Nothing learned yet</p>
               <p className="text-[12px] text-muted-foreground max-w-xs leading-relaxed">
@@ -922,18 +914,18 @@ export function VocabularyView() {
         ) : (
           <>
             {/* Toolbar */}
-            <div className="flex items-center gap-2 mb-4 flex-wrap">
-              <div className="flex items-center gap-2 flex-1 min-w-[180px] px-3 h-8 rounded-lg" style={{ background: "hsl(var(--surface-4))", boxShadow: "inset 0 0 0 1px hsl(var(--border))" }}>
+            <div className="flex items-center gap-2 mb-6 flex-wrap">
+              <div className="field flex-1 min-w-[180px] h-8">
                 <Search size={13} className="text-muted-foreground flex-shrink-0" />
                 <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search words or mishearings…"
-                  className="flex-1 bg-transparent outline-none text-[12.5px] text-foreground placeholder:text-muted-foreground/70" />
+                  className="text-[12.5px]" />
                 {search.length > 0 && <button onClick={() => setSearch("")} className="text-muted-foreground hover:text-foreground transition-colors" title="Clear search"><X size={12} /></button>}
               </div>
               <StatusChips value={statusFilter} counts={counts} onChange={setStatusFilter} />
               <SortDropdown value={sort} onChange={setSort} />
-              <button onClick={() => void refresh()} title="Refresh"
-                className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
-                style={{ background: "hsl(var(--surface-4))", color: "hsl(var(--muted-foreground))", boxShadow: "inset 0 0 0 1px hsl(var(--border))" }}>
+              <button onClick={() => void refresh()} title="Refresh" aria-label="Refresh"
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-[hsl(var(--foreground)/0.04)] transition-colors"
+                style={{ boxShadow: "inset 0 0 0 1px hsl(var(--glass-stroke-strong))" }}>
                 <RotateCw size={13} />
               </button>
             </div>
@@ -958,7 +950,7 @@ export function VocabularyView() {
                 )}
               </>
             ) : (
-              <div className="space-y-2">{renderCards(filtered)}</div>
+              <VocabList>{renderCards(filtered)}</VocabList>
             )}
           </>
         )}
