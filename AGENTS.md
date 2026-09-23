@@ -52,6 +52,10 @@ Core runtime (platform-specific code paths shown):
 # Dev mode: builds airnote-backend, syncs sidecar, launches Tauri + Vite
 just dev
 
+# UI only, in a browser, no Rust: every Tauri command and HTTP call is mocked
+# (desktop/src/dev/mock). ?scenario=ready|new|onboarding|update|signed-out&theme=light
+just mock
+
 # Full CI gate — run before every PR
 just check              # fmt-check + clippy + tests + typecheck
 

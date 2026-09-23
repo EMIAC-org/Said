@@ -19,6 +19,12 @@ dev:
 dev-app:
     AIRNOTE_DEV_APP_BUNDLE=1 ./dev.sh
 
+# The desktop UI in a browser, no Rust: Tauri commands and HTTP are mocked with
+# realistic data (desktop/src/dev/mock). Switch scenario and theme from the pill
+# in the corner, or with ?scenario=ready|new|onboarding|update|signed-out&theme=light.
+mock:
+    cd desktop && npm run mock
+
 # Enterprise admin stack: rebuild control-plane, start API (:3100) + admin UI (:5174).
 # Vite proxies /v1 to the API — always use this instead of starting binaries manually.
 dev-admin:

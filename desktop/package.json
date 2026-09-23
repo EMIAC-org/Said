@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "mock": "vite --mode mock --port 1430 --open",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "tauri:dev": "tauri dev",
