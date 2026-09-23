@@ -4,7 +4,7 @@ import { useTheme, type ThemePreference } from "@/lib/useTheme";
 
 /**
  * Appearance section in Settings. Two blocks:
- *   1. Theme      — Dark vs Light (Warm Paper), each with a live mini preview.
+ *   1. Theme      — Dark vs Light, each with a live mini preview.
  *   2. Dashboard  — Editorial vs Split home layout.
  * Theme is driven by the shared App-level source (passed in) so the picker and
  * the topbar Sun/Moon toggle never fall out of sync. Falls back to its own
@@ -24,7 +24,7 @@ export function AppearanceSection({
       <section className="space-y-5">
         <SectionHeader
           title="Theme"
-          desc="Dark for focus, Warm Paper for daylight. Applies instantly across the app."
+          desc="Dark for focus, Light for daylight. Applies instantly across the app."
         />
         <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
           <ThemeCard
@@ -43,8 +43,8 @@ export function AppearanceSection({
           />
           <ThemeCard
             palette={LIGHT_PALETTE}
-            title="Warm Paper"
-            desc="Warm off-white, indigo accent, soft layered depth."
+            title="Light"
+            desc="White and cool grey, EMIAC blue, hairline edges."
             selected={activeTheme === "light"}
             onSelect={() => setTheme("light")}
           />
@@ -120,19 +120,19 @@ const DARK_PALETTE: Palette = {
 };
 
 const LIGHT_PALETTE: Palette = {
-  floor:  "hsl(40 30% 94.5%)",
-  rail:   "hsl(36 26% 92%)",
-  card:   "hsl(42 46% 99%)",
-  line:   "hsl(36 20% 84%)",
-  text:   "hsl(230 20% 24%)",
-  sub:    "hsl(36 14% 76%)",
-  accent: "hsl(232 74% 59%)",
+  floor:  "hsl(210 11% 96%)",
+  rail:   "hsl(210 11% 96%)",
+  card:   "hsl(0 0% 100%)",
+  line:   "hsl(216 11% 90%)",
+  text:   "hsl(0 0% 7%)",
+  sub:    "hsl(216 10% 84%)",
+  accent: "hsl(209 100% 35%)",
   accentInk: "#ffffff",
 };
 
 const SYSTEM_PALETTE: Palette = {
-  floor:  "linear-gradient(135deg, #0f0f13 0%, #0f0f13 48%, hsl(40 30% 94.5%) 52%, hsl(40 30% 94.5%) 100%)",
-  rail:   "linear-gradient(135deg, #0d0d11 0%, #0d0d11 50%, hsl(36 26% 92%) 50%, hsl(36 26% 92%) 100%)",
+  floor:  "linear-gradient(135deg, #0f0f13 0%, #0f0f13 48%, hsl(210 11% 96%) 52%, hsl(210 11% 96%) 100%)",
+  rail:   "linear-gradient(135deg, #0d0d11 0%, #0d0d11 50%, hsl(210 11% 96%) 50%, hsl(210 11% 96%) 100%)",
   card:   "linear-gradient(135deg, #17171d 0%, #17171d 50%, hsl(42 46% 99%) 50%, hsl(42 46% 99%) 100%)",
   line:   "rgba(148,148,160,0.35)",
   text:   "rgba(233,233,238,0.90)",

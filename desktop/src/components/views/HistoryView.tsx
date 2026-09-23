@@ -177,8 +177,8 @@ const TOAST_ICON: Record<ToastKind, React.ReactNode> = {
   info: <Trash2 size={13} strokeWidth={2.2} />,
 };
 const TOAST_TINT: Record<ToastKind, { bg: string; fg: string }> = {
-  success: { bg: "hsl(150 60% 50% / 0.16)", fg: "hsl(150 60% 62%)" },
-  error: { bg: "hsl(2 70% 60% / 0.16)", fg: "hsl(2 78% 66%)" },
+  success: { bg: "hsl(var(--chip-lime-bg))", fg: "hsl(var(--chip-lime-fg))" },
+  error: { bg: "hsl(var(--chip-red-bg))", fg: "hsl(var(--chip-red-fg))" },
   info: { bg: "hsl(var(--primary) / 0.16)", fg: "hsl(var(--primary))" },
 };
 
@@ -313,7 +313,7 @@ function RowMenu({ recording, playingId, hasAudio, onPlay, onCopy, onCopyTranscr
       onClick={() => { if (!disabled) { action(); onClose(); } }}
       disabled={disabled}
       className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[13px] rounded-lg transition-colors disabled:opacity-40"
-      style={{ color: danger ? "hsl(0 75% 62%)" : disabled ? "hsl(var(--muted-foreground))" : "hsl(var(--foreground))" }}
+      style={{ color: danger ? "hsl(var(--destructive))" : disabled ? "hsl(var(--muted-foreground))" : "hsl(var(--foreground))" }}
       onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
     >
@@ -499,7 +499,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
           {hasOriginal && (
             <>
               <span className="opacity-40">·</span>
-              <button onClick={() => setShowOriginal((v) => !v)} className="font-medium transition-colors" style={{ color: "hsl(var(--chip-lime-fg))" }}>
+              <button onClick={() => setShowOriginal((v) => !v)} className="font-medium transition-colors" style={{ color: "hsl(var(--primary))" }}>
                 {showOriginal ? "Hide raw STT" : hasRawStt ? "Show raw STT" : "Show original"}
               </button>
             </>
@@ -818,7 +818,7 @@ export function HistoryView({ onDownloadSuccess, refreshKey }: { onDownloadSucce
               ) : (
                 <button onClick={() => setConfirmClear(true)}
                   className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium transition-colors"
-                  style={{ color: "hsl(0 75% 62%)", background: "hsl(0 72% 51% / 0.1)" }}>
+                  style={{ color: "hsl(var(--destructive))", background: "hsl(var(--chip-red-bg))" }}>
                   <Trash2 size={13} /> Clear all
                 </button>
               )}

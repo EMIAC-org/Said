@@ -253,7 +253,7 @@ export function BucketsView() {
                               e.stopPropagation();
                               setMenuFor((cur) => (cur === a.app_key ? null : a.app_key));
                             }}
-                            className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                            className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-[hsl(var(--foreground)/0.05)] transition-colors"
                           >
                             <MoreHorizontal size={15} />
                           </button>
@@ -276,7 +276,7 @@ export function BucketsView() {
                                       e.stopPropagation();
                                       void move(a.app_key, opt);
                                     }}
-                                    className="w-full text-left px-3 py-1.5 text-[12.5px] text-foreground hover:bg-white/5 transition-colors"
+                                    className="w-full text-left px-3 py-1.5 text-[12.5px] text-foreground hover:bg-[hsl(var(--foreground)/0.05)] transition-colors"
                                   >
                                     Move to {bucketLabel(opt)}
                                   </button>

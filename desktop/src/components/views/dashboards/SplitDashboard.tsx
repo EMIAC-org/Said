@@ -149,7 +149,7 @@ function PaceCard({ avgWpm, spark }: { avgWpm: number; spark: { height: number }
                   i === spark.length - 1
                     ? "hsl(var(--primary) / 0.55)"
                     : i % 2 === 0
-                      ? "hsl(0 0% 100% / 0.07)"
+                      ? "hsl(var(--foreground) / 0.07)"
                       : "hsl(var(--primary) / 0.40)",
               }}
             />
@@ -484,7 +484,7 @@ function ActionButton({
       style={{
         width: 22, height: 22,
         borderRadius: 5,
-        background: active ? "hsl(var(--primary) / 0.18)" : "hsl(0 0% 100% / 0.05)",
+        background: active ? "hsl(var(--primary) / 0.18)" : "hsl(var(--foreground) / 0.05)",
         color: active ? "hsl(var(--primary))" : "hsl(var(--foreground))",
         border: 0,
         cursor: disabled || !onClick ? "not-allowed" : "pointer",
@@ -496,7 +496,7 @@ function ActionButton({
       }}
       onMouseLeave={(e) => {
         if (disabled || !onClick) return;
-        if (!active) e.currentTarget.style.background = "hsl(0 0% 100% / 0.05)";
+        if (!active) e.currentTarget.style.background = "hsl(var(--foreground) / 0.05)";
       }}
     >
       {children}

@@ -146,7 +146,7 @@ const TOAST_ICON: Record<ToastKind, React.ReactNode> = {
 };
 const TOAST_TINT: Record<ToastKind, { bg: string; fg: string }> = {
   success: { bg: "hsl(var(--chip-lime-bg))", fg: "hsl(var(--chip-lime-fg))" },
-  error: { bg: "hsl(2 70% 60% / 0.16)", fg: "hsl(2 78% 66%)" },
+  error: { bg: "hsl(var(--chip-red-bg))", fg: "hsl(var(--chip-red-fg))" },
   info: { bg: "hsl(var(--primary) / 0.16)", fg: "hsl(var(--primary))" },
 };
 
@@ -294,7 +294,7 @@ function VocabRowItem({ info, flash, expanded, onToggleExpand, onStar, onDelete,
             title="Delete term (and its learned fixes)"
             className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
             style={{ color: "hsl(var(--muted-foreground))" }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; e.currentTarget.style.color = "hsl(0 75% 62%)"; }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; e.currentTarget.style.color = "hsl(var(--destructive))"; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "hsl(var(--muted-foreground))"; }}
           >
             <Trash2 size={13} />
@@ -472,7 +472,7 @@ function VocabDetailModal({
             <button onClick={() => { onClose(); onDelete(row); }} title="Delete term and its learned fixes"
               className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
               style={{ color: "hsl(var(--muted-foreground))", border: "1px solid hsl(var(--surface-4))" }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "hsl(0 75% 62%)"; }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "hsl(var(--destructive))"; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = "hsl(var(--muted-foreground))"; }}>
               <Trash2 size={13} />
             </button>

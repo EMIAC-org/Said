@@ -1301,7 +1301,7 @@ function PermRow({
           <div className="row-desc">{desc}</div>
         </div>
         {granted ? (
-          <span className="accent-pill" style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}>
+          <span className="accent-pill" style={{ color: "hsl(var(--chip-lime-fg))", background: "hsl(var(--chip-lime-bg))" }}>
             Granted
           </span>
         ) : (
@@ -1357,7 +1357,7 @@ function DictationModelCard({
     <div
       className="rounded-lg p-3"
       style={{
-        background: "hsl(0 0% 100% / 0.025)",
+        background: "hsl(var(--foreground) / 0.025)",
         boxShadow: "inset 0 0 0 1px hsl(var(--glass-stroke))",
       }}
     >
@@ -1381,7 +1381,7 @@ function DictationModelCard({
         {installed ? (
           <span
             className="accent-pill shrink-0"
-            style={{ color: "hsl(140 65% 65%)", background: "hsl(140 65% 50% / 0.14)" }}
+            style={{ color: "hsl(var(--chip-lime-fg))", background: "hsl(var(--chip-lime-bg))" }}
           >
             <Check size={11} /> Installed
           </span>

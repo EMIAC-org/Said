@@ -316,7 +316,7 @@ function PerformanceMonitor() {
         </span>
         <span
           className={cn("ml-auto w-1.5 h-1.5 rounded-full", sample && !error && "animate-pulse")}
-          style={{ background: error ? "hsl(0 75% 62%)" : "hsl(var(--primary))" }}
+          style={{ background: error ? "hsl(var(--destructive))" : "hsl(var(--primary))" }}
         />
       </div>
 

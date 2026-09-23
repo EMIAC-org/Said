@@ -36,7 +36,7 @@ export function RetryToast({
       {/* Red accent circle */}
       <span
         className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
-        style={{ background: "hsl(0 70% 60% / 0.16)", color: "hsl(0 70% 60%)" }}
+        style={{ background: "hsl(var(--chip-red-bg))", color: "hsl(var(--chip-red-fg))" }}
       >
         <X size={13} strokeWidth={2.5} />
       </span>

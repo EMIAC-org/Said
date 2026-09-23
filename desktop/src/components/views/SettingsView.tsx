@@ -1486,7 +1486,7 @@ export function SettingsView({
                               className="flex items-start gap-2 rounded-lg px-3 py-2 text-[11px]"
                               style={{
                                 background: "hsl(38 80% 12% / 0.75)",
-                                color: "hsl(38 90% 72%)",
+                                color: "hsl(var(--chip-amber-fg))",
                               }}
                             >
                               <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
@@ -1554,7 +1554,7 @@ export function SettingsView({
           {axSupported && (!micGranted || !axGranted || !imGranted) && (
             <div
               className="rounded-xl px-4 py-3 mb-3 text-[12px] leading-relaxed"
-              style={{ background: "hsl(38 80% 12%)", color: "hsl(38 90% 70%)" }}
+              style={{ background: "hsl(var(--chip-amber-bg))", color: "hsl(var(--chip-amber-fg))" }}
             >
               <p className="font-semibold mb-1">Permissions needed</p>
               {!micGranted && (

@@ -107,7 +107,7 @@ function NotifDropdown({
                   style={{
                     background:
                       n.kind === "error"
-                        ? "hsl(0 70% 60% / 0.16)"
+                        ? "hsl(var(--chip-red-bg))"
                         : n.kind === "vocab-starred"
                         ? "hsl(var(--chip-amber-bg))"
                         : n.kind === "vocab-removed"
@@ -115,7 +115,7 @@ function NotifDropdown({
                         : "hsl(var(--chip-mint-bg))",
                     color:
                       n.kind === "error"
-                        ? "hsl(0 70% 60%)"
+                        ? "hsl(var(--chip-red-fg))"
                         : n.kind === "vocab-starred"
                         ? "hsl(var(--chip-amber-fg))"
                         : n.kind === "vocab-removed"
@@ -221,7 +221,7 @@ function ProfileDropdown({
         <button
           onClick={() => { onClose(); onLogout(); }}
           className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12.5px] rounded-lg transition-colors"
-          style={{ color: "hsl(0 75% 62%)" }}
+          style={{ color: "hsl(var(--destructive))" }}
           onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
           onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
         >
@@ -367,7 +367,7 @@ export function Topbar({ snapshot: _snapshot, theme, toggleTheme, onEnterpriseDi
               <span
                 className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold flex items-center justify-center tabular-nums"
                 style={{
-                  background: "hsl(0 70% 60%)",
+                  background: "hsl(var(--destructive))",
                   color:      "white",
                   boxShadow:  "0 0 0 2px hsl(var(--surface-1))",
                 }}

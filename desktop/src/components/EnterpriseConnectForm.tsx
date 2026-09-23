@@ -290,7 +290,7 @@ export function EnterpriseConnectForm({
                 className={`group flex items-center gap-2 rounded-lg border px-3 py-2 transition-colors ${
                   selected
                     ? "border-primary/40 bg-primary/10"
-                    : "border-border hover:border-primary/25 hover:bg-white/[0.03]"
+                    : "border-border hover:border-primary/25 hover:bg-[hsl(var(--foreground)/0.03)]"
                 }`}
               >
                 <button
@@ -435,7 +435,7 @@ export function EnterpriseConnectForm({
       {validationError && (
         <div
           className="rounded-lg px-3 py-2 text-[12px]"
-          style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
+          style={{ background: "hsl(var(--chip-red-bg))", color: "hsl(var(--chip-red-fg))" }}
         >
           {validationError}
         </div>
@@ -448,7 +448,7 @@ export function EnterpriseConnectForm({
       )}
 
       {validated && !waitingForBrowser && oauthPhase === "idle" && (
-        <div className="rounded-2xl border border-border bg-white/[0.025] px-5 py-6 flex flex-col items-center text-center gap-4">
+        <div className="rounded-2xl border border-border bg-[hsl(var(--foreground)/0.025)] px-5 py-6 flex flex-col items-center text-center gap-4">
           <LarkLogo size={46} />
           <div className="space-y-1">
             <p className="text-[14px] font-semibold text-foreground">Sign in with Lark</p>
@@ -572,7 +572,7 @@ export function EnterpriseConnectForm({
         <div className="space-y-2">
           <div
             className="rounded-lg px-3 py-2 text-[12px]"
-            style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
+            style={{ background: "hsl(var(--chip-red-bg))", color: "hsl(var(--chip-red-fg))" }}
           >
             {tokenError}
           </div>

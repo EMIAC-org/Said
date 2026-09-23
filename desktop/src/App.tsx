@@ -871,8 +871,8 @@ export default function App() {
         <div
           className="fixed bottom-4 right-4 max-w-sm rounded-xl px-4 py-3 flex items-start gap-3 z-50"
           style={{
-            background: "hsl(0 75% 60% / 0.12)",
-            color:      "hsl(0 75% 80%)",
+            background: "hsl(var(--chip-red-bg))",
+            color:      "hsl(var(--chip-red-fg))",
           }}
         >
           <p className="text-[13px] flex-1 leading-snug">{errorBanner}</p>
