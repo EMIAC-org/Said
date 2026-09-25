@@ -84,7 +84,7 @@ export function EditorialDashboard({ snapshot }: Props) {
   const dictMinutesToday = wordsToday > 0 ? wordsToday / 120 : 0;
   const minutesSaved = Math.max(0, Math.round(typingMinutesToday - dictMinutesToday));
 
-  const editsLearned = useMemo(
+  const editsMade = useMemo(
     () => recordings.reduce((s, r) => s + (r.edit_count ?? 0), 0),
     [recordings],
   );
@@ -204,7 +204,7 @@ export function EditorialDashboard({ snapshot }: Props) {
               </div>
             )}
             <Glance label="Avg pace" value={`${snapshot?.avg_wpm ?? 0}`} unit="wpm" border={topApps.length > 0} />
-            <Glance label="Edits learned" value={`${editsLearned}`} unit="" border />
+            <Glance label="Your edits" value={`${editsMade}`} unit="" border />
           </div>
         </Section>
 

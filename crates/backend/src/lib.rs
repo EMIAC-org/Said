@@ -8,36 +8,22 @@ use axum::{
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 
 pub mod auth;
 pub mod cp_client;
-pub mod embedder;
-pub mod legacy_learning;
 pub mod llm;
-pub mod number_format;
 pub mod observability;
-pub mod recent_speech_context;
 pub mod routes;
 pub mod store;
-pub mod stt;
 pub mod telemetry;
-pub mod tier2;
 pub mod watchdog;
 
 // Re-export the cross-platform path helpers from said-core so that code
 // reading `said_backend::paths::*` keeps working without an extra import.
 pub use said_core::paths;
-
-#[cfg(test)]
-mod alpha_test_suite;
-#[cfg(test)]
-mod learning_flow_tests;
-#[cfg(test)]
-mod legacy_learning_tests;
 
 // ── Preferences hot-cache (Gap 3) ─────────────────────────────────────────────
 //
@@ -90,23 +76,7 @@ pub async fn invalidate_prefs_cache(cache: &PrefsCache) {
     tracing::trace!("[prefs-cache] invalidated");
 }
 
-// ── Lexicon hot-cache ──────────────────────────────────────────────────────────
-//
-// Caches corrections + stt_replacements together — both change at most once per
-// session, but are read synchronously from SQLite on every voice/text request.
-// TTL = 60 s; invalidated immediately on any write (classify / feedback routes).
-
-const LEXICON_CACHE_TTL: Duration = Duration::from_secs(60);
 const LIVE_SERVER_RUNTIME_TTL: Duration = Duration::from_secs(120);
-
-#[derive(Clone)]
-pub struct CachedLexicon {
-    pub corrections: Vec<store::corrections::Correction>,
-    pub stt_replacements: Vec<store::stt_replacements::SttReplacement>,
-    pub cached_at: Instant,
-}
-
-pub type LexiconCache = Arc<RwLock<Option<CachedLexicon>>>;
 
 #[derive(Clone, Debug)]
 pub struct LiveServerRuntimeLatency {
@@ -125,54 +95,6 @@ pub struct LiveServerRuntimeResult {
 }
 
 pub type LiveServerRuntimeCache = Arc<RwLock<HashMap<String, LiveServerRuntimeResult>>>;
-
-/// Read corrections + stt_replacements from cache, or SQLite on miss.
-/// On a miss, both reads run in parallel on blocking threads.
-pub async fn get_lexicon_cached(
-    cache: &LexiconCache,
-    pool: &store::DbPool,
-    user_id: &str,
-) -> (
-    Vec<store::corrections::Correction>,
-    Vec<store::stt_replacements::SttReplacement>,
-) {
-    // Fast path
-    {
-        let guard = cache.read().await;
-        if let Some(ref entry) = *guard {
-            if entry.cached_at.elapsed() < LEXICON_CACHE_TTL {
-                return (entry.corrections.clone(), entry.stt_replacements.clone());
-            }
-        }
-    }
-    // Slow path — both SQLite reads in parallel, off the async executor
-    let pool1 = pool.clone();
-    let pool2 = pool.clone();
-    let uid1 = user_id.to_string();
-    let uid2 = user_id.to_string();
-    let (c, s) = tokio::join!(
-        tokio::task::spawn_blocking(move || store::corrections::load_all(&pool1, &uid1)),
-        tokio::task::spawn_blocking(move || store::stt_replacements::load_all(&pool2, &uid2)),
-    );
-    let corrections = c.unwrap_or_default();
-    let stt_replacements = s.unwrap_or_default();
-
-    let mut guard = cache.write().await;
-    *guard = Some(CachedLexicon {
-        corrections: corrections.clone(),
-        stt_replacements: stt_replacements.clone(),
-        cached_at: Instant::now(),
-    });
-    tracing::trace!("[lexicon-cache] miss → refreshed from SQLite");
-    (corrections, stt_replacements)
-}
-
-/// Invalidate after any write to corrections or stt_replacements tables.
-pub async fn invalidate_lexicon_cache(cache: &LexiconCache) {
-    let mut guard = cache.write().await;
-    *guard = None;
-    tracing::info!("[lexicon-cache] invalidated");
-}
 
 pub async fn put_live_server_runtime_result(
     cache: &LiveServerRuntimeCache,
@@ -199,24 +121,6 @@ pub async fn take_live_server_runtime_result(
 
 // ── Application state ─────────────────────────────────────────────────────────
 
-/// Tracks how many fire-and-forget background tasks (embedding, meaning,
-/// alias review) are currently running. Logged at pipeline-start so you
-/// can correlate latency spikes with background contention.
-pub static BG_TASK_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-pub fn bg_task_guard() -> BgTaskGuard {
-    BG_TASK_COUNT.fetch_add(1, Ordering::Relaxed);
-    BgTaskGuard
-}
-
-pub struct BgTaskGuard;
-
-impl Drop for BgTaskGuard {
-    fn drop(&mut self) {
-        BG_TASK_COUNT.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub pool: store::DbPool,
@@ -224,8 +128,6 @@ pub struct AppState {
     pub default_user_id: Arc<String>,
     /// Preferences hot-cache — avoids SQLite SELECT per request.
     pub prefs_cache: PrefsCache,
-    /// Lexicon hot-cache — corrections + stt_replacements together.
-    pub lexicon_cache: LexiconCache,
     /// Short-lived cache of live server-runtime results keyed by recording/session id.
     pub live_server_runtime_cache: LiveServerRuntimeCache,
     /// Shared HTTP client — keeps TCP/TLS connections alive across all requests.
@@ -233,29 +135,6 @@ pub struct AppState {
     /// Watchdog health state — shared with the bare-thread watchdog.
     pub watchdog: Arc<watchdog::WatchdogState>,
 }
-
-fn spawn_cold_start_onnx_train(state: AppState) {
-    tokio::spawn(async move {
-        let uid = state.default_user_id.to_string();
-        let vocab_count = store::vocabulary::count(&state.pool, &uid);
-        if vocab_count <= 0 {
-            return;
-        }
-        let has_model = store::tier2_model::get(&state.pool, &uid)
-            .map(|m| std::path::Path::new(&m.artifact_path).is_file())
-            .unwrap_or(false);
-        if has_model {
-            return;
-        }
-        tracing::info!(
-            "[cold-start] {vocab_count} vocab terms found but no ONNX model — training initial model"
-        );
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        routes::classify::schedule_retrain_public(state);
-    });
-}
-
-// ── Router factory ────────────────────────────────────────────────────────────
 
 pub fn router_with_state(state: AppState) -> Router {
     // Public routes (no auth)
@@ -265,7 +144,6 @@ pub fn router_with_state(state: AppState) -> Router {
 
     // Authenticated routes (require shared-secret bearer)
     let authenticated = Router::new()
-        .route("/v1/pre-embed", post(routes::pre_embed::handler))
         .route("/v1/voice/polish", post(routes::voice::polish))
         .route(
             "/v1/problem/transcribe",
@@ -317,46 +195,15 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/v1/voice/repair", post(routes::voice::repair_transcript))
         .route("/v1/text/polish", post(routes::text::polish))
         .route("/v1/text/refine-last", post(routes::text::refine_last))
-        .route("/v1/edit-feedback", post(routes::feedback::submit))
-        .route("/v1/classify-edit", post(routes::classify::classify))
-        .route("/v1/retrain-status", get(routes::classify::retrain_status))
-        .route("/v1/pending-edits", post(routes::pending_edits::create))
-        .route("/v1/pending-edits", get(routes::pending_edits::list))
         .route(
-            "/v1/pending-edits/unnotified",
-            get(routes::pending_edits::list_unnotified),
+            "/v1/dictionary",
+            get(routes::dictionary::list)
+                .post(routes::dictionary::add)
+                .delete(routes::dictionary::delete_all),
         )
         .route(
-            "/v1/pending-edits/mark-notified",
-            post(routes::pending_edits::mark_notified),
-        )
-        .route(
-            "/v1/pending-edits/:id/resolve",
-            post(routes::pending_edits::resolve),
-        )
-        .route(
-            "/v1/pending-edits/:id/dismiss",
-            post(routes::pending_edits::dismiss),
-        )
-        .route("/v1/vocabulary/terms", get(routes::vocabulary::list_terms))
-        .route(
-            "/v1/vocabulary/aliases",
-            get(routes::vocabulary::list_aliases),
-        )
-        .route("/v1/stt/bias", get(routes::vocabulary::stt_bias))
-        .route(
-            "/v1/vocabulary/all",
-            axum::routing::delete(routes::vocabulary::delete_all),
-        )
-        .route("/v1/vocabulary", get(routes::vocabulary::list))
-        .route("/v1/vocabulary", post(routes::vocabulary::create))
-        .route(
-            "/v1/vocabulary/:term",
-            axum::routing::delete(routes::vocabulary::delete).patch(routes::vocabulary::patch),
-        )
-        .route(
-            "/v1/vocabulary/:term/star",
-            post(routes::vocabulary::toggle_star),
+            "/v1/dictionary/:id",
+            axum::routing::delete(routes::dictionary::delete),
         )
         .route("/v1/history", get(routes::history::list))
         .route("/v1/history/apps", get(routes::history::app_usage))
@@ -388,8 +235,6 @@ pub fn router_with_state(state: AppState) -> Router {
         )
         .route("/v1/preferences", get(routes::prefs::get_prefs))
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
-        .route("/v1/corrections", get(routes::prefs::get_corrections))
-        .route("/v1/tier2/status", get(routes::tier2::status))
         .route(
             "/v1/telemetry/runs/:run_id",
             patch(routes::telemetry::patch_run),
@@ -421,15 +266,6 @@ pub fn router_with_state(state: AppState) -> Router {
             "/v1/enterprise/status",
             get(routes::cloud::enterprise_status),
         )
-        .route(
-            "/v1/company-vocab/status",
-            get(routes::company_vocab::status),
-        )
-        .route("/v1/company-vocab/sync", post(routes::company_vocab::sync))
-        .route(
-            "/v1/company-vocab/upload-user-summary",
-            post(routes::company_vocab::upload_user_summary),
-        )
         // OpenAI Codex OAuth
         .route(
             "/v1/openai-oauth/initiate",
@@ -439,21 +275,6 @@ pub fn router_with_state(state: AppState) -> Router {
         .route(
             "/v1/openai-oauth/disconnect",
             axum::routing::delete(routes::openai_oauth::disconnect),
-        )
-        // Confirm / block term corrections
-        .route("/v1/confirm-term", post(routes::confirm::confirm_term))
-        .route("/v1/confirm-batch", post(routes::confirm::confirm_batch))
-        .route(
-            "/v1/edit-review-sessions/next",
-            get(routes::edit_review_sessions::next),
-        )
-        .route(
-            "/v1/edit-review-sessions/:id/skip",
-            post(routes::edit_review_sessions::skip),
-        )
-        .route(
-            "/v1/block-correction",
-            post(routes::confirm::block_correction),
         )
         // Invite-a-friend email
         .route("/v1/invite", post(routes::invite::send))
@@ -502,13 +323,10 @@ pub fn router() -> Router {
         shared_secret: Arc::new(secret),
         default_user_id: Arc::new(user_id),
         prefs_cache: Arc::new(RwLock::new(None)),
-        lexicon_cache: Arc::new(RwLock::new(None)),
         live_server_runtime_cache: Arc::new(RwLock::new(HashMap::new())),
         http_client,
         watchdog: wd.clone(),
     };
-    routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
-    spawn_cold_start_onnx_train(state.clone());
 
     watchdog::spawn_watchdog(pool, wd, tokio::runtime::Handle::current());
 

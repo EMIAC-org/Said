@@ -3,9 +3,10 @@ use axum::{
     body::Body,
     extract::{Multipart, Path, Query, State},
     http::{StatusCode, header},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use serde_json::json;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use tracing::warn;
@@ -98,20 +99,30 @@ pub async fn record_kept(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<KeptBody>,
-) -> StatusCode {
+) -> Response {
     let text = body.text.trim();
     if text.is_empty() {
-        return StatusCode::BAD_REQUEST;
+        return StatusCode::BAD_REQUEST.into_response();
     }
     let Some(rec) = crate::store::history::get_recording(&state.pool, &id) else {
-        return StatusCode::NOT_FOUND;
+        return StatusCode::NOT_FOUND.into_response();
     };
     if rec.user_id != state.default_user_id.as_str() {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
     }
     if crate::store::history::apply_edit_feedback(&state.pool, &id, text).is_none() {
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+
+    // The words the user fixed join their word list, for polish to use.
+    let learning_on = crate::get_prefs_cached(&state.prefs_cache, &state.pool, &rec.user_id)
+        .await
+        .is_some_and(|prefs| prefs.learning_enabled);
+    let learned = if learning_on {
+        crate::store::dictionary::learn_from_edit(&state.pool, &rec.user_id, &rec.polished, text)
+    } else {
+        vec![]
+    };
 
     if crate::observability::should_enqueue(&state.pool, &state.default_user_id) {
         let pool = state.pool.clone();
@@ -130,7 +141,7 @@ pub async fn record_kept(
             crate::observability::uploader::maybe_upload_after_enqueue(&pool, &user_id, &http);
         });
     }
-    StatusCode::NO_CONTENT
+    Json(json!({ "learned": learned })).into_response()
 }
 
 #[derive(Debug, Deserialize)]

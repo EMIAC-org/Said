@@ -1,28 +1,10 @@
 use axum::{Json, extract::State, http::StatusCode};
-use serde::Serialize;
 use tracing::info;
 
 use crate::{
     AppState, get_prefs_cached, invalidate_prefs_cache,
-    store::{
-        corrections,
-        prefs::{Preferences, PrefsUpdate},
-    },
+    store::prefs::{Preferences, PrefsUpdate},
 };
-
-/// GET /v1/corrections — returns the "right" words from the user's correction
-/// history as a flat list of strings for profile and prompt context.
-pub async fn get_corrections(State(state): State<AppState>) -> Json<CorrectionsResponse> {
-    let user_id = state.default_user_id.clone();
-    let all = corrections::load_all(&state.pool, &user_id);
-    let keyterms: Vec<String> = all.into_iter().map(|c| c.right).collect();
-    Json(CorrectionsResponse { keyterms })
-}
-
-#[derive(Serialize)]
-pub struct CorrectionsResponse {
-    pub keyterms: Vec<String>,
-}
 
 pub async fn get_prefs(State(state): State<AppState>) -> Result<Json<Preferences>, StatusCode> {
     let user_id = state.default_user_id.clone();

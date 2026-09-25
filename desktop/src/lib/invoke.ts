@@ -9,7 +9,6 @@ import type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
-  PendingEditsResponse,
   PerformanceSnapshot,
   PolishDone,
   Preferences,
@@ -394,74 +393,6 @@ export async function getFavicon(host: string | null | undefined): Promise<strin
   }
 }
 
-export interface ProfileRunStats {
-  run_count: number;
-  skipped_count: number;
-  last_run_at: string | null;
-  last_run_outcome: string | null;
-}
-
-export interface KnowledgeBase {
-  background: string | null;
-  domains: string[];
-  focus_areas: string[];
-}
-
-export interface BucketInsight {
-  bucket_key: string;
-  style: string[];
-  speech_patterns: string[];
-  version: number;
-  updated_at: string | null;
-}
-
-export interface ProfileInsights {
-  run_stats: ProfileRunStats;
-  knowledge: KnowledgeBase;
-  buckets: BucketInsight[];
-}
-
-/** What the cloud profiling brain has learned. `null` when signed out / offline. */
-export async function getProfileInsights(): Promise<ProfileInsights | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<ProfileInsights>("get_profile_insights");
-  } catch {
-    return null;
-  }
-}
-
-/** One app resolved to its bucket, for the Buckets kanban. */
-export interface AppBucketRow {
-  app_key: string;
-  bucket_key: string;
-  /** "user" | "static" | "agent" | "default" */
-  source: string;
-  count: number;
-}
-
-export interface AppBuckets {
-  /** Canonical bucket keys in display order (the kanban columns). */
-  buckets: string[];
-  apps: AppBucketRow[];
-}
-
-/** Apps grouped by bucket. `null` when signed out / offline. */
-export async function getAppBuckets(): Promise<AppBuckets | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return await tauriInvoke<AppBuckets>("get_app_buckets");
-  } catch {
-    return null;
-  }
-}
-
-/** Re-file an app into a bucket (user override; wins over static + agent). */
-export async function setAppBucket(appKey: string, bucketKey: string): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await tauriInvoke("set_app_bucket", { appKey, bucketKey });
-}
-
 /** Diagnostic — try all 5 AX field-reading methods on whatever is focused. */
 export interface AxMethodResult {
   method: string;
@@ -645,24 +576,6 @@ export async function revealDownloadedFile(path: string): Promise<void> {
   await tauriInvoke("reveal_downloaded_file", { path });
 }
 
-/** Submit edit feedback so the backend can learn from user corrections. */
-export async function submitEditFeedback(
-  recordingId: string,
-  userKept: string,
-  targetApp?: string
-): Promise<void> {
-  if (!isTauriRuntime()) return;
-  try {
-    await tauriInvoke("submit_edit_feedback", {
-      recording_id: recordingId,
-      user_kept: userKept,
-      target_app: targetApp ?? null,
-    });
-  } catch {
-    // Non-critical — swallow silently
-  }
-}
-
 // ── SSE event listeners (Phase E streaming) ───────────────────────────────────
 
 type Unsubscribe = () => void;
@@ -734,23 +647,6 @@ export function onVoiceError(
   listen<VoiceErrorPayload>("voice-error", (e) =>
     handler(e.payload.message, e.payload.audio_id, e.payload.error_code, e.payload)
   ).then((fn) => { unsub = fn; });
-  return () => unsub();
-}
-
-/** Listen for detected edits that need user confirmation before being saved. */
-export interface EditDetectedPayload {
-  recording_id: string;
-  ai_output:    string;
-  user_kept:    string;
-}
-export function onEditDetected(
-  handler: (payload: EditDetectedPayload) => void
-): Unsubscribe {
-  if (!isTauriRuntime()) return () => {};
-  let unsub: Unsubscribe = () => {};
-  listen<EditDetectedPayload>("edit-detected", (e) => handler(e.payload)).then(
-    (fn) => { unsub = fn; }
-  );
   return () => unsub();
 }
 
@@ -873,130 +769,52 @@ export async function sendNotification(title: string, body: string): Promise<voi
   }
 }
 
-// ── Pending-edit review ───────────────────────────────────────────────────────
+// ── Dictionary (the user's word list) ───────────────────────────────────────
 
-export async function getPendingEdits(): Promise<PendingEditsResponse> {
-  if (!isTauriRuntime()) return { edits: [], total: 0 };
-  try {
-    return await tauriInvoke<PendingEditsResponse>("get_pending_edits");
-  } catch {
-    return { edits: [], total: 0 };
-  }
+/** Where a transcript has `heard`, polish writes `written`. */
+export interface DictionaryWord {
+  id: number;
+  written: string;
+  heard: string | null;
+  /** "learned" from a correction, or "added" on the Dictionary page. */
+  source: "learned" | "added";
+  created_at: number;
 }
 
-export async function resolvePendingEdit(
-  id: string,
-  action: "approve" | "skip"
-): Promise<void> {
+export async function listDictionary(): Promise<DictionaryWord[]> {
+  if (!isTauriRuntime()) return [];
+  return await tauriInvoke<DictionaryWord[]>("list_dictionary");
+}
+
+export async function addDictionaryWord(written: string, heard: string | null): Promise<DictionaryWord | null> {
+  if (!isTauriRuntime()) return null;
+  return await tauriInvoke<DictionaryWord>("add_dictionary_word", { written, heard });
+}
+
+export async function deleteDictionaryWord(id: number): Promise<void> {
   if (!isTauriRuntime()) return;
-  try {
-    await tauriInvoke("resolve_pending_edit", { id, action });
-  } catch {
-    // non-critical
-  }
+  await tauriInvoke("delete_dictionary_word", { id });
 }
 
-export async function dismissPendingEdit(id: string): Promise<void> {
+export async function clearDictionary(): Promise<void> {
   if (!isTauriRuntime()) return;
-  try {
-    await tauriInvoke("dismiss_pending_edit", { id });
-  } catch {
-    // non-critical
-  }
+  await tauriInvoke("clear_dictionary");
 }
 
-/** Listen for the backend's signal that pending edits list changed. */
-export function onPendingEditsChanged(handler: () => void): () => void {
+/** Fires with "Learned: heard → written" when a correction adds a word. */
+export function onWordLearned(handler: (message: string) => void): () => void {
   if (!isTauriRuntime()) return () => {};
   let unsub: () => void = () => {};
-  listen("pending-edits-changed", () => handler()).then((fn) => { unsub = fn; });
+  listen<{ message: string }>("vocab-learned", (e) => handler(e.payload.message)).then((fn) => { unsub = fn; });
   return () => unsub();
 }
 
-// ── Vocabulary management ────────────────────────────────────────────────────
-
-export interface VocabRow {
-  term:            string;
-  weight:          number;
-  use_count:       number;
-  last_used:       number;
-  source:          "auto" | "manual" | "starred";
-  meaning?:        string | null;
-  term_type?:      string | null;
-  example_context?: string | null;
-}
-
-export interface VocabListResponse {
-  terms: VocabRow[];
-  total: number;
-}
-
-export async function listVocabulary(): Promise<VocabListResponse> {
-  if (!isTauriRuntime()) return { terms: [], total: 0 };
-  try {
-    return await tauriInvoke<VocabListResponse>("list_vocabulary");
-  } catch {
-    return { terms: [], total: 0 };
-  }
-}
-
-/** A learned mishearing→canonical correction that rewrites dictation output. */
-export interface VocabAlias {
-  correct_form:    string;   // the canonical spelling (matches a vocab term)
-  transcript_form: string;   // the mis-heard form STT produced
-  use_count:       number;
-  active:          boolean;  // fires at runtime (approved + not blocked)
-}
-
-export interface VocabAliasesResponse {
-  aliases: VocabAlias[];
-}
-
-/** The real learned corrections behind vocab terms (stt_replacements). */
-export async function listVocabularyAliases(): Promise<VocabAliasesResponse> {
-  if (!isTauriRuntime()) return { aliases: [] };
-  try {
-    return await tauriInvoke<VocabAliasesResponse>("list_vocabulary_aliases");
-  } catch {
-    return { aliases: [] };
-  }
-}
-
-export async function addVocabularyTerm(term: string): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await tauriInvoke("add_vocabulary_term", { term });
-}
-
-export async function deleteVocabularyTerm(term: string): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await tauriInvoke("delete_vocabulary_term", { term });
-}
-
-export async function resetAllVocabulary(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await tauriInvoke("reset_all_vocabulary");
-}
-
-export async function patchVocabularyTerm(
-  term: string,
-  updates: { meaning?: string; term_type?: string; example_context?: string },
-): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await tauriInvoke("patch_vocabulary_term", {
-    term,
-    meaning: updates.meaning ?? null,
-    termType: updates.term_type ?? null,
-    exampleContext: updates.example_context ?? null,
-  });
-}
-
-export async function starVocabularyTerm(term: string): Promise<boolean> {
-  if (!isTauriRuntime()) return false;
-  try {
-    return await tauriInvoke<boolean>("star_vocabulary_term", { term });
-  } catch {
-    return false;
-  }
+/** Fires when a word is learned, added or deleted. */
+export function onDictionaryChanged(handler: () => void): () => void {
+  if (!isTauriRuntime()) return () => {};
+  let unsub: () => void = () => {};
+  listen("dictionary-changed", () => handler()).then((fn) => { unsub = fn; });
+  return () => unsub();
 }
 
 // ── External URL opener ─────────────────────────────────────────────────────
@@ -1035,29 +853,6 @@ export type InviteOutcome =
 export async function sendInviteEmail(to: string): Promise<InviteOutcome> {
   if (!isTauriRuntime()) return { status: "fallback_mailto" };
   return await tauriInvoke<InviteOutcome>("send_invite_email", { to });
-}
-
-/** Listen for vocabulary mutations (manual add / delete / star toggle / auto-promote). */
-export function onVocabularyChanged(handler: () => void): () => void {
-  if (!isTauriRuntime()) return () => {};
-  let unsub: () => void = () => {};
-  listen("vocabulary-changed", () => handler()).then((fn) => { unsub = fn; });
-  return () => unsub();
-}
-
-/** In-app vocabulary toast event payload (emitted by backend on add/promote/star/queue). */
-export interface VocabToastPayload {
-  /** "queued" — sighting recorded; k-event threshold not yet met (one more needed). */
-  kind:   "added" | "starred" | "removed" | "queued";
-  term:   string;
-  source?: "auto" | "manual" | "starred";
-}
-
-export function onVocabToast(handler: (p: VocabToastPayload) => void): () => void {
-  if (!isTauriRuntime()) return () => {};
-  let unsub: () => void = () => {};
-  listen<VocabToastPayload>("vocab-toast", (e) => handler(e.payload)).then((fn) => { unsub = fn; });
-  return () => unsub();
 }
 
 /// Fired on launch when a dictation that was lost to a crash has been recovered
@@ -1553,7 +1348,6 @@ export type {
   CloudAuthResponse,
   CloudStatus,
   HistoryItem,
-  PendingEditsResponse,
   PolishDone,
   Preferences,
   PrefsUpdate,

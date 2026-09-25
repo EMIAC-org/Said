@@ -4,29 +4,14 @@ use rusqlite::{Connection, params};
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-pub mod alias_safety;
-pub mod company_vocab;
-pub mod corrections;
-pub mod edit_review_sessions;
-pub mod email_memory;
+pub mod dictionary;
 pub mod history;
 pub mod openai_oauth;
-pub mod pending_edits;
-pub mod pending_promotions;
 pub mod prefs;
-pub mod profile_summary;
 pub mod server_migration;
 pub mod server_settings;
-pub mod stt_replacements;
 pub mod telemetry;
-pub mod tier2_edit_policy;
-pub mod tier2_model;
-pub mod tier2_policy;
 pub mod users;
-pub mod vectors;
-pub mod vocab_embeddings;
-pub mod vocab_fts;
-pub mod vocabulary;
 pub mod voice_runs;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
@@ -98,6 +83,7 @@ const MIGRATION_064: &str = include_str!("migrations/064_telemetry_speech_provid
 const MIGRATION_065: &str = include_str!("migrations/065_telemetry_speech_identity.sql");
 const MIGRATION_066: &str = include_str!("migrations/066_meeting_observability_outbox.sql");
 const MIGRATION_067: &str = include_str!("migrations/067_polish_enabled.sql");
+const MIGRATION_068: &str = include_str!("migrations/068_dictionary.sql");
 
 /// Open (or create) the SQLite database at `path`, run pending migrations,
 /// and return a connection pool.
@@ -127,20 +113,6 @@ pub fn open(path: &PathBuf) -> DbPool {
 
     run_migrations(&pool);
     repair_schema_gaps(&pool);
-    purge_garbage_edits(&pool);
-    if crate::legacy_learning::legacy_learning_writes_allowed() {
-        corrections::backfill_from_edit_events(&pool);
-        let repaired_term_types = vocabulary::backfill_missing_term_types(&pool);
-        let rebuilt_fts_rows = vocab_fts::backfill_from_vocabulary(&pool);
-        if repaired_term_types > 0 || rebuilt_fts_rows > 0 {
-            info!(
-                "[vocab-repair] startup repaired term_types={} fts_rows={}",
-                repaired_term_types, rebuilt_fts_rows,
-            );
-        }
-    } else {
-        info!("[legacy-learning] skipped startup legacy learning backfills — writes frozen");
-    }
     pool
 }
 
@@ -857,6 +829,54 @@ fn run_migrations(pool: &DbPool) {
         conn.execute_batch("PRAGMA user_version = 67")
             .expect("failed to set user_version to 67");
     }
+
+    if version < 68 {
+        info!("running migration 068_dictionary");
+        conn.execute_batch(MIGRATION_068)
+            .expect("migration 068 failed");
+        copy_old_words_into_dictionary(&conn);
+        conn.execute_batch("PRAGMA user_version = 68")
+            .expect("failed to set user_version to 68");
+    }
+}
+
+/// Carry the user's words into the dictionary: every vocabulary term, and the
+/// misheard forms they confirmed on a review card (not the spelling variants
+/// generated after each confirm). A database that never had these tables, or
+/// is missing a column, simply has nothing to carry over.
+fn copy_old_words_into_dictionary(conn: &Connection) {
+    let has = |table: &str, column: &str| -> bool {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            [column],
+            |row| row.get::<_, i64>(0),
+        )
+        .is_ok_and(|n| n > 0)
+    };
+    if has("vocabulary", "source") && has("vocabulary", "last_used") {
+        if let Err(e) = conn.execute_batch(
+            "INSERT OR IGNORE INTO dictionary (user_id, written, heard, source, created_at, updated_at)
+             SELECT user_id, term, NULL,
+                    CASE WHEN source IN ('manual', 'starred') THEN 'added' ELSE 'learned' END,
+                    last_used, last_used
+               FROM vocabulary
+              WHERE trim(term) <> '';",
+        ) {
+            warn!("migration 068: copying vocabulary failed: {e}");
+        }
+    }
+    if has("stt_replacements", "review_reason") && has("stt_replacements", "last_used") {
+        if let Err(e) = conn.execute_batch(
+            "INSERT OR IGNORE INTO dictionary (user_id, written, heard, source, created_at, updated_at)
+             SELECT user_id, correct_form, transcript_form, 'learned', last_used, last_used
+               FROM stt_replacements
+              WHERE review_reason = 'user_confirmed_alias'
+                AND trim(correct_form) <> ''
+                AND trim(transcript_form) <> '';",
+        ) {
+            warn!("migration 068: copying confirmed fixes failed: {e}");
+        }
+    }
 }
 
 /// Idempotent repairs for partial migration states (e.g. user_version bumped without ALTER).
@@ -1070,72 +1090,6 @@ pub fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Remove edit_events (and their linked preference_vectors) where user_kept
-/// has no meaningful word overlap with ai_output — i.e. the watcher captured
-/// a UI placeholder (e.g. Slack's "Type / for commands") instead of the real edit.
-/// Runs once at startup so stale garbage never poisons future RAG retrievals.
-fn purge_garbage_edits(pool: &DbPool) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("[purge] pool error: {e}");
-            return;
-        }
-    };
-
-    // Load all edit_events for inspection
-    let rows: Vec<(String, String, String)> = {
-        let mut stmt = match conn.prepare("SELECT id, ai_output, user_kept FROM edit_events") {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .ok()
-        .map(|it| it.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
-    };
-
-    let mut deleted = 0usize;
-    for (id, ai_output, user_kept) in &rows {
-        if !has_word_overlap(user_kept, ai_output) {
-            // Delete from preference_vectors first (JOIN dependency)
-            let _ = conn.execute(
-                "DELETE FROM preference_vectors WHERE edit_event_id = ?1",
-                params![id],
-            );
-            if let Ok(n) = conn.execute("DELETE FROM edit_events WHERE id = ?1", params![id]) {
-                if n > 0 {
-                    deleted += 1;
-                }
-            }
-        }
-    }
-
-    if deleted > 0 {
-        info!("[purge] removed {deleted} garbage edit_event(s) with no word overlap");
-    }
-}
-
-/// True if any word >3 chars from `a` appears (case-insensitive) in `b`.
-fn has_word_overlap(a: &str, b: &str) -> bool {
-    let b_words: std::collections::HashSet<String> = b
-        .split_whitespace()
-        .filter(|w| w.chars().count() > 3)
-        .map(|w| w.to_lowercase())
-        .collect();
-    if b_words.is_empty() {
-        return !a.trim().is_empty();
-    }
-    a.split_whitespace()
-        .any(|w| b_words.contains(&w.to_lowercase()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1151,9 +1105,10 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 67);
+        assert_eq!(version, 68);
 
         for table in [
+            "dictionary",
             "tier2_policy_weights",
             "tier2_decision_events",
             "tier2_edit_policy_rules",
@@ -1240,7 +1195,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 67);
+        assert_eq!(version, 68);
         let identity: (String, String, String) = conn
             .query_row(
                 "SELECT speech_provider, speech_model, speech_path
@@ -1281,7 +1236,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 67);
+        assert_eq!(version, 68);
         assert_eq!(table_exists, 1);
     }
 }

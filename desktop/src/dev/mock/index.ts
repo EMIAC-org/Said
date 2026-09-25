@@ -75,7 +75,7 @@ const state = {
   recording: "idle" as "idle" | "recording" | "processing",
   preferences: { ...fx.preferences },
   desktopPrefs: { ...fx.desktopPrefs },
-  vocabulary: scenario === "new" || scenario === "onboarding" ? [] : [...fx.vocabulary],
+  dictionary: scenario === "new" || scenario === "onboarding" ? [] : [...fx.dictionary],
   downloadCancelled: false,
 };
 
@@ -154,20 +154,22 @@ const commands: Record<string, (args: Args) => unknown> = {
   get_favicon: () => null,
   get_app_usage: () => fx.appUsage(state.history),
   get_site_usage: () => (state.history.length ? fx.siteUsage : []),
-  get_app_buckets: () => fx.appBuckets(state.history),
-  get_profile_insights: () => fx.profileInsights,
-  get_pending_edits: () => ({ edits: [], total: 0 }),
-  get_next_edit_review_session: () => null,
   get_performance_snapshot: () => fx.performance(),
 
-  list_vocabulary: () => ({ terms: state.vocabulary, total: state.vocabulary.length }),
-  list_vocabulary_aliases: () => ({ aliases: state.vocabulary.length ? fx.vocabAliases : [] }),
-  add_vocabulary_term: (args) => {
-    state.vocabulary = [{ term: String(args?.term ?? "New term"), weight: 1, use_count: 0, last_used: Date.now(), source: "manual" }, ...state.vocabulary];
-    return null;
+  list_dictionary: () => state.dictionary,
+  add_dictionary_word: (args) => {
+    const word = {
+      id: Date.now(),
+      written: String(args?.written ?? "New word"),
+      heard: args?.heard ? String(args.heard) : null,
+      source: "added" as const,
+      created_at: Date.now(),
+    };
+    state.dictionary = [word, ...state.dictionary];
+    return word;
   },
-  delete_vocabulary_term: (args) => { state.vocabulary = state.vocabulary.filter((row) => row.term !== args?.term); return null; },
-  star_vocabulary_term: () => true,
+  delete_dictionary_word: (args) => { state.dictionary = state.dictionary.filter((w) => w.id !== args?.id); return null; },
+  clear_dictionary: () => { state.dictionary = []; return null; },
 
   get_preferences: () => state.preferences,
   patch_preferences: (args) => { Object.assign(state.preferences, args?.update as object); return state.preferences; },

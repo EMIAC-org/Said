@@ -97,22 +97,6 @@ pub struct DictationPatchPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AliasLearnItem {
-    pub heard: String,
-    pub correct: String,
-    pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub safety: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recording_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AliasBatchPayload {
-    pub items: Vec<AliasLearnItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingSessionPayload {
     pub client_session_id: String,
     pub title: String,
@@ -269,17 +253,6 @@ pub fn enqueue_dictation_patch(
         Some(&recording_id),
         &payload,
     )
-}
-
-pub fn enqueue_alias_batch(
-    pool: &DbPool,
-    user_id: &str,
-    payload: AliasBatchPayload,
-) -> Result<(), String> {
-    if payload.items.is_empty() {
-        return Ok(());
-    }
-    insert_row(pool, user_id, "upsert_alias_batch", None, &payload)
 }
 
 pub fn enqueue_meeting_session(

@@ -1,7 +1,7 @@
 //! Best-effort background uploader for observability outbox rows.
 
 use crate::observability::outbox::{
-    AliasBatchPayload, DictationPatchPayload, DictationUpsertPayload, MeetingProviderUsagePayload,
+    DictationPatchPayload, DictationUpsertPayload, MeetingProviderUsagePayload,
     MeetingSessionPayload, OutboxRow, list_pending, mark_done, mark_failed,
     meeting_session_done_for_org, pending_count,
 };
@@ -88,18 +88,9 @@ async fn upload_row(http: &Client, token: &str, base: &str, row: &OutboxRow) -> 
             )
             .await
         }
-        "upsert_alias_batch" => {
-            let payload: AliasBatchPayload =
-                serde_json::from_str(&row.payload_json).map_err(|e| e.to_string())?;
-            post_json(
-                http,
-                token,
-                &format!("{base}/v1/runtime/observability/aliases"),
-                &payload,
-                row.active_org_id.as_deref(),
-            )
-            .await
-        }
+        // Rows queued by builds that still learned aliases on the server;
+        // nothing receives them any more, so they are dropped as delivered.
+        "upsert_alias_batch" => Ok(()),
         "upsert_meeting_session" => {
             let payload: MeetingSessionPayload =
                 serde_json::from_str(&row.payload_json).map_err(|e| e.to_string())?;

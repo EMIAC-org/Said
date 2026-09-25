@@ -23,25 +23,21 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    embedder::gemini,
     llm::{
         gateway, gemini_direct, groq, openai_codex,
         prompt::{
-            VocabEntry, build_refine_last_transform_prompt,
-            build_refine_last_transform_user_message, build_system_prompt_with_vocab_entries,
-            build_tray_format_system_prompt, build_tray_format_user_message,
+            build_refine_last_transform_prompt, build_refine_last_transform_user_message,
+            build_system_prompt, build_tray_format_system_prompt, build_tray_format_user_message,
             build_tray_system_prompt, build_tray_user_message, build_user_message,
         },
         script,
         stream_safety::{
             STREAM_RESET_SENTINEL, StreamProvider, StreamSafetyFilter, scrub_polished_output,
         },
-        vocab_retrieval::{self, VocabRetrievalRequest},
     },
     store::{
         history::{InsertRecording, insert_recording},
         openai_oauth,
-        vectors::retrieve_similar,
     },
 };
 
@@ -128,7 +124,7 @@ pub async fn polish(
     let target_app = body.target_app.clone();
     let tone_override = body.tone_override.clone();
 
-    // Load prefs + lexicon from cache and grab shared HTTP client before stream.
+    // Load prefs from cache and grab shared HTTP client before stream.
     let prefs_opt = crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await;
     let Some(prefs_for_guard) = prefs_opt.as_ref() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -137,8 +133,6 @@ pub async fn polish(
     if !missing.is_empty() {
         return crate::routes::key_guard::missing_api_keys_response(missing);
     }
-    let (word_corrections_cached, _stt_replacement_rules) =
-        crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id).await;
     let http_client = state.http_client.clone();
 
     let stream = async_stream::stream! {
@@ -158,87 +152,16 @@ pub async fn polish(
         yield Ok(Event::default().event("status")
             .data(json!({"phase": "polishing", "transcript": transcript}).to_string()));
 
-        // 1. Embed transcript + retrieve RAG examples
-        let gemini_key = prefs.gemini_api_key.clone()
-            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
-            .unwrap_or_default();
-        // http_client is the shared client from AppState (loaded before stream)
-        let e_start = Instant::now();
-        let embedding   = gemini::embed(&http_client, &pool, &transcript, &gemini_key).await;
-        let embed_ms    = e_start.elapsed().as_millis() as i64;
-
-        let rag_examples = match &embedding {
-            Some(emb) => {
-                let hits = retrieve_similar(&pool, &user_id, emb, 5, 0.65);
-                debug!("[text] RAG: {} examples retrieved", hits.len());
-                hits
-            }
-            None => {
-                debug!("[text] RAG skipped (no embedding)");
-                vec![]
-            }
-        };
-        let examples_used = rag_examples.len();
-
-        // 2. Word corrections — formatter and normal polish both get them;
-        //    other tray tones (professional, casual, etc.) don't need them.
+        let embed_ms = 0i64;
+        let examples_used = 0usize;
         let is_formatter = tone_override.as_deref() == Some("format");
-        let word_corrections = if tone_override.is_none() || is_formatter {
-            word_corrections_cached
-        } else {
-            vec![]
-        };
-        if !word_corrections.is_empty() {
-            info!("[text] {} word correction(s) loaded", word_corrections.len());
-        }
-
-        // Vocab retrieval — formatter and normal polish get meaning-first
-        // evidence cards; other tray tones get raw transcript with no vocab.
-        let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = if tone_override.is_none() || is_formatter {
-            let alias_t0 = Instant::now();
-            let pool_v = pool.clone();
-            let uid_v = user_id.clone();
-            let lang_v = prefs.output_language.clone();
-            let emb_v = embedding.clone();
-            let transcript_v = transcript.clone();
-            let target_app_v = target_app.clone();
-            let cards = tokio::task::spawn_blocking(move || {
-                vocab_retrieval::retrieve_after_transcription(
-                    &pool_v,
-                    VocabRetrievalRequest {
-                        user_id: uid_v,
-                        transcript: transcript_v,
-                        output_language: lang_v,
-                        target_app: target_app_v,
-                        bucket: None,
-                        screen_context: None,
-                        transcript_embedding: emb_v,
-                        limit: 8,
-                    },
-                )
-            }).await.unwrap_or_default();
-            let resolve_ms = alias_t0.elapsed().as_millis() as i64;
-            info!(
-                "[text] vocab retriever={}ms selected={}",
-                resolve_ms,
-                cards.len(),
-            );
-            let entries = vocab_retrieval::cards_to_vocab_entries(cards);
-            (transcript.clone(), entries)
-        } else {
-            (transcript.clone(), vec![])
-        };
-        let relevant_corrections = crate::store::corrections::filter_relevant(
-            &word_corrections, &resolved_transcript, 2, 10,
-        );
+        let resolved_transcript = transcript.clone();
         let system_prompt = if is_formatter {
-            build_tray_format_system_prompt(&vocab_entries, &relevant_corrections)
+            build_tray_format_system_prompt()
         } else if let Some(ref tone) = tone_override {
             build_tray_system_prompt(tone)
         } else {
-            build_system_prompt_with_vocab_entries(
-                &prefs, &rag_examples, &relevant_corrections, &vocab_entries,
-            )
+            build_system_prompt(&prefs)
         };
         let user_message = if is_formatter {
             build_tray_format_user_message(&resolved_transcript)
@@ -739,145 +662,6 @@ pub async fn refine_last(
 #[cfg(test)]
 mod tests {
     use super::server_helper_mode;
-    use crate::llm::vocab_retrieval::{VocabRetrievalRequest, retrieve_after_transcription};
-    use crate::store::vocab_embeddings::upsert_embedding;
-    use crate::store::{DbPool, now_ms, vocab_fts};
-    use r2d2_sqlite::SqliteConnectionManager;
-    use rusqlite::params;
-
-    fn mem_pool() -> DbPool {
-        let mgr = SqliteConnectionManager::memory();
-        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
-        pool.get()
-            .unwrap()
-            .execute_batch(
-                "CREATE TABLE local_user (id TEXT PRIMARY KEY);
-             INSERT INTO local_user(id) VALUES ('u1');
-             CREATE TABLE vocabulary (
-                 user_id                 TEXT NOT NULL REFERENCES local_user(id),
-                 term                    TEXT NOT NULL,
-                 weight                  REAL NOT NULL DEFAULT 1.0,
-                 use_count               INTEGER NOT NULL DEFAULT 1,
-                 last_used               INTEGER NOT NULL,
-                 source                  TEXT NOT NULL DEFAULT 'auto',
-                 language                TEXT,
-                 example_context         TEXT,
-                 term_type               TEXT,
-                 meaning                 TEXT,
-                 meaning_updated_at      INTEGER,
-                 examples_since_meaning  INTEGER NOT NULL DEFAULT 0,
-                 UNIQUE(user_id, term)
-             );
-             CREATE TABLE vocab_embeddings (
-                 user_id    TEXT NOT NULL REFERENCES local_user(id),
-                 term       TEXT NOT NULL,
-                 embedding  BLOB NOT NULL,
-                 updated_at INTEGER NOT NULL,
-                 UNIQUE(user_id, term)
-             );
-             CREATE TABLE vocab_embedding_examples (
-                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                 user_id       TEXT NOT NULL REFERENCES local_user(id),
-                 term          TEXT NOT NULL,
-                 embedding     BLOB NOT NULL,
-                 example_text  TEXT NOT NULL,
-                 recorded_at   INTEGER NOT NULL
-             );
-             CREATE TABLE stt_replacements (
-                 user_id TEXT NOT NULL,
-                 transcript_form TEXT NOT NULL,
-                 correct_form TEXT NOT NULL,
-                 phonetic_key TEXT NOT NULL DEFAULT '',
-                 weight REAL NOT NULL DEFAULT 1.0,
-                 use_count INTEGER NOT NULL DEFAULT 1,
-                 last_used INTEGER NOT NULL DEFAULT 0,
-                 language TEXT,
-                 export_tier TEXT NOT NULL DEFAULT 'local_only',
-                 contradiction_count INTEGER NOT NULL DEFAULT 0,
-                 review_status TEXT NOT NULL DEFAULT 'approved',
-                 review_reason TEXT,
-                 last_reviewed_at INTEGER
-             );
-             CREATE TABLE company_vocabulary (
-                 user_id TEXT NOT NULL,
-                 term TEXT NOT NULL,
-                 term_norm TEXT NOT NULL,
-                 term_type TEXT,
-                 language TEXT,
-                 weight REAL NOT NULL DEFAULT 1.0,
-                 priority INTEGER NOT NULL DEFAULT 0,
-                 status TEXT NOT NULL DEFAULT 'approved',
-                 updated_at INTEGER NOT NULL
-             );
-             CREATE TABLE company_stt_replacements (
-                 user_id TEXT NOT NULL,
-                 transcript_form TEXT NOT NULL,
-                 transcript_norm TEXT NOT NULL,
-                 correct_form TEXT NOT NULL,
-                 correct_norm TEXT NOT NULL,
-                 language TEXT,
-                 weight REAL NOT NULL DEFAULT 1.0,
-                 safety_status TEXT NOT NULL DEFAULT 'approved',
-                 status TEXT NOT NULL DEFAULT 'approved',
-                 updated_at INTEGER NOT NULL
-             );
-             CREATE VIRTUAL TABLE vocab_fts USING fts5(
-                 user_id UNINDEXED, term UNINDEXED, card_text,
-                 tokenize = 'unicode61 remove_diacritics 2'
-             );",
-            )
-            .unwrap();
-        pool
-    }
-
-    fn seed_vocab(
-        pool: &DbPool,
-        term: &str,
-        weight: f64,
-        context: &str,
-        meaning: Option<&str>,
-        embedding: &[f32],
-    ) {
-        pool.get().unwrap().execute(
-            "INSERT INTO vocabulary
-               (user_id, term, weight, use_count, last_used, source, language, example_context, term_type, meaning)
-             VALUES ('u1', ?1, ?2, 1, ?3, 'auto', 'english', ?4, 'proper_noun', ?5)",
-            params![term, weight, now_ms(), context, meaning],
-        ).unwrap();
-        vocab_fts::upsert(pool, "u1", term, Some(context));
-        upsert_embedding(pool, "u1", term, embedding);
-    }
-
-    #[test]
-    fn text_prompt_vocab_stays_empty_for_unrelated_top_weight_term() {
-        let pool = mem_pool();
-        seed_vocab(
-            &pool,
-            "tembeess",
-            5.0,
-            "tembeess Friday team meeting",
-            Some("Internal project term for a team meeting context."),
-            &[1.0, 0.0, 0.0, 0.0],
-        );
-
-        let chosen = retrieve_after_transcription(
-            &pool,
-            VocabRetrievalRequest {
-                user_id: "u1".into(),
-                transcript: "what time is it".into(),
-                output_language: "english".into(),
-                target_app: None,
-                bucket: None,
-                screen_context: None,
-                transcript_embedding: Some(vec![0.99, 0.0, 0.0, 0.0]),
-                limit: 8,
-            },
-        );
-        assert!(
-            chosen.is_empty(),
-            "text polish should not inject unrelated top-weight vocab"
-        );
-    }
 
     #[test]
     fn every_option_digit_helper_routes_to_the_server() {

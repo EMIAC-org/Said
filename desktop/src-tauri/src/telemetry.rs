@@ -300,34 +300,6 @@ pub fn on_edit_outcome(
     spawn_patch(ep.clone(), run_id.to_string(), patch);
 }
 
-pub fn on_classify_result(ep: &BackendEndpoint, run_id: &str, resp: &api::ClassifyEditResponse) {
-    let learning_modal = resp.notify
-        || !resp.review_candidates.is_empty()
-        || !resp.ambiguous_terms.is_empty()
-        || resp.pending_id.is_some();
-    let patch = api::TelemetryRunPatch {
-        learning_candidate: Some(learning_modal || resp.learned),
-        learning_modal_shown: Some(learning_modal),
-        server_learning_saved: Some(resp.learned),
-        learning_confirmed: Some(resp.learned && !resp.review_candidates.is_empty()),
-        finalize: true,
-        ..Default::default()
-    };
-    spawn_patch(ep.clone(), run_id.to_string(), patch);
-}
-
-pub fn on_learning_resolve(ep: &BackendEndpoint, run_id: &str, confirmed: bool, dismissed: bool) {
-    let patch = api::TelemetryRunPatch {
-        learning_confirmed: Some(confirmed),
-        learning_dismissed: Some(dismissed),
-        server_learning_saved: Some(confirmed),
-        server_learning_blocked: Some(dismissed),
-        finalize: true,
-        ..Default::default()
-    };
-    spawn_patch(ep.clone(), run_id.to_string(), patch);
-}
-
 pub fn on_pipeline_error(ep: &BackendEndpoint, run_id: &str, error_code: Option<String>) {
     let patch = api::TelemetryRunPatch {
         success: Some(false),

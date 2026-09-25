@@ -4,14 +4,11 @@
  * instead of quietly rendering a broken screen.
  */
 import type {
-  AppBuckets,
   DesktopPrefs,
+  DictionaryWord,
   LocalModelInfo,
   LocalModelInventory,
-  ProfileInsights,
   SttSetupPolicy,
-  VocabAlias,
-  VocabRow,
 } from "@/lib/invoke";
 import type {
   AppIdentity,
@@ -226,50 +223,14 @@ export function modelInventory(state: "current" | "legacy" | "none"): LocalModel
   };
 }
 
-export const vocabulary: VocabRow[] = [
-  { term: "AirNote", weight: 1, use_count: 64, last_used: Date.now() - HOUR, source: "starred", meaning: "This app", term_type: "product" },
-  { term: "EMIAC", weight: 1, use_count: 41, last_used: Date.now() - 3 * HOUR, source: "manual", meaning: "The company", term_type: "org" },
-  { term: "Clario", weight: 0.9, use_count: 28, last_used: Date.now() - DAY, source: "auto", term_type: "product" },
-  { term: "whisper.cpp", weight: 0.8, use_count: 17, last_used: Date.now() - 2 * DAY, source: "auto", term_type: "tech" },
-  { term: "Tauri", weight: 0.8, use_count: 12, last_used: Date.now() - 2 * DAY, source: "auto", term_type: "tech" },
-  { term: "Lark", weight: 0.7, use_count: 9, last_used: Date.now() - 4 * DAY, source: "auto", term_type: "product" },
-  { term: "Hinglish", weight: 0.7, use_count: 22, last_used: Date.now() - 5 * HOUR, source: "starred", term_type: "language" },
-  { term: "Rahul", weight: 0.6, use_count: 6, last_used: Date.now() - 6 * DAY, source: "auto", term_type: "person" },
+export const dictionary: DictionaryWord[] = [
+  { id: 1, written: "AirNote", heard: "air note", source: "learned", created_at: Date.now() - HOUR },
+  { id: 2, written: "EMIAC", heard: "e mac", source: "learned", created_at: Date.now() - 3 * HOUR },
+  { id: 3, written: "Clario", heard: null, source: "added", created_at: Date.now() - DAY },
+  { id: 4, written: "whisper.cpp", heard: "whisper cpp", source: "learned", created_at: Date.now() - 2 * DAY },
+  { id: 5, written: "Lark", heard: "large", source: "learned", created_at: Date.now() - 4 * DAY },
+  { id: 6, written: "Tauri", heard: null, source: "added", created_at: Date.now() - 5 * DAY },
 ];
-
-export const vocabAliases: VocabAlias[] = [
-  { correct_form: "AirNote", transcript_form: "air note", use_count: 31, active: true },
-  { correct_form: "EMIAC", transcript_form: "e mac", use_count: 12, active: true },
-  { correct_form: "whisper.cpp", transcript_form: "whisper cpp", use_count: 7, active: true },
-];
-
-export const profileInsights: ProfileInsights = {
-  run_stats: { run_count: 14, skipped_count: 2, last_run_at: new Date(Date.now() - 2 * HOUR).toISOString(), last_run_outcome: "updated" },
-  knowledge: {
-    background: "Builds desktop and AI products at EMIAC; writes in a mix of English and Hinglish.",
-    domains: ["Speech recognition", "Desktop apps", "Product launches"],
-    focus_areas: ["AirNote releases", "Model quality", "Onboarding"],
-  },
-  buckets: [
-    { bucket_key: "messaging", style: ["Short, casual lines", "Hinglish kept in Roman script"], speech_patterns: ["Starts with 'haan' or 'bhai'"], version: 4, updated_at: new Date(Date.now() - DAY).toISOString() },
-    { bucket_key: "formal_writing", style: ["Full sentences", "Greeting and sign-off"], speech_patterns: ["Dictates the salutation first"], version: 2, updated_at: new Date(Date.now() - 3 * DAY).toISOString() },
-    { bucket_key: "coding", style: ["Technical terms kept verbatim"], speech_patterns: ["Uses TODO prefixes"], version: 3, updated_at: new Date(Date.now() - 2 * DAY).toISOString() },
-  ],
-};
-
-export function appBuckets(history: Recording[]): AppBuckets {
-  const counts = new Map<string, number>();
-  for (const row of history) if (row.target_app) counts.set(row.target_app, (counts.get(row.target_app) ?? 0) + 1);
-  return {
-    buckets: ["coding", "messaging", "work_tracker", "formal_writing", "default"],
-    apps: [...counts].map(([app_key, count]) => ({
-      app_key,
-      bucket_key: MOCK_APPS[app_key]?.category ?? "default",
-      source: "auto",
-      count,
-    })),
-  };
-}
 
 export function appUsage(history: Recording[]): AppUsageRow[] {
   const rows = new Map<string, AppUsageRow>();

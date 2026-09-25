@@ -68,10 +68,6 @@ fn backend_ai_payload_log_path() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("airnote-backend-ai-payloads.jsonl"))
 }
 
-fn recent_speech_hints_allowed(vocab_entries: &[VocabEntry]) -> bool {
-    !vocab_entries.is_empty()
-}
-
 async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest) {
     if !backend_ai_payload_log_enabled() {
         return;
@@ -100,10 +96,7 @@ async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest
         "selected_model": &req.selected_model,
         "output_language": &req.output_language,
         "target_app": &req.target_app,
-        "screen_context": &req.screen_context,
-        "safe_vocab_terms": &req.safe_vocab_terms,
-        "vocab_cards": &req.vocab_cards,
-        "recent_speech_hints": &req.recent_speech_hints,
+        "dictionary": &req.dictionary,
         "transcript": &req.transcript,
     })
     .to_string();
@@ -122,13 +115,11 @@ async fn write_backend_ai_payload_log(url: &str, req: &ServerRuntimeVoiceRequest
                 );
             } else {
                 info!(
-                    "[voice] backend AI payload log wrote path={} run_id={} transcript_chars={} vocab_terms={} vocab_cards={} recent_speech_hints={}",
+                    "[voice] backend AI payload log wrote path={} run_id={} transcript_chars={} dictionary={}",
                     path.display(),
                     req.client_run_id.as_deref().unwrap_or("none"),
                     req.transcript.chars().count(),
-                    req.safe_vocab_terms.len(),
-                    req.vocab_cards.len(),
-                    req.recent_speech_hints.len()
+                    req.dictionary.len(),
                 );
             }
         }
@@ -377,22 +368,15 @@ pub fn cleanup_old_audio(pool: &crate::store::DbPool) {
 
 use crate::{
     AppState,
-    embedder::gemini,
     llm::{
         openai_codex,
-        prompt::{
-            VocabEntry, build_user_message_with_hints, build_voice_repair_system_prompt,
-            build_voice_repair_user_message, default_voice_prompt_template,
-            render_voice_system_prompt_template_with_profile_and_recent,
-        },
+        prompt::{build_voice_repair_system_prompt, build_voice_repair_user_message},
         script,
         stream_safety::scrub_polished_output,
-        vocab_retrieval::{self, VocabRetrievalRequest},
     },
     store::{
-        company_vocab,
         history::{InsertRecording, insert_recording},
-        openai_oauth, vocab_embeddings, vocabulary,
+        openai_oauth,
     },
 };
 
@@ -428,100 +412,12 @@ struct ServerRuntimeVoiceRequest {
     transcript: String,
     output_language: String,
     selected_model: String,
-    screen_context: Option<String>,
-    safe_vocab_terms: Vec<String>,
-    /// Rich, evidence-backed cards selected by the local retriever. The control
-    /// plane treats them as soft evidence; the term list remains for prompt
-    /// compatibility with older control-plane versions.
+    /// The user's words that occur in this transcript.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    vocab_cards: Vec<ServerRuntimeVocabCard>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    recent_speech_hints: Vec<String>,
-    /// Focused-app key (bundle-id / exe). Lets the server pick the per-app profile
-    /// bucket. The learned profile now lives server-side, so the client no longer
-    /// ships `client_profile_markdown` — the server injects its own KB.
+    dictionary: Vec<said_core::polish::dictation::DictionaryEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     target_app: Option<String>,
     client_run_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ServerRuntimeVocabCard {
-    term: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    term_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    meaning: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    context: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    aliases: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    evidence: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    do_not_use_when: Option<String>,
-}
-
-const SERVER_VOCAB_CARD_LIMIT: usize = 8;
-
-fn clean_server_vocab_text(raw: &str, max_chars: usize) -> String {
-    raw.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(max_chars)
-        .collect()
-}
-
-fn supported_vocab_term_type(term_type: Option<&str>) -> Option<String> {
-    match term_type.map(str::trim) {
-        Some("acronym" | "proper_noun" | "brand" | "code_identifier" | "phrase" | "other") => {
-            term_type.map(str::trim).map(str::to_string)
-        }
-        _ => None,
-    }
-}
-
-fn server_vocab_cards(entries: &[VocabEntry]) -> Vec<ServerRuntimeVocabCard> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let term = clean_server_vocab_text(&entry.term, 96);
-            if term.is_empty() {
-                return None;
-            }
-
-            let clean_optional = |value: Option<&String>| {
-                value.and_then(|value| {
-                    let value = clean_server_vocab_text(value, 180);
-                    (!value.is_empty()).then_some(value)
-                })
-            };
-            Some(ServerRuntimeVocabCard {
-                term,
-                term_type: supported_vocab_term_type(entry.term_type.as_deref()),
-                meaning: clean_optional(entry.meaning.as_ref()),
-                context: clean_optional(entry.context.as_ref()),
-                aliases: entry
-                    .stt_aliases
-                    .iter()
-                    .map(|(alias, _)| clean_server_vocab_text(alias, 80))
-                    .filter(|alias| !alias.is_empty())
-                    .take(6)
-                    .collect(),
-                evidence: entry
-                    .evidence
-                    .iter()
-                    .map(|evidence| clean_server_vocab_text(evidence, 100))
-                    .filter(|evidence| !evidence.is_empty())
-                    .take(4)
-                    .collect(),
-                do_not_use_when: clean_optional(entry.do_not_use_when.as_ref()),
-            })
-        })
-        .take(SERVER_VOCAB_CARD_LIMIT)
-        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1110,10 +1006,8 @@ async fn run_server_runtime_voice_stream(
     transcript: String,
     output_language: String,
     selected_model: String,
-    screen_context: Option<String>,
-    vocab_entries: Vec<VocabEntry>,
+    dictionary: Vec<said_core::polish::dictation::DictionaryEntry>,
     target_app: Option<String>,
-    recent_speech_hints: Vec<String>,
     token_tx: mpsc::Sender<String>,
 ) -> Result<(crate::llm::PolishResult, String, ServerRuntimeTraceMeta), String> {
     let setup_start = Instant::now();
@@ -1132,20 +1026,11 @@ async fn run_server_runtime_voice_stream(
         .unwrap_or("https://airnote.emiactech.com")
         .to_string();
 
-    let vocab_cards = server_vocab_cards(&vocab_entries);
-    let safe_vocab_terms = vocab_cards
-        .iter()
-        .map(|card| card.term.clone())
-        .collect::<Vec<_>>();
-
     let req = ServerRuntimeVoiceRequest {
         transcript,
         output_language,
         selected_model,
-        screen_context: screen_context.map(|s| s.chars().take(500).collect()),
-        safe_vocab_terms,
-        vocab_cards,
-        recent_speech_hints,
+        dictionary,
         target_app,
         client_run_id: client_run_id
             .filter(|s| !s.trim().is_empty())
@@ -1158,21 +1043,15 @@ async fn run_server_runtime_voice_stream(
     );
     let start = Instant::now();
     info!(
-        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} safe_vocab_terms={} vocab_cards={} recent_speech_hints={} target_app={} screen_context_chars={} setup_ms={}",
+        "[voice] server runtime stream start run_id={} url={} transcript_chars={} words={} selected_model={} output_language={} dictionary={} target_app={} setup_ms={}",
         req.client_run_id.as_deref().unwrap_or("none"),
         url,
         req.transcript.chars().count(),
         req.transcript.split_whitespace().count(),
         req.selected_model,
         req.output_language,
-        req.safe_vocab_terms.len(),
-        req.vocab_cards.len(),
-        req.recent_speech_hints.len(),
+        req.dictionary.len(),
         req.target_app.as_deref().unwrap_or("none"),
-        req.screen_context
-            .as_ref()
-            .map(|s| s.chars().count())
-            .unwrap_or(0),
         setup_start.elapsed().as_millis(),
     );
 
@@ -1312,53 +1191,6 @@ async fn run_server_runtime_voice_stream(
     ))
 }
 
-async fn run_local_voice_polish_no_stream(
-    http_client: reqwest::Client,
-    pool: crate::store::DbPool,
-    user_id: String,
-    llm_provider: String,
-    selected_model: String,
-    gateway_key: String,
-    gemini_key: String,
-    groq_key: String,
-    deepinfra_key: String,
-    system_prompt: String,
-    user_message: String,
-) -> Result<(crate::llm::PolishResult, String), String> {
-    let route = crate::llm::polish_dispatch::voice_polish_route(&selected_model);
-    let openai_token_opt = if llm_provider == "openai_codex" {
-        let pool_tok = pool.clone();
-        let uid_tok = user_id.clone();
-        let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
-            .await
-            .unwrap_or(None);
-        tok.map(|t| t.access_token)
-    } else {
-        None
-    };
-
-    let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
-    let drain = tokio::spawn(async move { while token_rx.recv().await.is_some() {} });
-
-    let result = crate::llm::polish_dispatch::stream_polish_routed(
-        &http_client,
-        &route,
-        &groq_key,
-        &gateway_key,
-        &gemini_key,
-        &deepinfra_key,
-        openai_token_opt.as_deref(),
-        &llm_provider,
-        &system_prompt,
-        &user_message,
-        token_tx,
-    )
-    .await;
-
-    let _ = drain.await;
-    result.map(|r| (r, route.label()))
-}
-
 struct PcmWav {
     pcm: Vec<u8>,
     sample_rate: u32,
@@ -1458,7 +1290,6 @@ fn downmix_stereo_i16_to_mono(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response {
-    let pre_stream_start = Instant::now();
     let VoicePolishInput {
         wav_data,
         target_app,
@@ -1585,99 +1416,13 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
     );
 
     let http_client = state.http_client.clone();
-
-    // ── Pre-fetch all DB-backed data in parallel, BEFORE opening the SSE stream ──
-    // Prefs (async RwLock), lexicon (async RwLock), and vocab terms (spawn_blocking)
-    // run concurrently so total wait ≈ max(each) instead of their sum (~8 ms saved).
-    let vocab_task = {
-        let pool_c = pool.clone();
-        let uid_c = user_id.clone();
-        // Load full VocabTerm rows so we can carry example_context into the
-        // polish prompt — the foundational signal that lets the LLM do
-        // context-aware recognition of unseen STT mishearings.
-        tokio::task::spawn_blocking(move || {
-            let mut terms = vocabulary::top_terms(&pool_c, &uid_c, 100);
-            let company_terms = company_vocab::load_terms(&pool_c, &uid_c, 100);
-            for term in company_terms {
-                if !terms
-                    .iter()
-                    .any(|t| t.term.eq_ignore_ascii_case(&term.term))
-                {
-                    terms.push(term);
-                }
-            }
-            terms
-        })
-    };
-    let prefetch_start = Instant::now();
-    let (prefs_opt, (word_corrections, mut stt_replacement_rules), vocab_full) = tokio::join!(
-        crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id),
-        crate::get_lexicon_cached(&state.lexicon_cache, &pool, &user_id),
-        async { vocab_task.await.unwrap_or_default() },
-    );
-    info!(
-        "[voice] pre-stream prefs/lexicon/vocab fetched in {}ms prefs_found={} corrections={} stt_rules={} vocab_terms={}",
-        prefetch_start.elapsed().as_millis(),
-        prefs_opt.is_some(),
-        word_corrections.len(),
-        stt_replacement_rules.len(),
-        vocab_full.len(),
-    );
-    let company_aliases = company_vocab::load_aliases(&pool, &user_id);
-    for rule in company_aliases {
-        if !stt_replacement_rules.iter().any(|r| {
-            r.transcript_form
-                .eq_ignore_ascii_case(&rule.transcript_form)
-        }) {
-            stt_replacement_rules.push(rule);
-        }
-    }
-    let Some(prefs_for_guard) = prefs_opt.as_ref() else {
+    let prefs_opt = crate::get_prefs_cached(&state.prefs_cache, &pool, &user_id).await;
+    if prefs_opt.is_none() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    info!(
-        "[voice] key guard pre_transcript_present={} message_polish={}",
-        pre_transcript.is_some(),
-        message_polish_mode,
-    );
-    let missing =
-        crate::routes::key_guard::missing_voice_api_keys(&pool, &user_id, prefs_for_guard);
-    if !missing.is_empty() {
-        let message = "API keys required";
-        let payload = voice_error_payload(
-            message,
-            Some(&voice_run_id),
-            saved_audio_id.as_deref(),
-            Some("missing_api_keys"),
-        );
-        let _ = crate::store::voice_runs::mark_voice_run_failed(
-            &pool,
-            &voice_run_id,
-            "missing_api_keys",
-            message,
-            saved_audio_id.is_some(),
-            false,
-            Some(&payload),
-        );
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({
-                "error_code": "missing_api_keys",
-                "message": message,
-                "missing": missing,
-                "run_id": voice_run_id,
-                "audio_id": saved_audio_id,
-                "retryable": saved_audio_id.is_some(),
-                "owned_by_airnote": false,
-                "diagnostic": payload.get("diagnostic").and_then(Value::as_str).unwrap_or(""),
-            })),
-        )
-            .into_response();
     }
-    // The polish-prompt vocab slice is computed below, AFTER the transcript
-    // embedding lands, so we can do relevance retrieval.
 
-    // ── Build SSE stream ───────────────────────────────────────────────────────
+    // Whisper's transcript is typed as it is; with polish on, the model's reply
+    // is typed as it is. Nothing runs on the text in between.
     let audio_id_ref = saved_audio_id.clone();
     let stream = async_stream::stream! {
         let total_start = Instant::now();
@@ -1706,57 +1451,12 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             return;
         }
 
-        let prefs = match prefs_opt {
-            Some(p) => p,
-            None => {
-                yield Ok::<Event, Infallible>(
-                    voice_run_failed_event(&pool, &voice_run_id, "preferences not found", aid, Some("preferences_not_found"))
-                );
-                return;
-            }
+        let Some(prefs) = prefs_opt else {
+            yield Ok::<Event, Infallible>(
+                voice_run_failed_event(&pool, &voice_run_id, "preferences not found", aid, Some("preferences_not_found"))
+            );
+            return;
         };
-
-        let gemini_key = prefs.gemini_api_key.clone()
-            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
-            .unwrap_or_default();
-        let gateway_key = prefs.gateway_api_key.clone()
-            .or_else(|| std::env::var("GATEWAY_API_KEY").ok())
-            .or_else(|| { let k = said_core::api_key(); if k.is_empty() { None } else { Some(k.to_string()) } })
-            .unwrap_or_default();
-        let groq_key = prefs.groq_api_key.clone()
-            .or_else(|| std::env::var("GROQ_API_KEY").ok())
-            .unwrap_or_default();
-        let deepinfra_key = prefs.deepinfra_api_key.clone()
-            .or_else(|| std::env::var("DEEPINFRA_API_KEY").ok())
-            .unwrap_or_default();
-
-        info!(
-            "[voice] SSE stream start after_pre_stream={}ms selected_model={} output_language={} server_runtime={} wav_bytes={} audio_seconds={:.2} pre_transcript_present={} pre_chars={} pre_words={} message_polish={} client_run_id={}",
-            pre_stream_start.elapsed().as_millis(),
-            prefs.selected_model,
-            prefs.output_language,
-            prefs.server_runtime_enabled,
-            wav_data.len(),
-            audio_secs,
-            pre_transcript.is_some(),
-            pre_transcript.as_ref().map(|t| t.chars().count()).unwrap_or(0),
-            pre_transcript
-                .as_ref()
-                .map(|t| t.split_whitespace().count())
-                .unwrap_or(0),
-            message_polish_mode,
-            client_run_id.as_deref().unwrap_or("none"),
-        );
-
-        // ── Pipeline-start summary ───────────────────────────────────────────────
-        let bg_active = crate::BG_TASK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        info!(
-            "[pipeline] start — learning={} vocab={} stt_rules={} bg_tasks={}",
-            if prefs.learning_enabled { "ON" } else { "OFF" },
-            vocab_full.len(),
-            stt_replacement_rules.len(),
-            bg_active,
-        );
 
         let Some(local_transcript) = pre_transcript.clone().filter(|t| !t.trim().is_empty()) else {
             yield Ok(voice_run_failed_event(
@@ -1768,46 +1468,32 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             ));
             return;
         };
-        let stt_transcript_raw = strip_confidence_markers(&local_transcript);
-        if stt_transcript_raw.trim().is_empty() {
-            yield Ok(voice_run_failed_event(
-                &pool,
-                &voice_run_id,
-                "no speech detected — try speaking again",
-                aid,
-                Some("no_speech_detected"),
-            ));
-            return;
-        }
-        let word_count = stt_transcript_raw.split_whitespace().count();
+        let transcript = local_transcript.trim().to_string();
         let local_meta = pre_transcript_meta.clone().unwrap_or_else(|| TranscriptMeta {
             enriched_transcript: local_transcript.clone(),
             confidence: 0.95,
             mean_word_confidence: 0.95,
-            word_count,
+            word_count: transcript.split_whitespace().count(),
             model: said_core::stt::telemetry_speech_model().to_string(),
             origin: TranscriptOrigin::DictationLocal,
             ..TranscriptMeta::default()
         });
-        let enriched_raw = if local_meta.enriched_transcript.trim().is_empty() {
-            local_transcript.clone()
-        } else {
-            local_meta.enriched_transcript.clone()
-        };
+        let stt_transcript_raw = transcript.clone();
         let stt_confidence = if local_meta.confidence > 0.0 {
             local_meta.confidence
         } else {
             0.95
         };
         let transcribe_ms = local_meta.duration_ms as i64;
-        let audio_seconds = audio_secs;
         info!(
-            "[voice] local transcript accepted chars={} words={} confidence={:.2} model={} origin={:?}",
-            stt_transcript_raw.chars().count(),
-            word_count,
+            "[voice] local transcript accepted chars={} words={} confidence={:.2} model={} origin={:?} polish={} message_polish={}",
+            transcript.chars().count(),
+            transcript.split_whitespace().count(),
             stt_confidence,
             local_meta.model,
             local_meta.origin,
+            prefs.polish_enabled,
+            message_polish_mode,
         );
 
         if message_polish_mode {
@@ -1910,849 +1596,111 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
             stage: "stt.selected_transcript",
             component: "backend",
             function: "desktop::local_asr",
-            output: Some(&stt_transcript_raw),
+            output: Some(&transcript),
             duration_ms: Some(transcribe_ms),
-            reason: Some("local speech transcript selected for polish"),
+            reason: Some("local speech transcript"),
             risk: Some("stt_selection"),
             metadata: json!({
                 "provider": "local_whisper",
                 "model": local_meta.model,
                 "origin": format!("{:?}", local_meta.origin),
                 "confidence": stt_confidence,
-                "audio_seconds": audio_seconds,
+                "audio_seconds": audio_secs,
             }),
             ..Default::default()
         });
-
-        // Pre-LLM: number normalization + tier2 EVIDENCE COLLECTION (read-only).
-        // Tier2 does NOT modify the transcript — it only identifies which tokens
-        // might be vocabulary terms. The LLM uses these hints + context to decide
-        // what to replace (contextual disambiguation).
-        let (stt_transcript, enriched_for_hints, alias_result) = {
-            let pool_t = pool.clone();
-            let uid_t = user_id.clone();
-            let number_t0 = Instant::now();
-            let numeric_t = crate::number_format::apply(&stt_transcript_raw);
-            let number_ms = number_t0.elapsed().as_millis() as i64;
-            let original_transcript = numeric_t.clone();
-            let rules_t = stt_replacement_rules.clone();
-            let vocab_t = vocab_full.clone();
-            if numeric_t != stt_transcript_raw {
-                info!(
-                    "[voice] deterministic number format before LLM: {:?} → {:?}",
-                    stt_transcript_raw, numeric_t
-                );
-            }
-            dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-                stage: "pre_llm.number_format",
-                component: "backend",
-                function: "number_format::apply",
-                input: Some(&stt_transcript_raw),
-                output: Some(&numeric_t),
-                duration_ms: Some(number_ms),
-                reason: Some("normalize spoken numbers before prompt"),
-                risk: Some("pre_model_mutation"),
-                metadata: json!({}),
-                ..Default::default()
-            });
-            let tier2_t0 = Instant::now();
-            let evidence = tokio::task::spawn_blocking(move || {
-                crate::tier2::collect_evidence_with_store(
-                    &pool_t,
-                    &uid_t,
-                    &numeric_t,
-                    &rules_t,
-                    &vocab_t,
-                )
-            }).await.unwrap_or_else(|e| {
-                warn!("[voice] tier2 evidence collection failed: {e}");
-                crate::tier2::EvidenceResult {
-                    source_text: original_transcript.clone(),
-                    evidence: vec![],
-                    matches: vec![],
-                    traces: vec![],
-                }
-            });
-            let tier2_ms = tier2_t0.elapsed().as_millis() as i64;
-            dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-                stage: "pre_llm.tier2_evidence",
-                component: "backend",
-                function: "tier2::collect_evidence_with_store",
-                input: Some(&original_transcript),
-                output: Some(&original_transcript),
-                duration_ms: Some(tier2_ms),
-                reason: Some("collect read-only alias/vocabulary evidence before prompt"),
-                risk: Some("prompt_context_bias"),
-                metadata: json!({
-                    "matches": evidence.matches.len(),
-                    "evidence_items": evidence.evidence.len(),
-                    "trace_items": evidence.traces.len(),
-                }),
-                ..Default::default()
-            });
-            if !evidence.matches.is_empty() {
-                info!(
-                    "[voice] tier2 evidence (read-only): {} match(es): {}",
-                    evidence.matches.len(),
-                    evidence.matches
-                        .iter()
-                        .map(|m| format!("{:?}→{} ({:?})", m.transcript_form, m.correct_form, m.kind))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-            }
-            // Pass raw transcript (not corrected) to LLM — let LLM disambiguate
-            (original_transcript, enriched_raw.clone(), evidence.as_apply_result())
+        let dictation = FinishedDictation {
+            user_id: user_id.clone(),
+            voice_run_id: voice_run_id.clone(),
+            client_run_id: client_run_id.clone(),
+            transcript: transcript.clone(),
+            target_app: target_app.clone(),
+            audio_id: saved_audio_id.clone(),
+            output_language: prefs.output_language.clone(),
+            audio_secs,
+            confidence: stt_confidence,
+            transcribe_ms,
         };
 
-        let status_payload = json!({"phase": "polishing", "transcript": &stt_transcript}).to_string();
-        yield Ok(Event::default().event("status").data(status_payload));
+        if !prefs.polish_enabled {
+            info!("[voice] polish off — typing the transcript as spoken");
+            let total_ms = total_start.elapsed().as_millis() as i64;
+            yield Ok(finish_dictation(&pool, dictation, transcript.clone(), "polish_disabled", 0, total_ms, None).await);
+            return;
+        }
 
-        // ── STEP 2: Embed cache lookup only ───────────────────────────────────────
-        // Never wait on a fresh Gemini call in the dictation hot path. The desktop's
-        // /v1/pre-embed hook populates this cache opportunistically for future runs.
-        // The cached vector is only used to narrow vocabulary candidates; full
-        // past-edit RAG examples are intentionally not injected into voice prompts.
-        let embed_t0 = tokio::time::Instant::now();
-        let embedding = gemini::cached(&pool, &stt_transcript).await;
-        let embed_ms = embed_t0.elapsed().as_millis() as i64;
-        info!("[timing] embed={}ms ({})", embed_ms, if embedding.is_some() { "cache-hit" } else { "cache-miss/nonblocking" });
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "context.embed_cache_lookup",
-            component: "backend",
-            function: "gemini::cached",
-            input: Some(&stt_transcript),
-            output: Some(&stt_transcript),
-            duration_ms: Some(embed_ms),
-            reason: Some("look up cached transcript embedding for vocab relevance without blocking"),
-            risk: Some("prompt_context_bias"),
-            metadata: json!({
-                "cache_hit": embedding.is_some(),
-            }),
-            ..Default::default()
-        });
-
-        // ── STEP 3: Meaning-first vocabulary cards ───────────────────────────────
-        // Retrieve a tiny evidence-backed card set. The retriever never rewrites
-        // the transcript and never calls the network; the polish LLM gets soft
-        // cards only when the current transcript has sound/meaning support.
-        let vocab_t0 = Instant::now();
-        let (resolved_transcript, vocab_entries): (String, Vec<VocabEntry>) = {
-            let pool_v   = pool.clone();
-            let uid_v    = user_id.clone();
-            let lang_v   = prefs.output_language.clone();
-            let emb_v    = embedding.clone();
-            let txt_v = alias_result.text.clone();
-            let target_app_v = target_app.clone();
-            let screen_context_v = screen_context.clone();
-            let cards = tokio::task::spawn_blocking(move || {
-                vocab_retrieval::retrieve_after_transcription(
-                    &pool_v,
-                    VocabRetrievalRequest {
-                        user_id: uid_v,
-                        transcript: txt_v,
-                        output_language: lang_v,
-                        target_app: target_app_v,
-                        bucket: None,
-                        screen_context: screen_context_v,
-                        transcript_embedding: emb_v,
-                        limit: 8,
-                    },
-                )
-            }).await.unwrap_or_default();
-
-            if cards.is_empty() {
-                info!(
-                    "[voice] vocab retriever picked 0/{} entries — no transcript evidence",
-                    vocab_full.len(),
-                );
-                (alias_result.text.clone(), vec![])
-            } else {
-                info!(
-                    "[voice] vocab retriever selected {} card(s): {}",
-                    cards.len(),
-                    cards
-                        .iter()
-                        .map(|card| {
-                            let evidence = card
-                                .evidence
-                                .iter()
-                                .map(|e| format!("{:?}", e.kind))
-                                .collect::<Vec<_>>()
-                                .join("+");
-                            format!("{}[{:.1}:{evidence}]", card.term, card.score)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                let entries = vocab_retrieval::cards_to_vocab_entries(cards);
-                (alias_result.text.clone(), entries)
-            }
-        };
-        let vocab_ms = vocab_t0.elapsed().as_millis() as i64;
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "vocab.retrieve_after_transcription",
-            component: "backend",
-            function: "vocab_retrieval::retrieve_after_transcription",
-            input: Some(&stt_transcript),
-            output: Some(&resolved_transcript),
-            duration_ms: Some(vocab_ms),
-            reason: Some("retrieve meaning-first vocabulary cards for prompt"),
-            risk: Some("prompt_context_bias"),
-            metadata: json!({
-                "candidate_terms_total": vocab_full.len(),
-                "selected_terms": vocab_entries.len(),
-                "terms": vocab_entries.iter().take(20).map(|v| v.term.clone()).collect::<Vec<_>>(),
-                "evidence": vocab_entries.iter().take(20).map(|v| v.evidence.clone()).collect::<Vec<_>>(),
-            }),
-            ..Default::default()
-        });
-        let profile_summary_t0 = Instant::now();
-        let client_profile_summary = {
-            let pool_profile = pool.clone();
-            let uid_profile = user_id.clone();
+        let dictionary = {
+            let pool_d = pool.clone();
+            let uid_d = user_id.clone();
+            let text_d = transcript.clone();
             tokio::task::spawn_blocking(move || {
-                crate::store::profile_summary::ensure_current(&pool_profile, &uid_profile)
-            })
-            .await
-            .unwrap_or(None)
-        };
-        let profile_summary_ms = profile_summary_t0.elapsed().as_millis() as i64;
-        let client_profile_markdown = client_profile_summary
-            .as_ref()
-            .map(|summary| summary.profile_markdown.as_str());
-        let client_profile_version = client_profile_summary.as_ref().map(|summary| summary.version);
-        info!(
-            "[profile-summary] voice prompt profile version={} chars={} injected={}",
-            client_profile_summary
-                .as_ref()
-                .map(|summary| summary.version)
-                .unwrap_or(0),
-            client_profile_markdown
-                .map(|profile| profile.chars().count())
-                .unwrap_or(0),
-            client_profile_markdown.is_some(),
-        );
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "prompt.profile_summary",
-            component: "backend",
-            function: "profile_summary::ensure_current",
-            input: Some(&resolved_transcript),
-            output: Some(&resolved_transcript),
-            duration_ms: Some(profile_summary_ms),
-            reason: Some("load the local learned profile used as prompt context"),
-            risk: Some("prompt_context_bias"),
-            metadata: json!({
-                "profile_version": client_profile_version,
-                "profile_chars": client_profile_markdown.map(|p| p.chars().count()).unwrap_or(0),
-                "injected": client_profile_markdown.is_some(),
-            }),
-            ..Default::default()
-        });
-        let recent_hints_t0 = Instant::now();
-        let recent_speech_suppressed = !recent_speech_hints_allowed(&vocab_entries);
-        let recent_speech_hints = if recent_speech_suppressed {
-            Vec::new()
-        } else {
-            let pool_recent = pool.clone();
-            let uid_recent = user_id.clone();
-            let run_recent = voice_run_id.clone();
-            let app_recent = target_app.clone();
-            tokio::task::spawn_blocking(move || {
-                let transcripts = crate::store::voice_runs::recent_successful_normal_transcripts_for_app(
-                    &pool_recent,
-                    &uid_recent,
-                    app_recent.as_deref(),
-                    &run_recent,
-                    crate::store::now_ms(),
-                    crate::recent_speech_context::RECENT_SPEECH_TTL_MS,
-                    crate::recent_speech_context::RECENT_SPEECH_RUN_LIMIT,
-                );
-                crate::recent_speech_context::extract_recent_speech_hints(&transcripts)
+                crate::store::dictionary::for_transcript(&pool_d, &uid_d, &text_d)
             })
             .await
             .unwrap_or_default()
         };
-        let recent_hints_ms = recent_hints_t0.elapsed().as_millis() as i64;
-        if recent_speech_suppressed {
+        if !dictionary.is_empty() {
             info!(
-                "[voice] recent speech hints suppressed in {}ms app={} reason=no_evidence_backed_vocab",
-                recent_hints_ms,
-                target_app.as_deref().unwrap_or("none"),
-            );
-        } else {
-            info!(
-                "[voice] recent speech hints loaded in {}ms app={} hints={} terms={:?}",
-                recent_hints_ms,
-                target_app.as_deref().unwrap_or("none"),
-                recent_speech_hints.len(),
-                recent_speech_hints
+                "[voice] word list for this transcript: {}",
+                dictionary
+                    .iter()
+                    .map(|e| match &e.heard {
+                        Some(heard) => format!("{heard} → {}", e.written),
+                        None => e.written.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
             );
         }
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "context.recent_speech_hints",
-            component: "backend",
-            function: "recent_speech_context::extract_recent_speech_hints",
-            input: Some(&resolved_transcript),
-            output: Some(&resolved_transcript),
-            duration_ms: Some(recent_hints_ms),
-            reason: Some("load short-lived same-app terms for spelling disambiguation"),
-            risk: Some("prompt_context_bias"),
-            metadata: json!({
-                "target_app": target_app.as_deref(),
-                "hint_count": recent_speech_hints.len(),
-                "hints": &recent_speech_hints,
-                "suppressed": recent_speech_suppressed,
-                "ttl_ms": crate::recent_speech_context::RECENT_SPEECH_TTL_MS,
-                "run_limit": crate::recent_speech_context::RECENT_SPEECH_RUN_LIMIT,
-            }),
-            ..Default::default()
-        });
-        let prompt_build_t0 = Instant::now();
-        let low_conf = keep_low_confidence_markers(&enriched_for_hints, 80.0);
-        let low_conf_ref = if low_conf != resolved_transcript {
-            Some(low_conf.as_str())
-        } else {
-            None
-        };
-        let user_message = build_user_message_with_hints(
-            &resolved_transcript,
-            &prefs.output_language,
-            low_conf_ref,
-        );
 
-        let prompt_body = default_voice_prompt_template();
-        let relevant_corrections = crate::store::corrections::filter_relevant(
-            &word_corrections, &resolved_transcript, 2, 10,
-        );
-        let mut base_system_prompt = render_voice_system_prompt_template_with_profile_and_recent(
-            &prompt_body,
-            &prefs,
-            &[],
-            &relevant_corrections,
-            &vocab_entries,
-            client_profile_markdown,
-            &recent_speech_hints,
-        );
-        let prompt_build_ms = prompt_build_t0.elapsed().as_millis() as i64;
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "prompt.build",
-            component: "backend",
-            function: "render_voice_system_prompt_template_with_profile_and_recent",
-            input: Some(&resolved_transcript),
-            output: Some(&base_system_prompt),
-            duration_ms: Some(prompt_build_ms),
-            reason: Some("system prompt rendered with typed compact context"),
-            risk: Some("prompt_context_bias"),
-            metadata: json!({
-                "profile_version": client_profile_version,
-                "profile_chars": client_profile_markdown.map(|p| p.chars().count()).unwrap_or(0),
-                "past_edit_examples": 0,
-                "past_edit_examples_disabled": true,
-                "corrections": relevant_corrections.len(),
-                "vocab_entries": vocab_entries.len(),
-                "recent_speech_hints": recent_speech_hints.len(),
-            }),
-            ..Default::default()
-        });
-
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "prompt.history_examples",
-            component: "backend",
-            function: "disabled",
-            input: Some(&resolved_transcript),
-            output: Some(&resolved_transcript),
-            duration_ms: Some(0),
-            reason: Some("dynamic full-text examples disabled for hallucination resistance"),
-            risk: Some("prompt_context_bias"),
-            metadata: json!({
-                "fewshot_examples": 0,
-                "disabled": true,
-            }),
-            ..Default::default()
-        });
-
-        if llm_debug_enabled() {
-            let debug_msg = format!(
-                "━━━ LLM INPUT ━━━\ntranscript: {:?}\nvocab_count: {}\ncorrections: {}\n{}{}━━━━━━━━━━━━━━━━━",
-                &resolved_transcript,
-                vocab_entries.len(),
-                relevant_corrections.len(),
-                vocab_entries.iter().map(|ve| format!(
-                    "  VOCAB: {:?} type={:?} aliases={:?}\n",
-                    ve.term,
-                    ve.term_type,
-                    ve.stt_aliases.iter().map(|(a, c)| format!("{a}({c})")).collect::<Vec<_>>(),
-                )).collect::<String>(),
-                if vocab_entries.is_empty() { "  *** NO VOCAB IN PROMPT ***\n".to_string() } else { String::new() },
-            );
-            let vocab_in_prompt = if let Some(start) = base_system_prompt.find("VOCAB:") {
-                let end = base_system_prompt[start..].find("\n\n\n").map(|i| start + i).unwrap_or(base_system_prompt.len().min(start + 800));
-                &base_system_prompt[start..end]
-            } else {
-                "*** NO VOCAB BLOCK IN PROMPT ***"
-            };
-            let full_debug = format!("{debug_msg}\n\nPROMPT VOCAB SECTION:\n{vocab_in_prompt}");
-            tracing::debug!("{full_debug}");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true).append(true)
-                .open(std::env::temp_dir().join("said-llm-debug.log"))
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "\n{full_debug}");
-            }
-        }
-
-        let prompt_final_t0 = Instant::now();
-        if let Some(ref ctx) = screen_context {
-            let block = said_core::polish::prompt::render_screen_context_block(ctx);
-            if !block.is_empty() {
-                info!(
-                    "[voice] screen context: {} chars",
-                    ctx.chars().count().min(said_core::polish::prompt::SCREEN_CONTEXT_MAX_CHARS)
-                );
-                base_system_prompt.push_str(&block);
-            }
-        }
-
-        let system_prompt = if repair_mode.as_deref() == Some("preserve_recall") {
-            format!(
-                "{}\n\nREPAIR OVERRIDE:\n- The user explicitly asked to reprocess this recording because the previous output likely missed words or drifted in language.\n- Be extra conservative about deleting words.\n- Prefer keeping uncertain transcript content over compressing it.\n- Preserve numbers, names, acronyms, dates, and mixed Hindi-English spans.",
-                base_system_prompt
-            )
-        } else {
-            base_system_prompt
-        };
-        dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "prompt.final",
-            component: "backend",
-            function: "routes::voice::system_prompt",
-            input: Some(&resolved_transcript),
-            output: Some(&system_prompt),
-            duration_ms: Some(prompt_final_t0.elapsed().as_millis() as i64),
-            reason: Some("final system prompt sent to polish model"),
-            risk: Some("prompt_context_bias"),
-            metadata: json!({
-                "prompt_chars": system_prompt.chars().count(),
-                "screen_context": screen_context.as_ref().is_some_and(|s| !s.trim().is_empty()),
-                "repair_mode": repair_mode.as_deref(),
-            }),
-            ..Default::default()
-        });
-
-        // ── STEP 5: LLM polish ───────────────────────────────────────────────────
-        let enforce_roman_hinglish = prefs.output_language == "hinglish";
-
-        // Polish turned off in Settings: paste the transcript as spoken. The
-        // script guard still runs — turning off rewriting is not a request to
-        // start emitting Devanagari at a user who asked for Hinglish.
-        //
-        // Note what this necessarily gives up. Vocabulary corrections are
-        // applied *by* the model from the hints Tier 2 collects, not before it
-        // (see the Tier 2 comment above), so a user's learned names and jargon
-        // stop being applied here, along with punctuation and filler removal.
-        // Only `number_format::apply`, which already ran pre-LLM, survives.
-        // The Settings copy says so; this is not a silent downgrade.
-        if !prefs.polish_enabled {
-            let raw = if enforce_roman_hinglish {
-                let t = if script::contains_devanagari(&resolved_transcript) {
-                    script::enforce_roman_hinglish(&resolved_transcript)
-                } else {
-                    resolved_transcript.clone()
-                };
-                script::strip_non_latin_scripts(&t)
-            } else {
-                resolved_transcript.clone()
-            };
-            let total_ms = total_start.elapsed().as_millis() as i64;
-            info!("[voice] polish disabled — pasting the transcript unmodified");
-
-            // Persist exactly like the polished path does, before `done`.
-            // Skipping this left polish-off dictations out of History entirely:
-            // no text, no target app, and a server row with zero words.
-            let recording_id = Uuid::new_v4().to_string();
-            let word_count = raw.split_whitespace().count() as i64;
-            let inserted = {
-                let pool2 = pool.clone();
-                let id2 = recording_id.clone();
-                let uid2 = user_id.clone();
-                let t2 = resolved_transcript.clone();
-                let p2 = raw.clone();
-                let ta2 = target_app.clone();
-                let conf = stt_confidence;
-                let t_ms = transcribe_ms;
-                let e_ms = embed_ms;
-                let aid2 = saved_audio_id.clone();
-                let enr2 = enriched_raw.clone();
-                let raw2 = stt_transcript_raw.clone();
-                let crid2 = client_run_id.clone();
-                tokio::task::spawn_blocking(move || {
-                    let rec = InsertRecording {
-                        id: &id2, user_id: &uid2,
-                        transcript: &t2, polished: &p2,
-                        word_count,
-                        recording_seconds: if audio_secs > 0.0 { audio_secs } else { estimated_secs(word_count) },
-                        model_used: "polish_disabled",
-                        confidence: Some(conf),
-                        transcribe_ms: Some(t_ms),
-                        embed_ms: Some(e_ms),
-                        polish_ms: Some(0),
-                        target_app: ta2.as_deref(),
-                        source: "voice",
-                        audio_id: aid2.as_deref(),
-                        enriched_transcript: Some(&enr2),
-                        raw_transcript: Some(&raw2),
-                        local_corrected_transcript: Some(&p2),
-                        polished_output: Some(&p2),
-                        trace_json: None,
-                    };
-                    crate::observability::after_recording_insert(
-                        &pool2,
-                        &uid2,
-                        &rec,
-                        crate::observability::observability_extras(crid2.as_deref()),
-                    );
-                    insert_recording(&pool2, rec).is_some()
-                }).await.unwrap_or(false)
-            };
-            if inserted {
-                let _ = crate::store::voice_runs::mark_voice_run_completed(
-                    &pool,
-                    &voice_run_id,
-                    &recording_id,
-                    None,
-                );
-            } else {
-                warn!("[voice] failed to insert polish-disabled recording history row");
-                let _ = crate::store::voice_runs::mark_voice_run_completed_unlinked(
-                    &pool,
-                    &voice_run_id,
-                );
-            }
-            yield Ok(Event::default().event("done").data(
-                json!({
-                    "recording_id": recording_id,
-                    "transcript":   resolved_transcript,
-                    "audio_id":     saved_audio_id,
-                    "source":       "voice",
-                    "target_app":   target_app,
-                    "output_language": prefs.output_language,
-                    "enriched_transcript": enriched_raw,
-                    "polished":     raw,
-                    "model_used":   "polish_disabled",
-                    "confidence":   stt_confidence,
-                    "latency_ms": {
-                        "transcribe": transcribe_ms,
-                        "embed":      embed_ms,
-                        "retrieve":   0,
-                        "polish":     0,
-                        "total":      total_ms,
-                    },
-                    "examples_used": 0,
-                })
-                .to_string()
-            ));
-            return;
-        }
-
+        yield Ok(Event::default().event("status")
+            .data(json!({"phase": "server_polishing", "transcript": &transcript}).to_string()));
         let llm_start = Instant::now();
-        let (llm_result, actual_model_used, server_runtime_trace) = if crate::store::prefs::server_runtime_forced() {
-            yield Ok(Event::default().event("status")
-                .data(json!({"phase": "server_polishing", "transcript": &resolved_transcript}).to_string()));
-            info!("[timing] LLM start — provider=server_runtime selected_model={:?}", prefs.selected_model);
-            let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
-            let runtime_task = tokio::spawn(run_server_runtime_voice_stream(
-                http_client.clone(),
-                pool.clone(),
-                user_id.clone(),
-                client_run_id.clone(),
-                resolved_transcript.clone(),
-                prefs.output_language.clone(),
-                prefs.selected_model.clone(),
-                screen_context.clone(),
-                vocab_entries.clone(),
-                target_app.clone(),
-                recent_speech_hints.clone(),
-                token_tx,
-            ));
+        let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
+        let runtime_task = tokio::spawn(run_server_runtime_voice_stream(
+            http_client.clone(),
+            pool.clone(),
+            user_id.clone(),
+            client_run_id.clone(),
+            transcript.clone(),
+            prefs.output_language.clone(),
+            prefs.selected_model.clone(),
+            dictionary.clone(),
+            target_app.clone(),
+            token_tx,
+        ));
+        while let Some(raw_token) = token_rx.recv().await {
+            yield Ok(Event::default().event("token")
+                .data(json!({"token": raw_token}).to_string()));
+        }
 
-            while let Some(raw_token) = token_rx.recv().await {
-                yield Ok(Event::default().event("token")
-                    .data(json!({"token": raw_token}).to_string()));
-            }
-
-            match runtime_task.await {
-                Ok(Ok((result, model, trace_meta))) => {
-                    info!(
-                        "[voice] server runtime stream returned {} chars using {model}",
-                        result.polished.len()
-                    );
-                    (result, model, Some(trace_meta))
-                }
-                Ok(Err(e)) => {
-                    warn!("[voice] server runtime stream failed; falling back to local polish: {e}");
-                    yield Ok(Event::default().event("status")
-                        .data(json!({"phase": "server_runtime_fallback", "transcript": &resolved_transcript}).to_string()));
-
-                    let fallback_provider = prefs.llm_provider.clone();
-                    match run_local_voice_polish_no_stream(
-                        http_client.clone(),
-                        pool.clone(),
-                        user_id.clone(),
-                        fallback_provider.clone(),
-                        prefs.selected_model.clone(),
-                        gateway_key.clone(),
-                        gemini_key.clone(),
-                        groq_key.clone(),
-                        deepinfra_key.clone(),
-                        system_prompt.clone(),
-                        user_message.clone(),
-                    )
-                    .await {
-                        Ok((result, model)) => {
-                            info!(
-                                "[voice] server runtime fallback succeeded locally using {model} ({} chars)",
-                                result.polished.len()
-                            );
-                            (
-                                result,
-                                format!("server-runtime-fallback:{model}"),
-                                None,
-                            )
-                        }
-                        Err(local_e) => {
-                            let message = if invalidate_openai_session_on_auth_error(
-                                &pool,
-                                &user_id,
-                                &fallback_provider,
-                                &local_e,
-                            ) {
-                                "OpenAI not connected — go to Settings to connect your account"
-                                    .to_string()
-                            } else {
-                                format!(
-                                    "server runtime failed ({e}); local fallback failed ({local_e})"
-                                )
-                            };
-                            warn!("[voice] server runtime fallback failed: {local_e}");
-                            yield Ok(voice_run_failed_event(&pool, &voice_run_id, message, aid, None));
-                            return;
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("[voice] server runtime stream task panicked: {e}");
-                    yield Ok(Event::default().event("status")
-                        .data(json!({"phase": "server_runtime_fallback", "transcript": &resolved_transcript}).to_string()));
-
-                    let fallback_provider = prefs.llm_provider.clone();
-                    match run_local_voice_polish_no_stream(
-                        http_client.clone(),
-                        pool.clone(),
-                        user_id.clone(),
-                        fallback_provider.clone(),
-                        prefs.selected_model.clone(),
-                        gateway_key.clone(),
-                        gemini_key.clone(),
-                        groq_key.clone(),
-                        deepinfra_key.clone(),
-                        system_prompt.clone(),
-                        user_message.clone(),
-                    )
-                    .await {
-                        Ok((result, model)) => {
-                            info!(
-                                "[voice] server runtime fallback succeeded locally using {model} ({} chars)",
-                                result.polished.len()
-                            );
-                            (
-                                result,
-                                format!("server-runtime-fallback:{model}"),
-                                None,
-                            )
-                        }
-                        Err(local_e) => {
-                            let message = if invalidate_openai_session_on_auth_error(
-                                &pool,
-                                &user_id,
-                                &fallback_provider,
-                                &local_e,
-                            ) {
-                                "OpenAI not connected — go to Settings to connect your account"
-                                    .to_string()
-                            } else {
-                                format!(
-                                    "server runtime task failed ({e}); local fallback failed ({local_e})"
-                                )
-                            };
-                            warn!("[voice] server runtime fallback failed: {local_e}");
-                            yield Ok(voice_run_failed_event(&pool, &voice_run_id, message, aid, None));
-                            return;
-                        }
-                    }
-                }
-            }
-        } else {
-            let (token_tx, mut token_rx) = mpsc::channel::<String>(64);
-            let sys_p       = system_prompt.clone();
-            let usr_m       = user_message.clone();
-            let client_c    = http_client.clone();
-
-            let llm_provider = prefs.llm_provider.clone();
-            let route = crate::llm::polish_dispatch::voice_polish_route(&prefs.selected_model);
-            let openai_token_opt = if llm_provider == "openai_codex" {
-                let pool_tok = pool.clone();
-                let uid_tok  = user_id.clone();
-                let tok = tokio::task::spawn_blocking(move || openai_oauth::get_token(&pool_tok, &uid_tok))
-                    .await
-                    .unwrap_or(None);
-                tok.map(|t| t.access_token)
-            } else {
-                None
-            };
-            let llm_provider_for_task = llm_provider.clone();
-
-            let gk          = gateway_key.clone();
-            let gk_gemini   = gemini_key.clone();
-            let gk_groq     = groq_key.clone();
-            let gk_deepinfra = deepinfra_key.clone();
-
-            info!("[timing] LLM start — route={:?}", route.label());
-            let actual_model_used = route.label();
-
-            let llm_task = tokio::spawn(async move {
-                crate::llm::polish_dispatch::stream_polish_routed(
-                    &client_c,
-                    &route,
-                    &gk_groq,
-                    &gk,
-                    &gk_gemini,
-                    &gk_deepinfra,
-                    openai_token_opt.as_deref(),
-                    &llm_provider_for_task,
-                    &sys_p,
-                    &usr_m,
-                    token_tx,
-                )
-                .await
-            });
-
-            while let Some(raw_token) = token_rx.recv().await {
-                yield Ok(Event::default().event("token")
-                    .data(json!({"token": raw_token}).to_string()));
-            }
-
-            let llm_result = match llm_task.await {
-                Ok(Ok(r))   => r,
-                Ok(Err(e))  => {
-                    let auth_err = invalidate_openai_session_on_auth_error(&pool, &user_id, &llm_provider, &e);
-                    let message = if auth_err {
-                        "OpenAI not connected — go to Settings to connect your account".to_string()
-                    } else {
-                        e.clone()
-                    };
-                    warn!("[voice] LLM error: {e}");
-                    // Raw fallback: for TRANSIENT polish failures (rate-limit / timeout
-                    // / overloaded) paste the raw STT transcript rather than DROP the
-                    // dictation. Auth/config errors are NOT fallen back — they keep
-                    // surfacing so a bad/expired key isn't silently swallowed. The raw
-                    // text is script-guarded (no Devanagari leak), and the desktop
-                    // reconciles any streamed tokens against this `done`, so there is
-                    // no double-typing.
-                    let lower = e.to_lowercase();
-                    // Gate the raw fallback on the HTTP status: retry only on transient
-                    // server/rate codes, NEVER on auth/bad-key (401/403). This avoids
-                    // misclassifying a billing/quota 401 whose body mentions "rate" as
-                    // transient and silently pasting unpolished text instead of telling
-                    // the user to fix their key.
-                    let auth_failure = lower.contains("401")
-                        || lower.contains("403")
-                        || lower.contains("invalid_api_key")
-                        || lower.contains("invalid api key")
-                        || lower.contains("unauthorized")
-                        || lower.contains("forbidden");
-                    let transient = !auth_err
-                        && !auth_failure
-                        && (lower.contains("429")
-                            || lower.contains("500")
-                            || lower.contains("502")
-                            || lower.contains("503")
-                            || lower.contains("504")
-                            || lower.contains("408")
-                            || lower.contains("timeout")
-                            || lower.contains("timed out")
-                            || lower.contains("overloaded")
-                            || lower.contains("temporarily"));
-                    let fallback_text = if transient {
-                        if enforce_roman_hinglish {
-                            let t = if script::contains_devanagari(&resolved_transcript) {
-                                script::enforce_roman_hinglish(&resolved_transcript)
-                            } else {
-                                resolved_transcript.clone()
-                            };
-                            script::strip_non_latin_scripts(&t)
-                        } else {
-                            resolved_transcript.clone()
-                        }
-                    } else {
-                        String::new()
-                    };
-                    if transient && !fallback_text.trim().is_empty() {
-                        warn!("[voice] transient polish failure — pasting raw transcript as fallback");
-                        let total_ms = total_start.elapsed().as_millis() as i64;
-                        let _ = crate::store::voice_runs::mark_voice_run_completed_unlinked(
-                            &pool,
-                            &voice_run_id,
-                        );
-                        yield Ok(Event::default().event("done").data(
-                            json!({
-                                "recording_id": Uuid::new_v4().to_string(),
-                                "transcript":   resolved_transcript,
-                                "audio_id":     saved_audio_id,
-                                "source":       "voice",
-                                "target_app":   target_app,
-                                "output_language": prefs.output_language,
-                                "enriched_transcript": enriched_raw,
-                                "polished":     fallback_text,
-                                "model_used":   "raw_fallback",
-                                "confidence":   stt_confidence,
-                                "latency_ms": {
-                                    "transcribe": transcribe_ms,
-                                    "embed":      embed_ms,
-                                    "retrieve":   0,
-                                    "polish":     0,
-                                    "total":      total_ms,
-                                },
-                                "examples_used": 0,
-                            })
-                            .to_string()
-                        ));
-                    } else {
-                        yield Ok(voice_run_failed_event(&pool, &voice_run_id, message, aid, None));
-                    }
-                    return;
-                }
-                Err(e) => {
-                    warn!("[voice] LLM task panicked: {e}");
-                    yield Ok(voice_run_failed_event(&pool, &voice_run_id, "internal error", aid, Some("internal_error")));
-                    return;
-                }
-            };
-            (llm_result, actual_model_used, None)
+        let outcome = match runtime_task.await {
+            Ok(result) => result,
+            Err(e) => Err(format!("server polish task failed: {e}")),
         };
-
+        let polish_ms = llm_start.elapsed().as_millis() as i64;
+        let (typed, model_used, server_trace) = match outcome {
+            Ok((result, model, trace_meta)) => (result.polished, model, Some(trace_meta)),
+            Err(e) => {
+                // Not polished, so the transcript is what gets typed — the
+                // user's words are never dropped because the server failed.
+                warn!("[voice] server polish failed; typing the transcript: {e}");
+                (transcript.clone(), "polish_failed".to_string(), None)
+            }
+        };
         dictation_trace.add_stage(said_core::dictation_trace::TraceStageInput {
             stage: "llm.raw_output",
             component: "backend",
-            function: "polish_dispatch::stream_polish_routed",
-            input: Some(&resolved_transcript),
-            output: Some(&llm_result.polished),
-            duration_ms: Some(llm_result.polish_ms as i64),
-            reason: Some("model output streamed directly to the desktop"),
+            function: "routes::voice::run_server_runtime_voice_stream",
+            input: Some(&transcript),
+            output: Some(&typed),
+            duration_ms: Some(polish_ms),
+            reason: Some("model output typed as returned"),
             risk: Some("model_output"),
             metadata: json!({
-                "model": actual_model_used.as_str(),
-                "server_runtime": server_runtime_trace.as_ref().map(|m| json!({
+                "model": model_used.as_str(),
+                "dictionary": dictionary.len(),
+                "server_runtime": server_trace.as_ref().map(|m| json!({
                     "roundtrip_ms": m.roundtrip_ms,
                     "server_total_ms": m.server_total_ms,
                     "server_prompt_ms": m.server_prompt_ms,
@@ -2762,161 +1710,129 @@ async fn polish_with_input(state: AppState, input: VoicePolishInput) -> Response
                 })),
             }),
         });
-
-        let llm_ms   = llm_start.elapsed().as_millis() as i64;
         let total_ms = total_start.elapsed().as_millis() as i64;
-
-        let word_count = llm_result.polished.split_whitespace().count() as i64;
-        info!("[timing] LLM={}ms (TTFT inside) | total={}ms ← STT={}ms embed={}ms vocab={}ms llm={}ms",
-            llm_ms, total_ms, transcribe_ms, embed_ms, vocab_ms, llm_ms);
-
-        let recording_id = Uuid::new_v4().to_string();
-        dictation_trace.set_summary_field("model", json!(actual_model_used.as_str()));
-        dictation_trace.set_summary_field("recording_id", json!(recording_id.as_str()));
-        dictation_trace.set_summary_field("final_output_chars", json!(llm_result.polished.chars().count()));
-        let trace_json_string = serde_json::to_string(&dictation_trace).ok();
-
-        // 7. Persist recording before emitting `done`, so the UI refresh that
-        // follows the done event can see both the row and its audio_id.
-        {
-            let pool2   = pool.clone();
-            let id2     = recording_id.clone();
-            let uid2    = user_id.clone();
-            let t2      = resolved_transcript.clone();
-            let p2      = llm_result.polished.clone();
-            let ta2     = target_app.clone();
-            let model2  = actual_model_used.clone();
-            let conf    = stt_confidence;
-            let t_ms    = transcribe_ms;
-            let e_ms    = embed_ms;
-            let p_ms    = llm_result.polish_ms as i64;
-            let aid2    = saved_audio_id.clone();
-            let enr2    = enriched_raw.clone();
-            let raw2    = stt_transcript_raw.clone();
-            let local2  = llm_result.polished.clone();
-            let crid2   = client_run_id.clone();
-            let trace2  = trace_json_string.clone();
-            let inserted = tokio::task::spawn_blocking(move || {
-                let rec = InsertRecording {
-                    id: &id2, user_id: &uid2,
-                    transcript: &t2, polished: &p2,
-                    word_count, recording_seconds: if audio_secs > 0.0 { audio_secs } else { estimated_secs(word_count) },
-                    model_used: &model2,
-                    confidence:    Some(conf),
-                    transcribe_ms: Some(t_ms),
-                    embed_ms:      Some(e_ms),
-                    polish_ms:     Some(p_ms),
-                    target_app:    ta2.as_deref(),
-                    source:        "voice",
-                    audio_id:      aid2.as_deref(),
-                    enriched_transcript: Some(&enr2),
-                    raw_transcript: Some(&raw2),
-                    local_corrected_transcript: Some(&local2),
-                    polished_output: Some(&p2),
-                    trace_json: trace2.as_deref(),
-                };
-                crate::observability::after_recording_insert(
-                    &pool2,
-                    &uid2,
-                    &rec,
-                    crate::observability::observability_extras(crid2.as_deref()),
-                );
-                insert_recording(&pool2, rec).is_some()
-            }).await.unwrap_or(false);
-            if !inserted {
-                warn!("[voice] failed to insert recording history row");
-            } else {
-                let _ = crate::store::voice_runs::mark_voice_run_completed(
-                    &pool,
-                    &voice_run_id,
-                    &recording_id,
-                    None,
-                );
-            }
-            if inserted && !alias_result.traces.is_empty() {
-                let pool_policy = pool.clone();
-                let uid_policy = user_id.clone();
-                let recording_policy = recording_id.clone();
-                let result_policy = alias_result.clone();
-                tokio::task::spawn_blocking(move || {
-                    let n = crate::store::tier2_policy::record_decisions(
-                        &pool_policy,
-                        &uid_policy,
-                        &recording_policy,
-                        &result_policy,
-                    );
-                    if n > 0 {
-                        tracing::info!(
-                            "[voice] recorded {n} tier2 policy decision event(s) for {recording_policy}"
-                        );
-                    }
-                });
-            }
-            // Record decision events for exact STT alias matches so that
-            // mark_removed_feedback can penalise the alias when the user
-            // reverts a wrong replacement.
-            if inserted && !alias_result.matches.is_empty() {
-                let pool_alias = pool.clone();
-                let uid_alias = user_id.clone();
-                let recording_alias = recording_id.clone();
-                let result_alias = alias_result.clone();
-                tokio::task::spawn_blocking(move || {
-                    let n = crate::store::tier2_policy::record_applied_matches(
-                        &pool_alias,
-                        &uid_alias,
-                        &recording_alias,
-                        &result_alias,
-                    );
-                    if n > 0 {
-                        tracing::info!(
-                            "[voice] recorded {n} stt_alias decision event(s) for {recording_alias}"
-                        );
-                    }
-                });
-            }
-
-            // Reinforcement-on-use: bump last_used + use_count for vocab
-            // terms that were in this polish prompt. This is the "use
-            // signal" half of the time-decay scoring — terms that get
-            // surfaced AND retained (the polish completed without error)
-            // get rewarded, freshening their decay clock and pushing them
-            // up the rank for future similar transcripts.
-            let pool3  = pool.clone();
-            let uid3   = user_id.clone();
-            let terms3: Vec<String> = vocab_entries.iter().map(|e| e.term.clone()).collect();
-            tokio::task::spawn_blocking(move || {
-                vocab_embeddings::bump_last_used(&pool3, &uid3, &terms3);
-            });
-        }
-
-        yield Ok(Event::default().event("done").data(
-            json!({
-                "recording_id": recording_id,
-                "transcript":   resolved_transcript,
-                "audio_id":     saved_audio_id,
-                "source":       "voice",
-                "target_app":   target_app,
-                "output_language": prefs.output_language,
-                "enriched_transcript": enriched_raw,
-                "polished":     llm_result.polished,
-                "model_used":   actual_model_used,
-                "confidence":   stt_confidence,
-                "latency_ms": {
-                    "transcribe": transcribe_ms,
-                    "embed":      embed_ms,
-                    "retrieve":   0,
-                    "polish":     llm_ms,
-                    "total":      total_ms,
-                },
-                "examples_used": 0,
-            })
-            .to_string()
-        ));
+        info!("[timing] polish={}ms total={}ms stt={}ms", polish_ms, total_ms, transcribe_ms);
+        let trace_json = serde_json::to_string(&dictation_trace).ok();
+        yield Ok(finish_dictation(&pool, dictation, typed, &model_used, polish_ms, total_ms, trace_json).await);
     };
 
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+/// What a dictation needs to be saved to History once its text is final.
+struct FinishedDictation {
+    user_id: String,
+    voice_run_id: String,
+    client_run_id: Option<String>,
+    transcript: String,
+    target_app: Option<String>,
+    audio_id: Option<String>,
+    output_language: String,
+    audio_secs: f64,
+    confidence: f64,
+    transcribe_ms: i64,
+}
+
+/// Save the dictation to History, close its voice run, and return the `done`
+/// event carrying `typed` — the exact text the desktop types.
+async fn finish_dictation(
+    pool: &crate::store::DbPool,
+    run: FinishedDictation,
+    typed: String,
+    model_used: &str,
+    polish_ms: i64,
+    total_ms: i64,
+    trace_json: Option<String>,
+) -> Event {
+    let recording_id = Uuid::new_v4().to_string();
+    let word_count = typed.split_whitespace().count() as i64;
+    let inserted = {
+        let pool = pool.clone();
+        let id = recording_id.clone();
+        let user_id = run.user_id.clone();
+        let transcript = run.transcript.clone();
+        let typed = typed.clone();
+        let target_app = run.target_app.clone();
+        let audio_id = run.audio_id.clone();
+        let client_run_id = run.client_run_id.clone();
+        let model_used = model_used.to_string();
+        let (audio_secs, confidence, transcribe_ms) =
+            (run.audio_secs, run.confidence, run.transcribe_ms);
+        tokio::task::spawn_blocking(move || {
+            let rec = InsertRecording {
+                id: &id,
+                user_id: &user_id,
+                transcript: &transcript,
+                polished: &typed,
+                word_count,
+                recording_seconds: if audio_secs > 0.0 {
+                    audio_secs
+                } else {
+                    estimated_secs(word_count)
+                },
+                model_used: &model_used,
+                confidence: Some(confidence),
+                transcribe_ms: Some(transcribe_ms),
+                embed_ms: Some(0),
+                polish_ms: Some(polish_ms),
+                target_app: target_app.as_deref(),
+                source: "voice",
+                audio_id: audio_id.as_deref(),
+                enriched_transcript: Some(&transcript),
+                raw_transcript: Some(&transcript),
+                local_corrected_transcript: None,
+                polished_output: Some(&typed),
+                trace_json: trace_json.as_deref(),
+            };
+            crate::observability::after_recording_insert(
+                &pool,
+                &user_id,
+                &rec,
+                crate::observability::observability_extras(client_run_id.as_deref()),
+            );
+            insert_recording(&pool, rec).is_some()
+        })
+        .await
+        .unwrap_or(false)
+    };
+    if inserted {
+        let _ = crate::store::voice_runs::mark_voice_run_completed(
+            pool,
+            &run.voice_run_id,
+            &recording_id,
+            None,
+        );
+    } else {
+        warn!("[voice] failed to insert the dictation into History");
+        let _ =
+            crate::store::voice_runs::mark_voice_run_completed_unlinked(pool, &run.voice_run_id);
+    }
+
+    Event::default().event("done").data(
+        json!({
+            "recording_id": recording_id,
+            "transcript": run.transcript,
+            "audio_id": run.audio_id,
+            "source": "voice",
+            "target_app": run.target_app,
+            "output_language": run.output_language,
+            "enriched_transcript": run.transcript,
+            "polished": typed,
+            "model_used": model_used,
+            "confidence": run.confidence,
+            "latency_ms": {
+                "transcribe": run.transcribe_ms,
+                "embed": 0,
+                "retrieve": 0,
+                "polish": polish_ms,
+                "total": total_ms,
+            },
+            "examples_used": 0,
+        })
+        .to_string(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -3310,48 +2226,6 @@ mod scrub_tests {
 // These tests cover the pure, side-effect-free math in wav_duration_secs and
 // estimated_secs.  They are a reliability safety net: if the byte offsets in the
 // WAV header parser drift, these catch it immediately.
-
-#[cfg(test)]
-mod recent_speech_guard_tests {
-    use super::{VocabEntry, recent_speech_hints_allowed};
-
-    #[test]
-    fn recent_speech_hints_need_vocab_evidence() {
-        assert!(!recent_speech_hints_allowed(&[]));
-        assert!(recent_speech_hints_allowed(&[VocabEntry::from_term(
-            "Macobs"
-        )]));
-    }
-}
-
-#[cfg(test)]
-mod server_vocab_card_tests {
-    use super::{VocabEntry, server_vocab_cards};
-
-    #[test]
-    fn rich_retrieval_card_is_preserved_for_server_runtime() {
-        let mut entry = VocabEntry::from_term(" Macobs ");
-        entry.term_type = Some(" proper_noun ".to_string());
-        entry.meaning = Some("Internal onboarding workflow".to_string());
-        entry.context = Some("Macobs ka onboarding flow".to_string());
-        entry.stt_aliases = vec![("main cops".to_string(), 4)];
-        entry.evidence = vec!["phonetic(main cops)".to_string()];
-        entry.do_not_use_when = Some("makeup products".to_string());
-
-        let cards = server_vocab_cards(&[entry]);
-        assert_eq!(cards.len(), 1);
-        let card = &cards[0];
-        assert_eq!(card.term, "Macobs");
-        assert_eq!(card.term_type.as_deref(), Some("proper_noun"));
-        assert_eq!(
-            card.meaning.as_deref(),
-            Some("Internal onboarding workflow")
-        );
-        assert_eq!(card.aliases, ["main cops"]);
-        assert_eq!(card.evidence, ["phonetic(main cops)"]);
-        assert_eq!(card.do_not_use_when.as_deref(), Some("makeup products"));
-    }
-}
 
 #[cfg(test)]
 mod audio_tests {

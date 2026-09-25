@@ -66,7 +66,6 @@ async fn start_backend(recording_id: &str) -> Backend {
         shared_secret: Arc::new(SECRET.to_string()),
         default_user_id: Arc::new(user_id),
         prefs_cache: Arc::new(RwLock::new(None)),
-        lexicon_cache: Arc::new(RwLock::new(None)),
         live_server_runtime_cache: Arc::new(RwLock::new(HashMap::new())),
         http_client: reqwest::Client::new(),
         watchdog: Arc::new(WatchdogState::new()),
@@ -87,15 +86,37 @@ async fn start_backend(recording_id: &str) -> Backend {
 
 impl Backend {
     async fn put_kept(&self, id: &str, text: &str) -> u16 {
-        self.client
+        self.put_kept_learning(id, text).await.0
+    }
+
+    /// Status, and the words the route learned from the edit.
+    async fn put_kept_learning(&self, id: &str, text: &str) -> (u16, Vec<Value>) {
+        let resp = self
+            .client
             .put(format!("{}/v1/recordings/{id}/kept", self.url))
             .bearer_auth(SECRET)
             .json(&json!({ "text": text }))
             .send()
             .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        let learned = body["learned"].as_array().cloned().unwrap_or_default();
+        (status, learned)
+    }
+
+    async fn dictionary(&self) -> Vec<Value> {
+        let body: Value = self
+            .client
+            .get(format!("{}/v1/dictionary", self.url))
+            .bearer_auth(SECRET)
+            .send()
+            .await
             .unwrap()
-            .status()
-            .as_u16()
+            .json()
+            .await
+            .unwrap();
+        body["entries"].as_array().cloned().unwrap_or_default()
     }
 
     async fn history_row(&self, id: &str) -> Value {
@@ -120,7 +141,7 @@ async fn history_shows_the_edited_text_and_keeps_airnotes_version() {
     let backend = start_backend("rec-edited").await;
     let kept = "Can we close the design review tomorrow?";
 
-    assert_eq!(backend.put_kept("rec-edited", kept).await, 204);
+    assert_eq!(backend.put_kept("rec-edited", kept).await, 200);
 
     let row = backend.history_row("rec-edited").await;
     assert_eq!(row["final_text"], kept);
@@ -135,13 +156,13 @@ async fn a_second_edit_replaces_the_first() {
         backend
             .put_kept("rec-twice", "Close the review today?")
             .await,
-        204
+        200
     );
     assert_eq!(
         backend
             .put_kept("rec-twice", "Close the review Friday?")
             .await,
-        204
+        200
     );
 
     let row = backend.history_row("rec-twice").await;
@@ -175,4 +196,31 @@ async fn the_kept_route_needs_the_shared_secret() {
         .status()
         .as_u16();
     assert_eq!(status, 401);
+}
+
+#[tokio::test]
+async fn a_corrected_name_joins_the_dictionary() {
+    let backend = start_backend("rec-learn").await;
+    let (status, learned) = backend
+        .put_kept_learning("rec-learn", "Can we close the Figma review today?")
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(learned.len(), 1, "learned: {learned:?}");
+    assert_eq!(learned[0]["heard"], "design");
+    assert_eq!(learned[0]["written"], "Figma");
+
+    let entries = backend.dictionary().await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["source"], "learned");
+}
+
+#[tokio::test]
+async fn a_rewrite_teaches_nothing() {
+    let backend = start_backend("rec-rewrite").await;
+    let (status, learned) = backend
+        .put_kept_learning("rec-rewrite", "Let's wrap up the Figma review tomorrow")
+        .await;
+    assert_eq!(status, 200);
+    assert!(learned.is_empty(), "learned: {learned:?}");
+    assert!(backend.dictionary().await.is_empty());
 }
