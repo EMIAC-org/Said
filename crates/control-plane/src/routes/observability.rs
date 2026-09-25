@@ -131,18 +131,6 @@ pub struct DictationDetailItem {
     pub total_ms: Option<i32>,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct AliasLearnEvent {
-    pub id: Uuid,
-    pub account_id: Uuid,
-    pub recording_id: Option<String>,
-    pub heard: String,
-    pub correct: String,
-    pub source: String,
-    pub safety: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
-
 pub async fn list_org_dictation(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -332,65 +320,7 @@ pub async fn get_org_dictation_detail(
         }
     }
 
-    let aliases: Vec<AliasLearnEvent> =
-        if let Some(rec_id) = row.recording_id.as_deref().filter(|s| !s.is_empty()) {
-            sqlx::query_as(
-                "SELECT id, account_id, recording_id, heard, correct, source, safety, created_at
-               FROM runtime_alias_learn_events
-              WHERE org_id = $1 AND account_id = $2 AND recording_id = $3
-              ORDER BY created_at ASC",
-            )
-            .bind(org_id)
-            .bind(row.account_id)
-            .bind(rec_id)
-            .fetch_all(&state.db)
-            .await
-            .unwrap_or_default()
-        } else {
-            vec![]
-        };
-
-    Ok(Json(json!({
-        "item": row,
-        "alias_events": aliases,
-    })))
-}
-
-pub async fn list_user_alias_events(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    user: AuthUser,
-    Path((org_id, account_id)): Path<(Uuid, Uuid)>,
-    Query(q): Query<DictationListQuery>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let (_, role) = tenant::ensure_path_org_active(&state, &user, &headers, org_id)
-        .await
-        .map_err(|_| json_err(StatusCode::FORBIDDEN, "forbidden"))?;
-    require_org_admin(&role).map_err(|_| json_err(StatusCode::FORBIDDEN, "admin required"))?;
-    ensure_org_account_member(&state.db, org_id, account_id)
-        .await
-        .map_err(|s| json_err(s, "account not in org"))?;
-
-    let (days, since) = window_bounds(q.days.as_deref());
-    let limit = q.limit.clamp(1, 500);
-
-    let items: Vec<AliasLearnEvent> = sqlx::query_as(
-        "SELECT id, account_id, recording_id, heard, correct, source, safety, created_at
-           FROM runtime_alias_learn_events
-          WHERE org_id = $1 AND account_id = $2
-            AND ($3::timestamptz IS NULL OR created_at >= $3)
-          ORDER BY created_at DESC
-          LIMIT $4",
-    )
-    .bind(org_id)
-    .bind(account_id)
-    .bind(since)
-    .bind(limit)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|_| herr("database error"))?;
-
-    Ok(Json(json!({ "window_days": days, "items": items })))
+    Ok(Json(json!({ "item": row })))
 }
 
 pub async fn org_observability_summary(
@@ -411,16 +341,6 @@ pub async fn org_observability_summary(
         "SELECT COUNT(*)::bigint FROM runtime_history_items
           WHERE org_id = $1 AND deleted_at IS NULL
             AND ($2::timestamptz IS NULL OR created_at >= $2)",
-    )
-    .bind(org_id)
-    .bind(since)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
-
-    let aliases_learned: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM runtime_alias_learn_events
-          WHERE org_id = $1 AND ($2::timestamptz IS NULL OR created_at >= $2)",
     )
     .bind(org_id)
     .bind(since)
@@ -461,7 +381,6 @@ pub async fn org_observability_summary(
     Ok(Json(json!({
         "window_days": days,
         "dictation_count": dictation_count,
-        "aliases_learned": aliases_learned,
         "edits_detected": edits_with_feedback,
         "stt_error_edits": stt_error_edits,
         "classify_stt_error_rate": classify_stt_error_rate,
@@ -498,20 +417,6 @@ pub struct DictationPatchRequest {
     pub final_text: Option<String>,
     pub edit_feedback_json: Option<Value>,
     pub dictation_trace_json: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AliasLearnEventItem {
-    pub heard: String,
-    pub correct: String,
-    pub source: Option<String>,
-    pub safety: Option<String>,
-    pub recording_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AliasBatchRequest {
-    pub items: Vec<AliasLearnEventItem>,
 }
 
 #[derive(Debug, Serialize)]
@@ -705,23 +610,6 @@ pub async fn ingest_dictation(
             herr("database error")
         })?;
 
-    // Fire-and-forget: enqueue a coalesced profiling+KB window job once the user crosses
-    // the dictation threshold. Idempotent — at most one in-flight job per user.
-    let enqueue_db = state.db.clone();
-    let enqueue_account = user.account_id;
-    let enqueue_scope = crate::profile::store::resolve_org_scope(tenant_ctx.active_org_id);
-    tokio::spawn(async move {
-        if let Err(e) = crate::profile::updater::batch::maybe_enqueue(
-            &enqueue_db,
-            enqueue_account,
-            enqueue_scope,
-        )
-        .await
-        {
-            tracing::warn!("[profile-batch] enqueue failed: {e}");
-        }
-    });
-
     Ok(Json(IngestOk { ok: true }))
 }
 
@@ -796,55 +684,6 @@ pub async fn patch_dictation(
         .await
         .map_err(|e| {
             tracing::warn!("[observability] patch insert fallback failed: {e}");
-            herr("database error")
-        })?;
-    }
-
-    Ok(Json(IngestOk { ok: true }))
-}
-
-pub async fn ingest_aliases(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    user: AuthUser,
-    Json(req): Json<AliasBatchRequest>,
-) -> Result<Json<IngestOk>, (StatusCode, Json<Value>)> {
-    if req.items.is_empty() {
-        return Ok(Json(IngestOk { ok: true }));
-    }
-
-    let tenant_ctx = tenant::resolve_tenant(&state, &user, &headers)
-        .await
-        .map_err(|_| json_err(StatusCode::FORBIDDEN, "forbidden"))?;
-    let org_id = tenant_ctx.active_org_id;
-
-    for item in &req.items {
-        let heard = item.heard.trim();
-        let correct = item.correct.trim();
-        if heard.is_empty() || correct.is_empty() {
-            continue;
-        }
-        let source = item
-            .source
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("classify");
-        sqlx::query(
-            "INSERT INTO runtime_alias_learn_events
-                (account_id, org_id, recording_id, heard, correct, source, safety)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(user.account_id)
-        .bind(org_id)
-        .bind(item.recording_id.as_deref().filter(|s| !s.is_empty()))
-        .bind(heard)
-        .bind(correct)
-        .bind(source)
-        .bind(item.safety.as_deref())
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::warn!("[observability] ingest alias failed: {e}");
             herr("database error")
         })?;
     }
