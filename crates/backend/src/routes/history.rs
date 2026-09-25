@@ -84,6 +84,55 @@ pub async fn site_usage(
     )))
 }
 
+#[derive(Deserialize)]
+pub struct KeptBody {
+    text: String,
+}
+
+/// Record what the user finally kept of a dictation after editing it in the
+/// app they dictated into. History owns this fact: it is written for every
+/// trusted edit, whether or not the learning pipeline finds anything in it.
+/// The device row is updated now; the account's server History gets it through
+/// the observability outbox.
+pub async fn record_kept(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<KeptBody>,
+) -> StatusCode {
+    let text = body.text.trim();
+    if text.is_empty() {
+        return StatusCode::BAD_REQUEST;
+    }
+    let Some(rec) = crate::store::history::get_recording(&state.pool, &id) else {
+        return StatusCode::NOT_FOUND;
+    };
+    if rec.user_id != state.default_user_id.as_str() {
+        return StatusCode::FORBIDDEN;
+    }
+    if crate::store::history::apply_edit_feedback(&state.pool, &id, text).is_none() {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
+    if crate::observability::should_enqueue(&state.pool, &state.default_user_id) {
+        let pool = state.pool.clone();
+        let user_id = state.default_user_id.clone();
+        let http = state.http_client.clone();
+        let patch = crate::observability::DictationPatchPayload {
+            recording_id: id,
+            final_text: Some(text.to_string()),
+            edit_feedback_json: None,
+            dictation_trace_json: None,
+        };
+        tokio::spawn(async move {
+            if let Err(e) = crate::observability::enqueue_dictation_patch(&pool, &user_id, patch) {
+                warn!("[history] kept-text patch enqueue failed: {e}");
+            }
+            crate::observability::uploader::maybe_upload_after_enqueue(&pool, &user_id, &http);
+        });
+    }
+    StatusCode::NO_CONTENT
+}
+
 #[derive(Debug, Deserialize)]
 struct RuntimeHistoryItem {
     id: Uuid,
@@ -167,9 +216,9 @@ fn server_row_to_recording(row: RuntimeHistoryItem, user_id: &str) -> Recording 
         row.raw_transcript.as_deref(),
     ])
     .unwrap_or_default();
-    // History stores strictly what AirNote OUTPUT (the polished paste), never the
-    // user's later manual correction. `final_text` (the 30s edit-watch capture)
-    // feeds the learning pipeline only — it must not become the displayed heading.
+    // `polished` is what AirNote typed; `final_text` is what the user kept after
+    // editing it. Both travel to the UI, which shows the kept text when there is
+    // one and keeps AirNote's version one click away.
     let polished = first_non_empty([
         row.polished_output.as_deref(),
         row.final_text.as_deref(),
@@ -321,6 +370,20 @@ fn merge_local_metadata(server: &mut Recording, local: &Recording) {
             server.model_used = local.model_used.clone();
         }
     }
+    // The kept text reaches the server through the outbox, so a fresh edit is on
+    // the device first. Show it now rather than after the upload lands.
+    if server
+        .final_text
+        .as_deref()
+        .is_none_or(|text| text.trim().is_empty())
+        && local
+            .final_text
+            .as_deref()
+            .is_some_and(|text| !text.trim().is_empty())
+    {
+        server.final_text = local.final_text.clone();
+        server.edit_count = server.edit_count.max(local.edit_count);
+    }
     if server.audio_id.is_none() {
         server.audio_id = local.audio_id.clone();
     }
@@ -406,8 +469,8 @@ mod tests {
         assert_eq!(rec.user_id, "user-1");
         assert_eq!(rec.timestamp_ms, 1780920000000);
         assert_eq!(rec.transcript, "corrected words");
-        // History shows AirNote's original output (`polished_output`), NOT the
-        // user's post-paste edit (`final_text`) — even though final_text is set.
+        // `polished` stays AirNote's output; the user's edit travels separately
+        // as `final_text`, which the UI prefers when it is set.
         assert_eq!(rec.polished, "polished words");
         assert_eq!(rec.final_text.as_deref(), Some("final words kept"));
         assert_eq!(rec.word_count, 3);
@@ -458,6 +521,27 @@ mod tests {
         server.target_app = Some("com.apple.Notes".to_string());
         merge_local_metadata(&mut server, &local);
         assert_eq!(server.target_app.as_deref(), Some("com.apple.Notes"));
+    }
+
+    #[test]
+    fn a_kept_text_on_the_device_shows_before_the_server_has_it() {
+        let mut server = server_row_to_recording(runtime_row(), "default");
+        server.final_text = None;
+        let mut local = server.clone();
+        local.final_text = Some("what the user kept".to_string());
+        local.edit_count = 1;
+
+        merge_local_metadata(&mut server, &local);
+        assert_eq!(server.final_text.as_deref(), Some("what the user kept"));
+        assert_eq!(server.edit_count, 1);
+
+        let mut server = server_row_to_recording(runtime_row(), "default");
+        merge_local_metadata(&mut server, &local);
+        assert_eq!(
+            server.final_text.as_deref(),
+            Some("final words kept"),
+            "a kept text the server already has stays"
+        );
     }
 
     #[test]

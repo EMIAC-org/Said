@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useAudioPlayer } from "@/lib/useAudioPlayer";
 import { downloadRecordingAudio } from "@/lib/invoke";
+import { keptText } from "@/lib/keptText";
 import type { AppSnapshot, Recording } from "@/types";
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -460,7 +461,7 @@ function Row({
   onPlay:     () => void;
   onDownloadSuccess?: (path: string) => void;
 }) {
-  const title    = rec.polished;
+  const title    = keptText(rec);
   const model    = modelLabel(rec.model_used);
 
   const isRecent = Date.now() - rec.timestamp_ms < 5 * 60_000;
@@ -475,7 +476,7 @@ function Row({
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(rec.polished);
+      await navigator.clipboard.writeText(keptText(rec));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch { /* ignore */ }

@@ -196,6 +196,18 @@ fn terminate_pid(pid: u32, graceful_for: Duration) {
     }
 }
 
+/// Whether a process with this pid still exists.
+pub(crate) fn process_exists(pid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        pid_is_alive(pid)
+    }
+    #[cfg(windows)]
+    {
+        u32::try_from(pid).is_ok_and(pid_is_alive)
+    }
+}
+
 #[cfg(unix)]
 fn pid_is_alive(pid: libc::pid_t) -> bool {
     let rc = unsafe { libc::kill(pid, 0) };

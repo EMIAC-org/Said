@@ -44,18 +44,19 @@ export const MOCK_APPS: Record<string, { name: string; category: string; color: 
   "com.apple.Notes": { name: "Notes", category: "default", color: "#F5B400" },
 };
 
-type Sample = { app: keyof typeof MOCK_APPS; raw: string; polished: string };
+/** `kept` is what the user changed AirNote's text to after it was typed. */
+type Sample = { app: keyof typeof MOCK_APPS; raw: string; polished: string; kept?: string };
 
 /** Hinglish in, clean text out: the product's actual job, so every screen that
  *  shows history shows the realistic mix. */
 const SAMPLES: Sample[] = [
-  { app: "com.tinyspeck.slackmacgap", raw: "haan main kal subah tak PR review kar dunga", polished: "Haan, main kal subah tak PR review kar dunga." },
+  { app: "com.tinyspeck.slackmacgap", raw: "haan main kal subah tak PR review kar dunga", polished: "Haan, main kal subah tak PR review kar dunga.", kept: "Haan, main kal dopahar tak PR #214 review kar dunga." },
   { app: "com.apple.mail", raw: "hi rahul please find attached the revised proposal let me know if the pricing works for you", polished: "Hi Rahul,\n\nPlease find attached the revised proposal. Let me know if the pricing works for you." },
   { app: "com.microsoft.VSCode", raw: "todo retry the upload with exponential backoff max five attempts", polished: "TODO: retry the upload with exponential backoff, max five attempts." },
   { app: "notion.id", raw: "launch checklist landing page update changelog aur release notes bhejna hai", polished: "Launch checklist: landing page update, changelog, aur release notes bhejna hai." },
   { app: "net.whatsapp.WhatsApp", raw: "bhai main raaste mein hoon das minute mein pahunchta hoon", polished: "Bhai, main raaste mein hoon — das minute mein pahunchta hoon." },
   { app: "com.linear", raw: "history view is empty when polish is off because the recording never gets saved", polished: "History view is empty when polish is off, because the recording never gets saved." },
-  { app: "com.google.Chrome", raw: "whisper cpp metal backend benchmark on m two air", polished: "whisper.cpp Metal backend benchmark on M2 Air" },
+  { app: "com.google.Chrome", raw: "whisper cpp metal backend benchmark on m two air", polished: "whisper.cpp Metal backend benchmark on M2 Air", kept: "whisper.cpp Metal backend benchmark on M3 Air" },
   { app: "com.tinyspeck.slackmacgap", raw: "deploy ho gaya hai prod par ek baar check kar lo", polished: "Deploy ho gaya hai prod par, ek baar check kar lo." },
   { app: "com.apple.Notes", raw: "groceries doodh bread anda aur coffee beans", polished: "Groceries: doodh, bread, anda aur coffee beans." },
   { app: "com.apple.mail", raw: "thanks for the quick turnaround we will share the signed copy by friday", polished: "Thanks for the quick turnaround. We will share the signed copy by Friday." },
@@ -73,7 +74,7 @@ function recording(index: number, sample: Sample, timestamp: number): Recording 
     timestamp_ms: timestamp,
     transcript: sample.raw,
     polished: polishOff ? sample.raw : sample.polished,
-    final_text: null,
+    final_text: polishOff ? null : sample.kept ?? null,
     word_count: words,
     recording_seconds: Math.max(2, Math.round((words / 2.6) * 10) / 10),
     model_used: polishOff ? "polish_disabled" : "gemma-3-27b",
@@ -82,7 +83,7 @@ function recording(index: number, sample: Sample, timestamp: number): Recording 
     embed_ms: 0,
     polish_ms: polishOff ? 0 : 620 + ((index * 53) % 400),
     target_app: sample.app,
-    edit_count: index % 5 === 2 ? 1 : 0,
+    edit_count: !polishOff && sample.kept ? 1 : 0,
     source: "voice",
     audio_id: null,
     enriched_transcript: null,

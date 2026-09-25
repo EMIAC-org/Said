@@ -7794,6 +7794,15 @@ const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 const EDIT_WATCH_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(300);
 const EDIT_WATCH_EMPTY_FIELD_BOUNDARY: Duration = Duration::from_millis(400);
 const EDIT_WATCH_MAX_OBSERVATIONS: usize = 32;
+/// Typed and Cmd+V inserts are both queued events: the target app applies them
+/// after `insert_text` returns. The baseline waits this long for the dictated
+/// text to show up in the field.
+const EDIT_WATCH_PASTE_SETTLE: Duration = Duration::from_millis(1500);
+const EDIT_WATCH_SETTLE_POLL: Duration = Duration::from_millis(100);
+/// A deletion key pressed up to this long before the last reading that still
+/// held the text counts towards the field being cleared: the app may not have
+/// applied the key when that reading was taken.
+const EDIT_WATCH_DELETION_SLACK: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedTextSpan {
@@ -7834,10 +7843,13 @@ impl EditObservationTimeline {
         field_value: &str,
         elapsed_ms: u64,
     ) -> Result<bool, &'static str> {
-        if field_value == post_paste || field_value.is_empty() {
+        if field_value == post_paste || field_value.trim().is_empty() {
             return Ok(false);
         }
         let owned_text = extract_owned_text(anchor, field_value)?;
+        if owned_text.is_empty() {
+            return Ok(false);
+        }
         if self
             .observations
             .back()
@@ -7879,19 +7891,41 @@ impl EditObservationTimeline {
     }
 }
 
+/// The field no longer holds any of the dictated text: it is empty, or only the
+/// text that was there before the paste is left. Chat boxes often keep a lone
+/// newline after Send.
+fn owned_text_is_blank(anchor: &EditCaptureAnchor, field_value: &str) -> bool {
+    field_value.trim().is_empty()
+        || extract_owned_text(anchor, field_value).is_ok_and(|owned| owned.is_empty())
+}
+
+/// The field value that holds what the user kept. When the field was cleared,
+/// the user either sent it (chat boxes clear on Send) or deleted the text. After
+/// a send, the last reading that still held the text is what they kept; after
+/// a deletion, nothing is.
 fn effective_owned_field_value(
     anchor: &EditCaptureAnchor,
     last_value: &str,
     observations: &EditObservationTimeline,
+    cleared_by_deletion: bool,
 ) -> String {
-    if !last_value.is_empty() && extract_owned_text(anchor, last_value).is_ok() {
+    let still_holds_text =
+        !owned_text_is_blank(anchor, last_value) && extract_owned_text(anchor, last_value).is_ok();
+    if still_holds_text || cleared_by_deletion {
         last_value.to_string()
     } else {
         observations
             .latest_field_value()
-            .unwrap_or(last_value)
+            .unwrap_or(&anchor.post_paste_text)
             .to_string()
     }
+}
+
+/// True when the dictated text is visibly in the field. Editors turn spaces
+/// into non-breaking ones, so runs of whitespace are compared collapsed.
+fn paste_has_landed(field_value: &str, polished: &str) -> bool {
+    let polished = collapse_whitespace(polished);
+    !polished.is_empty() && collapse_whitespace(field_value).contains(&polished)
 }
 
 fn derive_owned_text_span(
@@ -8016,14 +8050,39 @@ fn paste_shortcut_seen_since(_since: std::time::Instant) -> bool {
     false
 }
 
-fn normalized_clipboard_candidate(text: &str) -> String {
+/// Whether a key that deletes text was pressed in this window.
+#[cfg(target_os = "macos")]
+fn deletion_key_seen_between(from: std::time::Instant, to: std::time::Instant) -> bool {
+    use said_hotkey::KeyEvt;
+    said_hotkey::key_buffer().lock().is_ok_and(|events| {
+        events.iter().any(|event| {
+            event.when >= from
+                && event.when <= to
+                && matches!(
+                    event.evt,
+                    KeyEvt::Backspace
+                        | KeyEvt::Delete
+                        | KeyEvt::WordBackspace
+                        | KeyEvt::LineBackspace
+                        | KeyEvt::Cut
+                )
+        })
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn deletion_key_seen_between(_from: std::time::Instant, _to: std::time::Instant) -> bool {
+    false
+}
+
+fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn clipboard_content_was_added(polished: &str, user_kept: &str, clipboard: &str) -> bool {
-    let polished = normalized_clipboard_candidate(polished);
-    let kept = normalized_clipboard_candidate(user_kept);
-    let clipboard = normalized_clipboard_candidate(clipboard);
+    let polished = collapse_whitespace(polished);
+    let kept = collapse_whitespace(user_kept);
+    let clipboard = collapse_whitespace(clipboard);
     if clipboard.chars().count() < 4
         || polished.is_empty()
         || kept.is_empty()
@@ -8044,7 +8103,7 @@ fn clipboard_content_was_added(polished: &str, user_kept: &str, clipboard: &str)
     }
 
     let without_clipboard = format!("{} {}", &kept[..offset], &kept[clip_end..]);
-    let remaining = normalized_clipboard_candidate(&without_clipboard);
+    let remaining = collapse_whitespace(&without_clipboard);
     remaining == polished || shares_word_overlap_ratio(&remaining, &polished) >= 0.6
 }
 
@@ -8116,6 +8175,32 @@ where
         Err(_) => {
             tracing::warn!("[edit-watch] blocking AX task {label} timed out");
             None
+        }
+    }
+}
+
+/// Tell History what the user kept of a dictation, then let open views refresh.
+/// A whitespace-only difference is not an edit anyone made on purpose.
+async fn record_kept_text(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    app: &tauri::AppHandle,
+    recording_id: &str,
+    polished: &str,
+    kept: &str,
+) {
+    if collapse_whitespace(kept) == collapse_whitespace(polished) {
+        return;
+    }
+    let Some(ep) = back_arc.lock().ok().and_then(|guard| guard.clone()) else {
+        return;
+    };
+    match api::record_kept_text(&ep, recording_id, kept).await {
+        Ok(()) => {
+            tracing::info!("[edit-watch] History now keeps the edited text for {recording_id}");
+            let _ = app.emit("history-changed", recording_id);
+        }
+        Err(e) => {
+            tracing::warn!("[edit-watch] could not record the kept text for {recording_id}: {e}")
         }
     }
 }
@@ -8242,61 +8327,48 @@ async fn watch_for_edit(
         blocking_ax_option("focused_pid after-paste", paster::focused_pid).await;
     let initial_pid = anchor.target_pid.or(focused_pid_after_paste);
 
-    // Attempt to get the initial field value.  Chrome / Electron may still be
-    // building their AX cache even after the pre-unlock at recording-start, so
-    // we retry a few times with increasing delays before declaring "AX blind".
+    // The baseline is the field *with the paste in it*. The anchor was read the
+    // moment the insert was queued, which can be before the app applied it (a
+    // lone newline, or half a paste); a baseline like that makes the paste itself
+    // look like the user's first edit and the session is thrown away. Chrome and
+    // Electron may also still be building their AX tree, so read until the
+    // dictated text is visibly there, or the settle window runs out.
     let post_paste = {
         let mut val = anchor.post_paste_text.clone();
-        if val.is_empty() {
-            val = blocking_ax_option(
-                "read_focused_value_first initial",
-                move || match initial_pid {
-                    Some(pid) => paster::read_focused_value_first_for_pid(pid),
-                    None => paster::read_focused_value_first(),
-                },
-            )
-            .await
-            .unwrap_or_default();
-        }
-        if val.is_empty() {
-            // 2nd attempt after 300 ms
-            if !cancellable_sleep(&cancel_token, Duration::from_millis(300)).await {
+        let settle_deadline = Instant::now() + EDIT_WATCH_PASTE_SETTLE;
+        while !paste_has_landed(&val, &polished) {
+            let read =
+                blocking_ax_option(
+                    "read_focused_value_first settle",
+                    move || match initial_pid {
+                        Some(pid) => paster::read_focused_value_first_for_pid(pid),
+                        None => paster::read_focused_value_first(),
+                    },
+                )
+                .await
+                .unwrap_or_default();
+            if !read.is_empty() {
+                val = read;
+            }
+            if paste_has_landed(&val, &polished) || Instant::now() >= settle_deadline {
+                break;
+            }
+            if !cancellable_sleep(&cancel_token, EDIT_WATCH_SETTLE_POLL).await {
                 tracing::info!(
-                    "[edit-watch] watcher cancelled during initial retry for {recording_id}"
+                    "[edit-watch] watcher cancelled while the paste settled for {recording_id}"
                 );
                 return;
             }
-            val = blocking_ax_option(
-                "read_focused_value_first retry1",
-                move || match initial_pid {
-                    Some(pid) => paster::read_focused_value_first_for_pid(pid),
-                    None => paster::read_focused_value_first(),
-                },
-            )
-            .await
-            .unwrap_or_default();
-        }
-        if val.is_empty() {
-            // 3rd attempt after another 500 ms — AX tree should be ready by now
-            if !cancellable_sleep(&cancel_token, Duration::from_millis(500)).await {
-                tracing::info!(
-                    "[edit-watch] watcher cancelled during initial retry for {recording_id}"
-                );
-                return;
-            }
-            val = blocking_ax_option(
-                "read_focused_value_first retry2",
-                move || match initial_pid {
-                    Some(pid) => paster::read_focused_value_first_for_pid(pid),
-                    None => paster::read_focused_value_first(),
-                },
-            )
-            .await
-            .unwrap_or_default();
         }
         val
     };
-    if anchor.post_paste_text.is_empty() && !post_paste.is_empty() {
+    if post_paste != anchor.post_paste_text {
+        tracing::info!(
+            "[edit-watch] baseline for {recording_id} read again after the paste landed (len {} -> {}, landed={})",
+            anchor.post_paste_text.len(),
+            post_paste.len(),
+            paste_has_landed(&post_paste, &polished),
+        );
         anchor.post_paste_text = post_paste.clone();
         anchor.owned_span =
             derive_owned_text_span(anchor.pre_paste_text.as_deref(), &post_paste, &polished);
@@ -8317,6 +8389,10 @@ async fn watch_for_edit(
     let mut ownership_lost_reason: Option<&'static str> = None;
     let mut finalize_requested = finalize_token.is_cancelled();
     let mut field_empty_since: Option<Instant> = None;
+    // The last poll that still found dictated text in the field. With the
+    // key log it tells a Send (field cleared, no deletion keys) from the user
+    // deleting the text.
+    let mut last_holding_read_at = Instant::now();
     let mut explicit_boundary: Option<&'static str> = None;
 
     // Scale timeouts by sentence length — long sentences need more reading time
@@ -8371,12 +8447,12 @@ async fn watch_for_edit(
             break;
         }
 
-        // Detect if target app exited — stop polling a dead process
+        // Stop polling a process that has exited. An unreadable frontmost app
+        // (`now_pid == None`) is not an exit: AX misses a poll now and then
+        // while the app is busy.
         if let Some(pid) = initial_pid {
-            if now_pid.is_none() || now_pid == Some(1) {
-                tracing::info!(
-                    "[edit-watch] target process pid={pid} appears dead — finalizing early"
-                );
+            if !backend_guard::process_exists(pid) {
+                tracing::info!("[edit-watch] target process pid={pid} exited — finalizing early");
                 break;
             }
         }
@@ -8397,6 +8473,7 @@ async fn watch_for_edit(
                     paster::read_focused_value_first_for_pid(pid)
                 })
                 .await
+                .or(fast)
             }
         } else if now_pid != last_pid {
             last_pid = now_pid;
@@ -8412,8 +8489,14 @@ async fn watch_for_edit(
             )
             .await
         }
-        .unwrap_or_default();
+        // A read that fails says nothing about the field. Treating it as an empty
+        // field made a missed poll look like the user clearing their text.
+        .unwrap_or_else(|| last_val.clone());
         let ax_latency = ax_read_start.elapsed();
+        let field_holds_text = !owned_text_is_blank(&anchor, &now_val);
+        if field_holds_text {
+            last_holding_read_at = Instant::now();
+        }
         if ax_latency > Duration::from_millis(100) && current_interval < Duration::from_millis(200)
         {
             current_interval = Duration::from_millis(ax_latency.as_millis() as u64 * 2);
@@ -8441,7 +8524,11 @@ async fn watch_for_edit(
             idle_at = Instant::now();
             last_change_at = Instant::now();
             current_interval = EDIT_WATCH_FAST_INTERVAL;
-            field_empty_since = now_val.is_empty().then(Instant::now);
+            if field_holds_text {
+                field_empty_since = None;
+            } else if field_empty_since.is_none() {
+                field_empty_since = Some(Instant::now());
+            }
             if now_val != post_paste {
                 if !saw_user_edit {
                     tracing::info!(
@@ -8532,6 +8619,12 @@ async fn watch_for_edit(
             }
             if final_field_is_owned && ownership_lost_reason.is_none() && now_val != last_val {
                 saw_user_edit = now_val != post_paste;
+                if owned_text_is_blank(&anchor, &now_val) {
+                    field_empty_since.get_or_insert_with(Instant::now);
+                } else {
+                    last_holding_read_at = Instant::now();
+                    field_empty_since = None;
+                }
                 if let Err(reason) = observations.record(
                     &anchor,
                     &post_paste,
@@ -8555,12 +8648,24 @@ async fn watch_for_edit(
         return;
     }
 
-    // A submit can clear the field after several valid edits. Recover the latest
-    // anchored state rather than guessing from word overlap or a single snapshot.
-    let effective_val = effective_owned_field_value(&anchor, &last_val, &observations);
+    // A Send clears the field after the edits are done, and so does deleting the
+    // text. The key log tells them apart: after a Send the latest reading that
+    // still held the text is what the user kept.
+    let cleared_by_deletion = field_empty_since.is_some_and(|cleared_at| {
+        let from = last_holding_read_at
+            .checked_sub(EDIT_WATCH_DELETION_SLACK)
+            .unwrap_or(last_holding_read_at);
+        deletion_key_seen_between(from, cleared_at)
+    });
+    let effective_val =
+        effective_owned_field_value(&anchor, &last_val, &observations, cleared_by_deletion);
     if effective_val != last_val {
         tracing::info!(
-            "[edit-watch] final field unavailable (sent message?); using latest owned observation"
+            "[edit-watch] field cleared without deleting (sent?) for {recording_id}; using the latest reading that held the text"
+        );
+    } else if field_empty_since.is_some() {
+        tracing::info!(
+            "[edit-watch] field cleared for {recording_id}; deletion keys seen: {cleared_by_deletion}"
         );
     }
 
@@ -8677,6 +8782,11 @@ async fn watch_for_edit(
         }
         return;
     }
+
+    // The user changed the text and the field is still provably theirs, so this
+    // is what History shows for the dictation from now on. Everything below
+    // decides only whether there is something to *learn* from the edit.
+    record_kept_text(&back_arc, &app, &recording_id, &polished, &user_kept).await;
 
     // Whitespace / punctuation / AX-jitter filter (no API call needed).
     if !is_meaningful_edit(&polished, &user_kept) {
@@ -10694,8 +10804,19 @@ mod edit_watch_timeout_tests {
         EDIT_WATCH_MAX_OBSERVATIONS, EditCaptureAnchor, EditObservationTimeline,
         clipboard_content_was_added, derive_owned_text_span, edit_watch_crossed_app_boundary,
         edit_watch_timeouts, edit_watcher_generation_is_current, effective_owned_field_value,
-        extract_owned_text, new_edit_watcher_control,
+        extract_owned_text, new_edit_watcher_control, owned_text_is_blank, paste_has_landed,
     };
+
+    /// A chat box that was empty before dictation, with the paste in it.
+    fn empty_box_anchor(pasted: &str) -> EditCaptureAnchor {
+        EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some(String::new()),
+            post_paste_text: pasted.to_string(),
+            owned_span: derive_owned_text_span(Some(""), pasted, pasted),
+        }
+    }
 
     #[test]
     fn gives_user_time_to_read_before_first_edit() {
@@ -10879,7 +11000,12 @@ mod edit_watch_timeout_tests {
             Some("Before SQLite and MACOBS After"),
         );
         assert_eq!(
-            effective_owned_field_value(&anchor, "Before SQLite and MACOBS After", &timeline,),
+            effective_owned_field_value(
+                &anchor,
+                "Before SQLite and MACOBS After",
+                &timeline,
+                false,
+            ),
             "Before SQLite and MACOBS After",
         );
     }
@@ -10899,7 +11025,7 @@ mod edit_watch_timeout_tests {
             .unwrap();
 
         assert_eq!(
-            effective_owned_field_value(&anchor, "Corrected output", &timeline),
+            effective_owned_field_value(&anchor, "Corrected output", &timeline, false),
             "Corrected output",
         );
     }
@@ -10936,5 +11062,89 @@ mod edit_watch_timeout_tests {
             ),
             Err("prefix_mismatch"),
         );
+    }
+    #[test]
+    fn a_sent_message_keeps_the_last_edit_not_the_emptied_box() {
+        // Reported 2026-09-25: a chat box keeps a lone newline after Send, and
+        // the kept text came out empty, so History kept AirNote's version.
+        let anchor = empty_box_anchor("Bhai jo maine tumhen lark ki chat ID di thi");
+        let mut timeline = EditObservationTimeline::default();
+        let edited = "Bhai jo maine tumhe Lark ki chat ID di thi";
+        assert_eq!(
+            timeline.record(&anchor, &anchor.post_paste_text, edited, 3_000),
+            Ok(true)
+        );
+        for after_send in ["", "\n", " \n"] {
+            assert!(owned_text_is_blank(&anchor, after_send));
+            assert_eq!(
+                timeline.record(&anchor, &anchor.post_paste_text, after_send, 9_000),
+                Ok(false),
+                "an emptied box is not an observation of what was kept"
+            );
+            let kept_field = effective_owned_field_value(&anchor, after_send, &timeline, false);
+            assert_eq!(
+                extract_owned_text(&anchor, &kept_field),
+                Ok(edited.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn a_message_sent_without_edits_is_an_unchanged_dictation() {
+        let anchor = empty_box_anchor("Can we close the design review today?");
+        let timeline = EditObservationTimeline::default();
+        assert_eq!(
+            effective_owned_field_value(&anchor, "\n", &timeline, false),
+            anchor.post_paste_text,
+        );
+    }
+
+    #[test]
+    fn text_the_user_deleted_is_not_what_they_kept() {
+        let anchor = empty_box_anchor("Can we close the design review today?");
+        let mut timeline = EditObservationTimeline::default();
+        timeline
+            .record(&anchor, &anchor.post_paste_text, "Can we close the", 2_000)
+            .unwrap();
+        let kept_field = effective_owned_field_value(&anchor, "", &timeline, true);
+        assert_eq!(extract_owned_text(&anchor, &kept_field), Ok(String::new()));
+    }
+
+    #[test]
+    fn only_the_text_that_was_there_before_the_paste_counts_as_blank() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Notes: ".to_string()),
+            post_paste_text: "Notes: ship on Friday".to_string(),
+            owned_span: derive_owned_text_span(
+                Some("Notes: "),
+                "Notes: ship on Friday",
+                "ship on Friday",
+            ),
+        };
+        assert!(owned_text_is_blank(&anchor, "Notes: "));
+        assert!(!owned_text_is_blank(&anchor, "Notes: ship Monday"));
+    }
+
+    #[test]
+    fn the_baseline_waits_for_the_paste_to_land() {
+        let polished = "Toh phir WhatsApp ke alawa links bheji hain";
+        // Read the moment the insert was queued: only the box's newline.
+        assert!(!paste_has_landed("\n", polished));
+        assert!(!paste_has_landed("Toh phir WhatsApp", polished));
+        // Editors put non-breaking spaces where the paste had plain ones.
+        assert!(paste_has_landed(
+            "Toh\u{a0}phir WhatsApp ke alawa links bheji hain\n",
+            polished
+        ));
+        assert!(!paste_has_landed("anything", ""));
+
+        // A baseline read too early owns nothing, so the first poll that sees
+        // the paste reads as an edit and the whole session is refused.
+        assert!(derive_owned_text_span(Some("\n"), "\n", polished).is_none());
+        let settled = format!("{polished}\n");
+        let span = derive_owned_text_span(Some("\n"), &settled, polished).expect("owned span");
+        assert_eq!(span.text.trim(), polished);
     }
 }

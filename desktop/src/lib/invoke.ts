@@ -703,6 +703,17 @@ export function onVoiceDone(
   return () => unsub();
 }
 
+/** A dictation's History entry changed after it was typed — the user edited the
+ *  text in the app they dictated into, and History now keeps their version. */
+export function onHistoryChanged(handler: (recordingId: string) => void): Unsubscribe {
+  if (!isTauriRuntime()) return () => {};
+  let unsub: Unsubscribe = () => {};
+  listen<string>("history-changed", (e) => handler(e.payload)).then(
+    (fn) => { unsub = fn; }
+  );
+  return () => unsub();
+}
+
 /** Listen for error events. `audioId` is the saved WAV id for retrying. */
 export type VoiceErrorPayload = {
   message: string;

@@ -20,6 +20,7 @@ import {
   onAppState,
   onNavSettings,
   onVoiceDone,
+  onHistoryChanged,
   onVoiceStatus,
   onVoiceToken,
   onVoiceError,
@@ -44,6 +45,7 @@ import {
   type ServerMigrationStatus,
 } from "@/lib/invoke";
 import { invalidateHistoryCache, refreshHistoryCache } from "@/lib/historyUiCache";
+import { keptText } from "@/lib/keptText";
 import {
   checkConnection,
   getConnection,
@@ -105,7 +107,7 @@ function computeStreak(items: HistoryItem[]): number {
 function recordingToHistoryItem(r: Recording): HistoryItem {
   return {
     timestamp_ms:      r.timestamp_ms,
-    polished:          r.polished,
+    polished:          keptText(r),
     word_count:        r.word_count,
     recording_seconds: r.recording_seconds,
     model:             r.model_used,
@@ -445,6 +447,13 @@ export default function App() {
       setStatusPhase("");
     });
 
+    // The user edited a dictation after it was typed; History now shows their text.
+    const unsubHistory = onHistoryChanged(() => {
+      invalidateHistoryCache();
+      refreshHistory();
+      setHistoryRefreshKey((k) => k + 1);
+    });
+
     // Voice error → show retry toast
     const unsubError = onVoiceError((msg, audioId, errorCode, payload) => {
       const retryMessage =
@@ -523,6 +532,7 @@ export default function App() {
       unsubStatus();
       unsubToken();
       unsubDone();
+      unsubHistory();
       unsubError();
       unsubEdit();
       unsubPending();

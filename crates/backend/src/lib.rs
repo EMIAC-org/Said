@@ -382,6 +382,10 @@ pub fn router_with_state(state: AppState) -> Router {
             "/v1/recordings/:id/audio",
             get(routes::history::audio).post(routes::history::upload_audio),
         )
+        .route(
+            "/v1/recordings/:id/kept",
+            axum::routing::put(routes::history::record_kept),
+        )
         .route("/v1/preferences", get(routes::prefs::get_prefs))
         .route("/v1/preferences", patch(routes::prefs::patch_prefs))
         .route("/v1/corrections", get(routes::prefs::get_corrections))

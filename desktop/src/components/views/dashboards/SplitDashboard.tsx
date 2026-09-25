@@ -7,6 +7,7 @@ import {
   subscribeHistoryCache,
 } from "@/lib/historyUiCache";
 import { useAudioPlayer } from "@/lib/useAudioPlayer";
+import { keptText } from "@/lib/keptText";
 import { AppIcon, appDisplayName, fallbackAppName, useAppIdentity } from "@/components/AppIcon";
 import { SplitDashboardSkeleton } from "@/components/views/dashboards/DashboardSkeleton";
 import type { AppSnapshot, Recording } from "@/types";
@@ -342,7 +343,7 @@ function RecordingCard({
   async function copy(e: React.MouseEvent) {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(rec.polished);
+      await navigator.clipboard.writeText(keptText(rec));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
     } catch { /* ignore */ }
@@ -458,9 +459,9 @@ function RecordingCard({
           overflow: "hidden",
           wordBreak: "break-word",
         }}
-        title={rec.polished}
+        title={keptText(rec)}
       >
-        {rec.polished}
+        {keptText(rec)}
       </div>
     </div>
   );

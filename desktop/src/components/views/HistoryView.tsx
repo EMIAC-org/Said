@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Clock, Copy, Play, Pause, Trash2, MoreHorizontal, Check, Search, X, Download,
-  RefreshCw, Monitor, ChevronDown, Undo2, AlertTriangle, FileDown,
+  RefreshCw, Monitor, ChevronDown, Undo2, AlertTriangle, FileDown, PenLine,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,6 +16,7 @@ import {
   revealDownloadedFile,
 } from "@/lib/invoke";
 import { friendlyError } from "@/lib/friendlyError";
+import { keptText, wasEdited } from "@/lib/keptText";
 import {
   getHistoryCacheSnapshot,
   invalidateHistoryCache,
@@ -126,9 +127,11 @@ function buildExportMarkdown(recordings: Recording[]): string {
     for (const r of g.items) {
       const time = new Date(r.timestamp_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       const meta = [formatSourceApp(r.target_app), formatModel(r.model_used), time, `${r.word_count} words`, formatDuration(r.recording_seconds)].filter(Boolean).join(" · ");
-      lines.push(`**${time}** — ${meta}`, ``, (r.polished || r.transcript || "—").trim(), ``);
+      const text = keptText(r) || r.transcript.trim() || "—";
+      lines.push(`**${time}** — ${meta}`, ``, text, ``);
+      if (wasEdited(r)) lines.push(`> AirNote typed: ${r.polished.trim()}`, ``);
       const orig = originalText(r);
-      if (orig && orig !== (r.polished ?? "").trim()) lines.push(`> original: ${orig}`, ``);
+      if (orig && orig !== text) lines.push(`> original: ${orig}`, ``);
     }
   }
   return lines.join("\n");
@@ -324,7 +327,7 @@ function RowMenu({ recording, playingId, hasAudio, onPlay, onCopy, onCopyTranscr
     <div ref={menuRef} className="absolute right-0 top-8 z-50 rounded-xl shadow-xl border py-1.5 px-1.5 min-w-[180px]"
       style={{ background: "hsl(var(--surface-1))", borderColor: "hsl(var(--surface-3))", boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }}>
       {item(isPlaying ? <Pause size={13} /> : <Play size={13} />, isPlaying ? "Pause" : "Play recording", onPlay, false, !hasAudio)}
-      {item(<Copy size={13} />, "Copy polished text", onCopy)}
+      {item(<Copy size={13} />, "Copy text", onCopy)}
       {item(<Copy size={13} />, "Copy original", onCopyTranscript)}
       {item(<Download size={13} />, "Download audio", onDownload, false, !hasAudio)}
       <div className="my-1 mx-1 border-t" style={{ borderColor: "hsl(var(--surface-3))" }} />
@@ -352,6 +355,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
   const [copied, setCopied] = useState<"polished" | "transcript" | false>(false);
   const [expanded, setExpanded] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
+  const [showAirNoteText, setShowAirNoteText] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [hasAudio, setHasAudio] = useState(Boolean(recording.audio_id));
   const [appIcon, setAppIcon] = useState<string | null>(() =>
@@ -394,7 +398,10 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
   const time = new Date(recording.timestamp_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const isPlaying = playingId === recording.id;
 
-  const fullText = (recording.polished ?? "").trim();
+  // What the user ended up with. When they edited AirNote's text after it was
+  // typed, that edit is the dictation; AirNote's own text is one click away.
+  const fullText = keptText(recording);
+  const edited = wasEdited(recording);
   const wordCount = recording.word_count ?? fullText.split(/\s+/).filter(Boolean).length;
   const isLong = wordCount > TRUNCATE_WORD_LIMIT;
   const displayText = useMemo(() => {
@@ -417,7 +424,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
   const duration = formatDuration(recording.recording_seconds);
 
   function handleCopy() {
-    navigator.clipboard.writeText(recording.polished ?? recording.transcript ?? "");
+    navigator.clipboard.writeText(fullText || recording.transcript || "");
     setCopied("polished"); setTimeout(() => setCopied(false), 1600);
     onCopyToast("success", "Copied to clipboard");
   }
@@ -474,6 +481,16 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
           )}
         </p>
 
+        {/* What AirNote typed, before the user's edit */}
+        {showAirNoteText && edited && (
+          <div className="mt-2 px-3 py-2 rounded-lg" style={{ background: "hsl(var(--surface-4))" }}>
+            <span className="block mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              AirNote typed
+            </span>
+            <p className="text-[12.5px] text-muted-foreground leading-relaxed">{recording.polished.trim()}</p>
+          </div>
+        )}
+
         {/* Original (progressive disclosure) */}
         {showOriginal && hasOriginal && (
           <div className="mt-2 px-3 py-2 rounded-lg" style={{ background: "hsl(var(--surface-4))" }}>
@@ -498,6 +515,17 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
           <span className="opacity-40">·</span><span className="tabular-nums">{time}</span>
           <span className="opacity-40">·</span><span className="tabular-nums">{wordCount} words</span>
           {duration && <><span className="opacity-40">·</span><span className="tabular-nums">{duration}</span></>}
+          {edited && (
+            <>
+              <span className="opacity-40">·</span>
+              <span className="flex items-center gap-1" title="You changed this after AirNote typed it">
+                <PenLine size={11} />Edited
+              </span>
+              <button onClick={() => setShowAirNoteText((v) => !v)} className="font-medium transition-colors" style={{ color: "hsl(var(--primary))" }}>
+                {showAirNoteText ? "Hide AirNote's version" : "Show AirNote's version"}
+              </button>
+            </>
+          )}
           {hasOriginal && (
             <>
               <span className="opacity-40">·</span>
@@ -519,7 +547,7 @@ function HistoryRow({ recording, playingId, onPlay, onDelete, onCopyToast, onDow
 
       {/* Hover actions */}
       <div className="hist-actions flex-shrink-0 flex items-start gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={handleCopy} title="Copy polished text"
+        <button onClick={handleCopy} title="Copy text"
           className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
           style={{ color: copied === "polished" ? "hsl(var(--chip-lime-fg))" : "hsl(var(--muted-foreground))" }}
           onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}

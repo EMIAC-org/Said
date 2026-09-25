@@ -688,7 +688,9 @@ async fn classify_inner(
     let mut negative_terms: Vec<NegativeTerm> = Vec::new();
     let mut policy_touched = false;
 
-    history::apply_edit_feedback(&state.pool, &body.recording_id, &body.user_kept);
+    // The kept text itself is written to History by the desktop through
+    // `PUT /v1/recordings/:id/kept` before it asks for classification; this
+    // route only decides what to learn from it.
 
     if has_correction_evidence {
         let edit_event_id = vectors::insert_edit_event(

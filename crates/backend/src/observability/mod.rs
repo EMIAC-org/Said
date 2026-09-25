@@ -100,7 +100,6 @@ pub fn schedule_classify_observability(state: &AppState, input: ClassifyObservab
     let user_id = state.default_user_id.clone();
     let http = state.http_client.clone();
     let recording_id = input.recording_id.to_string();
-    let user_kept = input.user_kept.to_string();
 
     let alias_items: Vec<AliasLearnItem> = input
         .changes
@@ -117,9 +116,10 @@ pub fn schedule_classify_observability(state: &AppState, input: ClassifyObservab
         .collect();
 
     tokio::spawn(async move {
+        // `final_text` is History's, sent by `routes::history::record_kept`.
         let patch = DictationPatchPayload {
             recording_id,
-            final_text: Some(user_kept),
+            final_text: None,
             edit_feedback_json: Some(feedback),
             dictation_trace_json: trace_value,
         };

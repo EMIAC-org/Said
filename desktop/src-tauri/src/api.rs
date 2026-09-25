@@ -1074,6 +1074,28 @@ pub async fn mark_voice_run_paste(
     }
 }
 
+/// Record in History what the user kept of a dictation after editing it.
+pub async fn record_kept_text(
+    ep: &BackendEndpoint,
+    recording_id: &str,
+    text: &str,
+) -> Result<(), String> {
+    let url = format!("{}/v1/recordings/{recording_id}/kept", ep.url);
+    let resp = Client::new()
+        .put(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "text": text }))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("record kept text request failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("record kept text failed: {}", resp.status()))
+    }
+}
+
 // ── Cloud auth (calls the cloud control plane directly) ───────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
