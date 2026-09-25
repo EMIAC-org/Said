@@ -44,11 +44,9 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::notification_hub::DesktopNotification;
-use crate::voice_polish_standalone::{
-    RuntimeVocabCard, build_rewrite_system_prompt, build_rewrite_user_message,
-    build_voice_system_prompt, build_voice_system_prompt_with_recent, build_voice_user_message,
-};
+use crate::voice_polish_standalone::{build_rewrite_system_prompt, build_rewrite_user_message};
 use crate::{AppState, auth::AuthUser, memory_hygiene, tenant};
+use said_core::polish::dictation::{self, DictionaryEntry};
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_VALIDATE_ENDPOINT: &str = "https://api.groq.com/openai/v1/models";
@@ -287,18 +285,14 @@ pub struct VoicePolishRequest {
     pub output_language: String,
     #[serde(default = "default_selected_model")]
     pub selected_model: String,
+    /// The user's words that appear in this transcript, from their AirNote
+    /// word list. Older desktops send vocab cards, hints and screen context
+    /// instead; those fields are ignored.
     #[serde(default)]
-    pub screen_context: Option<String>,
-    #[serde(default)]
-    pub safe_vocab_terms: Vec<String>,
-    #[serde(default)]
-    pub vocab_cards: Vec<RuntimeVocabCard>,
-    #[serde(default)]
-    pub recent_speech_hints: Vec<String>,
+    pub dictionary: Vec<DictionaryEntry>,
     #[serde(default)]
     pub client_run_id: Option<String>,
-    /// Bundle-id / exe app_key of the focused app, forwarded from the desktop so the
-    /// server can inject the matching per-app profile bucket. Absent → global KB only.
+    /// Bundle-id / exe app_key of the focused app, recorded in History.
     #[serde(default)]
     pub target_app: Option<String>,
     /// Optional per-request tone override (e.g. the iOS keyboard "rewrite selection"
@@ -1603,223 +1597,14 @@ fn runtime_error_payload(
     payload
 }
 
-/// Load the account's polish persona (tone_preset + custom_prompt) from
-/// `runtime_user_settings` for the voice prompt. Best-effort: a missing row or a
-/// query error must NEVER fail a dictation, so both fall back to the neutral
-/// default that the voice path used before per-account tone existed.
-/// Normalize a tone value onto the canonical said_core vocabulary — mirrors the mapping
-/// inside `account_polish_persona` so a per-request tone override (e.g. the keyboard
-/// rewrite) shares the same tone keys. Legacy mobile use-case names map across; canonical
-/// and unknown values pass through (said_core maps anything unrecognized to neutral).
+/// Normalize a per-request tone (the iOS keyboard rewrite) onto the canonical
+/// said_core tone keys. Legacy mobile use-case names map across; canonical and
+/// unknown values pass through (said_core maps anything unrecognized to neutral).
 fn normalize_tone_preset(raw: &str) -> String {
     match raw {
         "work" | "email" => "professional".to_string(),
         "notes" => "concise".to_string(),
         other => other.to_string(),
-    }
-}
-
-async fn account_polish_persona(state: &AppState, account_id: Uuid) -> (String, Option<String>) {
-    let (tone_preset, custom_prompt) = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT tone_preset, custom_prompt FROM runtime_user_settings WHERE account_id = $1",
-    )
-    .bind(account_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| ("neutral".to_string(), None));
-    // Map legacy mobile use-case tone names onto the canonical said_core vocabulary
-    // the desktop already uses (the iOS picker matches these; this only rescues a
-    // value persisted by an older client). Canonical + unknown values pass through —
-    // said_core maps anything it doesn't recognise to neutral.
-    let tone_preset = match tone_preset.as_str() {
-        "work" | "email" => "professional".to_string(),
-        "notes" => "concise".to_string(),
-        _ => tone_preset,
-    };
-    (tone_preset, custom_prompt)
-}
-
-/// Additive learned-profile block for polish: global profile markdown plus, when the
-/// focused app is known, the current app-bucket's style overlay. Empty when nothing has
-/// been learned yet (caller then injects nothing).
-async fn load_injected_profile(
-    state: &AppState,
-    account_id: Uuid,
-    org_scope: Uuid,
-    target_app: Option<&str>,
-) -> String {
-    crate::profile::load_prompt_profile_context_cached(state, account_id, org_scope, target_app)
-        .await
-        .markdown
-}
-
-async fn polish_runtime_transcript(
-    state: &AppState,
-    account_id: Uuid,
-    run_id: Uuid,
-    transcript: &str,
-    output_language: &str,
-    selected_model: &str,
-    screen_context: Option<&str>,
-    safe_vocab_terms: &[String],
-    target_app: Option<&str>,
-) -> Result<String, (StatusCode, Json<Value>)> {
-    let formatted_transcript = crate::number_format::apply(transcript);
-    if formatted_transcript != transcript {
-        insert_stage_event(
-            state,
-            run_id,
-            "formatter_pre",
-            "ok",
-            None,
-            None,
-            json!({
-                "input_chars": transcript.chars().count(),
-                "output_chars": formatted_transcript.chars().count()
-            }),
-        )
-        .await?;
-    }
-
-    let (tone_preset, custom_prompt) = account_polish_persona(state, account_id).await;
-
-    // Additive learned-profile injection: global profile + (when the focused app is known)
-    // the current bucket's style overlay. Never replaces the base prompt or its hard rules.
-    let active_org_id = primary_org_id(state, account_id).await?;
-    let org_scope = crate::profile::store::resolve_org_scope(active_org_id);
-    let profile_block = load_injected_profile(state, account_id, org_scope, target_app).await;
-    let profile_md: Option<&str> = if profile_block.is_empty() {
-        None
-    } else {
-        Some(profile_block.as_str())
-    };
-
-    let prompt_start = Instant::now();
-    let system_prompt = build_voice_system_prompt(
-        output_language,
-        &tone_preset,
-        custom_prompt.as_deref(),
-        screen_context,
-        safe_vocab_terms,
-        profile_md,
-    );
-    let user_message = build_voice_user_message(&formatted_transcript, output_language);
-    let prompt_ms = prompt_start.elapsed().as_millis() as i64;
-    insert_stage_event(
-        state,
-        run_id,
-        "prompt_built",
-        "ok",
-        Some(prompt_ms),
-        None,
-        json!({"prompt_version": said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION}),
-    )
-    .await?;
-
-    let selected_model = normalize_voice_polish_model(selected_model);
-    let route = selected_polish_route(&selected_model);
-    let model = route.model.clone();
-    let provider_label = route.provider;
-    write_runtime_prompt_debug_log(RuntimePromptDebug {
-        route: "polish_runtime_transcript",
-        account_id,
-        run_id,
-        provider: provider_label,
-        model: &model,
-        selected_model: &selected_model,
-        output_language,
-        tone_preset: &tone_preset,
-        prompt_kind: "voice_polish",
-        profile_version: None,
-        profile_status: if profile_md.is_some() {
-            "injected"
-        } else {
-            "missing"
-        },
-        profile_cache_hit: false,
-        profile_chars: profile_md.map(|p| p.chars().count()).unwrap_or(0),
-        profile_injected: profile_md.is_some(),
-        transcript_chars: transcript.chars().count(),
-        user_message: &user_message,
-        system_prompt: &system_prompt,
-    })
-    .await;
-    let model_start = Instant::now();
-    let credential =
-        runtime_provider_secret(state, account_id, active_org_id, provider_label).await?;
-    let secret = credential.secret.clone();
-    let polish_credential = Some(credential);
-    let output = polish_llm(
-        state,
-        provider_label,
-        &secret,
-        &model,
-        &system_prompt,
-        &user_message,
-        None,
-    )
-    .await;
-    let model_ms = model_start.elapsed().as_millis() as i64;
-
-    match output {
-        Ok(completion) => {
-            if let Some(ref credential) = polish_credential {
-                let _ = update_credential_used(state, credential.credential_id).await;
-                insert_provider_usage(
-                    state,
-                    run_id,
-                    credential,
-                    provider_label,
-                    Some(model.as_str()),
-                    Some(&completion.usage),
-                    Some(model_ms),
-                    "ok",
-                    None,
-                )
-                .await?;
-            }
-            let output = completion.text;
-            insert_stage_event(
-                state,
-                run_id,
-                "llm_complete",
-                "ok",
-                Some(model_ms),
-                None,
-                json!({"model": model, "provider": provider_label}),
-            )
-            .await?;
-            Ok(output)
-        }
-        Err(err) => {
-            if let Some(ref credential) = polish_credential {
-                let _ = insert_provider_usage(
-                    state,
-                    run_id,
-                    credential,
-                    provider_label,
-                    Some(model.as_str()),
-                    None,
-                    Some(model_ms),
-                    "error",
-                    Some("model_failed"),
-                )
-                .await;
-            }
-            let _ = insert_stage_event(
-                state,
-                run_id,
-                "llm_complete",
-                "error",
-                Some(model_ms),
-                Some("model_failed"),
-                json!({"model": model, "provider": provider_label}),
-            )
-            .await;
-            Err(err)
-        }
     }
 }
 
@@ -2460,38 +2245,16 @@ async fn execute_voice_polish(
     }
 
     tracing::info!(
-        "[runtime] voice polish inbound account={} client_run_id={} selected_model_raw={} output_language={} transcript_chars={} words={} safe_vocab_terms={} vocab_cards={} recent_speech_hints={} screen_context_chars={} tenant_ms={}",
+        "[runtime] voice polish inbound account={} client_run_id={} selected_model_raw={} output_language={} transcript_chars={} words={} dictionary={} tenant_ms={}",
         user.account_id,
         req.client_run_id.as_deref().unwrap_or("none"),
         req.selected_model,
         req.output_language,
         transcript.chars().count(),
         transcript.split_whitespace().count(),
-        req.safe_vocab_terms.len(),
-        req.vocab_cards.len(),
-        req.recent_speech_hints.len(),
-        req.screen_context
-            .as_ref()
-            .map(|s| s.chars().count())
-            .unwrap_or(0),
+        req.dictionary.len(),
         tenant_ms,
     );
-
-    let memory_start = Instant::now();
-    let server_memory = load_runtime_memory_cached(&state, user.account_id)
-        .await
-        .unwrap_or_default();
-    let client_vocab_terms = if req.safe_vocab_terms.is_empty() {
-        req.vocab_cards
-            .iter()
-            .map(|card| card.term.clone())
-            .collect::<Vec<_>>()
-    } else {
-        req.safe_vocab_terms.clone()
-    };
-    let merged_vocab =
-        merge_vocab_terms(&client_vocab_terms, &server_memory.vocab_terms, transcript);
-    let memory_ms = memory_start.elapsed().as_millis() as i64;
 
     let session_start = Instant::now();
     let run_id = create_runtime_session(
@@ -2507,38 +2270,15 @@ async fn execute_voice_polish(
         json!({
             "endpoint": "voice_polish_probe",
             "transcript_chars": transcript.chars().count(),
-            "safe_vocab_terms": merged_vocab.len(),
-            "vocab_cards": req.vocab_cards.len(),
-            "recent_speech_hints": req.recent_speech_hints.len(),
-            "server_vocab_count": server_memory.vocab_terms.len(),
+            "dictionary": req.dictionary.len(),
         }),
     )
     .await?;
     let session_ms = session_start.elapsed().as_millis() as i64;
 
-    let prompt_start = Instant::now();
-    let formatted_transcript = crate::number_format::apply(transcript);
-    if formatted_transcript != transcript {
-        // Telemetry only — fire-and-forget so it never gates the model call (#4).
-        let bg = state.clone();
-        let input_chars = transcript.chars().count();
-        let output_chars = formatted_transcript.chars().count();
-        tokio::spawn(async move {
-            let _ = insert_stage_event(
-                &bg,
-                run_id,
-                "formatter_pre",
-                "ok",
-                None,
-                None,
-                json!({"input_chars": input_chars, "output_chars": output_chars}),
-            )
-            .await;
-        });
-    }
     // An explicit per-request tone (only the iOS keyboard "select → polish" sends one)
     // marks a REWRITE: rephrase freely + translate strictly into the chosen language.
-    // No tone = the dictation path, which preserves the speaker's language and words.
+    // No tone = dictation: the minimal cleanup prompt, and its output is typed as is.
     let explicit_tone = req
         .tone_preset
         .as_deref()
@@ -2546,33 +2286,19 @@ async fn execute_voice_polish(
         .filter(|t| !t.is_empty());
     let is_rewrite = explicit_tone.is_some();
 
-    // Resolve the model route up front (pure CPU, no I/O) so the provider
-    // credential lookup can run concurrently with the persona read below.
     let selected_model = normalize_voice_polish_model(&req.selected_model);
     let route = selected_polish_route(&selected_model);
     let model = route.model.clone();
     let provider_label = route.provider;
-    let prompt_cpu_ms = prompt_start.elapsed().as_millis() as i64;
 
-    // Persona (tone/custom prompt) and the provider credential are two
-    // independent, uncached DB reads that used to run back-to-back before the
-    // model call. Resolve them concurrently so the two round-trips overlap into
-    // one. On the rewrite path the tone is explicit, so persona needs no DB hit.
     let credential_start = Instant::now();
-    let persona_fut = async {
-        match explicit_tone {
-            Some(raw) => (normalize_tone_preset(raw), None),
-            None => account_polish_persona(&state, user.account_id).await,
-        }
-    };
-    let credential_fut = runtime_provider_secret(
+    let credential_lookup = runtime_provider_secret(
         &state,
         user.account_id,
         tenant_ctx.active_org_id,
         provider_label,
-    );
-    let ((tone_preset, custom_prompt), credential_lookup) =
-        tokio::join!(persona_fut, credential_fut);
+    )
+    .await;
     let credential_ms = credential_start.elapsed().as_millis() as i64;
 
     let (api_secret, polish_credential, credential_scope) = match credential_lookup {
@@ -2602,63 +2328,24 @@ async fn execute_voice_polish(
         }
     };
 
-    // Additive server-learned profile injection: unified global KB + (when the focused
-    // app is known) the matching per-app bucket overlay. Replaces the legacy
-    // client-shipped `client_profile_markdown`; never overrides the base prompt/hard rules.
-    let org_scope = crate::profile::resolve_org_scope(&tenant_ctx);
-    let profile_start = Instant::now();
-    let profile_context = crate::profile::load_prompt_profile_context_cached(
-        &state,
-        user.account_id,
-        org_scope,
-        req.target_app.as_deref(),
-    )
-    .await;
-    let profile_ms = profile_start.elapsed().as_millis() as i64;
-    let profile_md: Option<&str> = if profile_context.markdown.trim().is_empty() {
-        None
-    } else {
-        Some(profile_context.markdown.as_str())
+    let prompt_start = Instant::now();
+    let tone_preset = explicit_tone.map(normalize_tone_preset);
+    let (system_prompt, user_message, prompt_version) = match tone_preset.as_deref() {
+        Some(tone) => (
+            build_rewrite_system_prompt(tone, &req.output_language),
+            build_rewrite_user_message(transcript, &req.output_language),
+            "rewrite",
+        ),
+        None => (
+            dictation::system_prompt(&req.output_language),
+            dictation::user_message(transcript, &req.dictionary),
+            dictation::DICTATION_PROMPT_VERSION,
+        ),
     };
-
-    // Build the prompt now that the persona has resolved (pure CPU).
-    let build_start = Instant::now();
-    let profile_snapshot = crate::prompt_profile_telemetry::snapshot_from_server(profile_md);
-    let mut prompt_built_meta = crate::prompt_profile_telemetry::prompt_built_metadata(
-        &profile_snapshot,
-        profile_context.profile_version,
-    );
-    if let Some(meta) = prompt_built_meta.as_object_mut() {
-        meta.insert(
-            "recent_speech_hints".to_string(),
-            json!(req.recent_speech_hints.len()),
-        );
-    }
-
-    let (system_prompt, user_message) = if is_rewrite {
-        (
-            build_rewrite_system_prompt(&tone_preset, &req.output_language),
-            build_rewrite_user_message(&formatted_transcript, &req.output_language),
-        )
-    } else {
-        (
-            build_voice_system_prompt_with_recent(
-                &req.output_language,
-                &tone_preset,
-                custom_prompt.as_deref(),
-                req.screen_context.as_deref(),
-                &req.vocab_cards,
-                &merged_vocab,
-                profile_md,
-                &req.recent_speech_hints,
-            ),
-            build_voice_user_message(&formatted_transcript, &req.output_language),
-        )
-    };
-    let prompt_ms = prompt_cpu_ms + profile_ms + build_start.elapsed().as_millis() as i64;
+    let prompt_ms = prompt_start.elapsed().as_millis() as i64;
 
     tracing::info!(
-        "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} vocab_hints={} recent_speech_hints={} setup_ms={{tenant:{}, memory:{}, session:{}, prompt:{}, profile:{}, credential:{}}} cache={{profile_context:{}, global_profile:{}, app_bucket:{}, bucket_profile:{}}} bucket={:?} bucket_source={:?}",
+        "[runtime] voice polish start account={} run_id={} model={} provider={} selected_model={} credential_scope={} transcript_chars={} dictionary={} setup_ms={{tenant:{}, session:{}, prompt:{}, credential:{}}}",
         user.account_id,
         run_id,
         model,
@@ -2666,20 +2353,11 @@ async fn execute_voice_polish(
         selected_model,
         credential_scope,
         transcript.len(),
-        merged_vocab.len(),
-        req.recent_speech_hints.len(),
+        req.dictionary.len(),
         tenant_ms,
-        memory_ms,
         session_ms,
         prompt_ms,
-        profile_ms,
         credential_ms,
-        profile_context.cache_hit,
-        profile_context.global_profile_cache_hit,
-        profile_context.app_bucket_cache_hit,
-        profile_context.bucket_profile_cache_hit,
-        profile_context.bucket_key.as_deref(),
-        profile_context.bucket_source,
     );
     write_runtime_prompt_debug_log(RuntimePromptDebug {
         route: "execute_voice_polish",
@@ -2689,21 +2367,17 @@ async fn execute_voice_polish(
         model: &model,
         selected_model: &selected_model,
         output_language: &req.output_language,
-        tone_preset: &tone_preset,
+        tone_preset: tone_preset.as_deref().unwrap_or("none"),
         prompt_kind: if is_rewrite {
             "rewrite"
         } else {
             "voice_polish"
         },
-        profile_version: profile_context.profile_version,
-        profile_status: if profile_snapshot.profile_chars > 0 {
-            "server_db"
-        } else {
-            "missing"
-        },
-        profile_cache_hit: profile_context.cache_hit,
-        profile_chars: profile_snapshot.profile_chars,
-        profile_injected: !is_rewrite && profile_snapshot.profile_chars > 0,
+        profile_version: None,
+        profile_status: "none",
+        profile_cache_hit: false,
+        profile_chars: 0,
+        profile_injected: false,
         transcript_chars: transcript.chars().count(),
         user_message: &user_message,
         system_prompt: &system_prompt,
@@ -2713,7 +2387,10 @@ async fn execute_voice_polish(
     {
         // Telemetry only — fire-and-forget so it never gates the model call (#4).
         let bg = state.clone();
-        let meta = prompt_built_meta.clone();
+        let meta = json!({
+            "prompt_version": prompt_version,
+            "dictionary": req.dictionary.len(),
+        });
         tokio::spawn(async move {
             let _ = insert_stage_event(
                 &bg,
@@ -2820,9 +2497,6 @@ async fn execute_voice_polish(
         let bg_model = model.to_string();
         let bg_polish_usage = polish_usage;
         let org_id_for_history = tenant_ctx.active_org_id;
-        let org_scope_for_profile = crate::profile::resolve_org_scope(&tenant_ctx);
-        let bg_profile_snapshot = profile_snapshot;
-        let bg_profile_version = profile_context.profile_version;
         tokio::spawn(async move {
             if let Some(ref credential) = bg_credential {
                 let _ = update_credential_used(&bg_state, credential.credential_id).await;
@@ -2843,22 +2517,6 @@ async fn execute_voice_polish(
                 let _ =
                     insert_stage_event(&bg_state, run_id, name, "ok", latency_ms, None, payload)
                         .await;
-            }
-            if let Err(err) = crate::prompt_profile_telemetry::upsert_latest(
-                &bg_state.db,
-                bg_account_id,
-                org_scope_for_profile,
-                run_id,
-                &bg_profile_snapshot,
-                bg_profile_version,
-            )
-            .await
-            {
-                tracing::warn!(
-                    "[runtime] prompt profile telemetry upsert failed account={} run_id={}: {err}",
-                    bg_account_id,
-                    run_id,
-                );
             }
             let _ = mark_runtime_session(&bg_state, run_id, "completed", None).await;
             crate::routes::runtime_history::write_history_from_runtime(
@@ -2884,7 +2542,7 @@ async fn execute_voice_polish(
         run_id: run_id.to_string(),
         output,
         model_used: model.to_string(),
-        prompt_version: said_core::polish::prompt::VOICE_PROMPT_BASE_VERSION.to_string(),
+        prompt_version: prompt_version.to_string(),
         latency_ms: RuntimeLatency {
             prompt: prompt_ms,
             model: model_ms,
@@ -5315,27 +4973,6 @@ fn infer_source_for_corrected(
     best.map(|(_, surface)| surface)
 }
 
-fn merge_vocab_terms(request: &[String], server: &[String], transcript: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut merged = Vec::with_capacity(request.len() + server.len());
-    for term in request {
-        let lower = term.to_lowercase();
-        if !lower.is_empty() && seen.insert(lower) {
-            merged.push(term.clone());
-        }
-    }
-    for term in server {
-        if !is_vocab_term_relevant_to_transcript(term, transcript) {
-            continue;
-        }
-        let lower = term.to_lowercase();
-        if !lower.is_empty() && seen.insert(lower) {
-            merged.push(term.clone());
-        }
-    }
-    merged
-}
-
 fn is_vocab_term_relevant_to_transcript(term: &str, transcript: &str) -> bool {
     let term_norm = normalize_learning_text(term);
     if term_norm.is_empty() {
@@ -5891,7 +5528,7 @@ mod tests {
         // Every existing caller omits tone_preset → defaults to None (behavior unchanged).
         let without: VoicePolishRequest = serde_json::from_str(r#"{"transcript":"hi"}"#).unwrap();
         assert_eq!(without.tone_preset, None);
-        assert!(without.recent_speech_hints.is_empty());
+        assert!(without.dictionary.is_empty());
         // New callers (the keyboard rewrite) can send a per-request tone override.
         let with: VoicePolishRequest =
             serde_json::from_str(r#"{"transcript":"hi","tone_preset":"casual"}"#).unwrap();
@@ -5940,56 +5577,30 @@ mod tests {
     }
 
     #[test]
-    fn merge_vocab_keeps_request_terms_but_filters_unrelated_server_terms() {
-        let request = vec!["UserProvided".to_string()];
-        let server = vec!["Supabase".to_string(), "Kafka".to_string()];
-        let merged = merge_vocab_terms(&request, &server, "kaafka nahi chal raha");
+    fn older_desktops_still_parse_and_their_context_is_ignored() {
+        let req: VoicePolishRequest = serde_json::from_str(
+            r#"{"transcript":"meac ka build","safe_vocab_terms":["EMIAC"],
+                "vocab_cards":[{"term":"EMIAC"}],"recent_speech_hints":["x"],
+                "screen_context":"Slack"}"#,
+        )
+        .unwrap();
+        assert!(req.dictionary.is_empty());
         assert_eq!(
-            merged,
-            vec!["UserProvided".to_string(), "Kafka".to_string()]
+            dictation::user_message(&req.transcript, &req.dictionary),
+            "<transcript>\nmeac ka build\n</transcript>"
         );
     }
 
     #[test]
-    fn server_voice_prompt_forbids_normal_word_translation() {
-        let prompt = build_voice_system_prompt("hinglish", "neutral", None, None, &[], None);
-        let user = build_voice_user_message("hello भाई कैसे हो", "hinglish");
-
-        assert!(prompt.contains("AirNote STT Cleanup Contract"));
-        assert!(prompt.contains("Output language: Roman Hinglish"));
-        assert!(prompt.contains("Use ONLY Latin letters"));
-        assert!(prompt.contains("Script rendering is not translation"));
-        assert!(prompt.contains("\"hello भाई कैसे हो\" = \"hello bhai kaise ho\""));
-        assert!(user.contains("Clean the noisy STT transcript below"));
-        assert!(user.contains("BEGIN CURRENT TRANSCRIPT"));
-    }
-
-    #[test]
-    fn server_voice_prompt_accepts_recent_speech_hints_as_soft_context() {
-        let hints = vec![
-            "recent speech hints".to_string(),
-            "current transcript wins".to_string(),
-        ];
-        let prompt = build_voice_system_prompt_with_recent(
-            "hinglish",
-            "neutral",
-            None,
-            None,
-            &[],
-            &[],
-            None,
-            &hints,
-        );
-
-        assert!(prompt.contains("RECENT TERM HINTS"));
-        assert!(prompt.contains("recent speech hints"));
-        assert!(prompt.contains("current transcript wins"));
-        assert!(prompt.contains("soft spelling context only"));
-        assert!(
-            prompt
-                .contains("Do not continue, summarize, copy, or import previous dictation content")
-        );
-        assert!(prompt.contains("Never introduce a hint with no current-transcript support"));
+    fn the_word_list_reaches_the_dictation_prompt() {
+        let req: VoicePolishRequest = serde_json::from_str(
+            r#"{"transcript":"air note ka build",
+                "dictionary":[{"heard":"air note","written":"AirNote"},{"written":"EMIAC"}]}"#,
+        )
+        .unwrap();
+        let message = dictation::user_message(&req.transcript, &req.dictionary);
+        assert!(message.contains("- air note → AirNote\n- EMIAC\n"));
+        assert!(message.ends_with("<transcript>\nair note ka build\n</transcript>"));
     }
 
     #[test]
