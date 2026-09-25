@@ -85,7 +85,7 @@ export function OnboardingShell({
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.color = "hsl(var(--foreground))";
-                e.currentTarget.style.background = "hsl(0 0% 100% / 0.04)";
+                e.currentTarget.style.background = "hsl(var(--foreground) / 0.04)";
                 e.currentTarget.style.borderColor = "hsl(var(--glass-stroke-strong))";
               }}
               onMouseLeave={(e) => {

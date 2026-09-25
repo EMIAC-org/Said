@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
-import { ChevronLeft, ChevronRight, Copy, CornerDownLeft, Download, ListChecks, RotateCcw, X } from "lucide-react";
+import { Copy, Download, RotateCcw, X } from "lucide-react";
 import type { AppSnapshot } from "./types";
 import {
   APPLY_UPDATE_FAILED_EVENT,
@@ -102,46 +102,13 @@ type BarState =
   | { kind: "manual_paste"; message?: string }
   | { kind: "error"; message: string; runId?: string; audioId?: string; rawError?: string; errorCode?: string; diagnostic?: string }
   | { kind: "recovered"; text: string; copied: boolean }
-  | { kind: "learned"; term: string; message: string }
-  | { kind: "email_saved"; email: string; message: string }
-  | { kind: "confirming"; term: string; original: string; context: string; recordingId: string }
-  | { kind: "negative_confirm"; term: string; wrongReplacement: string }
-  | { kind: "wrong_fixed"; term: string; wrongReplacement: string }
-  | { kind: "queued"; term: string; remaining: number }
-  | { kind: "reviewing"; candidates: ReviewCandidate[]; detectedChanges: DetectedChange[]; selected: Set<number>; recordingId: string; reviewSessionId: string }
+  | { kind: "learned"; message: string; wordId?: number }
   | { kind: "placement"; message: string }
   | { kind: "polish_mode"; enabled: boolean; message: string }
   | { kind: "problem_ambiguous"; candidates: DeveloperContextCandidate[] }
-  | { kind: "update_ready"; version: string; message: string }
-  | { kind: "retraining" }
-  | { kind: "retrain_done"; durationS: number };
+  | { kind: "update_ready"; version: string; message: string };
 
 type UpdateReadyState = Extract<BarState, { kind: "update_ready" }>;
-
-type ReviewCandidate = {
-  original: string;
-  corrected: string;
-  term_type: string;
-  learnable: boolean;
-  tag: string;
-  context?: string | null;
-};
-
-type DetectedChange = {
-  original: string;
-  corrected: string;
-  reason: string;
-  should_learn: boolean;
-  confidence: number;
-  skip_reason?: string | null;
-};
-
-type EditReviewSession = {
-  id: string;
-  recording_id: string;
-  review_candidates: ReviewCandidate[];
-  detected_changes: DetectedChange[];
-};
 
 type VoiceErrorPayload = {
   message: string;
@@ -162,13 +129,8 @@ type VoiceStatusPayload = {
 
 type PillKind = BarState["kind"];
 
-function isActionPromptKind(kind: PillKind): boolean {
-  return kind === "confirming" || kind === "negative_confirm" || kind === "reviewing";
-}
-
 function keepsHudOverIdle(kind: PillKind): boolean {
   return kind === "error"
-    || isActionPromptKind(kind)
     || kind === "done"
     || kind === "pasted"
     || kind === "manual_paste"
@@ -189,12 +151,6 @@ const VOICE_COMPACT_HEIGHT = 34;
 const VOICE_INNER_HEIGHT = 98;
 const VOICE_CANVAS_WIDTH = VOICE_INNER_WIDTH + 40;
 const VOICE_CANVAS_HEIGHT = VOICE_INNER_HEIGHT + 40;
-const REVIEW_PAGE_SIZE = 5;
-const REVIEW_PILL_HEIGHT = 36;
-const REVIEW_CARD_WIDTH = 352;
-/** Compact survey card — list scrolls inside fixed height. */
-const REVIEW_CARD_HEIGHT = 264;
-const REVIEW_EXPAND_MS = 160;
 
 // Fluid waveform: a parabolic envelope (tall center, short edges). Bars animate
 // via scaleY around this envelope — a traveling wave that tracks the mic level
@@ -212,34 +168,10 @@ function textWidth(text: string): number {
   return Math.ceil(text.length * 6.8);
 }
 
-function reviewPillLabel(count: number): string {
-  return `${count} correction${count !== 1 ? "s" : ""}`;
-}
-
-function reviewLetter(slot: number): string {
-  return String.fromCharCode(65 + slot);
-}
-
-function reviewTagHint(tag: string): string {
-  switch (tag) {
-    case "added": return "new word";
-    case "case": return "capitalization";
-    case "stt_error": return "speech recognition";
-    case "meaning_context": return "add context";
-    case "polish_error": return "writing correction";
-    case "format_preference": return "formatting";
-    case "style_preference": return "rephrasing";
-    case "structural_rewrite": return "larger rewrite";
-    default: return "swapped";
-  }
-}
-
 function pillSize(
   kind: PillKind,
   hasTranscript = false,
   label = "",
-  candidateCount = 0,
-  reviewExpanded = true,
   actionCount = 0,
 ): { width: number; height: number } {
   if (hasTranscript) return { width: VOICE_INNER_WIDTH, height: VOICE_INNER_HEIGHT };
@@ -255,20 +187,6 @@ function pillSize(
   if (kind === "update_ready") {
     const content = Math.min(textWidth(label), 190) + 148;
     return { width: Math.max(320, Math.min(Math.ceil(content), 390)), height: 136 };
-  }
-  if (kind === "confirming") return { width: 280, height: 142 };
-  if (kind === "negative_confirm") return { width: 280, height: 142 };
-  if (kind === "reviewing") {
-    if (!reviewExpanded) {
-      const pillLabel = reviewPillLabel(candidateCount);
-      const content = textWidth(pillLabel) + 8 + 14 + 18;
-      const padded = Math.ceil(content * 1.12);
-      return {
-        width: Math.max(168, Math.min(padded, 300)),
-        height: REVIEW_PILL_HEIGHT,
-      };
-    }
-    return { width: REVIEW_CARD_WIDTH, height: REVIEW_CARD_HEIGHT };
   }
 
   if (label) {
@@ -313,18 +231,13 @@ function CardHost({
 
 export default function StatusBar() {
   const [bar, setBar] = useState<BarState>(() => ({ kind: "idle" }));
-  const [reviewPage, setReviewPage] = useState(0);
-  const [reviewExpanded, setReviewExpanded] = useState(false);
-  const [showAllCandidates, setShowAllCandidates] = useState(false);
   const [dragUnlocked, setDragUnlocked] = useState(false);
-  const reviewListRef = useRef<HTMLDivElement | null>(null);
   const dragActiveRef = useRef(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioLevel, setAudioLevel] = useState(0);
   const [polishModeEnabled, setPolishModeEnabled] = useState(false);
   const [longDictationLocked, setLongDictationLocked] = useState(false);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const serverNotifyPendingRef = useRef(false);
   const audioLevelRef = useRef(0);
   const pinnedUpdateRef = useRef<UpdateReadyState | null>(null);
   const barTargets = useRef<number[]>(new Array(15).fill(0));
@@ -361,34 +274,6 @@ export default function StatusBar() {
       win.show().catch((showErr) => console.warn("[status-bar] fallback show failed", showErr));
     });
   };
-  const presentNextReviewSession = async (withSound: boolean): Promise<boolean> => {
-    try {
-      const session = await invoke<EditReviewSession | null>("get_next_edit_review_session");
-      if (!session) return false;
-      if (["recording", "processing"].includes(barKindRef.current)) {
-        return false;
-      }
-      const selected = new Set<number>();
-      session.review_candidates.forEach((candidate, index) => {
-        if (candidate.learnable) selected.add(index);
-      });
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      presentStatusBar("vocab-review-queue");
-      if (withSound) playSound("knock");
-      setBar({
-        kind: "reviewing",
-        candidates: session.review_candidates,
-        detectedChanges: session.detected_changes,
-        selected,
-        recordingId: session.recording_id,
-        reviewSessionId: session.id,
-      });
-      return true;
-    } catch (error) {
-      console.warn("[status-bar] failed to load edit review queue", error);
-      return false;
-    }
-  };
   const showPinnedUpdate = (next: UpdateReadyState, reason: string) => {
     pinnedUpdateRef.current = next;
     if (doneTimer.current) clearTimeout(doneTimer.current);
@@ -424,16 +309,12 @@ export default function StatusBar() {
   const hasTranscript =
     (bar.kind === "recording" || bar.kind === "processing") && liveTranscript.trim().length > 0;
   const isInteractive =
-    bar.kind === "confirming"
-    || bar.kind === "negative_confirm"
-    || bar.kind === "reviewing"
-    || bar.kind === "error"
+    bar.kind === "error"
     || bar.kind === "learned"
     || bar.kind === "update_ready"
     || bar.kind === "recovered"
     || bar.kind === "placement"
     || bar.kind === "problem_ambiguous";
-  const isFullBleedCard = bar.kind === "reviewing" && reviewExpanded;
 
   const pillLabel = (() => {
     switch (bar.kind) {
@@ -446,29 +327,19 @@ export default function StatusBar() {
       case "error": return bar.message;
       case "recovered": return "Recovered dictation";
       case "learned": return bar.message;
-      case "email_saved": return bar.message;
-      case "queued": return `"${bar.term}" — ${bar.remaining === 1 ? "1 more edit to learn" : `${bar.remaining} more edits to learn`}`;
-      case "wrong_fixed": return `Got it — won’t type "${bar.wrongReplacement}" for "${bar.term}"`;
       case "placement": return bar.message;
       case "polish_mode": return bar.message;
       case "problem_ambiguous": return "Ambiguous Project Match";
       case "update_ready": return `Update ${bar.version} ready`;
-      case "retraining": return "Improving model...";
-      case "retrain_done": return bar.durationS > 0 ? `Model updated (${bar.durationS.toFixed(1)}s)` : "Model updated";
       default: return "";
     }
   })();
 
-  const candidateCount = bar.kind === "reviewing"
-    ? Math.max(bar.candidates.length, bar.detectedChanges.length)
-    : 0;
   const compactActionCount = bar.kind === "error" ? 2 + (bar.audioId ? 2 : 0) : 0;
   const innerSize = pillSize(
     bar.kind,
     hasTranscript,
     pillLabel,
-    candidateCount,
-    reviewExpanded,
     compactActionCount,
   );
 
@@ -477,37 +348,11 @@ export default function StatusBar() {
   }, [bar.kind]);
 
   useEffect(() => {
-    if (bar.kind === "reviewing") {
-      setReviewPage(0);
-      setShowAllCandidates(false);
-    }
-  }, [bar.kind === "reviewing" ? bar.recordingId : null, bar.kind === "reviewing" ? bar.candidates.length : 0]);
-
-  useEffect(() => {
-    reviewListRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-  }, [reviewPage]);
-
-  // Compact pill first, then expand to the full review card.
-  useEffect(() => {
-    if (bar.kind !== "reviewing") {
-      setReviewExpanded(false);
-      return;
-    }
-    setReviewExpanded(false);
-    const t = window.setTimeout(() => setReviewExpanded(true), REVIEW_EXPAND_MS);
-    return () => window.clearTimeout(t);
-  }, [bar.kind === "reviewing" ? bar.recordingId : null, bar.kind]);
-
-  useEffect(() => {
     const root = document.documentElement;
     const app = document.getElementById("app");
     if (bar.kind !== "idle") {
       root?.classList.add("sb-card-mode");
-      if (isFullBleedCard) {
-        app?.classList.add("sb-app--card");
-      } else {
-        app?.classList.remove("sb-app--card");
-      }
+      app?.classList.remove("sb-app--card");
     } else {
       root?.classList.remove("sb-card-mode");
       app?.classList.remove("sb-app--card");
@@ -516,7 +361,7 @@ export default function StatusBar() {
       root?.classList.remove("sb-card-mode");
       app?.classList.remove("sb-app--card");
     };
-  }, [bar.kind, isFullBleedCard]);
+  }, [bar.kind]);
 
   useEffect(() => {
     invoke("set_status_bar_interactive", {
@@ -633,18 +478,13 @@ export default function StatusBar() {
   // Resize native window before paint — voice states use a fixed canvas so the
   // transcript grows upward inside the panel instead of pushing the window down.
   useLayoutEffect(() => {
-    const isReviewing = bar.kind === "reviewing";
     const usesVoiceCanvas = bar.kind === "recording" || bar.kind === "processing";
-    const w = isReviewing
-      ? REVIEW_CARD_WIDTH
-      : usesVoiceCanvas
-        ? VOICE_CANVAS_WIDTH
-        : Math.max(innerSize.width + 40, HUD_CANVAS_MIN_WIDTH);
-    const h = isReviewing
-      ? REVIEW_CARD_HEIGHT
-      : usesVoiceCanvas
-        ? VOICE_CANVAS_HEIGHT
-        : Math.max(innerSize.height + 40, 56);
+    const w = usesVoiceCanvas
+      ? VOICE_CANVAS_WIDTH
+      : Math.max(innerSize.width + 40, HUD_CANVAS_MIN_WIDTH);
+    const h = usesVoiceCanvas
+      ? VOICE_CANVAS_HEIGHT
+      : Math.max(innerSize.height + 40, 56);
 
     const apply = (force = false) => {
       const previous = lastResizeRef.current;
@@ -656,11 +496,7 @@ export default function StatusBar() {
     };
 
     apply();
-    if (isReviewing && reviewExpanded) {
-      const t = window.setTimeout(apply, 48);
-      return () => window.clearTimeout(t);
-    }
-  }, [innerSize.width, innerSize.height, bar.kind, reviewExpanded, win]);
+  }, [innerSize.width, innerSize.height, bar.kind, win]);
 
   useEffect(() => {
     console.info("[status-bar] mounted", {
@@ -948,7 +784,7 @@ export default function StatusBar() {
           : { kind: "pasted" },
       );
       doneTimer.current = setTimeout(
-        () => setBar((prev) => isActionPromptKind(prev.kind) ? prev : { kind: "idle" }),
+        () => setBar({ kind: "idle" }),
         e.payload.status === "pasted" ? 100 : 5200,
       );
     }).then((fn) => {
@@ -1080,116 +916,17 @@ export default function StatusBar() {
     }).catch((err) => console.warn("[status-bar] placement finish subscribe failed", err));
 
     // ── Learning notifications ────────────────────────────────────────
-    listen<{ term: string; message: string }>("vocab-learned", (e) => {
-      serverNotifyPendingRef.current = false; // cancel deferred fallback toast
+    listen<{ message: string; id?: number }>("vocab-learned", (e) => {
       if (!notifEnabled("learned")) return;
       console.info("[status-bar] vocab-learned", e.payload);
       if (doneTimer.current) clearTimeout(doneTimer.current);
       presentStatusBar("vocab-learned");
       playSound("levelUp");
-      setBar({ kind: "learned", term: e.payload.term, message: e.payload.message });
+      setBar({ kind: "learned", message: e.payload.message, wordId: e.payload.id });
       doneTimer.current = setTimeout(() => {
         setBar({ kind: "idle" });
         invoke("dismiss_status_bar").catch(() => {});
       }, 3000);
-    }).then((fn) => {
-      subs.push(fn);
-    }).catch(() => {});
-
-    listen<{ email: string; message: string }>("email-learned", (e) => {
-      if (!notifEnabled("learned")) return;
-      console.info("[status-bar] email-learned", e.payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      presentStatusBar("email-learned");
-      playSound("levelUp");
-      setBar({ kind: "email_saved", email: e.payload.email, message: e.payload.message });
-      doneTimer.current = setTimeout(() => {
-        setBar({ kind: "idle" });
-        invoke("dismiss_status_bar").catch(() => {});
-      }, 3000);
-    }).then((fn) => {
-      subs.push(fn);
-    }).catch(() => {});
-
-    // ── Queued term — show remaining edits needed ─────────────────────
-    listen<{ term: string; remaining: number }>("vocab-queued", (e) => {
-      if (!notifEnabled("queued")) return;
-      console.info("[status-bar] vocab-queued", e.payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      presentStatusBar("vocab-queued");
-      playSound("tick");
-      setBar({ kind: "queued", term: e.payload.term, remaining: e.payload.remaining });
-      doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 5000);
-    }).then((fn) => {
-      subs.push(fn);
-    }).catch(() => {});
-
-    // ── Ambiguous term — needs user confirmation ──────────────────────
-    listen<{ term: string; original: string; context: string; recording_id: string }>("vocab-confirm", (e) => {
-      if (!notifEnabled("confirm")) return;
-      console.info("[status-bar] vocab-confirm", e.payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      presentStatusBar("vocab-confirm");
-      playSound("knock");
-      setBar({ kind: "confirming", term: e.payload.term, original: e.payload.original, context: e.payload.context, recordingId: e.payload.recording_id });
-    }).then((fn) => {
-      subs.push(fn);
-    }).catch(() => {});
-
-    // ── Review card — multi-change edit review ────────────────────────
-    listen<{ review_session_id?: string; recording_id: string }>("vocab-review", (e) => {
-      // Review is an actionable prompt, not a passive "word learned" toast.
-      // It must remain visible even if learned-notification toasts are disabled.
-      console.info("[status-bar] vocab-review", e.payload);
-      if (barKindRef.current === "reviewing") return;
-      void presentNextReviewSession(true);
-    }).then((fn) => {
-      subs.push(fn);
-    }).catch(() => {});
-
-    // ── Wrong correction detected (manual block request) ──────────────
-    listen<{ term: string; wrong_replacement: string }>("vocab-negative", (e) => {
-      if (!notifEnabled("negative")) return;
-      console.info("[status-bar] vocab-negative", e.payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      presentStatusBar("vocab-negative");
-      playSound("alert");
-      setBar({ kind: "negative_confirm", term: e.payload.term, wrongReplacement: e.payload.wrong_replacement });
-    }).then((fn) => {
-      subs.push(fn);
-    }).catch(() => {});
-
-    // ── Wrong correction auto-fixed ─────────────────────────────────
-    listen<{ term: string; wrong_replacement: string }>("vocab-wrong-fixed", (e) => {
-      if (!notifEnabled("negative")) return;
-      console.info("[status-bar] vocab-wrong-fixed", e.payload);
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      presentStatusBar("vocab-wrong-fixed");
-      playSound("chimeDown");
-      setBar({ kind: "wrong_fixed", term: e.payload.term, wrongReplacement: e.payload.wrong_replacement });
-      doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 4000);
-    }).then((fn) => {
-      subs.push(fn);
-    }).catch(() => {});
-
-    // ── Retrain progress ─────────────────────────────────────────────
-    listen<{ phase: string; duration_s?: number; success?: boolean }>("retrain-status", (e) => {
-      if (!notifEnabled("retrain")) return;
-      console.info("[status-bar] retrain-status", e.payload);
-      if (e.payload.phase === "started") {
-        if (doneTimer.current) clearTimeout(doneTimer.current);
-        presentStatusBar("retrain-started");
-        setBar({ kind: "retraining" });
-      } else if (e.payload.phase === "done") {
-        playSound("shimmer");
-        const dur = e.payload.duration_s ?? 0;
-        setBar({ kind: "retrain_done", durationS: dur });
-        if (doneTimer.current) clearTimeout(doneTimer.current);
-        doneTimer.current = setTimeout(() => setBar({ kind: "idle" }), 10000);
-      } else if (e.payload.phase === "unavailable") {
-        // Retrain API not available or feature not enabled on this machine — silent.
-        console.info("[status-bar] retrain not available on this machine");
-      }
     }).then((fn) => {
       subs.push(fn);
     }).catch(() => {});
@@ -1238,23 +975,6 @@ export default function StatusBar() {
     return () => window.clearTimeout(t);
   }, []);
 
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      if (barKindRef.current === "idle") {
-        void presentNextReviewSession(false);
-      }
-    }, 500);
-    return () => window.clearTimeout(t);
-  }, []);
-
-  function dismissToIdle() {
-    setBar({ kind: "idle" });
-    if (doneTimer.current) clearTimeout(doneTimer.current);
-    doneTimer.current = setTimeout(() => {
-      invoke("dismiss_status_bar").catch(() => {});
-    }, 1500);
-  }
-
   async function releaseProblemHold(reason: string) {
     try {
       await invoke("set_status_bar_persistent", { persistent: false, reason });
@@ -1288,30 +1008,6 @@ export default function StatusBar() {
     } else {
       invoke("dismiss_status_bar").catch(() => {});
     }
-  }
-
-  async function handleConfirm(term: string, original: string, action: "learn" | "skip", recordingId: string, context?: string) {
-    try {
-      await invoke("confirm_term", { term, original, action, recordingId: recordingId || null, context: context || null });
-    } catch (e) {
-      console.warn("[status-bar] confirm_term failed:", e);
-    }
-    if (action === "learn") {
-      setBar({ kind: "learned", term, message: `Will recognise "${term}" next time` });
-      if (doneTimer.current) clearTimeout(doneTimer.current);
-      doneTimer.current = setTimeout(() => dismissToIdle(), 3000);
-    } else {
-      dismissToIdle();
-    }
-  }
-
-  async function handleBlock(variant: string, wrongReplacement: string) {
-    try {
-      await invoke("block_correction", { variant, wrongReplacement });
-    } catch (e) {
-      console.warn("[status-bar] block_correction failed:", e);
-    }
-    dismissToIdle();
   }
 
   // ── Idle: nothing visible; native window hides via dismiss_status_bar ──
@@ -1366,327 +1062,6 @@ export default function StatusBar() {
               Edit Aliases
             </button>
           </div>
-        </div>
-      </CardHost>
-    );
-  }
-
-  // ── Toast states render as expanded cards, not pills ──────────────────
-  if (bar.kind === "confirming") {
-    return (
-      <CardHost>
-        <div
-          className="sb-survey sb-survey--panel sb-survey--interactive"
-          style={{ width: innerSize.width, height: innerSize.height }}
-          aria-label="AirNote confirming"
-        >
-          <div className="sb-survey-kicker-row">
-            <span className="sb-status-dot sb-status-dot--warn" />
-            <span className="sb-survey-kicker">Quick question</span>
-          </div>
-          <div className="sb-survey-body">
-            You changed <span className="sb-survey-strike">{bar.original}</span>
-            {" → "}
-            <span className="sb-survey-chip">{bar.term}</span>
-            <br />
-            Is <strong>&ldquo;{bar.term}&rdquo;</strong> a product, brand, or name?
-          </div>
-          <div className="sb-survey-footer">
-            <button type="button" className="sb-survey-skip" onClick={() => handleConfirm(bar.term, bar.original, "skip", bar.recordingId, bar.context)}>
-              No, just rephrasing
-            </button>
-            <button type="button" className="sb-survey-next" onClick={() => handleConfirm(bar.term, bar.original, "learn", bar.recordingId, bar.context)}>
-              Yes, learn it
-              <CornerDownLeft size={14} strokeWidth={2} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      </CardHost>
-    );
-  }
-
-  if (bar.kind === "reviewing") {
-    const sel = bar.selected;
-    const selCount = sel.size;
-    const pairKey = (original: string, corrected: string) =>
-      `${original.trim().toLocaleLowerCase()}\u0000${corrected.trim().toLocaleLowerCase()}`;
-    const matchedCandidateIndexes = new Set<number>();
-    const allEntries = bar.detectedChanges.map((change) => {
-      const candidateIndex = bar.candidates.findIndex((candidate, index) =>
-        !matchedCandidateIndexes.has(index)
-        && pairKey(candidate.original, candidate.corrected) === pairKey(change.original, change.corrected));
-      if (candidateIndex >= 0) matchedCandidateIndexes.add(candidateIndex);
-      const candidate = candidateIndex >= 0 ? bar.candidates[candidateIndex] : null;
-      const c: ReviewCandidate = candidate ?? {
-        original: change.original,
-        corrected: change.corrected,
-        term_type: "other",
-        learnable: false,
-        tag: change.reason,
-        context: null,
-      };
-      return { c, candidateIndex: candidateIndex >= 0 ? candidateIndex : null };
-    });
-    bar.candidates.forEach((candidate, candidateIndex) => {
-      if (!matchedCandidateIndexes.has(candidateIndex)) {
-        allEntries.push({ c: candidate, candidateIndex });
-      }
-    });
-    const learnableEntries = bar.candidates
-      .map((c, candidateIndex) => ({ c, candidateIndex }))
-      .filter(({ c }) => c.learnable);
-    const displayEntries = showAllCandidates
-      ? allEntries
-      : learnableEntries.filter(({ candidateIndex }) => sel.has(candidateIndex));
-    const totalPages = Math.max(1, Math.ceil(displayEntries.length / REVIEW_PAGE_SIZE));
-    const page = Math.min(reviewPage, totalPages - 1);
-    const pageStart = page * REVIEW_PAGE_SIZE;
-    const pageItems = displayEntries.slice(pageStart, pageStart + REVIEW_PAGE_SIZE);
-    const detectedTotal = allEntries.length;
-    const hiddenCount = Math.max(0, detectedTotal - selCount);
-
-    const toggleIdx = (idx: number) => {
-      if (!bar.candidates[idx]?.learnable) return;
-      setBar((prev) => {
-        if (prev.kind !== "reviewing") return prev;
-        const next = new Set(prev.selected);
-        if (next.has(idx)) next.delete(idx); else next.add(idx);
-        return { ...prev, selected: next };
-      });
-    };
-    const isLastPage = page >= totalPages - 1;
-
-    const handleLearn = async () => {
-      const items = bar.candidates
-        .filter((_, i) => sel.has(i))
-        .map((c) => ({ original: c.original, corrected: c.corrected, context: c.context || null, tag: c.tag }));
-      if (items.length === 0) return;
-      try {
-        const result = await invoke<{ learned_count: number; server_owned?: boolean }>("confirm_batch", {
-          items,
-          recordingId: bar.recordingId,
-          reviewSessionId: bar.reviewSessionId,
-        });
-        const n = result.learned_count;
-        if (await presentNextReviewSession(false)) return;
-        if (result.server_owned) {
-          // Server-owned: defer toast and let the WS vocab-learned notification take over.
-          // Fallback after 1.5s if WS event does not arrive.
-          serverNotifyPendingRef.current = true;
-          if (doneTimer.current) clearTimeout(doneTimer.current);
-          doneTimer.current = setTimeout(() => {
-            if (!serverNotifyPendingRef.current) return;
-            serverNotifyPendingRef.current = false;
-            if (n > 0) {
-              playSound("levelUp");
-              setBar({ kind: "learned", term: `${n} correction${n > 1 ? "s" : ""}`, message: `Saved ${n} correction${n > 1 ? "s" : ""}` });
-              doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 3000);
-            } else {
-              setBar({ kind: "idle" });
-              invoke("dismiss_status_bar").catch(() => {});
-            }
-          }, 1500);
-        } else {
-          playSound("levelUp");
-          setBar({ kind: "learned", term: `${n} correction${n > 1 ? "s" : ""}`, message: `Learned ${n} correction${n > 1 ? "s" : ""}` });
-          if (doneTimer.current) clearTimeout(doneTimer.current);
-          doneTimer.current = setTimeout(() => { setBar({ kind: "idle" }); invoke("dismiss_status_bar").catch(() => {}); }, 3000);
-        }
-      } catch (e) { console.error("[review] confirm_batch failed", e); }
-    };
-    const handleSkip = async () => {
-      try {
-        await invoke("skip_edit_review_session", { sessionId: bar.reviewSessionId });
-      } catch (error) {
-        console.error("[review] skip failed", error);
-        return;
-      }
-      setReviewPage(0);
-      if (!(await presentNextReviewSession(false))) {
-        setBar({ kind: "idle" });
-        invoke("dismiss_status_bar").catch(() => {});
-      }
-    };
-    const handleNext = () => {
-      if (!isLastPage) {
-        setReviewPage((p) => Math.min(totalPages - 1, p + 1));
-        return;
-      }
-      void handleLearn();
-    };
-    const pillText = reviewPillLabel(detectedTotal);
-    const pillW = innerSize.width;
-
-    return (
-      <CardHost variant="card">
-        {!reviewExpanded ? (
-          <div
-            className="sb-survey sb-survey--compact sb-survey--pill sb-survey--interactive"
-            style={{ width: pillW, height: REVIEW_PILL_HEIGHT }}
-            aria-label="AirNote review"
-          >
-            <ListChecks size={14} strokeWidth={2} className="sb-review-icon" aria-hidden="true" />
-            <span className="sb-survey-kicker sb-survey-em">{pillText}</span>
-          </div>
-        ) : (
-        <div className="sb-survey sb-survey--interactive sb-survey--expanded">
-          <div className="sb-survey-top">
-            <div className="sb-survey-kicker-row">
-              <span className="sb-survey-kicker">
-                {detectedTotal} detected · {selCount} learnable
-              </span>
-              {!showAllCandidates && hiddenCount > 0 && (
-                <button
-                  type="button"
-                  className="sb-survey-edit"
-                  onClick={() => { setShowAllCandidates(true); setReviewPage(0); }}
-                >
-                  View all
-                </button>
-              )}
-              {showAllCandidates && detectedTotal > selCount && (
-                <button
-                  type="button"
-                  className="sb-survey-edit"
-                  onClick={() => { setShowAllCandidates(false); setReviewPage(0); }}
-                >
-                  Show learnable
-                </button>
-              )}
-            </div>
-            {totalPages > 1 && (
-              <div className="sb-survey-pager">
-                <button
-                  type="button"
-                  className="sb-survey-pager-btn"
-                  disabled={page === 0}
-                  onClick={() => setReviewPage((p) => Math.max(0, p - 1))}
-                  aria-label="Previous page"
-                >
-                  <ChevronLeft size={14} strokeWidth={1.75} />
-                </button>
-                <span className="sb-survey-pager-label">{page + 1} of {totalPages}</span>
-                <button
-                  type="button"
-                  className="sb-survey-pager-btn"
-                  disabled={page >= totalPages - 1}
-                  onClick={() => setReviewPage((p) => Math.min(totalPages - 1, p + 1))}
-                  aria-label="Next page"
-                >
-                  <ChevronRight size={14} strokeWidth={1.75} />
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div className="sb-survey-question">
-            {showAllCandidates ? "All detected changes; dimmed items will not be learned" : "Safe learning suggestions"}
-          </div>
-
-          <div className="sb-survey-list" ref={reviewListRef}>
-            {pageItems.length === 0 ? (
-              <div className="sb-survey-empty">
-                Nothing selected
-                {hiddenCount > 0 && (
-                  <button
-                    type="button"
-                    className="sb-survey-edit"
-                    onClick={() => setShowAllCandidates(true)}
-                  >
-                    Pick corrections
-                  </button>
-                )}
-              </div>
-            ) : pageItems.map(({ c, candidateIndex }, slot) => {
-              const learnable = candidateIndex !== null && c.learnable;
-              const selected = learnable && sel.has(candidateIndex);
-              return (
-                <div
-                  key={`${c.original}-${c.corrected}-${candidateIndex ?? `detected-${slot}`}`}
-                  className={`sb-survey-row${selected ? " selected" : ""}${learnable ? "" : " disabled"}`}
-                  onClick={() => { if (candidateIndex !== null) toggleIdx(candidateIndex); }}
-                  role={learnable ? "button" : undefined}
-                  tabIndex={learnable ? 0 : -1}
-                  onKeyDown={(e) => {
-                    if (candidateIndex !== null && (e.key === "Enter" || e.key === " ")) {
-                      e.preventDefault();
-                      toggleIdx(candidateIndex);
-                    }
-                  }}
-                >
-                  <span className="sb-survey-letter">{reviewLetter(slot)}</span>
-                  <p className="sb-survey-copy">
-                    <span className="sb-survey-primary">{c.corrected}</span>
-                    <span className="sb-survey-desc">
-                      {" "}— was “{c.original || "—"}”
-                      {" · "}{reviewTagHint(c.tag)}
-                      {!learnable ? " · not learnable" : ""}
-                    </span>
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="sb-survey-footer">
-            <button type="button" className="sb-survey-skip" onClick={() => { void handleSkip(); }}>Skip</button>
-            <button
-              type="button"
-              className="sb-survey-next"
-              onClick={handleNext}
-              disabled={isLastPage && selCount === 0}
-            >
-              {isLastPage ? (selCount > 0 ? `Learn ${selCount}` : "Learn") : "Next"}
-              <CornerDownLeft size={14} strokeWidth={2} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-        )}
-      </CardHost>
-    );
-  }
-
-  if (bar.kind === "negative_confirm") {
-    return (
-      <CardHost>
-        <div
-          className="sb-survey sb-survey--panel sb-survey--interactive"
-          style={{ width: innerSize.width, height: innerSize.height }}
-          aria-label="AirNote wrong correction"
-        >
-          <div className="sb-survey-kicker-row">
-            <span className="sb-status-dot sb-status-dot--err" />
-            <span className="sb-survey-kicker">Wrong correction detected</span>
-          </div>
-          <div className="sb-survey-body">
-            AirNote keeps changing <span className="sb-survey-chip">{bar.term}</span> to{" "}
-            <strong>&ldquo;{bar.wrongReplacement}&rdquo;</strong> but you changed it back.
-            <br />
-            Should I stop this correction?
-          </div>
-          <div className="sb-survey-footer">
-            <button type="button" className="sb-survey-skip" onClick={() => setBar({ kind: "idle" })}>
-              It was right this time
-            </button>
-            <button type="button" className="sb-survey-next" onClick={() => handleBlock(bar.term, bar.wrongReplacement)}>
-              Yes, stop it
-              <CornerDownLeft size={14} strokeWidth={2} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      </CardHost>
-    );
-  }
-
-  if (bar.kind === "wrong_fixed") {
-    return (
-      <CardHost>
-        <div
-          className="sb-survey sb-survey--compact sb-survey--toast"
-          style={{ width: innerSize.width, height: innerSize.height }}
-        >
-          <span className="sb-status-dot sb-status-dot--ok" />
-          <span className="sb-survey-label">{pillLabel}</span>
         </div>
       </CardHost>
     );
@@ -1797,48 +1172,6 @@ export default function StatusBar() {
     );
   }
 
-  if (bar.kind === "queued") {
-    return (
-      <CardHost>
-        <div
-          className="sb-survey sb-survey--compact sb-survey--toast"
-          style={{ width: innerSize.width, height: innerSize.height }}
-        >
-          <span className="sb-status-dot sb-status-dot--warn" />
-          <span className="sb-survey-label">{pillLabel}</span>
-        </div>
-      </CardHost>
-    );
-  }
-
-  if (bar.kind === "retraining") {
-    return (
-      <CardHost>
-        <div
-          className="sb-survey sb-survey--compact sb-survey--toast"
-          style={{ width: innerSize.width, height: innerSize.height }}
-        >
-          <span className="sb-status-dot sb-status-dot--info" />
-          <span className="sb-survey-label">{pillLabel}</span>
-        </div>
-      </CardHost>
-    );
-  }
-
-  if (bar.kind === "retrain_done") {
-    return (
-      <CardHost>
-        <div
-          className="sb-survey sb-survey--compact sb-survey--toast"
-          style={{ width: innerSize.width, height: innerSize.height }}
-        >
-          <span className="sb-status-dot sb-status-dot--ok" />
-          <span className="sb-survey-label">{pillLabel}</span>
-        </div>
-      </CardHost>
-    );
-  }
-
   const usesVoiceCanvas = bar.kind === "recording" || bar.kind === "processing";
   const voiceSurfaceWidth = hasTranscript
     ? VOICE_INNER_WIDTH
@@ -1874,12 +1207,7 @@ export default function StatusBar() {
           ) : bar.kind === "learned" ? (
             <div className="sb-survey-label">
               <span className="sb-status-dot sb-status-dot--ok" />
-              <strong>{bar.term}</strong> learned
-            </div>
-          ) : bar.kind === "email_saved" ? (
-            <div className="sb-survey-label">
-              <span className="sb-status-dot sb-status-dot--ok" />
-              <strong>{bar.email}</strong> saved
+              <span>{bar.message}</span>
             </div>
           ) : bar.kind === "error" ? (
             <div className="sb-survey-label">
@@ -1928,16 +1256,16 @@ export default function StatusBar() {
             </div>
           )}
 
-          {bar.kind === "learned" ? (
+          {bar.kind === "learned" && bar.wordId !== undefined ? (
             <button
               className="sb-survey-undo"
-              title="Undo — remove this term"
+              title="Undo — remove this word from your dictionary"
               aria-label="Undo"
               onClick={async () => {
                 try {
-                  await invoke("delete_vocabulary_term", { term: bar.term });
+                  await invoke("delete_dictionary_word", { id: bar.wordId });
                 } catch (e) {
-                  console.warn("[status-bar] delete_vocab_term failed", e);
+                  console.warn("[status-bar] delete_dictionary_word failed", e);
                 }
                 setBar({ kind: "idle" });
                 invoke("dismiss_status_bar").catch(() => {});

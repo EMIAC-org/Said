@@ -158,14 +158,12 @@ async fn async_main() {
         shared_secret: std::sync::Arc::new(secret),
         default_user_id: std::sync::Arc::new(user_id.clone()),
         prefs_cache: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
-        lexicon_cache: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         live_server_runtime_cache: std::sync::Arc::new(tokio::sync::RwLock::new(
             std::collections::HashMap::new(),
         )),
         http_client,
         watchdog: wd.clone(),
     };
-    said_backend::routes::vocabulary::spawn_prompt_artifact_repair(state.clone());
     {
         let state2 = state.clone();
         tokio::spawn(async move {
@@ -209,8 +207,6 @@ async fn async_main() {
     };
 
     info!("airnote-backend listening on http://{addr}");
-
-    tokio::task::spawn_blocking(said_backend::tier2::warm_runtime_caches);
 
     // ── Retention sweep (every 6 h): delete recordings + audio older than 1 day
     // (failed-retryable audio is protected up to 7 days — see cleanup_old_audio).
@@ -270,19 +266,6 @@ async fn async_main() {
             user_id.clone(),
             state.http_client.clone(),
         );
-    }
-
-    // ── Background alias review lane ────────────────────────────────────────
-    {
-        let state2 = state.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
-            interval.tick().await; // skip immediate startup run
-            loop {
-                interval.tick().await;
-                said_backend::stt::background::run_pending_alias_reviews(state2.clone(), 12).await;
-            }
-        });
     }
 
     // ── Graceful shutdown on SIGTERM / SIGINT ─────────────────────────────────

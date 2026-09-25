@@ -1,4 +1,4 @@
-//! Polish a raw STT transcript using the same Groq pipeline as POST /v1/runtime/voice/polish.
+//! Polish a raw STT transcript with the same dictation prompt as POST /v1/runtime/voice/polish.
 //!
 //! Usage:
 //!   GROQ_API_KEY=... cargo run --bin polish-cli -- "raw transcript here"
@@ -38,7 +38,6 @@ async fn main() {
         &output_language,
         &selected_model,
         &groq_key,
-        None,
         &[],
     )
     .await

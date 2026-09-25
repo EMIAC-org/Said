@@ -12,27 +12,18 @@ import { Topbar } from "@/components/Topbar";
 import { DashboardView } from "@/components/views/DashboardView";
 import { InsightsView } from "@/components/views/InsightsView";
 import { HistoryView } from "@/components/views/HistoryView";
-import { LearningsView } from "@/components/views/LearningsView";
-import { BucketsView } from "@/components/views/BucketsView";
-import { VocabularyView } from "@/components/views/VocabularyView";
+import { DictionaryView } from "@/components/views/DictionaryView";
 import {
   invoke,
   onAppState,
   onNavSettings,
   onVoiceDone,
+  onHistoryChanged,
   onVoiceStatus,
   onVoiceToken,
   onVoiceError,
-  onEditDetected,
-  onPendingEditsChanged,
-  getPendingEdits,
-  resolvePendingEdit,
-  sendNotification,
   requestInputMonitoring,
   requestMicrophone,
-  submitEditFeedback,
-  onVocabToast,
-  deleteVocabularyTerm,
   checkNotificationPermission,
   revealDownloadedFile,
   getMigrationStatus,
@@ -40,29 +31,27 @@ import {
   syncServerSettings,
   syncCredentialVault,
   type NotifPermission,
-  type VocabToastPayload,
   type ServerMigrationStatus,
 } from "@/lib/invoke";
 import { invalidateHistoryCache, refreshHistoryCache } from "@/lib/historyUiCache";
+import { keptText } from "@/lib/keptText";
 import {
   checkConnection,
   getConnection,
   isConnected,
   ensureDesktopRegistered,
   restoreConnectionFromLocalBackend,
-  syncCompanyVocab,
-  uploadUserVocabSummary,
   type EnterpriseConnection,
 } from "@/lib/enterprise";
 import { useTheme } from "@/lib/useTheme";
 import { useBackendHeartbeat } from "@/lib/useBackendHeartbeat";
 import { startDailyAutoUpdateCheck } from "@/lib/autoUpdate";
 import { ReconnectingOverlay } from "@/components/ReconnectingOverlay";
-import type { AppSnapshot, HistoryItem, PendingEdit, Recording } from "@/types";
-import { RetryToast, EditConfirmToast, VocabularyToast, DownloadSuccessToast } from "@/components/NotificationToast";
+import type { AppSnapshot, HistoryItem, Recording } from "@/types";
+import { RetryToast, DownloadSuccessToast } from "@/components/NotificationToast";
 
-export type ActiveView = "dashboard" | "insights" | "history" | "vocabulary" | "learnings" | "buckets" | "settings";
-const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "vocabulary", "learnings", "buckets", "settings"];
+export type ActiveView = "dashboard" | "insights" | "history" | "dictionary" | "settings";
+const VALID_VIEWS: ActiveView[] = ["dashboard", "insights", "history", "dictionary", "settings"];
 type SettingsSectionId =
   | "appearance"
   | "writing"
@@ -105,7 +94,7 @@ function computeStreak(items: HistoryItem[]): number {
 function recordingToHistoryItem(r: Recording): HistoryItem {
   return {
     timestamp_ms:      r.timestamp_ms,
-    polished:          r.polished,
+    polished:          keptText(r),
     word_count:        r.word_count,
     recording_seconds: r.recording_seconds,
     model:             r.model_used,
@@ -125,8 +114,6 @@ const SETUP_STEPS = [
   "Restoring account",
   "Syncing API keys",
   "Uploading history",
-  "Uploading vocabulary and corrections",
-  "Preparing server memory",
 ];
 
 function SetupLoader({ status }: { status: ServerMigrationStatus | null }) {
@@ -135,8 +122,6 @@ function SetupLoader({ status }: { status: ServerMigrationStatus | null }) {
         status.uploaded_credentials_count,
         status.uploaded_credentials_count,
         status.uploaded_history_count,
-        status.uploaded_vocab_count + status.uploaded_alias_count + status.uploaded_email_count,
-        status.uploaded_vocab_count + status.uploaded_alias_count,
       ]
     : SETUP_STEPS.map(() => 0);
 
@@ -206,19 +191,8 @@ export default function App() {
   // ── Retry toast ───────────────────────────────────────────────────────────
   const [retryToast, setRetryToast] = useState<{ message: string; audioId: string } | null>(null);
 
-  // ── Edit confirmation toast ────────────────────────────────────────────────
-  const [editToast, setEditToast] = useState<{
-    recordingId: string; aiOutput: string; userKept: string;
-  } | null>(null);
-
-  // ── Vocabulary toast (manual add, auto-promote, star) ─────────────────────
-  const [vocabToast, setVocabToast] = useState<VocabToastPayload | null>(null);
-
   // ── Download success toast ────────────────────────────────────────────────
   const [downloadToast, setDownloadToast] = useState<{ path: string } | null>(null);
-
-  // ── Pending edits ─────────────────────────────────────────────────────────
-  const [pendingEdits, setPendingEdits] = useState<PendingEdit[]>([]);
 
   // ── History refresh key — incremented after each dictation to trigger reload
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -328,8 +302,6 @@ export default function App() {
       void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
       void syncServerSettings();
       void syncCredentialVault();
-      void syncCompanyVocab(false);
-      void uploadUserVocabSummary();
     };
     tick();
     const interval = setInterval(tick, 5 * 60 * 1000);
@@ -341,8 +313,6 @@ export default function App() {
     void ensureDesktopRegistered(conn.serverUrl, conn.jwt);
     void syncServerSettings();
     void syncCredentialVault();
-    void syncCompanyVocab(true);
-    void uploadUserVocabSummary(true);
   }, []);
 
   // ── Trigger migration once after enterprise connects ──────────────────────
@@ -445,6 +415,13 @@ export default function App() {
       setStatusPhase("");
     });
 
+    // The user edited a dictation after it was typed; History now shows their text.
+    const unsubHistory = onHistoryChanged(() => {
+      invalidateHistoryCache();
+      refreshHistory();
+      setHistoryRefreshKey((k) => k + 1);
+    });
+
     // Voice error → show retry toast
     const unsubError = onVoiceError((msg, audioId, errorCode, payload) => {
       const retryMessage =
@@ -467,46 +444,6 @@ export default function App() {
       }
     });
 
-    // Edit detected (legacy in-app toast — still fires as fallback)
-    const unsubEdit = onEditDetected((payload) => {
-      setEditToast({
-        recordingId: payload.recording_id,
-        aiOutput:    payload.ai_output,
-        userKept:    payload.user_kept,
-      });
-    });
-
-    // Pending edits changed → refresh list, only notify for genuinely new edits.
-    // Track IDs we've already shown in this session to avoid duplicate OS banners.
-    const notifiedIds = new Set<string>();
-    const sessionStartMs = Date.now();
-    const refreshPending = async () => {
-      const r = await getPendingEdits();
-      setPendingEdits(r.edits);
-      // Only notify for edits created during this session that we haven't shown yet.
-      // Edits from previous sessions (older than 30s before session start) are stale.
-      const cutoff = sessionStartMs - 30_000;
-      const fresh = r.edits.filter(
-        (e) => !notifiedIds.has(e.id) && e.timestamp_ms > cutoff
-      );
-      if (fresh.length > 0) {
-        const edit = fresh[0];
-        notifiedIds.add(edit.id);
-        const ai   = edit.ai_output.length > 50 ? edit.ai_output.slice(0, 50) + "…" : edit.ai_output;
-        const kept = edit.user_kept.length  > 50 ? edit.user_kept.slice(0, 50)  + "…" : edit.user_kept;
-        sendNotification(
-          "AirNote noticed an edit — tap to review",
-          `"${ai}"  →  "${kept}"`
-        );
-      }
-    };
-    refreshPending();
-    const unsubPending = onPendingEditsChanged(refreshPending);
-
-    // Vocabulary toast — fires on auto-promote during dictation,
-    // manual add via the Vocabulary panel, and star toggles.
-    const unsubVocabToast = onVocabToast(setVocabToast);
-
     // Tray menu → navigate to Settings
     const unsubNav = onNavSettings((section) => {
       setSettingsSection(
@@ -523,10 +460,8 @@ export default function App() {
       unsubStatus();
       unsubToken();
       unsubDone();
+      unsubHistory();
       unsubError();
-      unsubEdit();
-      unsubPending();
-      unsubVocabToast();
     };
   }, [refreshHistory]);
 
@@ -756,20 +691,13 @@ export default function App() {
                     onToggle={handleToggle}
                     onAccessibility={handleAccessibility}
                     onNavigate={handleViewChange}
-                    pendingEdits={pendingEdits}
                     onDownloadSuccess={handleDownloadSuccess}
                     refreshKey={historyRefreshKey}
-                    onResolvePending={async (id, action) => {
-                      await resolvePendingEdit(id, action);
-                      setPendingEdits((prev) => prev.filter((e) => e.id !== id));
-                    }}
                   />
                 )}
                 {activeView === "insights" && <InsightsView />}
                 {activeView === "history"    && <HistoryView onDownloadSuccess={handleDownloadSuccess} refreshKey={historyRefreshKey} />}
-                {activeView === "vocabulary" && <VocabularyView />}
-                {activeView === "learnings"  && <LearningsView />}
-                {activeView === "buckets"    && <BucketsView />}
+                {activeView === "dictionary" && <DictionaryView />}
                 {/* Settings is now a modal — opened via setSettingsOpen */}
               </div>
             </main>
@@ -818,43 +746,8 @@ export default function App() {
         />
       )}
 
-      {/* ── Edit confirmation toast (bottom-center) ── */}
-      {editToast && !retryToast && (
-        <EditConfirmToast
-          aiOutput={editToast.aiOutput}
-          userKept={editToast.userKept}
-          onSave={async () => {
-            setEditToast(null);
-            try {
-              await submitEditFeedback(editToast.recordingId, editToast.userKept);
-            } catch { /* non-critical */ }
-          }}
-          onDismiss={() => setEditToast(null)}
-        />
-      )}
-
-      {/* ── Vocabulary toast (bottom-center) ─────────── */}
-      {/* Suppressed on the Vocabulary page — that view owns its own toasts
-          (with Undo) for explicit edits; this global surface is for background
-          auto-learning feedback while you're dictating elsewhere. */}
-      {vocabToast && activeView !== "vocabulary" && !retryToast && !editToast && (
-        <VocabularyToast
-          kind={vocabToast.kind}
-          term={vocabToast.term}
-          source={vocabToast.source}
-          onUndo={vocabToast.kind === "added" ? async () => {
-            const t = vocabToast.term;
-            setVocabToast(null);
-            try {
-              await deleteVocabularyTerm(t);
-            } catch { /* non-critical */ }
-          } : undefined}
-          onDismiss={() => setVocabToast(null)}
-        />
-      )}
-
       {/* ── Download success toast (bottom-center) ─── */}
-      {downloadToast && !retryToast && !editToast && !vocabToast && (
+      {downloadToast && !retryToast && (
         <DownloadSuccessToast
           path={downloadToast.path}
           onReveal={() => {
@@ -871,8 +764,8 @@ export default function App() {
         <div
           className="fixed bottom-4 right-4 max-w-sm rounded-xl px-4 py-3 flex items-start gap-3 z-50"
           style={{
-            background: "hsl(0 75% 60% / 0.12)",
-            color:      "hsl(0 75% 80%)",
+            background: "hsl(var(--chip-red-bg))",
+            color:      "hsl(var(--chip-red-fg))",
           }}
         >
           <p className="text-[13px] flex-1 leading-snug">{errorBanner}</p>

@@ -1,12 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Bell, LogOut, User, Sparkles, BookOpen, Star, AlertCircle } from "lucide-react";
+import { Bell, LogOut, User, Sparkles, AlertCircle } from "lucide-react";
 import type { AppSnapshot } from "@/types";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { BrandMark } from "@/components/BrandMark";
 import type { Theme } from "@/lib/useTheme";
 import {
-  onVocabToast,
-  onPendingEditsChanged,
+  onWordLearned,
   onVoiceError,
 } from "@/lib/invoke";
 import { disconnectEnterprise, getConnection } from "@/lib/enterprise";
@@ -15,7 +14,7 @@ import { disconnectEnterprise, getConnection } from "@/lib/enterprise";
 
 interface NotifEntry {
   id:        string;
-  kind:      "vocab-added" | "vocab-removed" | "vocab-starred" | "error" | "info";
+  kind:      "learned" | "error" | "info";
   title:     string;
   body:      string;
   timestamp: number;       // ms
@@ -107,28 +106,16 @@ function NotifDropdown({
                   style={{
                     background:
                       n.kind === "error"
-                        ? "hsl(0 70% 60% / 0.16)"
-                        : n.kind === "vocab-starred"
-                        ? "hsl(var(--chip-amber-bg))"
-                        : n.kind === "vocab-removed"
-                        ? "hsl(var(--surface-4))"
+                        ? "hsl(var(--chip-red-bg))"
                         : "hsl(var(--chip-mint-bg))",
                     color:
                       n.kind === "error"
-                        ? "hsl(0 70% 60%)"
-                        : n.kind === "vocab-starred"
-                        ? "hsl(var(--chip-amber-fg))"
-                        : n.kind === "vocab-removed"
-                        ? "hsl(var(--muted-foreground))"
+                        ? "hsl(var(--chip-red-fg))"
                         : "hsl(var(--chip-mint-fg))",
                   }}
                 >
                   {n.kind === "error" ? (
                     <AlertCircle size={11} strokeWidth={2.4} />
-                  ) : n.kind === "vocab-starred" ? (
-                    <Star size={11} fill="currentColor" />
-                  ) : n.kind === "vocab-removed" ? (
-                    <BookOpen size={11} />
                   ) : (
                     <Sparkles size={11} />
                   )}
@@ -221,7 +208,7 @@ function ProfileDropdown({
         <button
           onClick={() => { onClose(); onLogout(); }}
           className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12.5px] rounded-lg transition-colors"
-          style={{ color: "hsl(0 75% 62%)" }}
+          style={{ color: "hsl(var(--destructive))" }}
           onMouseEnter={(e) => { e.currentTarget.style.background = "hsl(var(--surface-4))"; }}
           onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
         >
@@ -292,29 +279,9 @@ export function Topbar({ snapshot: _snapshot, theme, toggleTheme, onEnterpriseDi
       });
     };
 
-    const unsubVocab = onVocabToast((payload) => {
-      if (payload.kind === "starred") {
-        push({
-          kind:  "vocab-starred",
-          title: "Pinned to vocabulary",
-          body:  `AirNote will keep "${payload.term}" even if you stop using it.`,
-        });
-      } else if (payload.kind === "removed") {
-        push({
-          kind:  "vocab-removed",
-          title: "Removed from vocabulary",
-          body:  `AirNote won't recognise "${payload.term}" any more.`,
-        });
-      } else if (payload.kind === "queued") {
-        push({
-          kind:  "info",
-          title: "Noticed your correction",
-          body:  `Make this fix once more and AirNote will remember "${payload.term}".`,
-        });
-      }
+    const unsubLearned = onWordLearned((message) => {
+      push({ kind: "learned", title: message, body: "Polish will write it this way from now on." });
     });
-
-    const unsubPending = onPendingEditsChanged(() => {});
 
     const unsubError = onVoiceError((message, audioId) => {
       const empty = /no\s*(speech|audio)|empty|too short/i.test(message);
@@ -327,7 +294,7 @@ export function Topbar({ snapshot: _snapshot, theme, toggleTheme, onEnterpriseDi
       });
     });
 
-    return () => { unsubVocab(); unsubPending(); unsubError(); };
+    return () => { unsubLearned(); unsubError(); };
   }, []);
 
   const unreadCount = notifs.filter((n) => !n.read).length;
@@ -367,7 +334,7 @@ export function Topbar({ snapshot: _snapshot, theme, toggleTheme, onEnterpriseDi
               <span
                 className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold flex items-center justify-center tabular-nums"
                 style={{
-                  background: "hsl(0 70% 60%)",
+                  background: "hsl(var(--destructive))",
                   color:      "white",
                   boxShadow:  "0 0 0 2px hsl(var(--surface-1))",
                 }}

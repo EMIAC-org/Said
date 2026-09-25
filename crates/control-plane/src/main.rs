@@ -14,8 +14,8 @@ use clap::Parser;
 use tracing::info;
 
 use said_control_plane::{
-    AppState, LarkConfig, ai_worker, build_router, meeting_hub, memory_hygiene_worker,
-    notification_hub, notification_worker, routes, store, vocab_worker,
+    AppState, LarkConfig, ai_worker, build_router, meeting_hub, notification_hub,
+    notification_worker, routes, store,
 };
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -123,36 +123,22 @@ async fn main() {
     // Start the notification worker (15-min reminders + urgent join alerts).
     notification_worker::start_notification_worker(db.clone(), lark.clone(), hub.clone());
 
-    // Build privacy-safe org vocabulary suggestions once daily.
-    vocab_worker::start_vocab_aggregation_worker(db.clone());
-    memory_hygiene_worker::start_memory_hygiene_worker(db.clone());
-
     let groq_api_key = if cli.groq_api_key.trim().is_empty() {
         cli.gateway_api_key.clone()
     } else {
         cli.groq_api_key.clone()
     };
     info!(
-        "[cp] runtime credential env: openai={} groq={} deepinfra={} deepseek={} runtime_credentials_key={}",
+        "[cp] runtime credential env: openai={} groq={} deepinfra={} runtime_credentials_key={}",
         !cli.openai_api_key.trim().is_empty(),
         !groq_api_key.trim().is_empty(),
         !cli.deepinfra_api_key.trim().is_empty(),
-        !std::env::var("DEEPSEEK_API_KEY")
-            .unwrap_or_default()
-            .trim()
-            .is_empty(),
         !cli.runtime_credentials_key.trim().is_empty(),
     );
 
-    // Derive the credential cipher + read DeepSeek config once at startup so the
-    // per-request hot path doesn't re-run the KDF or hit the environment.
+    // Derive the credential cipher once at startup so the per-request hot path
+    // doesn't re-run the KDF.
     let runtime_cipher = routes::runtime::derive_runtime_cipher(&cli.runtime_credentials_key);
-    let deepseek_api_key = std::env::var("DEEPSEEK_API_KEY").unwrap_or_default();
-    let deepseek_base_url = std::env::var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| "https://api.deepseek.com".to_string())
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
 
     let setup_caches = said_control_plane::new_setup_caches();
 
@@ -170,20 +156,10 @@ async fn main() {
         diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
         runtime_credentials_key: cli.runtime_credentials_key,
         runtime_cipher,
-        deepseek_api_key,
-        deepseek_base_url,
         platform_admin_org_slug: cli.platform_admin_org_slug,
         tenant_cache: setup_caches.tenant_cache,
-        runtime_memory_cache: setup_caches.runtime_memory_cache,
-        profile_cache: setup_caches.profile_cache,
-        app_bucket_cache: setup_caches.app_bucket_cache,
-        bucket_profile_cache: setup_caches.bucket_profile_cache,
-        prompt_profile_context_cache: setup_caches.prompt_profile_context_cache,
         runtime_credential_cache: setup_caches.runtime_credential_cache,
     };
-
-    // Per-user batched profiling + KB worker (deepseek-v4-flash, one run per ~10 dictations).
-    said_control_plane::profile::updater::batch_run::start_batch_worker(state.clone());
 
     let app = build_router(state);
 

@@ -355,47 +355,6 @@ pub fn load_correction_examples(
     rows
 }
 
-/// Select few-shot examples most similar to the current transcript.
-/// Uses simple word overlap as the similarity metric — fast and effective
-/// for our use case (research shows TF-IDF selection improves F1 by 7%).
-pub fn select_fewshot_examples(
-    pool: &DbPool,
-    user_id: &str,
-    current_transcript: &str,
-    max_examples: usize,
-) -> Vec<(String, String)> {
-    let candidates = load_correction_examples(pool, user_id, 50);
-    if candidates.is_empty() {
-        return vec![];
-    }
-
-    let current_words: std::collections::HashSet<String> = current_transcript
-        .split_whitespace()
-        .map(|w| w.to_ascii_lowercase())
-        .collect();
-
-    let mut scored: Vec<(f64, &(String, String))> = candidates
-        .iter()
-        .map(|pair| {
-            let raw_words: std::collections::HashSet<String> = pair
-                .0
-                .split_whitespace()
-                .map(|w| w.to_ascii_lowercase())
-                .collect();
-            let overlap = current_words.intersection(&raw_words).count() as f64;
-            let total = current_words.len().max(1) as f64;
-            (overlap / total, pair)
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored
-        .into_iter()
-        .take(max_examples)
-        .map(|(_, pair)| pair.clone())
-        .collect()
-}
-
 pub fn apply_edit_feedback(pool: &DbPool, recording_id: &str, user_kept: &str) -> Option<()> {
     let conn = pool.get().ok()?;
     conn.execute(

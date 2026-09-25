@@ -102,93 +102,94 @@
     --topbar-height:        48px;
   }
 
-  /* ── LIGHT — "Warm Paper": warm off-white floor, layered surfaces,
-        deeper indigo-periwinkle accent, shadow-driven depth. Cool accent on
-        warm paper is the contrast that reads crafted (Linear / Things), not
-        clinical. Same token keys as dark — only values change. ─────────── */
+  /* ── LIGHT — EMIAC: white cards on a cool grey sheet, ink text, one brand
+        blue. Mirrors the company site (sites/emiac/site.css): --brand #005cb1,
+        --ink #111, --sheet #f4f5f6, --line #e4e6e9, --wash #eaf2fd. Greys do
+        the work; blue is kept for the primary action, focus and the one thing
+        on screen that is "yours". Same token keys as dark — only values change. */
   [data-theme="light"] {
-    --background:           38 32% 95.5%;      /* warm paper floor */
-    --foreground:           230 20% 15%;       /* warm near-black ink */
-    --card:                 42 46% 99.2%;      /* clean warm-white card */
-    --card-foreground:      230 20% 15%;
-    --popover:              42 46% 99.2%;
-    --popover-foreground:   230 20% 15%;
+    --background:           210 11% 96%;       /* sheet #f4f5f6 — window floor */
+    --foreground:           0 0% 7%;           /* ink #111 */
+    --card:                 0 0% 100%;
+    --card-foreground:      0 0% 7%;
+    --popover:              0 0% 100%;
+    --popover-foreground:   0 0% 7%;
 
-    --primary:              232 74% 59%;       /* deeper indigo — pops on paper, AA on white */
+    --primary:              209 100% 35%;      /* brand #005cb1 — 6.4:1 on white */
     --primary-foreground:   0 0% 100%;
 
-    --accent-violet:        232 74% 59%;
-    --accent-violet-soft:   232 74% 59% / 0.12;
+    --accent-violet:        209 100% 35%;
+    --accent-violet-soft:   209 100% 35% / 0.10;
 
-    --secondary:            38 22% 90%;
-    --secondary-foreground: 230 16% 22%;
-    --muted:                38 22% 90%;
-    --muted-foreground:     232 12% 42%;
+    --secondary:            216 15% 94%;       /* sheet-2 #eceef1 */
+    --secondary-foreground: 214 8% 18%;        /* ink-2 #2a2d31 */
+    --muted:                210 11% 96%;
+    --muted-foreground:     216 4% 44%;        /* muted #6b6f75 — 5.1:1 on white */
 
-    --accent:               232 74% 59%;
+    --accent:               209 100% 35%;
     --accent-foreground:    0 0% 100%;
 
-    --destructive:          356 72% 50%;
+    --destructive:          356 72% 48%;
     --destructive-foreground: 0 0% 100%;
 
-    --border:               36 20% 84%;
-    --input:                42 40% 98%;
-    --ring:                 232 74% 59%;
+    --border:               216 11% 90%;       /* line #e4e6e9 */
+    --input:                0 0% 100%;
+    --ring:                 209 100% 35%;
 
     --recording:            356 72% 50%;
 
-    /* ── Surface hierarchy — widened ladder so rail / mat / card are each
-          legibly distinct (the old 90→94→98 collapse is gone). ────────── */
-    --surface-1:            36 26% 92%;         /* sidebar / rail — deeper than the mat */
-    --surface-2:            40 30% 94.5%;       /* page mat / gutter */
-    --surface-3:            42 46% 99.2%;       /* cards / content panels */
-    --surface-4:            36 22% 88%;         /* chips / icon backplates */
-    --surface-hover:        38 26% 91.5%;
+    /* Surface ladder: sheet (rail, floor) → white (content) → sheet-2 (chips). */
+    --surface-1:            210 11% 96%;        /* sidebar / rail */
+    --surface-2:            210 11% 96%;        /* page floor / gutter */
+    --surface-3:            0 0% 100%;          /* cards / content panels */
+    --surface-4:            216 15% 94%;        /* chips / icon backplates */
+    --surface-hover:        216 15% 94%;
 
-    /* Nearly opaque — stops macOS vibrancy dark bleed ("dhabbaa" stains) */
-    --glass-bg:             40 30% 94% / 0.98;
-    --glass-bg-strong:      42 46% 99% / 0.98;
-    --glass-stroke:         36 24% 78% / 0.55;
-    --glass-stroke-strong:  36 22% 70% / 0.6;
-    --glass-highlight:      40 60% 100% / 0.7;
+    --glass-bg:             0 0% 100% / 0.98;
+    --glass-bg-strong:      0 0% 100% / 0.99;
+    --glass-stroke:         216 11% 90% / 1;
+    --glass-stroke-strong:  216 10% 84% / 1;
+    --glass-highlight:      0 0% 100% / 0.8;
 
-    /* Selected pill / primary CTA = the accent — NOT a black pill. */
-    --pill-active-bg:       232 74% 59%;
+    /* Selected pill = ink, like the site's black "Contact sales" — keeps the
+       blue budget for actions. */
+    --pill-active-bg:       0 0% 7%;
     --pill-active-fg:       0 0% 100%;
 
-    /* Chip colors — bolder tints so they actually register on paper */
-    --chip-mint-bg:         232 74% 59% / 0.14;
-    --chip-mint-fg:         232 60% 44%;
-    --chip-violet-bg:       232 74% 59% / 0.14;
-    --chip-violet-fg:       232 60% 44%;
-    --chip-cyan-bg:         232 74% 59% / 0.14;
-    --chip-cyan-fg:         232 60% 44%;
-    --chip-blue-bg:         232 74% 59% / 0.14;
-    --chip-blue-fg:         232 60% 44%;
-    --chip-amber-bg:        32 92% 52% / 0.18;
-    --chip-amber-fg:        26 84% 34%;
-    --chip-red-bg:          356 72% 50% / 0.14;
+    /* Chips: one blue family (wash bg, deep-brand text) plus status hues. */
+    --chip-mint-bg:         214 87% 95%;
+    --chip-mint-fg:         209 100% 29%;
+    --chip-violet-bg:       214 87% 95%;
+    --chip-violet-fg:       209 100% 29%;
+    --chip-cyan-bg:         214 87% 95%;
+    --chip-cyan-fg:         209 100% 29%;
+    --chip-blue-bg:         214 87% 95%;
+    --chip-blue-fg:         209 100% 29%;
+    --chip-amber-bg:        38 92% 50% / 0.14;
+    --chip-amber-fg:        28 80% 32%;
+    --chip-red-bg:          356 72% 48% / 0.09;
     --chip-red-fg:          356 66% 40%;
-    --chip-lime-bg:         150 60% 42% / 0.16;
-    --chip-lime-fg:         150 60% 28%;
+    --chip-lime-bg:         152 55% 40% / 0.12;
+    --chip-lime-fg:         152 60% 26%;
 
-    --heat-0:               36 22% 89%;
+    --heat-0:               216 15% 94%;
 
-    /* Shadows — layered, cool-tinted so warm cards visibly float. */
+    /* Shadows — neutral and low. Hairlines carry the edges; shadow only lifts. */
     --shadow-tile:
-      0 1px 0 hsl(40 60% 100% / 0.7) inset,
-      0 1px 2px hsl(232 24% 40% / 0.05),
-      0 4px 12px hsl(232 24% 40% / 0.05);
+      0 1px 2px hsl(216 20% 10% / 0.04),
+      0 4px 14px hsl(216 20% 10% / 0.035);
     --shadow-glass:
-      0 1px 0 hsl(40 60% 100% / 0.7) inset,
-      0 0 0 1px hsl(36 20% 74% / 0.5),
-      0 8px 24px hsl(232 24% 40% / 0.08);
+      0 0 0 1px hsl(216 11% 90%),
+      0 8px 24px hsl(216 20% 10% / 0.06);
     --shadow-pop:
-      0 30px 70px hsl(232 30% 35% / 0.20);
+      0 24px 64px hsl(216 30% 12% / 0.16),
+      0 2px 6px hsl(216 30% 12% / 0.06);
 
+    /* The site's hero light: brand blue from the top, a trace of lavender and
+       peach. Kept faint; it sets temperature, not decoration. */
     --mesh-bg:
-      radial-gradient(60% 50% at 10% 0%,  hsl(232 74% 59% / 0.03) 0%, transparent 55%),
-      radial-gradient(50% 50% at 100% 100%, hsl(24 82% 60% / 0.03) 0%, transparent 60%);
+      radial-gradient(55% 45% at 50% -8%, hsl(212 72% 56% / 0.07) 0%, transparent 70%),
+      radial-gradient(40% 40% at 100% 100%, hsl(24 90% 75% / 0.05) 0%, transparent 70%);
   }
 
   * {
@@ -219,7 +220,7 @@
     --body-overlay: hsl(240 8% 2.5% / 1);
   }
   [data-theme="light"] {
-    --body-overlay: hsl(38 32% 95.5% / 0.99);
+    --body-overlay: hsl(210 11% 96% / 0.99);
   }
 
   body {
@@ -310,20 +311,19 @@
 
   /* Light mode — warm layered shadows so surfaces lift off the paper. */
   [data-theme="light"] .glass {
-    backdrop-filter: blur(12px) saturate(120%);
-    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     box-shadow:
       inset 0 0 0 1px hsl(var(--glass-stroke)),
-      inset 0 1px 0 hsl(40 60% 100% / 0.6),
-      0 2px 8px hsl(232 24% 40% / 0.07);
+      0 2px 8px hsl(216 20% 10% / 0.05);
   }
   [data-theme="light"] .glass-strong {
-    backdrop-filter: blur(12px) saturate(120%);
-    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     box-shadow:
-      inset 0 0 0 1px hsl(var(--glass-stroke-strong)),
-      inset 0 1px 0 hsl(40 60% 100% / 0.7),
-      0 6px 20px hsl(232 24% 40% / 0.09);
+      inset 0 0 0 1px hsl(var(--glass-stroke)),
+      0 12px 32px hsl(216 30% 12% / 0.10),
+      0 2px 6px hsl(216 30% 12% / 0.05);
   }
 
   /* ── Tile (card surface) — solid panel with subtle inner highlight ── */
@@ -341,9 +341,8 @@
   }
   [data-theme="light"] .tile-glass {
     box-shadow:
-      inset 0 1px 0 hsl(40 60% 100% / 0.7),
-      0 1px 2px hsl(232 24% 40% / 0.05),
-      0 4px 14px hsl(232 24% 40% / 0.06);
+      inset 0 0 0 1px hsl(var(--border)),
+      0 1px 2px hsl(216 20% 10% / 0.03);
   }
   /* Panel — Sentinel-style: white card with subtle 1px border + soft shadow */
   .panel {
@@ -356,10 +355,7 @@
   /* Light mode — hairline border + soft warm lift so panels float. */
   [data-theme="light"] .panel {
     border: 1px solid hsl(var(--border));
-    box-shadow:
-      inset 0 1px 0 hsl(40 60% 100% / 0.6),
-      0 1px 2px hsl(232 24% 40% / 0.05),
-      0 6px 18px hsl(232 24% 40% / 0.06);
+    box-shadow: 0 1px 2px hsl(216 20% 10% / 0.03);
   }
   /* Main content mat (App.tsx) — elevated surface behind routed views */
   .content-mat {
@@ -370,15 +366,14 @@
     box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.055);
   }
   [data-theme="light"] .content-mat {
+    /* White sheet with the site's hero light falling from the top edge — the
+       one decorative gesture in light mode. */
     background:
-      linear-gradient(180deg, hsl(36 27% 92.4% / 0.98), hsl(40 29% 93.2% / 0.99)),
-      hsl(var(--surface-1));
-    border: 1px solid hsl(36 21% 81%);
-    /* Warm inner highlight only — outer drop is clipped by the app shell, and a
-       warm inset keeps the mat reading as lifted paper without a harsh edge. */
-    box-shadow:
-      inset 0 1px 0 hsl(40 52% 98% / 0.42),
-      inset 0 0 0 999px hsl(36 26% 91% / 0.04);
+      radial-gradient(70% 220px at 50% 0%, hsl(214 87% 95% / 0.9) 0%, hsl(214 87% 95% / 0) 100%),
+      radial-gradient(30% 160px at 88% 0%, hsl(24 90% 88% / 0.35) 0%, transparent 100%),
+      hsl(0 0% 100%);
+    border: 1px solid hsl(var(--border));
+    box-shadow: 0 1px 2px hsl(216 20% 10% / 0.03);
   }
 
   /* Settings modal — portaled to body so shadow isn't clipped by app shell */
@@ -397,10 +392,9 @@
     border: 1px solid hsl(var(--glass-stroke));
   }
   [data-theme="light"] .settings-modal-dialog {
+    background: hsl(var(--surface-3));
     border: 1px solid hsl(var(--border));
-    box-shadow:
-      0 1px 0 hsl(40 60% 100% / 0.7) inset,
-      0 30px 70px hsl(232 30% 35% / 0.20);
+    box-shadow: var(--shadow-pop);
   }
   /* Dark mode override — drop the visible border, restore inset highlight */
   :root:not([data-theme="light"]) .panel,
@@ -464,12 +458,15 @@
     box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke));
   }
   [data-theme="light"] .nav-item:hover {
-    background: hsl(220 16% 50% / 0.06);
+    background: hsl(216 15% 91%);
     color: hsl(var(--foreground));
   }
   [data-theme="light"] .nav-item.active {
-    background: hsl(220 16% 50% / 0.08);
-    box-shadow: inset 0 0 0 1px hsl(220 14% 70% / 0.14);
+    background: hsl(0 0% 100%);
+    color: hsl(var(--foreground));
+    box-shadow:
+      inset 0 0 0 1px hsl(var(--border)),
+      0 1px 2px hsl(216 20% 10% / 0.05);
   }
   .nav-item.disabled {
     @apply opacity-30 cursor-not-allowed pointer-events-none;
@@ -522,19 +519,23 @@
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.22),
-      0 1px 2px hsl(232 40% 30% / 0.18),
-      0 4px 12px hsl(232 40% 30% / 0.16);
+      inset 0 1px 0 hsl(0 0% 100% / 0.14),
+      0 1px 2px hsl(209 100% 20% / 0.18);
   }
   [data-theme="light"] .btn-primary:hover {
-    background: hsl(232 74% 55%);
+    background: hsl(209 100% 29%);
     box-shadow:
-      inset 0 1px 0 hsl(0 0% 100% / 0.26),
-      0 2px 6px hsl(232 40% 30% / 0.22),
-      0 6px 16px hsl(232 40% 30% / 0.20);
+      inset 0 1px 0 hsl(0 0% 100% / 0.14),
+      0 2px 8px hsl(209 100% 20% / 0.22);
+  }
+  [data-theme="light"] .btn-primary:disabled {
+    background: hsl(var(--surface-4));
+    color: hsl(var(--muted-foreground));
+    box-shadow: none;
+    cursor: not-allowed;
   }
   [data-theme="light"] .btn-ghost:hover {
-    background: hsl(36 24% 50% / 0.06);
+    background: hsl(216 15% 94%);
     box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
   }
 
@@ -604,12 +605,12 @@
     background: hsl(105 75% 68% / 0.25);
     box-shadow: inset 0 0 0 1.5px hsl(var(--primary));
   }
-  /* Light mode — lighter & friendlier mint ramp */
-  [data-theme="light"] .heat-0 { background: hsl(220 12% 84%); }
-  [data-theme="light"] .heat-1 { background: hsl(160 55% 82%); }
-  [data-theme="light"] .heat-2 { background: hsl(150 60% 68%); }
-  [data-theme="light"] .heat-3 { background: hsl(140 65% 52%); }
-  [data-theme="light"] .heat-4 { background: hsl(135 65% 42%); }
+  /* Light mode — the brand-blue ramp, wash to deep brand */
+  [data-theme="light"] .heat-0 { background: hsl(216 15% 93%); }
+  [data-theme="light"] .heat-1 { background: hsl(214 80% 88%); }
+  [data-theme="light"] .heat-2 { background: hsl(213 74% 74%); }
+  [data-theme="light"] .heat-3 { background: hsl(212 72% 56%); }
+  [data-theme="light"] .heat-4 { background: hsl(209 100% 35%); }
 
   /* ── Activity heatmap (TimelineCard) — responsive cells + hover tooltip ── */
   .heat-cell {
@@ -644,11 +645,12 @@
   }
   [data-theme="light"] .input {
     background: hsl(var(--input));
-    border-color: hsl(var(--border));
+    border-color: hsl(var(--glass-stroke-strong));
   }
   [data-theme="light"] .input:focus {
-    background: hsl(var(--surface-3));
-    border-color: hsl(var(--primary) / 0.45);
+    background: hsl(0 0% 100%);
+    border-color: hsl(var(--primary) / 0.6);
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.12);
   }
 
   .btn-accent {
@@ -832,13 +834,11 @@
   .mig-bar > div { height: 100%; border-radius: 999px; background: hsl(var(--primary)); transition: width 0.2s ease; }
   .mig-actions { display: flex; flex-direction: column; gap: 8px; }
   .mig-actions .btn-primary { min-height: 42px; border-radius: 10px; }
-  [data-theme="light"] .mig-overlay { background: hsl(232 18% 18% / 0.26); }
+  [data-theme="light"] .mig-overlay { background: hsl(216 30% 12% / 0.22); }
   [data-theme="light"] .mig-card {
-    background: linear-gradient(180deg, hsl(40 35% 97%), hsl(38 27% 94%));
-    border-color: hsl(36 18% 79%);
-    box-shadow:
-      inset 0 1px 0 hsl(40 70% 100% / 0.75),
-      0 28px 75px hsl(232 22% 18% / 0.24);
+    background: hsl(0 0% 100%);
+    border-color: hsl(var(--border));
+    box-shadow: var(--shadow-pop);
   }
   @keyframes migCardIn {
     from { opacity: 0; transform: translateY(7px) scale(0.99); }
@@ -858,7 +858,7 @@
     -webkit-backdrop-filter: blur(9px) saturate(72%);
     animation: fadeIn 0.18s ease-out;
   }
-  [data-theme="light"] .meeting-modal-overlay { background: hsl(232 18% 18% / 0.26); }
+  [data-theme="light"] .meeting-modal-overlay { background: hsl(216 30% 12% / 0.22); }
   .meeting-modal-card {
     display: flex;
     flex-direction: column;
@@ -874,11 +874,9 @@
     animation: migCardIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   [data-theme="light"] .meeting-modal-card {
-    background: hsl(40 33% 96%);
-    border-color: hsl(36 18% 79%);
-    box-shadow:
-      inset 0 1px 0 hsl(40 70% 100% / 0.75),
-      0 32px 80px hsl(232 22% 18% / 0.24);
+    background: hsl(0 0% 100%);
+    border-color: hsl(var(--border));
+    box-shadow: var(--shadow-pop);
   }
   .meeting-modal-close {
     position: absolute;
@@ -1125,6 +1123,70 @@
     font-weight: 500;
   }
 
+  /* ── Onboarding — LIGHT. The split was drawn dark-only (hard-coded near-black
+        panels), which left light mode with a grey veil and unreadable text.
+        Light gets the EMIAC hero instead: a white brand half lit by blue from
+        above with lavender and peach at the sides, concentric rings around the
+        waveform, and a plain white form. ─────────────────────────────────── */
+  [data-theme="light"] .onb-brand {
+    background:
+      radial-gradient(46% 34% at 50% 36%, hsl(214 80% 62% / 0.34) 0%, transparent 100%),
+      radial-gradient(42% 40% at 12% 40%, hsl(232 92% 86% / 0.55) 0%, transparent 100%),
+      radial-gradient(38% 34% at 90% 48%, hsl(20 72% 84% / 0.55) 0%, transparent 100%),
+      linear-gradient(180deg, hsl(214 70% 96%) 0%, hsl(0 0% 100%) 78%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-right: 1px solid hsl(var(--border));
+  }
+  [data-theme="light"] .onb-brand::before {
+    background: repeating-radial-gradient(circle at 50% 40%, transparent 0 63px, hsl(214 40% 45% / 0.07) 64px 65px);
+    -webkit-mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 62%);
+            mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 62%);
+  }
+  [data-theme="light"] .onb-brand::after { opacity: 0; }
+  [data-theme="light"] .onb-brand-lockup { color: hsl(var(--foreground)); }
+  [data-theme="light"] .onb-brand-lockup .mk {
+    color: hsl(var(--primary));
+    background: hsl(0 0% 100%);
+    box-shadow: inset 0 0 0 1px hsl(var(--border)), 0 1px 2px hsl(216 20% 10% / 0.06);
+  }
+  [data-theme="light"] .onb-wave-halo { background: radial-gradient(circle, hsl(0 0% 100% / 0.55) 0%, transparent 62%); }
+  [data-theme="light"] .onb-wave { filter: drop-shadow(0 8px 24px hsl(209 100% 35% / 0.18)); }
+  [data-theme="light"] .onb-wave-bar { background: linear-gradient(to top, hsl(209 100% 35% / 0.55) 0%, hsl(209 100% 35%) 100%); }
+  [data-theme="light"] .onb-brand-headline { color: hsl(var(--foreground)); }
+  [data-theme="light"] .onb-brand-foot { border-top-color: hsl(var(--border)); }
+  [data-theme="light"] .onb-brand-kicker { color: hsl(var(--primary)); }
+  [data-theme="light"] .onb-brand-kicker::before { background: hsl(var(--primary)); box-shadow: none; }
+  [data-theme="light"] .onb-brand-quote { color: hsl(var(--muted-foreground)); }
+
+  [data-theme="light"] .onb-form {
+    background: hsl(0 0% 100%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  [data-theme="light"] .onb-stepnav-clickable:hover { background: hsl(var(--surface-4)); }
+  [data-theme="light"] .onb-stepnav-done { color: hsl(152 60% 30%); }
+  [data-theme="light"] .onb-row { background: hsl(0 0% 100%); box-shadow: inset 0 0 0 1px hsl(var(--border)); }
+  [data-theme="light"] .onb-row.selectable:hover { background: hsl(210 11% 97%); }
+  [data-theme="light"] .onb-row.selected {
+    background: hsl(214 87% 97%);
+    box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.45);
+  }
+  [data-theme="light"] .onb-row .ico-wrap { background: hsl(var(--surface-2)); box-shadow: inset 0 0 0 1px hsl(var(--border)); }
+  [data-theme="light"] .key-glyph {
+    background: hsl(0 0% 100%);
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong)), 0 1px 0 hsl(216 10% 84%);
+  }
+  [data-theme="light"] .onb-try-field { background: hsl(var(--surface-2)); box-shadow: inset 0 0 0 1px hsl(var(--border)); }
+  [data-theme="light"] .onb-try-field:focus { background: hsl(0 0% 100%); box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.6), 0 0 0 3px hsl(var(--primary) / 0.12); }
+  [data-theme="light"] .onb-try-chip { color: hsl(var(--chip-lime-fg)); background: hsl(var(--chip-lime-bg)); box-shadow: none; }
+  [data-theme="light"] .onb-try-kbd { background: hsl(var(--surface-4)); box-shadow: inset 0 0 0 1px hsl(var(--border)); }
+  [data-theme="light"] .onb-try-warn { color: hsl(var(--chip-amber-fg)); }
+  [data-theme="light"] .onb-reclaim { background: hsl(var(--surface-2)); box-shadow: inset 0 0 0 1px hsl(var(--border)); }
+  [data-theme="light"] .onb-reclaim-done { color: hsl(var(--chip-lime-fg)); background: hsl(var(--chip-lime-bg)); box-shadow: none; }
+  [data-theme="light"] .onb-error-card { background: hsl(0 0% 100%); box-shadow: inset 0 0 0 1px hsl(var(--border)), var(--shadow-pop); }
+  [data-theme="light"] .mig-ready { color: hsl(var(--chip-lime-fg)); }
+
   /* Cursor-style soft accent pill (active/now-pill) */
   .accent-pill {
     @apply inline-flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em]
@@ -1210,6 +1272,44 @@
     color: hsl(var(--foreground));
     box-shadow: inset 0 0 0 1px hsl(var(--border));
   }
+
+  [data-theme="light"] .seg { background: hsl(var(--surface-2)); }
+  [data-theme="light"] .seg > button[aria-selected="true"],
+  [data-theme="light"] .seg > button[data-active="true"] {
+    background: hsl(0 0% 100%);
+    box-shadow: 0 0 0 1px hsl(var(--border)), 0 1px 2px hsl(216 20% 10% / 0.06);
+  }
+
+  /* ── Text field with a leading icon (search, quick add) ─────────────── */
+  .field {
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    border-radius: 10px;
+    background: hsl(var(--input));
+    box-shadow: inset 0 0 0 1px hsl(var(--glass-stroke-strong));
+    transition: box-shadow 0.15s ease;
+  }
+  .field:focus-within {
+    box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.6), 0 0 0 3px hsl(var(--primary) / 0.12);
+  }
+  .field input { flex: 1; min-width: 0; background: transparent; outline: none; color: hsl(var(--foreground)); }
+  .field input::placeholder { color: hsl(var(--muted-foreground) / 0.8); }
+
+  /* ── Vocabulary — one hairline panel, divided rows, a column header:
+        the site's table rhythm instead of a stack of cards. ─────────────── */
+  .vocab-list {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .vocab-list-head {
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--surface-2) / 0.6);
+  }
+  .vocab-row { transition: background-color 0.12s ease; }
+  .vocab-row + .vocab-row { border-top: 1px solid hsl(var(--border)); }
+  .vocab-row:hover { background: hsl(var(--foreground) / 0.025); }
+  .vocab-row[data-flash] { background: hsl(var(--primary) / 0.08); }
 
   /* ── Live token blinking caret ──────────────────────────────────── */
   .caret-blink {

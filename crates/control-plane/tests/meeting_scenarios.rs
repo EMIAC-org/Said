@@ -55,15 +55,8 @@ impl TestServer {
             diagnostics_rate_limit: routes::diagnostics::DiagnosticsRateLimiter::default(),
             runtime_credentials_key: "test-runtime-credentials-key".into(),
             runtime_cipher: None,
-            deepseek_api_key: String::new(),
-            deepseek_base_url: String::new(),
             platform_admin_org_slug: "scenario".into(),
             tenant_cache: setup_caches.tenant_cache,
-            runtime_memory_cache: setup_caches.runtime_memory_cache,
-            profile_cache: setup_caches.profile_cache,
-            app_bucket_cache: setup_caches.app_bucket_cache,
-            bucket_profile_cache: setup_caches.bucket_profile_cache,
-            prompt_profile_context_cache: setup_caches.prompt_profile_context_cache,
             runtime_credential_cache: setup_caches.runtime_credential_cache,
         };
 

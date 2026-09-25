@@ -6,7 +6,7 @@
 //! prefs/lexicon cache pattern (short TTL + invalidate-on-write).
 //!
 //! Used to collapse the per-dictation setup round-trips (tenant resolution,
-//! runtime learning memory) that otherwise cost one DB round-trip each. Over a
+//! provider credentials) that otherwise cost one DB round-trip each. Over a
 //! tunnelled dev DB that is ~400ms/query; in production (co-located DB) it still
 //! removes redundant queries and DB load.
 

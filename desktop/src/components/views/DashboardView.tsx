@@ -1,4 +1,4 @@
-import type { AppSnapshot, PendingEdit } from "@/types";
+import type { AppSnapshot } from "@/types";
 import { EditorialDashboard } from "@/components/views/dashboards/EditorialDashboard";
 import { SplitDashboard } from "@/components/views/dashboards/SplitDashboard";
 import { useDashboardLayout } from "@/lib/useDashboardLayout";
@@ -12,8 +12,6 @@ interface DashboardViewProps {
   onToggle:        () => void;
   onAccessibility: () => void;
   onNavigate?:     (view: string) => void;
-  pendingEdits?:   PendingEdit[];
-  onResolvePending?: (id: string, action: "approve" | "skip") => void;
   onDownloadSuccess?: (path: string) => void;
   refreshKey?:     number;
 }

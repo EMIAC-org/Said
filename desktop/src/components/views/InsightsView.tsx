@@ -1,11 +1,7 @@
 import { startTransition, useEffect, useState } from "react";
 import {
-  ArrowUpRight,
-  BookOpen,
-  Check,
   Clock3,
   Gauge,
-  Languages,
   Monitor,
   Sparkles,
   Target,
@@ -15,19 +11,10 @@ import { AppIcon, appDisplayName, useAppIdentity } from "@/components/AppIcon";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  type VocabAlias,
-  type VocabRow,
-} from "@/lib/invoke";
-import {
   getHistoryCacheSnapshot,
   refreshHistoryCache,
   subscribeHistoryCache,
 } from "@/lib/historyUiCache";
-import {
-  getVocabularyCacheSnapshot,
-  refreshVocabularyCache,
-  subscribeVocabularyCache,
-} from "@/lib/vocabularyUiCache";
 import {
   currentInsightStreak,
   buildHeatmapDays,
@@ -35,7 +22,6 @@ import {
 } from "@/lib/insights";
 import type { Recording } from "@/types";
 
-type InsightTab = "activity" | "learning";
 type ActivityRange = "30d" | "90d" | "all";
 
 const DAY_MS = 86_400_000;
@@ -59,35 +45,25 @@ function formatCount(value: number): string {
 }
 
 export function InsightsView() {
-  const [tab, setTab] = useState<InsightTab>("activity");
   const [range, setRange] = useState<ActivityRange>("30d");
   const [historySnapshot, setHistorySnapshot] = useState(() => getHistoryCacheSnapshot());
-  const [vocabularySnapshot, setVocabularySnapshot] = useState(() => getVocabularyCacheSnapshot());
 
   useEffect(() => {
     const sync = () => {
       startTransition(() => {
         setHistorySnapshot(getHistoryCacheSnapshot());
-        setVocabularySnapshot(getVocabularyCacheSnapshot());
       });
     };
     sync();
     const unsubscribeHistory = subscribeHistoryCache(sync);
-    const unsubscribeVocabulary = subscribeVocabularyCache(sync);
     void refreshHistoryCache({ limit: 2_000 });
-    void refreshVocabularyCache();
     return () => {
       unsubscribeHistory();
-      unsubscribeVocabulary();
     };
   }, []);
 
   const recordings = historySnapshot.recordings ?? [];
-  const vocabulary = vocabularySnapshot.terms ?? [];
-  const aliases = vocabularySnapshot.aliases ?? [];
-  const loading = historySnapshot.recordings === undefined
-    || vocabularySnapshot.terms === undefined
-    || vocabularySnapshot.aliases === undefined;
+  const loading = historySnapshot.recordings === undefined;
 
   const visible = recordings.filter((recording) => recording.timestamp_ms >= rangeCutoff(range));
   const words = visible.reduce((sum, recording) => sum + recording.word_count, 0);
@@ -114,12 +90,6 @@ export function InsightsView() {
     .sort((a, b) => b.words - a.words)
     .slice(0, 5);
 
-  const activeAliases = aliases.filter((alias) => alias.active);
-  const appliedFixes = activeAliases.reduce((sum, alias) => sum + alias.use_count, 0);
-  const manualTerms = vocabulary.filter((term) => term.source === "manual").length;
-  const recentTerms = [...vocabulary].sort((a, b) => b.last_used - a.last_used).slice(0, 6);
-  const topAliases = [...activeAliases].sort((a, b) => b.use_count - a.use_count).slice(0, 6);
-
   return (
     <ScrollArea className="h-full">
       <div className="insights-page">
@@ -128,13 +98,9 @@ export function InsightsView() {
             <h1>Insights</h1>
             <p className="insights-subtitle">Your momentum, on this Mac</p>
           </div>
-          <div className="insights-tabs" role="tablist" aria-label="Insights sections">
-            <button type="button" role="tab" aria-selected={tab === "activity"} onClick={() => setTab("activity")}>Activity</button>
-            <button type="button" role="tab" aria-selected={tab === "learning"} onClick={() => setTab("learning")}>Learning</button>
-          </div>
         </header>
 
-        {loading ? <InsightsSkeleton /> : tab === "activity" ? (
+        {loading ? <InsightsSkeleton /> : (
           <ActivityTab
             range={range}
             setRange={setRange}
@@ -147,15 +113,6 @@ export function InsightsView() {
             longestStreak={longestStreak}
             topApps={topApps}
             appWords={appWords}
-          />
-        ) : (
-          <LearningTab
-            vocabulary={vocabulary}
-            activeAliases={activeAliases}
-            appliedFixes={appliedFixes}
-            manualTerms={manualTerms}
-            recentTerms={recentTerms}
-            topAliases={topAliases}
           />
         )}
       </div>
@@ -258,29 +215,6 @@ function AppUsageRow({ app, total }: { app: { key: string; words: number; sessio
       <AppIcon appKey={app.key} size={34} radius={9} />
       <div className="insights-app-main"><div><strong>{appDisplayName(app.key, identity)}</strong><span>{identity?.category || `${app.sessions} dictations`}</span></div><div className="insights-app-track"><span style={{ width: `${percentage}%` }} /></div></div>
       <div className="insights-app-value"><strong>{percentage}%</strong><span>{app.words.toLocaleString()} words</span></div>
-    </div>
-  );
-}
-
-function LearningTab({ vocabulary, activeAliases, appliedFixes, manualTerms, recentTerms, topAliases }: { vocabulary: VocabRow[]; activeAliases: VocabAlias[]; appliedFixes: number; manualTerms: number; recentTerms: VocabRow[]; topAliases: VocabAlias[] }) {
-  const autoTerms = vocabulary.filter((term) => term.source === "auto").length;
-  return (
-    <div className="insights-reveal" role="tabpanel">
-      <section className="insights-metric-grid">
-        <MetricCard icon={<BookOpen size={15} />} label="Vocabulary" value={vocabulary.length.toLocaleString()} detail={`${manualTerms} added by you · ${autoTerms} learned`} />
-        <MetricCard icon={<Languages size={15} />} label="Active corrections" value={activeAliases.length.toLocaleString()} detail="Approved mishearing fixes" />
-        <MetricCard icon={<Check size={15} />} label="Fixes applied" value={appliedFixes.toLocaleString()} detail="Times active rules were used" />
-      </section>
-      <section className="insights-two-column">
-        <div className="insights-card">
-          <div className="insights-card-heading"><div><p className="insights-kicker">Recently used</p><h2>Your vocabulary</h2></div><BookOpen size={17} /></div>
-          {recentTerms.length ? <div className="insights-term-list">{recentTerms.map((term) => <div key={term.term} className="insights-term-row"><span>{term.term.slice(0, 1).toUpperCase()}</span><div><strong>{term.term}</strong><small>{term.meaning || (term.source === "manual" ? "Added by you" : "Learned from corrections")}</small></div><em>{term.use_count} uses</em></div>)}</div> : <EmptyInsight text="Your vocabulary grows when you add a term or approve a correction." />}
-        </div>
-        <div className="insights-card">
-          <div className="insights-card-heading"><div><p className="insights-kicker">Working for you</p><h2>Top correction rules</h2></div><ArrowUpRight size={17} /></div>
-          {topAliases.length ? <div className="insights-alias-list">{topAliases.map((alias) => <div key={`${alias.transcript_form}-${alias.correct_form}`} className="insights-alias-row"><span>{alias.transcript_form}</span><ArrowUpRight size={13} /><strong>{alias.correct_form}</strong><em>{alias.use_count}×</em></div>)}</div> : <EmptyInsight text="Approved pronunciation fixes will appear here after AirNote learns one." />}
-        </div>
-      </section>
     </div>
   );
 }

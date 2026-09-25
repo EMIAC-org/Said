@@ -1074,6 +1074,38 @@ pub async fn mark_voice_run_paste(
     }
 }
 
+/// Record in History what the user kept of a dictation after editing it.
+/// Record what the user kept of a dictation; returns the words the backend
+/// learned from the edit.
+pub async fn record_kept_text(
+    ep: &BackendEndpoint,
+    recording_id: &str,
+    text: &str,
+) -> Result<Vec<DictionaryWord>, String> {
+    let url = format!("{}/v1/recordings/{recording_id}/kept", ep.url);
+    let resp = Client::new()
+        .put(&url)
+        .header("Authorization", ep.bearer())
+        .json(&serde_json::json!({ "text": text }))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("record kept text request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("record kept text failed: {}", resp.status()));
+    }
+    #[derive(Deserialize)]
+    struct Kept {
+        #[serde(default)]
+        learned: Vec<DictionaryWord>,
+    }
+    Ok(resp
+        .json::<Kept>()
+        .await
+        .map(|k| k.learned)
+        .unwrap_or_default())
+}
+
 // ── Cloud auth (calls the cloud control plane directly) ───────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1350,122 +1382,6 @@ pub async fn list_workspaces(
         .map_err(|e| format!("parse org list: {e}"))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProfileRunStats {
-    pub run_count: i64,
-    pub skipped_count: i64,
-    pub last_run_at: Option<String>,
-    pub last_run_outcome: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct KnowledgeBase {
-    pub background: Option<String>,
-    #[serde(default)]
-    pub domains: Vec<String>,
-    #[serde(default)]
-    pub focus_areas: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BucketInsight {
-    pub bucket_key: String,
-    #[serde(default)]
-    pub style: Vec<String>,
-    #[serde(default)]
-    pub speech_patterns: Vec<String>,
-    pub version: i64,
-    pub updated_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProfileInsights {
-    pub run_stats: ProfileRunStats,
-    pub knowledge: KnowledgeBase,
-    #[serde(default)]
-    pub buckets: Vec<BucketInsight>,
-}
-
-/// GET /v1/runtime/profile/insights — what the cloud profiling brain has learned.
-pub async fn get_profile_insights(
-    server_url: &str,
-    token: &str,
-    active_org_id: Option<&str>,
-) -> Result<ProfileInsights, String> {
-    let url = format!(
-        "{}/v1/runtime/profile/insights",
-        server_url.trim_end_matches('/')
-    );
-    let mut req = Client::new()
-        .get(&url)
-        .bearer_auth(token)
-        .timeout(std::time::Duration::from_secs(10));
-    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
-        req = req.header("x-airnote-org-id", org_id);
-    }
-    req.send()
-        .await
-        .map_err(|e| format!("profile insights failed: {e}"))?
-        .json::<ProfileInsights>()
-        .await
-        .map_err(|e| format!("parse profile insights: {e}"))
-}
-
-/// GET /v1/runtime/profile/buckets — apps the user dictates into, grouped by bucket.
-pub async fn get_app_buckets(
-    server_url: &str,
-    token: &str,
-    active_org_id: Option<&str>,
-) -> Result<serde_json::Value, String> {
-    let url = format!(
-        "{}/v1/runtime/profile/buckets",
-        server_url.trim_end_matches('/')
-    );
-    let mut req = Client::new()
-        .get(&url)
-        .bearer_auth(token)
-        .timeout(std::time::Duration::from_secs(10));
-    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
-        req = req.header("x-airnote-org-id", org_id);
-    }
-    req.send()
-        .await
-        .map_err(|e| format!("app buckets failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse app buckets: {e}"))
-}
-
-/// POST /v1/runtime/profile/buckets/override — re-file an app into a bucket (user override).
-pub async fn set_app_bucket(
-    server_url: &str,
-    token: &str,
-    active_org_id: Option<&str>,
-    app_key: &str,
-    bucket_key: &str,
-) -> Result<(), String> {
-    let url = format!(
-        "{}/v1/runtime/profile/buckets/override",
-        server_url.trim_end_matches('/')
-    );
-    let mut req = Client::new()
-        .post(&url)
-        .bearer_auth(token)
-        .timeout(std::time::Duration::from_secs(10))
-        .json(&serde_json::json!({ "app_key": app_key, "bucket_key": bucket_key }));
-    if let Some(org_id) = active_org_id.filter(|s| !s.trim().is_empty()) {
-        req = req.header("x-airnote-org-id", org_id);
-    }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("set app bucket failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("set app bucket failed: HTTP {}", resp.status()));
-    }
-    Ok(())
-}
-
 pub async fn activate_workspace_on_server(
     server_url: &str,
     token: &str,
@@ -1571,393 +1487,6 @@ fn extract_error(body: &str) -> String {
         .unwrap_or_else(|| said_core::text::truncate_utf8(&body, 200).to_string())
 }
 
-// ── Edit feedback ─────────────────────────────────────────────────────────────
-
-pub async fn submit_feedback(
-    ep: &BackendEndpoint,
-    recording_id: &str,
-    user_kept: &str,
-    target_app: Option<&str>,
-) -> Result<(), String> {
-    let url = format!("{}/v1/edit-feedback", ep.url);
-    let body = serde_json::json!({
-        "recording_id": recording_id,
-        "user_kept":    user_kept,
-        "target_app":   target_app,
-    });
-
-    let status = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("submit feedback failed: {e}"))?
-        .status();
-
-    if status.is_success() || status.as_u16() == 204 {
-        Ok(())
-    } else {
-        Err(format!("edit-feedback error: {status}"))
-    }
-}
-
-// ── Pending edits ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingEdit {
-    pub id: String,
-    pub recording_id: Option<String>,
-    pub ai_output: String,
-    pub user_kept: String,
-    pub timestamp_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingEditsResponse {
-    pub edits: Vec<PendingEdit>,
-    pub total: i64,
-}
-
-/// Four-way edit classifier response.
-///
-/// `class` is one of `STT_ERROR | POLISH_ERROR | USER_REPHRASE | USER_REWRITE`.
-/// `learned` indicates whether any artifact was written (vocabulary entry,
-/// post-STT replacement, or word correction).  `notify` is the desktop's
-/// notification gate.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct ClassifyEditResponse {
-    pub class: String,
-    pub reason: String,
-    pub pending_id: Option<String>,
-    #[serde(default)]
-    pub review_session_id: Option<String>,
-    #[serde(default)]
-    pub learned: bool,
-    #[serde(default)]
-    pub notify: bool,
-    #[serde(default)]
-    pub promoted_count: usize,
-    #[serde(default)]
-    pub is_repeat: bool,
-    /// Flat correct_form values that were just promoted to vocabulary.
-    /// Driven by the toast event the desktop emits to the frontend.
-    #[serde(default)]
-    pub promoted_terms: Vec<String>,
-    /// Email addresses saved to local deterministic email memory.
-    #[serde(default)]
-    pub learned_emails: Vec<String>,
-    /// Terms recorded into the pending-promotions queue but not yet promoted
-    /// (k-threshold not met). The desktop surfaces these as a soft "noticed"
-    /// toast so the user knows the system saw the correction.
-    #[serde(default)]
-    pub queued_terms: Vec<QueuedTermResponse>,
-    /// Ambiguous terms where the classifier can't decide — needs user confirmation.
-    #[serde(default)]
-    pub ambiguous_terms: Vec<AmbiguousTermResponse>,
-    /// Corrections the system keeps making wrong — needs user to confirm blocking.
-    #[serde(default)]
-    pub negative_terms: Vec<NegativeTermResponse>,
-    /// Changes the user should review before learning.
-    #[serde(default)]
-    pub review_candidates: Vec<ReviewCandidateResponse>,
-    /// Every deterministic change detected in the final owned text. This is
-    /// intentionally broader than `review_candidates`, which contains only the
-    /// subset eligible for learning or explicit review.
-    #[serde(default)]
-    pub changes: Vec<AnalyzedChangeResponse>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct AnalyzedChangeResponse {
-    pub original: String,
-    pub corrected: String,
-    pub reason: String,
-    #[serde(default)]
-    pub should_learn: bool,
-    #[serde(default)]
-    pub confidence: f64,
-    #[serde(default)]
-    pub skip_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct AmbiguousTermResponse {
-    pub original: String,
-    pub corrected: String,
-    pub context: String,
-    pub recording_id: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct NegativeTermResponse {
-    pub term: String,
-    pub wrong_replacement: String,
-    pub correction_count: i64,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct QueuedTermResponse {
-    pub term: String,
-    pub sighting_count: i64,
-    pub k: i64,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct ReviewCandidateResponse {
-    pub original: String,
-    pub corrected: String,
-    pub term_type: String,
-    pub learnable: bool,
-    pub tag: String,
-    #[serde(default)]
-    pub context: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ConfirmBatchRequestItem {
-    pub original: String,
-    pub corrected: String,
-    #[serde(default)]
-    pub context: Option<String>,
-    #[serde(default)]
-    pub tag: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct ConfirmBatchResponse {
-    pub learned_count: usize,
-    pub learned_terms: Vec<String>,
-    #[serde(default)]
-    pub blocked_count: usize,
-    #[serde(default)]
-    pub server_owned: bool,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct EditReviewSessionResponse {
-    pub id: String,
-    pub recording_id: String,
-    pub ai_output: String,
-    pub user_kept: String,
-    #[serde(default)]
-    pub review_candidates: Vec<ReviewCandidateResponse>,
-    #[serde(default)]
-    pub detected_changes: Vec<AnalyzedChangeResponse>,
-    pub created_at_ms: i64,
-}
-
-pub async fn confirm_batch(
-    ep: &BackendEndpoint,
-    items: &[ConfirmBatchRequestItem],
-    recording_id: Option<&str>,
-    review_session_id: Option<&str>,
-) -> Result<ConfirmBatchResponse, String> {
-    let url = format!("{}/v1/confirm-batch", ep.url);
-    let items_json: Vec<serde_json::Value> = items
-        .iter()
-        .map(|item| {
-            serde_json::json!({
-                "original": item.original,
-                "corrected": item.corrected,
-                "context": item.context,
-                "tag": item.tag,
-            })
-        })
-        .collect();
-    let body = serde_json::json!({
-        "items": items_json,
-        "recording_id": recording_id,
-        "review_session_id": review_session_id,
-    });
-    Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("confirm batch failed: {e}"))?
-        .json::<ConfirmBatchResponse>()
-        .await
-        .map_err(|e| format!("parse confirm batch: {e}"))
-}
-
-pub async fn get_next_edit_review_session(
-    ep: &BackendEndpoint,
-) -> Result<Option<EditReviewSessionResponse>, String> {
-    let url = format!("{}/v1/edit-review-sessions/next", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| format!("get next edit review session failed: {e}"))?
-        .json::<Option<EditReviewSessionResponse>>()
-        .await
-        .map_err(|e| format!("parse next edit review session: {e}"))
-}
-
-pub async fn skip_edit_review_session(
-    ep: &BackendEndpoint,
-    session_id: &str,
-) -> Result<(), String> {
-    let url = format!("{}/v1/edit-review-sessions/{session_id}/skip", ep.url);
-    let response = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|e| format!("skip edit review session failed: {e}"))?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "skip edit review session returned {}",
-            response.status()
-        ))
-    }
-}
-
-/// Classify an edit using the four-way classifier.
-///
-/// Sends (recording_id, ai_output, user_kept) to the backend, which looks up
-/// the original transcript and calls Groq.  Promotion happens server-side:
-/// STT_ERROR auto-promotes on first sighting; POLISH_ERROR promotes only on
-/// repeat; REPHRASE/REWRITE do nothing.
-/// Capture-error metadata.  Sent alongside the edit so the backend's
-/// CAPTURE_ERROR pre-filter can cheaply reject obvious bad signals
-/// (app-switch, paste-on-top, stale capture) before any pipeline cost.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct CaptureMeta {
-    pub time_since_paste_ms: u64,
-    pub app_switched: bool,
-    pub matches_clipboard: bool,
-}
-
-pub async fn classify_edit(
-    ep: &BackendEndpoint,
-    recording_id: &str,
-    ai_output: &str,
-    user_kept: &str,
-    capture_method: &str,
-    capture_meta: CaptureMeta,
-    client_run_id: Option<&str>,
-    prior_text: Option<&str>,
-    edit_trace_json: Option<Value>,
-) -> Result<ClassifyEditResponse, String> {
-    let url = format!("{}/v1/classify-edit", ep.url);
-    let mut body = serde_json::json!({
-        "recording_id":        recording_id,
-        "ai_output":           ai_output,
-        "user_kept":           user_kept,
-        "capture_method":      capture_method,
-        "time_since_paste_ms": capture_meta.time_since_paste_ms,
-        "app_switched":        capture_meta.app_switched,
-        "matches_clipboard":   capture_meta.matches_clipboard,
-    });
-    if let Some(run_id) = client_run_id.map(str::trim).filter(|s| !s.is_empty()) {
-        body["client_run_id"] = serde_json::Value::String(run_id.to_string());
-    }
-    // The pre-dictation field baseline. When the user dictated into a field that
-    // already had text, this lets the backend scope the edit-diff to OUR output
-    // and ignore the surrounding context. Empty/None → field was empty.
-    if let Some(prior) = prior_text.filter(|s| !s.is_empty()) {
-        body["prior_text"] = serde_json::Value::String(prior.to_string());
-    }
-    if let Some(trace) = edit_trace_json {
-        body["edit_trace_json"] = trace;
-    }
-    Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(20))
-        .send()
-        .await
-        .map_err(|e| format!("classify edit failed: {e}"))?
-        .json::<ClassifyEditResponse>()
-        .await
-        .map_err(|e| format!("parse classify response: {e}"))
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct RetrainStatus {
-    pub scheduled: bool,
-    pub running: bool,
-    pub started_at: i64,
-    pub finished_at: i64,
-    pub duration_ms: i64,
-    pub success: bool,
-}
-
-pub async fn get_retrain_status(ep: &BackendEndpoint) -> Result<RetrainStatus, String> {
-    let url = format!("{}/v1/retrain-status", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .timeout(std::time::Duration::from_secs(3))
-        .send()
-        .await
-        .map_err(|e| format!("retrain status failed: {e}"))?
-        .json::<RetrainStatus>()
-        .await
-        .map_err(|e| format!("parse retrain status: {e}"))
-}
-
-// ── Vocabulary alias API (honest UI: learned wrong→right fixes) ─────────────
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AliasRow {
-    pub correct_form: String,
-    pub transcript_form: String,
-    pub use_count: i64,
-    pub active: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AliasesResponse {
-    pub aliases: Vec<AliasRow>,
-}
-
-pub async fn list_vocab_aliases(ep: &BackendEndpoint) -> Result<AliasesResponse, String> {
-    let url = format!("{}/v1/vocabulary/aliases", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("list vocab aliases failed: {e}"))?
-        .json::<AliasesResponse>()
-        .await
-        .map_err(|e| format!("parse vocab aliases: {e}"))
-}
-
-// ── Vocabulary management API (settings UI) ─────────────────────────────────
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VocabRow {
-    pub term: String,
-    pub weight: f64,
-    pub use_count: i64,
-    pub last_used: i64,
-    pub source: String,
-    #[serde(default)]
-    pub meaning: Option<String>,
-    #[serde(default)]
-    pub term_type: Option<String>,
-    #[serde(default)]
-    pub example_context: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VocabListResponse {
-    pub terms: Vec<VocabRow>,
-    pub total: i64,
-}
-
 async fn json_or_error(resp: reqwest::Response, label: &str) -> Result<Value, String> {
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
@@ -1972,129 +1501,75 @@ async fn json_or_error(resp: reqwest::Response, label: &str) -> Result<Value, St
     })
 }
 
-/// Full vocab list with metadata, for the management view.
-pub async fn list_vocabulary(ep: &BackendEndpoint) -> Result<VocabListResponse, String> {
-    let url = format!("{}/v1/vocabulary", ep.url);
-    Client::new()
-        .get(&url)
+// ── Dictionary (the user's word list) ───────────────────────────────────────
+
+/// Where the transcript has `heard`, polish writes `written`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DictionaryWord {
+    #[serde(default)]
+    pub id: i64,
+    pub written: String,
+    #[serde(default)]
+    pub heard: Option<String>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub created_at: i64,
+}
+
+pub async fn list_dictionary(ep: &BackendEndpoint) -> Result<Vec<DictionaryWord>, String> {
+    let resp = Client::new()
+        .get(format!("{}/v1/dictionary", ep.url))
         .header("Authorization", ep.bearer())
         .send()
         .await
-        .map_err(|e| format!("list vocab failed: {e}"))?
-        .json::<VocabListResponse>()
-        .await
-        .map_err(|e| format!("parse vocab list: {e}"))
+        .map_err(|e| format!("dictionary request failed: {e}"))?;
+    let value = json_or_error(resp, "dictionary").await?;
+    serde_json::from_value(value["entries"].clone()).map_err(|e| format!("parse dictionary: {e}"))
 }
 
-pub async fn patch_vocabulary_term(
+pub async fn add_dictionary_word(
     ep: &BackendEndpoint,
-    term: &str,
-    meaning: Option<&str>,
-    term_type: Option<&str>,
-    example_context: Option<&str>,
-) -> Result<(), String> {
-    let encoded_term: String = term
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c.to_string()
-            } else {
-                format!("%{:02X}", c as u32)
-            }
-        })
-        .collect();
-    let url = format!("{}/v1/vocabulary/{}", ep.url, encoded_term);
-    let mut body = serde_json::Map::new();
-    if let Some(m) = meaning {
-        body.insert("meaning".into(), serde_json::Value::String(m.to_string()));
-    }
-    if let Some(t) = term_type {
-        body.insert("term_type".into(), serde_json::Value::String(t.to_string()));
-    }
-    if let Some(c) = example_context {
-        body.insert(
-            "example_context".into(),
-            serde_json::Value::String(c.to_string()),
-        );
-    }
-    Client::new()
-        .patch(&url)
-        .header("Authorization", ep.bearer())
-        .json(&serde_json::Value::Object(body))
-        .send()
-        .await
-        .map_err(|e| format!("patch vocab failed: {e}"))?;
-    Ok(())
-}
-
-/// Manually add a term (source = "manual", weight 1.5).
-pub async fn add_vocabulary_term(ep: &BackendEndpoint, term: &str) -> Result<(), String> {
-    let url = format!("{}/v1/vocabulary", ep.url);
+    written: &str,
+    heard: Option<&str>,
+) -> Result<DictionaryWord, String> {
     let resp = Client::new()
-        .post(&url)
+        .post(format!("{}/v1/dictionary", ep.url))
         .header("Authorization", ep.bearer())
-        .json(&serde_json::json!({ "term": term }))
+        .json(&serde_json::json!({ "written": written, "heard": heard }))
         .send()
         .await
-        .map_err(|e| format!("add vocab failed: {e}"))?;
-    let status = resp.status();
-    if status.is_success() {
-        Ok(())
-    } else {
-        let body = resp.text().await.unwrap_or_default();
-        Err(format!("add vocab error {status}: {body}"))
-    }
+        .map_err(|e| format!("add dictionary word request failed: {e}"))?;
+    let value = json_or_error(resp, "add dictionary word").await?;
+    serde_json::from_value(value).map_err(|e| format!("parse dictionary word: {e}"))
 }
 
-/// Wipe all learning data (vocab, corrections, STT aliases, embeddings).
-pub async fn reset_all_vocabulary(ep: &BackendEndpoint) -> Result<(), String> {
-    let url = format!("{}/v1/vocabulary/all", ep.url);
-    let status = Client::new()
-        .delete(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("reset vocab failed: {e}"))?
-        .status();
-    if status.is_success() || status.as_u16() == 204 {
-        Ok(())
-    } else {
-        Err(format!("reset vocab error {status}"))
-    }
-}
-
-/// Hard-delete a single vocab term.
-pub async fn delete_vocabulary_term(ep: &BackendEndpoint, term: &str) -> Result<(), String> {
-    let encoded = urlencoding_encode(term);
-    let url = format!("{}/v1/vocabulary/{}", ep.url, encoded);
-    let status = Client::new()
-        .delete(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("delete vocab failed: {e}"))?
-        .status();
-    if status.is_success() || status.as_u16() == 204 {
-        Ok(())
-    } else {
-        Err(format!("delete vocab error {status}"))
-    }
-}
-
-/// Toggle starred status — returns the new starred state.
-pub async fn star_vocabulary_term(ep: &BackendEndpoint, term: &str) -> Result<bool, String> {
-    let encoded = urlencoding_encode(term);
-    let url = format!("{}/v1/vocabulary/{}/star", ep.url, encoded);
+pub async fn delete_dictionary_word(ep: &BackendEndpoint, id: i64) -> Result<(), String> {
     let resp = Client::new()
-        .post(&url)
+        .delete(format!("{}/v1/dictionary/{id}", ep.url))
         .header("Authorization", ep.bearer())
         .send()
         .await
-        .map_err(|e| format!("star vocab failed: {e}"))?
-        .json::<serde_json::Value>()
+        .map_err(|e| format!("delete dictionary word request failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("delete dictionary word failed: {}", resp.status()))
+    }
+}
+
+pub async fn clear_dictionary(ep: &BackendEndpoint) -> Result<(), String> {
+    let resp = Client::new()
+        .delete(format!("{}/v1/dictionary", ep.url))
+        .header("Authorization", ep.bearer())
+        .send()
         .await
-        .map_err(|e| format!("parse star response: {e}"))?;
-    Ok(resp["starred"].as_bool().unwrap_or(false))
+        .map_err(|e| format!("clear dictionary request failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("clear dictionary failed: {}", resp.status()))
+    }
 }
 
 /// Send an invite email via the backend (Resend under the hood).
@@ -2125,74 +1600,6 @@ pub async fn send_invite_email(ep: &BackendEndpoint, to: &str) -> Result<bool, S
         return Err("email_not_configured".into());
     }
     Err(format!("invite send error {status}: {body}"))
-}
-
-/// Minimal RFC-3986 path-segment encoder (Tauri-side).  Same conservative
-/// rules as the backend's keyterm encoder so server-side parsing matches.
-fn urlencoding_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                use std::fmt::Write;
-                let _ = write!(out, "%{:02X}", b);
-            }
-        }
-    }
-    out
-}
-
-pub async fn get_pending_edits(ep: &BackendEndpoint) -> Result<PendingEditsResponse, String> {
-    let url = format!("{}/v1/pending-edits", ep.url);
-    Client::new()
-        .get(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("get pending edits failed: {e}"))?
-        .json::<PendingEditsResponse>()
-        .await
-        .map_err(|e| format!("parse pending edits: {e}"))
-}
-
-pub async fn resolve_pending_edit(
-    ep: &BackendEndpoint,
-    id: &str,
-    action: &str, // "approve" | "skip"
-) -> Result<(), String> {
-    let url = format!("{}/v1/pending-edits/{id}/resolve", ep.url);
-    let status = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&serde_json::json!({ "action": action }))
-        .send()
-        .await
-        .map_err(|e| format!("resolve pending edit failed: {e}"))?
-        .status();
-    if status.is_success() || status.as_u16() == 204 {
-        Ok(())
-    } else {
-        Err(format!("resolve error: {status}"))
-    }
-}
-
-pub async fn dismiss_pending_edit(ep: &BackendEndpoint, id: &str) -> Result<(), String> {
-    let url = format!("{}/v1/pending-edits/{id}/dismiss", ep.url);
-    let status = Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .send()
-        .await
-        .map_err(|e| format!("dismiss pending edit failed: {e}"))?
-        .status();
-    if status.is_success() || status.as_u16() == 204 {
-        Ok(())
-    } else {
-        Err(format!("dismiss error: {status}"))
-    }
 }
 
 /// Hard-delete a single recording (SQLite row + WAV file).

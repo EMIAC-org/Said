@@ -247,17 +247,3 @@ export interface CloudStatus {
   email:        string | null;
 }
 
-// ── Pending edits ────────────────────────────────────────────────────────────
-
-export interface PendingEdit {
-  id:           string;
-  recording_id: string | null;
-  ai_output:    string;
-  user_kept:    string;
-  timestamp_ms: number;
-}
-
-export interface PendingEditsResponse {
-  edits: PendingEdit[];
-  total: number;
-}

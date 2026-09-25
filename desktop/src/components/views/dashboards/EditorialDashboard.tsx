@@ -7,6 +7,7 @@ import {
   subscribeHistoryCache,
 } from "@/lib/historyUiCache";
 import { cn } from "@/lib/utils";
+import { keptText } from "@/lib/keptText";
 import { Copy, Download, Check, Play, Square, BookOpen, ExternalLink } from "lucide-react";
 import { AppIcon, appDisplayName, useAppIdentity } from "@/components/AppIcon";
 import { EditorialDashboardSkeleton } from "@/components/views/dashboards/DashboardSkeleton";
@@ -83,7 +84,7 @@ export function EditorialDashboard({ snapshot }: Props) {
   const dictMinutesToday = wordsToday > 0 ? wordsToday / 120 : 0;
   const minutesSaved = Math.max(0, Math.round(typingMinutesToday - dictMinutesToday));
 
-  const editsLearned = useMemo(
+  const editsMade = useMemo(
     () => recordings.reduce((s, r) => s + (r.edit_count ?? 0), 0),
     [recordings],
   );
@@ -203,7 +204,7 @@ export function EditorialDashboard({ snapshot }: Props) {
               </div>
             )}
             <Glance label="Avg pace" value={`${snapshot?.avg_wpm ?? 0}`} unit="wpm" border={topApps.length > 0} />
-            <Glance label="Edits learned" value={`${editsLearned}`} unit="" border />
+            <Glance label="Your edits" value={`${editsMade}`} unit="" border />
           </div>
         </Section>
 
@@ -494,7 +495,7 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(r.polished || r.transcript);
+      await navigator.clipboard.writeText(keptText(r) || r.transcript);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch { /* clipboard not available */ }
@@ -545,9 +546,9 @@ function HistoryRow({ recording: r }: { recording: Recording }) {
         <div
           className="text-[13.5px] leading-snug truncate"
           style={{ color: "hsl(var(--foreground))" }}
-          title={r.polished || r.transcript || undefined}
+          title={keptText(r) || r.transcript || undefined}
         >
-          {r.polished || r.transcript}
+          {keptText(r) || r.transcript}
         </div>
         <div className="flex items-center gap-2 mt-1">
           <span

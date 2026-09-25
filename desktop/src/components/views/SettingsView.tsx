@@ -1205,8 +1205,8 @@ export function SettingsView({
               <p className="text-[12px] font-semibold text-foreground">Polish my dictation</p>
               <p className="text-[11px] text-muted-foreground leading-snug mt-1">
                 {prefs?.polish_enabled === false
-                  ? "Off — AirNote types exactly what you said. Your learned words, punctuation and filler removal are not applied."
-                  : "On — AirNote cleans up punctuation, filler words and applies the words you've taught it."}
+                  ? "Off — AirNote types exactly what speech recognition heard. Your Dictionary is not used."
+                  : "On — Gemma fixes punctuation and capitals, drops um and uh, and writes your Dictionary words your way. Its reply is typed as it is."}
               </p>
             </div>
             <button
@@ -1486,7 +1486,7 @@ export function SettingsView({
                               className="flex items-start gap-2 rounded-lg px-3 py-2 text-[11px]"
                               style={{
                                 background: "hsl(38 80% 12% / 0.75)",
-                                color: "hsl(38 90% 72%)",
+                                color: "hsl(var(--chip-amber-fg))",
                               }}
                             >
                               <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
@@ -1554,7 +1554,7 @@ export function SettingsView({
           {axSupported && (!micGranted || !axGranted || !imGranted) && (
             <div
               className="rounded-xl px-4 py-3 mb-3 text-[12px] leading-relaxed"
-              style={{ background: "hsl(38 80% 12%)", color: "hsl(38 90% 70%)" }}
+              style={{ background: "hsl(var(--chip-amber-bg))", color: "hsl(var(--chip-amber-fg))" }}
             >
               <p className="font-semibold mb-1">Permissions needed</p>
               {!micGranted && (
@@ -1682,12 +1682,12 @@ export function SettingsView({
                 <p className="text-[13px] font-medium text-foreground">Notifications</p>
                 <p className="text-[12px] text-muted-foreground mt-0.5 leading-relaxed">
                   {notifPerm === "granted"
-                    ? "Granted — AirNote will notify you when a learning edit is ready to review."
+                    ? "Granted — AirNote can notify you about errors and updates."
                     : notifPerm === "denied"
                     ? isWindows
                       ? "Denied — open Windows Settings → System → Notifications & actions → AirNote to enable."
                       : "Denied — open System Settings → Notifications → AirNote to enable."
-                    : "AirNote asks once to send learning-edit notifications."}
+                    : "AirNote asks once to send notifications about errors and updates."}
                 </p>
               </div>
               <div className="flex-shrink-0 ml-4">
@@ -2268,10 +2268,6 @@ const NOTIF_STORAGE_KEY = "airnote-notif-prefs";
 
 interface NotifPrefs {
   learned: boolean;
-  queued: boolean;
-  confirm: boolean;
-  negative: boolean;
-  retrain: boolean;
   updates: boolean;
   error: boolean;
   sounds: boolean;
@@ -2279,10 +2275,6 @@ interface NotifPrefs {
 
 const DEFAULT_NOTIF: NotifPrefs = {
   learned: true,
-  queued: true,
-  confirm: true,
-  negative: true,
-  retrain: true,
   updates: true,
   error: true,
   sounds: true,
@@ -2304,14 +2296,10 @@ function saveNotifPrefs(p: NotifPrefs) {
 export function getNotifPrefs(): NotifPrefs { return loadNotifPrefs(); }
 
 const NOTIF_ITEMS: { key: keyof NotifPrefs; label: string; desc: string }[] = [
-  { key: "learned",  label: "Word learned",          desc: "When a new vocabulary term is added or a new spelling is recorded" },
-  { key: "queued",   label: "Correction noticed",    desc: "When a correction is queued but not yet confirmed (sighting 1/3)" },
-  { key: "confirm",  label: "Ambiguous term",        desc: "Ask whether a corrected word is a brand/name (one-click confirm)" },
-  { key: "negative", label: "Wrong correction",      desc: "Alert when AirNote keeps making the same wrong correction" },
-  { key: "retrain",  label: "Model updated",         desc: "When the ONNX correction model finishes retraining" },
+  { key: "learned",  label: "Word learned",          desc: "When a name you fixed is added to your Dictionary" },
   { key: "updates",  label: "App update ready",      desc: "When AirNote has downloaded an update and needs a restart" },
   { key: "error",    label: "Errors",                desc: "Recording errors, backend connection issues" },
-  { key: "sounds",   label: "Sound effects",         desc: "Play subtle sounds on recording start, paste, learning events" },
+  { key: "sounds",   label: "Sound effects",         desc: "Play subtle sounds on recording start, paste and learned words" },
 ];
 
 function NotificationToggles() {

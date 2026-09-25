@@ -2758,18 +2758,7 @@ fn start_runtime_notification_listener(app: tauri::AppHandle, ep: BackendEndpoin
 fn is_status_bar_notification_event(event_name: &str) -> bool {
     matches!(
         event_name,
-        "vocab-learned"
-            | "email-learned"
-            | "vocab-queued"
-            | "vocab-confirm"
-            | "vocab-review"
-            | "vocab-negative"
-            | "vocab-wrong-fixed"
-            | "retrain-status"
-            | "auto-update-ready"
-            | "voice-error"
-            | "message-polish-mode"
-            | "learning_saved"
+        "vocab-learned" | "auto-update-ready" | "voice-error" | "message-polish-mode"
     )
 }
 
@@ -3156,17 +3145,6 @@ async fn get_site_usage(backend: State<'_, BackendState>) -> Result<Vec<api::Sit
 #[tauri::command]
 async fn get_favicon(host: String) -> Option<String> {
     favicon::favicon_data_url(&host).await
-}
-
-#[tauri::command]
-async fn submit_edit_feedback(
-    backend: State<'_, BackendState>,
-    recording_id: String,
-    user_kept: String,
-    target_app: Option<String>,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    api::submit_feedback(&ep, &recording_id, &user_kept, target_app.as_deref()).await
 }
 
 #[tauri::command]
@@ -4763,9 +4741,6 @@ fn do_finish_recording(
         } else {
             // Normal mode: paste and edit-watch
             // Spawn edit-watcher immediately after paste (non-blocking).
-            // Capture watch_start NOW — before the spawn — so the ring
-            // buffer timestamp filter doesn't miss early mouse clicks.
-            let watch_start = std::time::Instant::now();
             if let Ok(ref done) = result {
                 let back3 = Arc::clone(&back_arc2);
                 let pre_paste = app2
@@ -4778,7 +4753,6 @@ fn do_finish_recording(
                     client_run_id.clone(),
                     done.recording_id.clone(),
                     done.polished.clone(),
-                    watch_start,
                     anchor,
                 );
             }
@@ -6481,7 +6455,6 @@ fn retry_recording_spawn(
         )
         .await;
 
-        let watch_start = std::time::Instant::now();
         if let Ok(ref done) = result {
             let back3 = Arc::clone(&back_arc2);
             let anchor = capture_edit_anchor(None, None, &done.polished);
@@ -6491,7 +6464,6 @@ fn retry_recording_spawn(
                 None,
                 done.recording_id.clone(),
                 done.polished.clone(),
-                watch_start,
                 anchor,
             );
         }
@@ -6520,291 +6492,50 @@ fn retry_recording_spawn(
     Ok(())
 }
 
-// ── Pending-edit review commands ──────────────────────────────────────────────
+// ── Dictionary (the user's word list) ───────────────────────────────────────
 
 #[tauri::command]
-async fn get_pending_edits(
+async fn list_dictionary(
     backend: State<'_, BackendState>,
-) -> Result<api::PendingEditsResponse, String> {
+) -> Result<Vec<api::DictionaryWord>, String> {
     let ep = get_endpoint(&backend)?;
-    api::get_pending_edits(&ep).await
+    api::list_dictionary(&ep).await
 }
 
 #[tauri::command]
-async fn resolve_pending_edit(
-    backend: State<'_, BackendState>,
-    id: String,
-    action: String,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    let result = api::resolve_pending_edit(&ep, &id, &action).await;
-    if result.is_ok() && action == "approve" {
-        tracing::info!("[vocabulary] pending edit approved; local ASR has no runtime bias refresh");
-    }
-    result
-}
-
-#[tauri::command]
-async fn dismiss_pending_edit(backend: State<'_, BackendState>, id: String) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    api::dismiss_pending_edit(&ep, &id).await
-}
-
-// ── Vocabulary management commands ────────────────────────────────────────────
-
-#[tauri::command]
-async fn list_vocabulary(
-    backend: State<'_, BackendState>,
-) -> Result<api::VocabListResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::list_vocabulary(&ep).await
-}
-
-#[tauri::command]
-async fn list_vocabulary_aliases(
-    backend: State<'_, BackendState>,
-) -> Result<api::AliasesResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    api::list_vocab_aliases(&ep).await
-}
-
-#[tauri::command]
-async fn add_vocabulary_term(
+async fn add_dictionary_word(
     app: tauri::AppHandle,
     backend: State<'_, BackendState>,
-    term: String,
+    written: String,
+    heard: Option<String>,
+) -> Result<api::DictionaryWord, String> {
+    let ep = get_endpoint(&backend)?;
+    let heard = heard.filter(|h| !h.trim().is_empty());
+    let word = api::add_dictionary_word(&ep, &written, heard.as_deref()).await?;
+    let _ = app.emit("dictionary-changed", ());
+    Ok(word)
+}
+
+#[tauri::command]
+async fn delete_dictionary_word(
+    app: tauri::AppHandle,
+    backend: State<'_, BackendState>,
+    id: i64,
 ) -> Result<(), String> {
     let ep = get_endpoint(&backend)?;
-    api::add_vocabulary_term(&ep, &term).await?;
-    let _ = app.emit("vocabulary-changed", ());
-
-    // In-app toast (matches the website's design language) — primary surface.
-    let _ = app.emit(
-        "vocab-toast",
-        serde_json::json!({
-            "kind": "added", "term": term, "source": "manual",
-        }),
-    );
-
-    // OS-level fallback for when the AirNote window isn't focused.
-    notify_macos(
-        &app,
-        "Added to vocabulary",
-        &format!("AirNote will recognise \"{term}\" on your next recording."),
-    );
+    api::delete_dictionary_word(&ep, id).await?;
+    let _ = app.emit("dictionary-changed", ());
     Ok(())
 }
 
 #[tauri::command]
-async fn delete_vocabulary_term(
-    app: tauri::AppHandle,
-    backend: State<'_, BackendState>,
-    term: String,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    api::delete_vocabulary_term(&ep, &term).await?;
-    let _ = app.emit("vocabulary-changed", ());
-    let _ = app.emit(
-        "vocab-toast",
-        serde_json::json!({
-            "kind": "removed", "term": term,
-        }),
-    );
-    Ok(())
-}
-
-#[tauri::command]
-async fn confirm_term(
-    app: tauri::AppHandle,
-    backend: State<'_, BackendState>,
-    term: String,
-    original: String,
-    action: String,
-    recording_id: Option<String>,
-    context: Option<String>,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    let body = serde_json::json!({
-        "term": term,
-        "original": original,
-        "action": action,
-        "recording_id": recording_id,
-        "context": context,
-    });
-    let url = format!("{}/v1/confirm-term", ep.url);
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("confirm-term failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("confirm-term returned {}", resp.status()));
-    }
-    if action == "learn" {
-        let _ = app.emit("vocabulary-changed", ());
-        tracing::info!("[confirm] user confirmed term {:?} — learning", term);
-    } else {
-        tracing::info!("[confirm] user skipped term {:?}", term);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn confirm_batch(
-    app: tauri::AppHandle,
-    backend: State<'_, BackendState>,
-    items: Vec<serde_json::Value>,
-    recording_id: Option<String>,
-    review_session_id: Option<String>,
-) -> Result<api::ConfirmBatchResponse, String> {
-    let ep = get_endpoint(&backend)?;
-    let request_items: Vec<api::ConfirmBatchRequestItem> = items
-        .iter()
-        .filter_map(|v| {
-            let orig = v.get("original")?.as_str()?.to_string();
-            let corr = v.get("corrected")?.as_str()?.to_string();
-            let context = v
-                .get("context")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string());
-            let tag = v
-                .get("tag")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string());
-            Some(api::ConfirmBatchRequestItem {
-                original: orig,
-                corrected: corr,
-                context,
-                tag,
-            })
-        })
-        .collect();
-    let result = api::confirm_batch(
-        &ep,
-        &request_items,
-        recording_id.as_deref(),
-        review_session_id.as_deref(),
-    )
-    .await?;
-    let _ = app.emit("vocabulary-changed", ());
-    tracing::info!(
-        "[confirm-batch] user confirmed {} term(s) server_owned={}: {:?}",
-        result.learned_count,
-        result.server_owned,
-        result.learned_terms,
-    );
-    Ok(result)
-}
-
-#[tauri::command]
-async fn get_next_edit_review_session(
-    backend: State<'_, BackendState>,
-) -> Result<Option<api::EditReviewSessionResponse>, String> {
-    let ep = get_endpoint(&backend)?;
-    api::get_next_edit_review_session(&ep).await
-}
-
-#[tauri::command]
-async fn skip_edit_review_session(
-    backend: State<'_, BackendState>,
-    session_id: String,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    api::skip_edit_review_session(&ep, &session_id).await
-}
-
-#[tauri::command]
-async fn block_correction(
-    app: tauri::AppHandle,
-    backend: State<'_, BackendState>,
-    variant: String,
-    wrong_replacement: String,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    let body = serde_json::json!({
-        "variant": variant,
-        "wrong_replacement": wrong_replacement,
-    });
-    let url = format!("{}/v1/block-correction", ep.url);
-    let resp = reqwest::Client::new()
-        .post(&url)
-        .header("Authorization", ep.bearer())
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("block-correction failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("block-correction returned {}", resp.status()));
-    }
-    let _ = app.emit("vocabulary-changed", ());
-    tracing::info!(
-        "[block] user blocked correction {:?} → {:?}",
-        variant,
-        wrong_replacement
-    );
-    Ok(())
-}
-
-#[tauri::command]
-async fn reset_all_vocabulary(
+async fn clear_dictionary(
     app: tauri::AppHandle,
     backend: State<'_, BackendState>,
 ) -> Result<(), String> {
     let ep = get_endpoint(&backend)?;
-    api::reset_all_vocabulary(&ep).await?;
-    let _ = app.emit("vocabulary-changed", ());
-    Ok(())
-}
-
-#[tauri::command]
-async fn star_vocabulary_term(
-    app: tauri::AppHandle,
-    backend: State<'_, BackendState>,
-    term: String,
-) -> Result<bool, String> {
-    let ep = get_endpoint(&backend)?;
-    let starred = api::star_vocabulary_term(&ep, &term).await?;
-    let _ = app.emit("vocabulary-changed", ());
-
-    // Lightweight confirmation toast for star/unstar — only on STAR (positive
-    // affirmation), not on unstar (silent).
-    if starred {
-        let _ = app.emit(
-            "vocab-toast",
-            serde_json::json!({
-                "kind": "starred", "term": term,
-            }),
-        );
-        notify_macos(
-            &app,
-            "Pinned to vocabulary",
-            &format!("AirNote will keep \"{term}\" even if you stop using it."),
-        );
-    }
-    Ok(starred)
-}
-
-#[tauri::command]
-async fn patch_vocabulary_term(
-    app: tauri::AppHandle,
-    backend: State<'_, BackendState>,
-    term: String,
-    meaning: Option<String>,
-    term_type: Option<String>,
-    example_context: Option<String>,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    api::patch_vocabulary_term(
-        &ep,
-        &term,
-        meaning.as_deref(),
-        term_type.as_deref(),
-        example_context.as_deref(),
-    )
-    .await?;
-    let _ = app.emit("vocabulary-changed", ());
+    api::clear_dictionary(&ep).await?;
+    let _ = app.emit("dictionary-changed", ());
     Ok(())
 }
 
@@ -7277,67 +7008,6 @@ async fn list_workspaces(
     api::list_workspaces(&server_url, &token, status.active_org_id.as_deref()).await
 }
 
-/// What the cloud profiling brain has learned (run stats + KB + per-bucket style).
-#[tauri::command]
-async fn get_profile_insights(
-    backend: State<'_, BackendState>,
-) -> Result<api::ProfileInsights, String> {
-    let ep = get_endpoint(&backend)?;
-    let status = api::get_enterprise_status(&ep).await?;
-    let token = status
-        .token
-        .filter(|t| !t.trim().is_empty())
-        .ok_or_else(|| "not signed in to a workspace".to_string())?;
-    let server_url = status
-        .server_url
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "workspace server URL not configured".to_string())?;
-    api::get_profile_insights(&server_url, &token, status.active_org_id.as_deref()).await
-}
-
-/// Apps the user dictates into, grouped by bucket (for the Buckets kanban).
-#[tauri::command]
-async fn get_app_buckets(backend: State<'_, BackendState>) -> Result<serde_json::Value, String> {
-    let ep = get_endpoint(&backend)?;
-    let status = api::get_enterprise_status(&ep).await?;
-    let token = status
-        .token
-        .filter(|t| !t.trim().is_empty())
-        .ok_or_else(|| "not signed in to a workspace".to_string())?;
-    let server_url = status
-        .server_url
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "workspace server URL not configured".to_string())?;
-    api::get_app_buckets(&server_url, &token, status.active_org_id.as_deref()).await
-}
-
-/// Re-file an app into a bucket (user override; wins over static + agent mappings).
-#[tauri::command]
-async fn set_app_bucket(
-    app_key: String,
-    bucket_key: String,
-    backend: State<'_, BackendState>,
-) -> Result<(), String> {
-    let ep = get_endpoint(&backend)?;
-    let status = api::get_enterprise_status(&ep).await?;
-    let token = status
-        .token
-        .filter(|t| !t.trim().is_empty())
-        .ok_or_else(|| "not signed in to a workspace".to_string())?;
-    let server_url = status
-        .server_url
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "workspace server URL not configured".to_string())?;
-    api::set_app_bucket(
-        &server_url,
-        &token,
-        status.active_org_id.as_deref(),
-        &app_key,
-        &bucket_key,
-    )
-    .await
-}
-
 #[tauri::command]
 async fn activate_workspace(
     org_id: String,
@@ -7450,18 +7120,12 @@ fn wire_notch_events(app: &tauri::AppHandle, sidecar: &notch_sidecar::NotchSidec
     }
 
     // Pass-through events: forward the payload verbatim with a `type` tag.
-    let passthrough: [(&str, &str); 13] = [
+    let passthrough: [(&str, &str); 7] = [
         ("voice-status", "status"),
         ("voice-done", "done"),
         ("voice-output", "output"),
         ("voice-error", "error"),
         ("vocab-learned", "learned"),
-        ("email-learned", "email_saved"),
-        ("vocab-queued", "queued"),
-        ("vocab-confirm", "confirm"),
-        ("vocab-review", "review"),
-        ("vocab-negative", "negative_confirm"),
-        ("vocab-wrong-fixed", "wrong_fixed"),
         ("status-bar-placement-mode", "placement"),
         ("auto-update-ready", "update_ready"),
     ];
@@ -7492,109 +7156,6 @@ fn handle_notch_action(app: &tauri::AppHandle, action: serde_json::Value) {
     let ty = action.get("type").and_then(|t| t.as_str()).unwrap_or("");
     match ty {
         "ready" => tracing::info!("[notch] sidecar ready"),
-
-        // confirm a single vocab term (learn | skip) → /v1/confirm-term
-        "confirm" => {
-            let endpoint = notch_endpoint(app);
-            if let Some(ep) = endpoint {
-                let term = notch_str(&action, "term");
-                let original = notch_str(&action, "original");
-                let decision = notch_str(&action, "decision");
-                let recording_id = action
-                    .get("recording_id")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string());
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let body = serde_json::json!({
-                        "term": term, "original": original,
-                        "action": decision, "recording_id": recording_id,
-                    });
-                    let ok = reqwest::Client::new()
-                        .post(format!("{}/v1/confirm-term", ep.url))
-                        .header("Authorization", ep.bearer())
-                        .json(&body)
-                        .send()
-                        .await
-                        .map(|r| r.status().is_success())
-                        .unwrap_or(false);
-                    if ok && decision == "learn" {
-                        let _ = app.emit("vocabulary-changed", ());
-                    }
-                });
-            }
-        }
-
-        // batch-learn reviewed corrections → api::confirm_batch
-        "confirm_batch" => {
-            let endpoint = notch_endpoint(app);
-            if let Some(ep) = endpoint {
-                let recording_id = action
-                    .get("recording_id")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string());
-                let request_items: Vec<api::ConfirmBatchRequestItem> = action
-                    .get("items")
-                    .and_then(|i| i.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| {
-                                let context = v
-                                    .get("context")
-                                    .and_then(|value| value.as_str())
-                                    .map(|value| value.to_string());
-                                let tag = v
-                                    .get("tag")
-                                    .and_then(|value| value.as_str())
-                                    .map(|value| value.to_string());
-                                Some(api::ConfirmBatchRequestItem {
-                                    original: v.get("original")?.as_str()?.to_string(),
-                                    corrected: v.get("corrected")?.as_str()?.to_string(),
-                                    context,
-                                    tag,
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if !request_items.is_empty() {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if api::confirm_batch(&ep, &request_items, recording_id.as_deref(), None)
-                            .await
-                            .is_ok()
-                        {
-                            let _ = app.emit("vocabulary-changed", ());
-                        }
-                    });
-                }
-            }
-        }
-
-        // stop a wrong correction → /v1/block-correction
-        "block" => {
-            let endpoint = notch_endpoint(app);
-            if let Some(ep) = endpoint {
-                let variant = notch_str(&action, "variant");
-                let wrong = notch_str(&action, "wrong_replacement");
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let body =
-                        serde_json::json!({ "variant": variant, "wrong_replacement": wrong });
-                    let ok = reqwest::Client::new()
-                        .post(format!("{}/v1/block-correction", ep.url))
-                        .header("Authorization", ep.bearer())
-                        .json(&body)
-                        .send()
-                        .await
-                        .map(|r| r.status().is_success())
-                        .unwrap_or(false);
-                    if ok {
-                        let _ = app.emit("vocabulary-changed", ());
-                    }
-                });
-            }
-        }
 
         // retry a failed dictation (honours the selected speech model)
         "retry" => {
@@ -7794,6 +7355,15 @@ const EDIT_WATCH_BLOCKING_TIMEOUT: Duration = Duration::from_millis(500);
 const EDIT_WATCH_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(300);
 const EDIT_WATCH_EMPTY_FIELD_BOUNDARY: Duration = Duration::from_millis(400);
 const EDIT_WATCH_MAX_OBSERVATIONS: usize = 32;
+/// Typed and Cmd+V inserts are both queued events: the target app applies them
+/// after `insert_text` returns. The baseline waits this long for the dictated
+/// text to show up in the field.
+const EDIT_WATCH_PASTE_SETTLE: Duration = Duration::from_millis(1500);
+const EDIT_WATCH_SETTLE_POLL: Duration = Duration::from_millis(100);
+/// A deletion key pressed up to this long before the last reading that still
+/// held the text counts towards the field being cleared: the app may not have
+/// applied the key when that reading was taken.
+const EDIT_WATCH_DELETION_SLACK: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedTextSpan {
@@ -7834,10 +7404,13 @@ impl EditObservationTimeline {
         field_value: &str,
         elapsed_ms: u64,
     ) -> Result<bool, &'static str> {
-        if field_value == post_paste || field_value.is_empty() {
+        if field_value == post_paste || field_value.trim().is_empty() {
             return Ok(false);
         }
         let owned_text = extract_owned_text(anchor, field_value)?;
+        if owned_text.is_empty() {
+            return Ok(false);
+        }
         if self
             .observations
             .back()
@@ -7879,19 +7452,41 @@ impl EditObservationTimeline {
     }
 }
 
+/// The field no longer holds any of the dictated text: it is empty, or only the
+/// text that was there before the paste is left. Chat boxes often keep a lone
+/// newline after Send.
+fn owned_text_is_blank(anchor: &EditCaptureAnchor, field_value: &str) -> bool {
+    field_value.trim().is_empty()
+        || extract_owned_text(anchor, field_value).is_ok_and(|owned| owned.is_empty())
+}
+
+/// The field value that holds what the user kept. When the field was cleared,
+/// the user either sent it (chat boxes clear on Send) or deleted the text. After
+/// a send, the last reading that still held the text is what they kept; after
+/// a deletion, nothing is.
 fn effective_owned_field_value(
     anchor: &EditCaptureAnchor,
     last_value: &str,
     observations: &EditObservationTimeline,
+    cleared_by_deletion: bool,
 ) -> String {
-    if !last_value.is_empty() && extract_owned_text(anchor, last_value).is_ok() {
+    let still_holds_text =
+        !owned_text_is_blank(anchor, last_value) && extract_owned_text(anchor, last_value).is_ok();
+    if still_holds_text || cleared_by_deletion {
         last_value.to_string()
     } else {
         observations
             .latest_field_value()
-            .unwrap_or(last_value)
+            .unwrap_or(&anchor.post_paste_text)
             .to_string()
     }
+}
+
+/// True when the dictated text is visibly in the field. Editors turn spaces
+/// into non-breaking ones, so runs of whitespace are compared collapsed.
+fn paste_has_landed(field_value: &str, polished: &str) -> bool {
+    let polished = collapse_whitespace(polished);
+    !polished.is_empty() && collapse_whitespace(field_value).contains(&polished)
 }
 
 fn derive_owned_text_span(
@@ -7978,97 +7573,33 @@ fn capture_edit_anchor(
     }
 }
 
+/// Whether a key that deletes text was pressed in this window.
 #[cfg(target_os = "macos")]
-async fn read_clipboard_text_readonly() -> Option<String> {
-    let read = tokio::task::spawn_blocking(|| {
-        let output = std::process::Command::new("pbpaste").output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8(output.stdout)
-            .ok()
-            .map(|text| text.trim().to_string())
-            .filter(|text| !text.is_empty())
-    });
-    tokio::time::timeout(EDIT_WATCH_CLIPBOARD_TIMEOUT, read)
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .flatten()
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn read_clipboard_text_readonly() -> Option<String> {
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn paste_shortcut_seen_since(since: std::time::Instant) -> bool {
+fn deletion_key_seen_between(from: std::time::Instant, to: std::time::Instant) -> bool {
+    use said_hotkey::KeyEvt;
     said_hotkey::key_buffer().lock().is_ok_and(|events| {
-        events
-            .iter()
-            .any(|event| event.when >= since && matches!(event.evt, said_hotkey::KeyEvt::Paste))
+        events.iter().any(|event| {
+            event.when >= from
+                && event.when <= to
+                && matches!(
+                    event.evt,
+                    KeyEvt::Backspace
+                        | KeyEvt::Delete
+                        | KeyEvt::WordBackspace
+                        | KeyEvt::LineBackspace
+                        | KeyEvt::Cut
+                )
+        })
     })
 }
 
 #[cfg(not(target_os = "macos"))]
-fn paste_shortcut_seen_since(_since: std::time::Instant) -> bool {
+fn deletion_key_seen_between(_from: std::time::Instant, _to: std::time::Instant) -> bool {
     false
 }
 
-fn normalized_clipboard_candidate(text: &str) -> String {
+fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn clipboard_content_was_added(polished: &str, user_kept: &str, clipboard: &str) -> bool {
-    let polished = normalized_clipboard_candidate(polished);
-    let kept = normalized_clipboard_candidate(user_kept);
-    let clipboard = normalized_clipboard_candidate(clipboard);
-    if clipboard.chars().count() < 4
-        || polished.is_empty()
-        || kept.is_empty()
-        || clipboard == polished
-        || !kept.contains(&clipboard)
-    {
-        return false;
-    }
-
-    let Some(offset) = kept.find(&clipboard) else {
-        return false;
-    };
-    let clip_end = offset + clipboard.len();
-    let is_surrounding_addition =
-        kept[..offset].trim().is_empty() || kept[clip_end..].trim().is_empty();
-    if !is_surrounding_addition {
-        return false;
-    }
-
-    let without_clipboard = format!("{} {}", &kept[..offset], &kept[clip_end..]);
-    let remaining = normalized_clipboard_candidate(&without_clipboard);
-    remaining == polished || shares_word_overlap_ratio(&remaining, &polished) >= 0.6
-}
-
-fn shares_word_overlap_ratio(candidate: &str, reference: &str) -> f64 {
-    let candidate_words: std::collections::HashSet<String> = candidate
-        .split_whitespace()
-        .map(alnum_word_core)
-        .filter(|word| word.chars().count() > 2)
-        .map(str::to_lowercase)
-        .collect();
-    let reference_words: std::collections::HashSet<String> = reference
-        .split_whitespace()
-        .map(alnum_word_core)
-        .filter(|word| word.chars().count() > 2)
-        .map(str::to_lowercase)
-        .collect();
-    if reference_words.is_empty() {
-        return 0.0;
-    }
-    let shared = reference_words
-        .iter()
-        .filter(|word| candidate_words.contains(*word))
-        .count();
-    shared as f64 / reference_words.len() as f64
 }
 
 /// Compute edit-watch timeouts scaled by sentence length.
@@ -8120,6 +7651,46 @@ where
     }
 }
 
+/// Tell History what the user kept of a dictation, then let open views refresh
+/// and say what the backend learned from the edit. A whitespace-only difference
+/// is not an edit anyone made on purpose.
+async fn record_kept_text(
+    back_arc: &Arc<Mutex<Option<BackendEndpoint>>>,
+    app: &tauri::AppHandle,
+    recording_id: &str,
+    polished: &str,
+    kept: &str,
+) {
+    if collapse_whitespace(kept) == collapse_whitespace(polished) {
+        return;
+    }
+    let Some(ep) = back_arc.lock().ok().and_then(|guard| guard.clone()) else {
+        return;
+    };
+    match api::record_kept_text(&ep, recording_id, kept).await {
+        Ok(learned) => {
+            tracing::info!("[edit-watch] History now keeps the edited text for {recording_id}");
+            let _ = app.emit("history-changed", recording_id);
+            if let Some(word) = learned.first() {
+                let message = match &word.heard {
+                    Some(heard) => format!("Learned: {heard} → {}", word.written),
+                    None => format!("Learned: {}", word.written),
+                };
+                tracing::info!("[edit-watch] {message}");
+                let _ = app.emit("dictionary-changed", ());
+                let _ = present_status_bar_native(app, "vocab-learned", false);
+                let _ = app.emit(
+                    "vocab-learned",
+                    serde_json::json!({ "id": word.id, "term": word.written, "message": message }),
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!("[edit-watch] could not record the kept text for {recording_id}: {e}")
+        }
+    }
+}
+
 async fn cancellable_sleep(token: &CancellationToken, duration: Duration) -> bool {
     tokio::select! {
         _ = token.cancelled() => false,
@@ -8163,7 +7734,6 @@ fn start_edit_watcher(
     client_run_id: Option<String>,
     recording_id: String,
     polished: String,
-    watch_start: std::time::Instant,
     anchor: EditCaptureAnchor,
 ) {
     let control = {
@@ -8197,7 +7767,6 @@ fn start_edit_watcher(
             client_run_id,
             recording_id,
             polished,
-            watch_start,
             anchor,
         )
         .await;
@@ -8220,13 +7789,10 @@ async fn watch_for_edit(
     app: tauri::AppHandle,
     client_run_id: Option<String>,
     recording_id: String,
-    polished: String,                // the AI-generated text we pasted
-    watch_start: std::time::Instant, // captured at the call site, right after paste
+    polished: String, // the text AirNote pasted
     mut anchor: EditCaptureAnchor,
 ) {
     use std::time::Instant;
-
-    let clipboard_at_watch_start = read_clipboard_text_readonly().await;
 
     // Let the paste animation settle and focus move into the text field.
     // 400ms covers paste animation (~200ms) + AX cache start; retries handle the rest.
@@ -8242,61 +7808,48 @@ async fn watch_for_edit(
         blocking_ax_option("focused_pid after-paste", paster::focused_pid).await;
     let initial_pid = anchor.target_pid.or(focused_pid_after_paste);
 
-    // Attempt to get the initial field value.  Chrome / Electron may still be
-    // building their AX cache even after the pre-unlock at recording-start, so
-    // we retry a few times with increasing delays before declaring "AX blind".
+    // The baseline is the field *with the paste in it*. The anchor was read the
+    // moment the insert was queued, which can be before the app applied it (a
+    // lone newline, or half a paste); a baseline like that makes the paste itself
+    // look like the user's first edit and the session is thrown away. Chrome and
+    // Electron may also still be building their AX tree, so read until the
+    // dictated text is visibly there, or the settle window runs out.
     let post_paste = {
         let mut val = anchor.post_paste_text.clone();
-        if val.is_empty() {
-            val = blocking_ax_option(
-                "read_focused_value_first initial",
-                move || match initial_pid {
-                    Some(pid) => paster::read_focused_value_first_for_pid(pid),
-                    None => paster::read_focused_value_first(),
-                },
-            )
-            .await
-            .unwrap_or_default();
-        }
-        if val.is_empty() {
-            // 2nd attempt after 300 ms
-            if !cancellable_sleep(&cancel_token, Duration::from_millis(300)).await {
+        let settle_deadline = Instant::now() + EDIT_WATCH_PASTE_SETTLE;
+        while !paste_has_landed(&val, &polished) {
+            let read =
+                blocking_ax_option(
+                    "read_focused_value_first settle",
+                    move || match initial_pid {
+                        Some(pid) => paster::read_focused_value_first_for_pid(pid),
+                        None => paster::read_focused_value_first(),
+                    },
+                )
+                .await
+                .unwrap_or_default();
+            if !read.is_empty() {
+                val = read;
+            }
+            if paste_has_landed(&val, &polished) || Instant::now() >= settle_deadline {
+                break;
+            }
+            if !cancellable_sleep(&cancel_token, EDIT_WATCH_SETTLE_POLL).await {
                 tracing::info!(
-                    "[edit-watch] watcher cancelled during initial retry for {recording_id}"
+                    "[edit-watch] watcher cancelled while the paste settled for {recording_id}"
                 );
                 return;
             }
-            val = blocking_ax_option(
-                "read_focused_value_first retry1",
-                move || match initial_pid {
-                    Some(pid) => paster::read_focused_value_first_for_pid(pid),
-                    None => paster::read_focused_value_first(),
-                },
-            )
-            .await
-            .unwrap_or_default();
-        }
-        if val.is_empty() {
-            // 3rd attempt after another 500 ms — AX tree should be ready by now
-            if !cancellable_sleep(&cancel_token, Duration::from_millis(500)).await {
-                tracing::info!(
-                    "[edit-watch] watcher cancelled during initial retry for {recording_id}"
-                );
-                return;
-            }
-            val = blocking_ax_option(
-                "read_focused_value_first retry2",
-                move || match initial_pid {
-                    Some(pid) => paster::read_focused_value_first_for_pid(pid),
-                    None => paster::read_focused_value_first(),
-                },
-            )
-            .await
-            .unwrap_or_default();
         }
         val
     };
-    if anchor.post_paste_text.is_empty() && !post_paste.is_empty() {
+    if post_paste != anchor.post_paste_text {
+        tracing::info!(
+            "[edit-watch] baseline for {recording_id} read again after the paste landed (len {} -> {}, landed={})",
+            anchor.post_paste_text.len(),
+            post_paste.len(),
+            paste_has_landed(&post_paste, &polished),
+        );
         anchor.post_paste_text = post_paste.clone();
         anchor.owned_span =
             derive_owned_text_span(anchor.pre_paste_text.as_deref(), &post_paste, &polished);
@@ -8317,6 +7870,10 @@ async fn watch_for_edit(
     let mut ownership_lost_reason: Option<&'static str> = None;
     let mut finalize_requested = finalize_token.is_cancelled();
     let mut field_empty_since: Option<Instant> = None;
+    // The last poll that still found dictated text in the field. With the
+    // key log it tells a Send (field cleared, no deletion keys) from the user
+    // deleting the text.
+    let mut last_holding_read_at = Instant::now();
     let mut explicit_boundary: Option<&'static str> = None;
 
     // Scale timeouts by sentence length — long sentences need more reading time
@@ -8330,9 +7887,6 @@ async fn watch_for_edit(
         post_edit_idle_timeout.as_secs(),
     );
     let mut saw_user_edit = false;
-    // Capture-error metadata, hoisted so we can ship it to the backend's
-    // CAPTURE_ERROR pre-filter alongside the edit text.
-    let mut app_switched_during_capture: bool = false;
 
     tracing::info!(
         "[edit-watch] watching {recording_id} — target_pid={:?} focused_after_paste={:?} initial field readable: {} (len={})",
@@ -8363,7 +7917,6 @@ async fn watch_for_edit(
         let now_pid = blocking_ax_option("focused_pid poll", paster::focused_pid).await;
         let pid_switched = edit_watch_crossed_app_boundary(initial_pid, now_pid);
         if pid_switched {
-            app_switched_during_capture = true;
             explicit_boundary = Some("app_switched");
             tracing::info!(
                 "[edit-watch] app boundary for {recording_id} — initial_pid={initial_pid:?} now_pid={now_pid:?}"
@@ -8371,12 +7924,12 @@ async fn watch_for_edit(
             break;
         }
 
-        // Detect if target app exited — stop polling a dead process
+        // Stop polling a process that has exited. An unreadable frontmost app
+        // (`now_pid == None`) is not an exit: AX misses a poll now and then
+        // while the app is busy.
         if let Some(pid) = initial_pid {
-            if now_pid.is_none() || now_pid == Some(1) {
-                tracing::info!(
-                    "[edit-watch] target process pid={pid} appears dead — finalizing early"
-                );
+            if !backend_guard::process_exists(pid) {
+                tracing::info!("[edit-watch] target process pid={pid} exited — finalizing early");
                 break;
             }
         }
@@ -8397,6 +7950,7 @@ async fn watch_for_edit(
                     paster::read_focused_value_first_for_pid(pid)
                 })
                 .await
+                .or(fast)
             }
         } else if now_pid != last_pid {
             last_pid = now_pid;
@@ -8412,8 +7966,14 @@ async fn watch_for_edit(
             )
             .await
         }
-        .unwrap_or_default();
+        // A read that fails says nothing about the field. Treating it as an empty
+        // field made a missed poll look like the user clearing their text.
+        .unwrap_or_else(|| last_val.clone());
         let ax_latency = ax_read_start.elapsed();
+        let field_holds_text = !owned_text_is_blank(&anchor, &now_val);
+        if field_holds_text {
+            last_holding_read_at = Instant::now();
+        }
         if ax_latency > Duration::from_millis(100) && current_interval < Duration::from_millis(200)
         {
             current_interval = Duration::from_millis(ax_latency.as_millis() as u64 * 2);
@@ -8441,7 +8001,11 @@ async fn watch_for_edit(
             idle_at = Instant::now();
             last_change_at = Instant::now();
             current_interval = EDIT_WATCH_FAST_INTERVAL;
-            field_empty_since = now_val.is_empty().then(Instant::now);
+            if field_holds_text {
+                field_empty_since = None;
+            } else if field_empty_since.is_none() {
+                field_empty_since = Some(Instant::now());
+            }
             if now_val != post_paste {
                 if !saw_user_edit {
                     tracing::info!(
@@ -8531,7 +8095,12 @@ async fn watch_for_edit(
                 }
             }
             if final_field_is_owned && ownership_lost_reason.is_none() && now_val != last_val {
-                saw_user_edit = now_val != post_paste;
+                if owned_text_is_blank(&anchor, &now_val) {
+                    field_empty_since.get_or_insert_with(Instant::now);
+                } else {
+                    last_holding_read_at = Instant::now();
+                    field_empty_since = None;
+                }
                 if let Err(reason) = observations.record(
                     &anchor,
                     &post_paste,
@@ -8555,12 +8124,24 @@ async fn watch_for_edit(
         return;
     }
 
-    // A submit can clear the field after several valid edits. Recover the latest
-    // anchored state rather than guessing from word overlap or a single snapshot.
-    let effective_val = effective_owned_field_value(&anchor, &last_val, &observations);
+    // A Send clears the field after the edits are done, and so does deleting the
+    // text. The key log tells them apart: after a Send the latest reading that
+    // still held the text is what the user kept.
+    let cleared_by_deletion = field_empty_since.is_some_and(|cleared_at| {
+        let from = last_holding_read_at
+            .checked_sub(EDIT_WATCH_DELETION_SLACK)
+            .unwrap_or(last_holding_read_at);
+        deletion_key_seen_between(from, cleared_at)
+    });
+    let effective_val =
+        effective_owned_field_value(&anchor, &last_val, &observations, cleared_by_deletion);
     if effective_val != last_val {
         tracing::info!(
-            "[edit-watch] final field unavailable (sent message?); using latest owned observation"
+            "[edit-watch] field cleared without deleting (sent?) for {recording_id}; using the latest reading that held the text"
+        );
+    } else if field_empty_since.is_some() {
+        tracing::info!(
+            "[edit-watch] field cleared for {recording_id}; deletion keys seen: {cleared_by_deletion}"
         );
     }
 
@@ -8572,17 +8153,9 @@ async fn watch_for_edit(
         explicit_boundary,
     );
 
-    // ── Determine user_kept + capture_method ───────────────────────────────────
-    //
-    // The capture_method is propagated to the backend so auto-promotion thresholds
-    // can scale with capture confidence:
-    //   • "ax"                 → AX API read directly (high confidence, ground truth)
-    //   • "keystroke_verified" → keystroke replay AGREES with clipboard read (high)
-    //   • "clipboard"          → clipboard read; keystroke unavailable or disagreed (medium)
-    //   • "keystroke_only"     → keystroke replay; clipboard unreachable (LOW — pending only)
+    // ── Determine user_kept ────────────────────────────────────────────────────
 
     let user_kept: String;
-    let capture_method: &'static str;
 
     if !post_paste.is_empty() {
         // ── AX was readable — compare values directly ──────────────────────────
@@ -8611,7 +8184,6 @@ async fn watch_for_edit(
                 return;
             }
         };
-        capture_method = "ax";
         tracing::info!(
             "[edit-watch] ax_capture for {recording_id}: {:?} → {:?}",
             polished.chars().take(60).collect::<String>(),
@@ -8678,351 +8250,24 @@ async fn watch_for_edit(
         return;
     }
 
-    // Whitespace / punctuation / AX-jitter filter (no API call needed).
-    if !is_meaningful_edit(&polished, &user_kept) {
-        tracing::info!("[edit-watch] edit not meaningful for {recording_id} — skipping");
-        if let (Some(run_id), Some(ep)) = (
-            client_run_id.as_deref(),
-            back_arc.lock().ok().and_then(|g| g.clone()),
-        ) {
-            telemetry::on_accepted_no_edit(&ep, run_id);
-        }
-        return;
-    }
-
-    // ── Three-way classifier (Groq LLM call) ────────────────────────────────
-    // Sends (recording_id, ai_output, user_kept) to the backend which looks up
-    // the original transcript and asks Groq: "Is this an AI mistake correction
-    // that we should learn from, or just user rephrasing / adding context?"
-    tracing::info!(
-        "[edit-watch] classifying edit for {recording_id}: polished={:?} → kept={:?}",
-        polished.chars().take(50).collect::<String>(),
-        user_kept.chars().take(50).collect::<String>(),
-    );
-
-    let ep_opt = back_arc.lock().ok().and_then(|g| g.clone());
-    if let Some(ref ep) = ep_opt {
-        let clipboard_at_capture = read_clipboard_text_readonly().await;
-        let paste_shortcut_seen = paste_shortcut_seen_since(watch_start);
-        let clipboard_addition_seen = clipboard_at_watch_start
-            .as_deref()
-            .is_some_and(|clipboard| clipboard_content_was_added(&polished, &user_kept, clipboard))
-            || clipboard_at_capture.as_deref().is_some_and(|clipboard| {
-                clipboard_content_was_added(&polished, &user_kept, clipboard)
-            });
-        let matches_clipboard = paste_shortcut_seen || clipboard_addition_seen;
-        if matches_clipboard {
-            tracing::info!(
-                "[edit-watch] follow-up paste detected for {recording_id}; shortcut={} clipboard_addition={}",
-                paste_shortcut_seen,
-                clipboard_addition_seen,
-            );
-        }
-        let capture_meta = api::CaptureMeta {
-            time_since_paste_ms: watch_start.elapsed().as_millis() as u64,
-            app_switched: app_switched_during_capture,
-            matches_clipboard,
-        };
-        let mut edit_trace = said_core::dictation_trace::DictationTrace::default();
-        edit_trace.add_stage(said_core::dictation_trace::TraceStageInput {
-            stage: "edit_watch.capture",
-            component: "desktop",
-            function: "watch_for_edit",
-            input: Some(&polished),
-            output: Some(&user_kept),
-            reason: Some("focused-field value captured after paste"),
-            risk: Some("edit_capture"),
-            metadata: serde_json::json!({
-                "capture_method": capture_method,
-                "time_since_paste_ms": capture_meta.time_since_paste_ms,
-                "app_switched": capture_meta.app_switched,
-                "matches_clipboard": capture_meta.matches_clipboard,
-                "post_paste_readable": !post_paste.is_empty(),
-                "saw_user_edit": saw_user_edit,
-                "initial_pid": initial_pid,
-                "final_front_pid": final_front_pid,
-                "boundary": explicit_boundary,
-                "field_fingerprint": anchor.field_fingerprint,
-                "owned_span_start_chars": anchor.owned_span.as_ref().map(|span| span.start_chars),
-                "owned_span_len_chars": anchor.owned_span.as_ref().map(|span| span.len_chars),
-                "observation_count": observations.total_observations,
-                "retained_observation_count": observations.retained_count(),
-                "dropped_observation_count": observations.dropped_count(),
-                "observation_span_ms": observations.elapsed_span_ms(),
-            }),
-            ..Default::default()
-        });
-        match api::classify_edit(
-            ep,
-            &recording_id,
+    // The user changed the text and the field is still provably theirs, so this
+    // is what History shows for the dictation from now on, and the backend
+    // learns any names or terms the user fixed.
+    record_kept_text(&back_arc, &app, &recording_id, &polished, &user_kept).await;
+    if let (Some(run_id), Some(ep)) = (
+        client_run_id.as_deref(),
+        back_arc.lock().ok().and_then(|g| g.clone()),
+    ) {
+        telemetry::on_edit_outcome(
+            &ep,
+            run_id,
             &polished,
             &user_kept,
-            capture_method,
-            capture_meta,
-            client_run_id.as_deref(),
-            anchor.pre_paste_text.as_deref(),
-            Some(edit_trace.into_value()),
-        )
-        .await
-        {
-            Ok(resp) => {
-                tracing::info!(
-                    "[edit-watch] classify_result class={} promoted={} repeat={} learned={} notify={} reason={:?} pending={:?}",
-                    resp.class,
-                    resp.promoted_count,
-                    resp.is_repeat,
-                    resp.learned,
-                    resp.notify,
-                    resp.reason,
-                    resp.pending_id
-                );
-
-                if let Some(run_id) = client_run_id.as_deref() {
-                    telemetry::on_edit_outcome(
-                        ep,
-                        run_id,
-                        &polished,
-                        &user_kept,
-                        false,
-                        user_kept.trim().is_empty(),
-                        false,
-                    );
-                    telemetry::on_classify_result(ep, run_id, &resp);
-                }
-
-                if let Some(email) = resp.learned_emails.first() {
-                    if !email.trim().is_empty() {
-                        let _ = present_status_bar_native(&app, "email-learned", false);
-                        let _ = app.emit(
-                            "email-learned",
-                            serde_json::json!({
-                                "email": email,
-                                "message": "Email saved for next time",
-                            }),
-                        );
-                    }
-                }
-
-                if (resp.notify || resp.learned) && resp.learned_emails.is_empty() {
-                    let first_term = resp.promoted_terms.first().cloned();
-                    if resp.notify {
-                        if let Some(ref term) = first_term {
-                            if !term.trim().is_empty() {
-                                let _ = app.emit(
-                                    "vocab-toast",
-                                    serde_json::json!({
-                                        "kind":   "added",
-                                        "term":   term,
-                                        "source": "auto",
-                                    }),
-                                );
-                            }
-                        }
-                    }
-                    // Show learning result in the status bar
-                    let term_display = first_term
-                        .clone()
-                        .unwrap_or_else(|| "your correction".to_string());
-                    let msg = match (resp.class.as_str(), resp.is_repeat) {
-                        ("STT_ERROR" | "stt_error", true) => {
-                            format!("Added new spelling for \"{}\"", term_display)
-                        }
-                        ("STT_ERROR" | "stt_error", false) => {
-                            format!("Will recognise \"{}\" next time", term_display)
-                        }
-                        ("POLISH_ERROR" | "polish_error", _) => {
-                            "Updated writing preference".to_string()
-                        }
-                        _ => "Remembered your correction".to_string(),
-                    };
-                    let _ = present_status_bar_native(&app, "vocab-learned", false);
-                    let _ = app.emit(
-                        "vocab-learned",
-                        serde_json::json!({
-                            "term": term_display,
-                            "message": msg,
-                        }),
-                    );
-                }
-
-                // Surface queued terms in the status bar pill so the user knows
-                // the system noticed and how many more edits are needed.
-                if let Some(qt) = resp.queued_terms.first() {
-                    if !qt.term.trim().is_empty() {
-                        let remaining = qt.k - qt.sighting_count;
-                        let _ = present_status_bar_native(&app, "vocab-queued", false);
-                        let _ = app.emit(
-                            "vocab-queued",
-                            serde_json::json!({
-                                "term": qt.term,
-                                "remaining": remaining,
-                                "sighting_count": qt.sighting_count,
-                                "k": qt.k,
-                            }),
-                        );
-                        tracing::info!(
-                            "[edit-watch] queued {:?} — {}/{} sightings, {} more to learn",
-                            qt.term,
-                            qt.sighting_count,
-                            qt.k,
-                            remaining,
-                        );
-                    }
-                }
-
-                // Review candidates — show interactive picker
-                if !resp.review_candidates.is_empty() {
-                    let _ = present_status_bar_native(&app, "vocab-review", false);
-                    let candidates: Vec<serde_json::Value> = resp
-                        .review_candidates
-                        .iter()
-                        .map(|c| {
-                            serde_json::json!({
-                                "original": c.original,
-                                "corrected": c.corrected,
-                                "term_type": c.term_type,
-                                "learnable": c.learnable,
-                                "tag": c.tag,
-                                "context": c.context,
-                            })
-                        })
-                        .collect();
-                    let _ = app.emit(
-                        "vocab-review",
-                        serde_json::json!({
-                            "candidates": candidates,
-                            "detected_changes": &resp.changes,
-                            "review_session_id": &resp.review_session_id,
-                            "recording_id": recording_id,
-                        }),
-                    );
-                    tracing::info!(
-                        "[edit-watch] review card: {} candidate(s), {} detected change(s)",
-                        resp.review_candidates.len(),
-                        resp.changes.len(),
-                    );
-                }
-
-                // Ambiguous terms — show confirmation toast in status bar
-                for amb in &resp.ambiguous_terms {
-                    let _ = present_status_bar_native(&app, "vocab-confirm", false);
-                    let _ = app.emit(
-                        "vocab-confirm",
-                        serde_json::json!({
-                            "term": amb.corrected,
-                            "original": amb.original,
-                            "context": amb.context,
-                            "recording_id": amb.recording_id,
-                        }),
-                    );
-                    tracing::info!(
-                        "[edit-watch] asking user: {:?} → {:?} — ambiguous",
-                        amb.original,
-                        amb.corrected,
-                    );
-                }
-
-                // Wrong corrections auto-fixed — show acknowledgement pill
-                for neg in &resp.negative_terms {
-                    let _ = present_status_bar_native(&app, "vocab-wrong-fixed", false);
-                    let _ = app.emit(
-                        "vocab-wrong-fixed",
-                        serde_json::json!({
-                            "term": neg.term,
-                            "wrong_replacement": neg.wrong_replacement,
-                        }),
-                    );
-                    tracing::info!(
-                        "[edit-watch] wrong correction fixed: {:?} → {:?} — alias deleted, retraining",
-                        neg.wrong_replacement,
-                        neg.term,
-                    );
-                }
-
-                if resp.learned || resp.pending_id.is_some() {
-                    let _ = app.emit("pending-edits-changed", ());
-                }
-
-                // Poll the backend for retrain lifecycle and emit real events.
-                if resp.learned {
-                    let app_retrain = app.clone();
-                    let ep_retrain = ep.clone();
-                    tokio::spawn(async move {
-                        let baseline_finished = api::get_retrain_status(&ep_retrain)
-                            .await
-                            .map(|s| s.finished_at)
-                            .unwrap_or(0);
-
-                        let mut started_emitted = false;
-                        for _ in 0..30 {
-                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                            let Ok(status) = api::get_retrain_status(&ep_retrain).await else {
-                                continue;
-                            };
-
-                            if status.running && !started_emitted {
-                                started_emitted = true;
-                                let _ = present_status_bar_native(
-                                    &app_retrain,
-                                    "retrain-started",
-                                    false,
-                                );
-                                let _ = app_retrain.emit(
-                                    "retrain-status",
-                                    serde_json::json!({ "phase": "started" }),
-                                );
-                                tracing::info!("[retrain-poll] training started — notified UI");
-                            }
-
-                            if status.finished_at > baseline_finished {
-                                let dur = status.duration_ms as f64 / 1000.0;
-                                let _ =
-                                    present_status_bar_native(&app_retrain, "retrain-done", false);
-                                let _ = app_retrain.emit(
-                                    "retrain-status",
-                                    serde_json::json!({
-                                        "phase": "done",
-                                        "duration_s": dur,
-                                        "success": status.success,
-                                    }),
-                                );
-                                tracing::info!(
-                                    "[retrain-poll] training finished in {dur:.1}s success={} — notified UI",
-                                    status.success,
-                                );
-                                break;
-                            }
-                        }
-                        // If retrain never started (API unavailable, feature gated, etc.)
-                        // emit unavailable so the frontend doesn't stay in a silent state.
-                        if !started_emitted {
-                            tracing::info!(
-                                "[retrain-poll] training did not start within 30 s (API unavailable or feature not enabled on this machine)"
-                            );
-                            let _ = app_retrain.emit(
-                                "retrain-status",
-                                serde_json::json!({ "phase": "unavailable" }),
-                            );
-                        }
-                    });
-                }
-
-                // Local ASR does not have a live provider-bias channel. Learned
-                // terms stay in the vocabulary/profile layer used by polish.
-                if resp.learned && resp.promoted_count > 0 {
-                    tracing::info!(
-                        "[vocabulary] learned {} promoted term(s); polish profile will pick them up",
-                        resp.promoted_count,
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("[edit-watch] classify_edit call failed: {e}");
-                // Classifier unavailable — fail open (don't store, don't notify).
-            }
-        }
+            false,
+            user_kept.trim().is_empty(),
+            false,
+        );
     }
-    let _ = back_arc; // keep arc alive until end of scope
 }
 
 /// Returns true if `candidate` shares at least one significant word (>3 chars,
@@ -9116,93 +8361,6 @@ fn common_suffix_bytes(a: &str, b: &str) -> usize {
         bytes += ac.len_utf8();
     }
     bytes
-}
-
-/// Returns true only if `user_kept` is *meaningfully* different from `polished`.
-///
-/// Filters out false positives caused by:
-/// - Whitespace-only changes (trailing newline, extra space)
-/// - Case-only changes (auto-capitalize)
-/// - Smart-punctuation substitutions (smart quotes, em-dashes, ellipsis)
-/// - AX read jitter (< 3 character differences) — **except** when a jargon-
-///   like token (digits + letters mixed, e.g. n8n, k8s, v2.0) is involved,
-///   which is exactly the case where small char diffs ARE meaningful.
-fn is_meaningful_edit(polished: &str, user_kept: &str) -> bool {
-    let p_raw = normalize_spacing_and_punctuation(polished);
-    let k_raw = normalize_spacing_and_punctuation(user_kept);
-    let p = p_raw.to_lowercase();
-    let k = k_raw.to_lowercase();
-
-    if p == k {
-        tracing::info!("[edit-gate] normalized texts identical — not meaningful");
-        return false;
-    }
-
-    // Word-level check: at least 1 alphanumeric word must actually differ.
-    // Compute this first so the char-distance gate can be context-aware.
-    let p_words: Vec<&str> = p.split_whitespace().collect();
-    let k_words: Vec<&str> = k.split_whitespace().collect();
-    let p_raw_words: Vec<&str> = p_raw.split_whitespace().collect();
-    let k_raw_words: Vec<&str> = k_raw.split_whitespace().collect();
-    let max_len = p_words.len().max(k_words.len());
-    let mut word_diffs = 0usize;
-    let mut jargon_diff = false;
-    for i in 0..max_len {
-        let pw = p_words.get(i).copied().unwrap_or("");
-        let kw = k_words.get(i).copied().unwrap_or("");
-        let pw_raw = p_raw_words.get(i).copied().unwrap_or("");
-        let kw_raw = k_raw_words.get(i).copied().unwrap_or("");
-        let pw_core = alnum_word_core(pw);
-        let kw_core = alnum_word_core(kw);
-        if pw_core != kw_core && (!pw_core.is_empty() || !kw_core.is_empty()) {
-            word_diffs += 1;
-            // Jargon signal: if EITHER side of the diff has digits, the edit
-            // is almost certainly a meaningful jargon correction (n8n, k8s,
-            // v2.0, IP0 → IPO, etc.) regardless of how few chars differ.
-            if looks_jargon_like_word(pw_raw) || looks_jargon_like_word(kw_raw) {
-                jargon_diff = true;
-            }
-        }
-    }
-
-    if word_diffs == 0 {
-        tracing::info!(
-            "[edit-gate] no alphanumeric word diffs — punctuation/formatting only, not meaningful"
-        );
-        return false;
-    }
-
-    // Character-level distance gate.  Threshold = 1 for jargon edits (any
-    // diff matters), 3 for plain prose (filter AX jitter / autocorrect).
-    let char_diff = simple_char_distance(&p, &k);
-    let min_char_diff = if jargon_diff { 1 } else { 3 };
-    if char_diff < min_char_diff {
-        tracing::info!(
-            "[edit-gate] char distance {char_diff} < {min_char_diff} — AX jitter, not meaningful"
-        );
-        return false;
-    }
-
-    tracing::info!(
-        "[edit-gate] {word_diffs} word(s) changed, char_diff={char_diff}, jargon={jargon_diff} — meaningful edit"
-    );
-    true
-}
-
-/// Normalize text for edit comparison: collapse whitespace and replace common
-/// Unicode punctuation variants with ASCII equivalents while preserving case.
-fn normalize_spacing_and_punctuation(s: &str) -> String {
-    s.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace('\u{201c}', "\"") // left double smart quote
-        .replace('\u{201d}', "\"") // right double smart quote
-        .replace('\u{2018}', "'") // left single smart quote
-        .replace('\u{2019}', "'") // right single smart quote / apostrophe
-        .replace('\u{2014}', "-") // em-dash
-        .replace('\u{2013}', "-") // en-dash
-        .replace('\u{2026}', "...") // ellipsis
-        .replace('\u{00a0}', " ") // non-breaking space
 }
 
 fn looks_jargon_like_word(word: &str) -> bool {
@@ -10369,7 +9527,6 @@ fn main() {
             trigger_browser_automation,
             request_browser_automation,
             browser_automation_status,
-            submit_edit_feedback,
             toggle_recording,
             set_mode,
             request_accessibility,
@@ -10389,9 +9546,6 @@ fn main() {
             clear_enterprise_auth,
             get_enterprise_status,
             list_workspaces,
-            get_profile_insights,
-            get_app_buckets,
-            set_app_bucket,
             activate_workspace,
             deactivate_workspace,
             get_device_id,
@@ -10415,23 +9569,11 @@ fn main() {
             reveal_downloaded_file,
             reveal_saved_audio,
             download_meeting_audio,
-            // Pending-edit review
-            get_pending_edits,
-            resolve_pending_edit,
-            dismiss_pending_edit,
-            // Vocabulary management
-            list_vocabulary,
-            list_vocabulary_aliases,
-            add_vocabulary_term,
-            delete_vocabulary_term,
-            confirm_term,
-            confirm_batch,
-            get_next_edit_review_session,
-            skip_edit_review_session,
-            block_correction,
-            reset_all_vocabulary,
-            star_vocabulary_term,
-            patch_vocabulary_term,
+            // Dictionary
+            list_dictionary,
+            add_dictionary_word,
+            delete_dictionary_word,
+            clear_dictionary,
             // Invite a friend
             send_invite_email,
             // OpenAI / ChatGPT OAuth
@@ -10578,73 +9720,6 @@ fn main() {
     });
 }
 
-// ── Tests for the meaningful-edit gate ────────────────────────────────────────
-
-#[cfg(test)]
-mod meaningful_edit_tests {
-    use super::is_meaningful_edit;
-
-    #[test]
-    fn rejects_identical_after_normalize() {
-        assert!(!is_meaningful_edit("Hello", "  hello  "));
-    }
-
-    #[test]
-    fn rejects_punctuation_only_change() {
-        assert!(!is_meaningful_edit("Hello world.", "Hello world!"));
-    }
-
-    #[test]
-    fn rejects_short_non_jargon_typo() {
-        // Plain prose typo within 2 chars — likely AX jitter.
-        assert!(!is_meaningful_edit(
-            "the meeting was good",
-            "the meeting was god",
-        ));
-    }
-
-    #[test]
-    fn accepts_real_word_swap_at_threshold() {
-        assert!(is_meaningful_edit(
-            "the meeting was good",
-            "the meeting was great",
-        ));
-    }
-
-    #[test]
-    fn accepts_short_jargon_edit_with_digits() {
-        // The exact production case from logs:
-        //   "Kal N10 ka IB0 nikalne wala hai." → "Kal n8n ka IB0 nikalne wala hai."
-        // char_diff after normalize = 2.  Old gate rejected as "AX jitter".
-        // New jargon-aware gate accepts because the changed token has digits.
-        assert!(is_meaningful_edit(
-            "Kal N10 ka IB0 nikalne wala hai.",
-            "Kal n8n ka IB0 nikalne wala hai.",
-        ));
-    }
-
-    #[test]
-    fn accepts_n8n_corrections_universally() {
-        assert!(is_meaningful_edit("I use 10 daily", "I use n8n daily"));
-        assert!(is_meaningful_edit("I use written daily", "I use n8n daily"));
-        assert!(is_meaningful_edit("I use k9s", "I use k8s")); // 1-char digit fix
-        assert!(is_meaningful_edit("v2.1 release", "v2.0 release"));
-    }
-
-    #[test]
-    fn accepts_brand_or_acronym_corrections_even_at_one_char() {
-        assert!(is_meaningful_edit(
-            "MacOps ka kitna profit hai is saal",
-            "MACOBS ka kitna profit hai is saal",
-        ));
-    }
-
-    #[test]
-    fn rejects_zero_alphanumeric_word_changes() {
-        assert!(!is_meaningful_edit("hello world", "hello   world"));
-    }
-}
-
 #[cfg(test)]
 mod dictation_audio_level_tests {
     use super::{dictation_pcm16_levels, dictation_wav_is_no_speech};
@@ -10692,10 +9767,21 @@ mod dictation_audio_level_tests {
 mod edit_watch_timeout_tests {
     use super::{
         EDIT_WATCH_MAX_OBSERVATIONS, EditCaptureAnchor, EditObservationTimeline,
-        clipboard_content_was_added, derive_owned_text_span, edit_watch_crossed_app_boundary,
-        edit_watch_timeouts, edit_watcher_generation_is_current, effective_owned_field_value,
-        extract_owned_text, new_edit_watcher_control,
+        derive_owned_text_span, edit_watch_crossed_app_boundary, edit_watch_timeouts,
+        edit_watcher_generation_is_current, effective_owned_field_value, extract_owned_text,
+        new_edit_watcher_control, owned_text_is_blank, paste_has_landed,
     };
+
+    /// A chat box that was empty before dictation, with the paste in it.
+    fn empty_box_anchor(pasted: &str) -> EditCaptureAnchor {
+        EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some(String::new()),
+            post_paste_text: pasted.to_string(),
+            owned_span: derive_owned_text_span(Some(""), pasted, pasted),
+        }
+    }
 
     #[test]
     fn gives_user_time_to_read_before_first_edit() {
@@ -10737,47 +9823,6 @@ mod edit_watch_timeout_tests {
         assert!(!edit_watcher_generation_is_current(Some(&current), 7));
         assert!(edit_watcher_generation_is_current(Some(&current), 8));
         assert!(!edit_watcher_generation_is_current(None, 8));
-    }
-
-    #[test]
-    fn detects_clipboard_text_appended_after_dictation() {
-        assert!(clipboard_content_was_added(
-            "Please review the proposal.",
-            "Please review the proposal. https://example.com/spec",
-            "https://example.com/spec",
-        ));
-    }
-
-    #[test]
-    fn detects_clipboard_text_prepended_before_dictation() {
-        assert!(clipboard_content_was_added(
-            "Please review the proposal.",
-            "Context from the client: Please review the proposal.",
-            "Context from the client:",
-        ));
-    }
-
-    #[test]
-    fn does_not_treat_word_correction_as_clipboard_addition() {
-        assert!(!clipboard_content_was_added(
-            "Please check the CQLite migration.",
-            "Please check the SQLite migration.",
-            "SQLite",
-        ));
-    }
-
-    #[test]
-    fn ignores_short_or_unrelated_clipboard_content() {
-        assert!(!clipboard_content_was_added(
-            "Please review the proposal.",
-            "Please review the proposal. yes",
-            "yes",
-        ));
-        assert!(!clipboard_content_was_added(
-            "Please review the proposal.",
-            "Please review the proposal carefully.",
-            "unrelated clipboard text",
-        ));
     }
 
     #[test]
@@ -10879,7 +9924,12 @@ mod edit_watch_timeout_tests {
             Some("Before SQLite and MACOBS After"),
         );
         assert_eq!(
-            effective_owned_field_value(&anchor, "Before SQLite and MACOBS After", &timeline,),
+            effective_owned_field_value(
+                &anchor,
+                "Before SQLite and MACOBS After",
+                &timeline,
+                false,
+            ),
             "Before SQLite and MACOBS After",
         );
     }
@@ -10899,7 +9949,7 @@ mod edit_watch_timeout_tests {
             .unwrap();
 
         assert_eq!(
-            effective_owned_field_value(&anchor, "Corrected output", &timeline),
+            effective_owned_field_value(&anchor, "Corrected output", &timeline, false),
             "Corrected output",
         );
     }
@@ -10936,5 +9986,89 @@ mod edit_watch_timeout_tests {
             ),
             Err("prefix_mismatch"),
         );
+    }
+    #[test]
+    fn a_sent_message_keeps_the_last_edit_not_the_emptied_box() {
+        // Reported 2026-09-25: a chat box keeps a lone newline after Send, and
+        // the kept text came out empty, so History kept AirNote's version.
+        let anchor = empty_box_anchor("Bhai jo maine tumhen lark ki chat ID di thi");
+        let mut timeline = EditObservationTimeline::default();
+        let edited = "Bhai jo maine tumhe Lark ki chat ID di thi";
+        assert_eq!(
+            timeline.record(&anchor, &anchor.post_paste_text, edited, 3_000),
+            Ok(true)
+        );
+        for after_send in ["", "\n", " \n"] {
+            assert!(owned_text_is_blank(&anchor, after_send));
+            assert_eq!(
+                timeline.record(&anchor, &anchor.post_paste_text, after_send, 9_000),
+                Ok(false),
+                "an emptied box is not an observation of what was kept"
+            );
+            let kept_field = effective_owned_field_value(&anchor, after_send, &timeline, false);
+            assert_eq!(
+                extract_owned_text(&anchor, &kept_field),
+                Ok(edited.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn a_message_sent_without_edits_is_an_unchanged_dictation() {
+        let anchor = empty_box_anchor("Can we close the design review today?");
+        let timeline = EditObservationTimeline::default();
+        assert_eq!(
+            effective_owned_field_value(&anchor, "\n", &timeline, false),
+            anchor.post_paste_text,
+        );
+    }
+
+    #[test]
+    fn text_the_user_deleted_is_not_what_they_kept() {
+        let anchor = empty_box_anchor("Can we close the design review today?");
+        let mut timeline = EditObservationTimeline::default();
+        timeline
+            .record(&anchor, &anchor.post_paste_text, "Can we close the", 2_000)
+            .unwrap();
+        let kept_field = effective_owned_field_value(&anchor, "", &timeline, true);
+        assert_eq!(extract_owned_text(&anchor, &kept_field), Ok(String::new()));
+    }
+
+    #[test]
+    fn only_the_text_that_was_there_before_the_paste_counts_as_blank() {
+        let anchor = EditCaptureAnchor {
+            target_pid: Some(42),
+            field_fingerprint: Some(7),
+            pre_paste_text: Some("Notes: ".to_string()),
+            post_paste_text: "Notes: ship on Friday".to_string(),
+            owned_span: derive_owned_text_span(
+                Some("Notes: "),
+                "Notes: ship on Friday",
+                "ship on Friday",
+            ),
+        };
+        assert!(owned_text_is_blank(&anchor, "Notes: "));
+        assert!(!owned_text_is_blank(&anchor, "Notes: ship Monday"));
+    }
+
+    #[test]
+    fn the_baseline_waits_for_the_paste_to_land() {
+        let polished = "Toh phir WhatsApp ke alawa links bheji hain";
+        // Read the moment the insert was queued: only the box's newline.
+        assert!(!paste_has_landed("\n", polished));
+        assert!(!paste_has_landed("Toh phir WhatsApp", polished));
+        // Editors put non-breaking spaces where the paste had plain ones.
+        assert!(paste_has_landed(
+            "Toh\u{a0}phir WhatsApp ke alawa links bheji hain\n",
+            polished
+        ));
+        assert!(!paste_has_landed("anything", ""));
+
+        // A baseline read too early owns nothing, so the first poll that sees
+        // the paste reads as an edit and the whole session is refused.
+        assert!(derive_owned_text_span(Some("\n"), "\n", polished).is_none());
+        let settled = format!("{polished}\n");
+        let span = derive_owned_text_span(Some("\n"), &settled, polished).expect("owned span");
+        assert_eq!(span.text.trim(), polished);
     }
 }

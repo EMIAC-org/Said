@@ -14,13 +14,13 @@ export function ReconnectingOverlay({ level, showOverlay, justRecovered }: Props
         <div
           className="flex items-center gap-2 px-4 py-2.5 rounded-xl pointer-events-auto"
           style={{
-            background: "hsl(152 60% 40% / 0.18)",
+            background: "hsl(var(--card))",
             backdropFilter: "blur(16px)",
-            boxShadow: "inset 0 0 0 1px hsl(152 60% 50% / 0.25), 0 8px 24px hsl(0 0% 0% / 0.3)",
+            boxShadow: "inset 0 0 0 1px hsl(var(--chip-lime-fg) / 0.3), 0 8px 24px hsl(0 0% 0% / 0.18)",
           }}
         >
-          <CheckCircle2 size={15} style={{ color: "hsl(152 60% 65%)" }} />
-          <span className="text-[12.5px] font-medium" style={{ color: "hsl(152 60% 80%)" }}>
+          <CheckCircle2 size={15} style={{ color: "hsl(var(--chip-lime-fg))" }} />
+          <span className="text-[12.5px] font-medium" style={{ color: "hsl(var(--foreground))" }}>
             Reconnected
           </span>
         </div>

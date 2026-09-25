@@ -7,6 +7,7 @@ import {
   subscribeHistoryCache,
 } from "@/lib/historyUiCache";
 import { useAudioPlayer } from "@/lib/useAudioPlayer";
+import { keptText } from "@/lib/keptText";
 import { AppIcon, appDisplayName, fallbackAppName, useAppIdentity } from "@/components/AppIcon";
 import { SplitDashboardSkeleton } from "@/components/views/dashboards/DashboardSkeleton";
 import type { AppSnapshot, Recording } from "@/types";
@@ -149,7 +150,7 @@ function PaceCard({ avgWpm, spark }: { avgWpm: number; spark: { height: number }
                   i === spark.length - 1
                     ? "hsl(var(--primary) / 0.55)"
                     : i % 2 === 0
-                      ? "hsl(0 0% 100% / 0.07)"
+                      ? "hsl(var(--foreground) / 0.07)"
                       : "hsl(var(--primary) / 0.40)",
               }}
             />
@@ -342,7 +343,7 @@ function RecordingCard({
   async function copy(e: React.MouseEvent) {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(rec.polished);
+      await navigator.clipboard.writeText(keptText(rec));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
     } catch { /* ignore */ }
@@ -458,9 +459,9 @@ function RecordingCard({
           overflow: "hidden",
           wordBreak: "break-word",
         }}
-        title={rec.polished}
+        title={keptText(rec)}
       >
-        {rec.polished}
+        {keptText(rec)}
       </div>
     </div>
   );
@@ -484,7 +485,7 @@ function ActionButton({
       style={{
         width: 22, height: 22,
         borderRadius: 5,
-        background: active ? "hsl(var(--primary) / 0.18)" : "hsl(0 0% 100% / 0.05)",
+        background: active ? "hsl(var(--primary) / 0.18)" : "hsl(var(--foreground) / 0.05)",
         color: active ? "hsl(var(--primary))" : "hsl(var(--foreground))",
         border: 0,
         cursor: disabled || !onClick ? "not-allowed" : "pointer",
@@ -496,7 +497,7 @@ function ActionButton({
       }}
       onMouseLeave={(e) => {
         if (disabled || !onClick) return;
-        if (!active) e.currentTarget.style.background = "hsl(0 0% 100% / 0.05)";
+        if (!active) e.currentTarget.style.background = "hsl(var(--foreground) / 0.05)";
       }}
     >
       {children}

@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import {
   LayoutDashboard,
   History,
-  Columns3,
   BookOpen,
   Settings,
   UserPlus,
@@ -12,7 +11,6 @@ import {
   HardDrive,
   Server,
   Zap,
-  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/BrandMark";
@@ -34,9 +32,7 @@ const GENERAL_NAV: NavItem[] = [
   { id: "dashboard",  label: "Dashboard",  icon: <LayoutDashboard size={15} /> },
   { id: "insights",   label: "Insights",   icon: <Activity size={15} /> },
   { id: "history",    label: "History",    icon: <History         size={15} /> },
-  { id: "vocabulary", label: "Vocabulary", icon: <BookOpen        size={15} /> },
-  { id: "learnings",  label: "Learnings",  icon: <Sparkles        size={15} />, badge: "New" },
-  { id: "buckets",    label: "Buckets",    icon: <Columns3        size={15} /> },
+  { id: "dictionary", label: "Dictionary", icon: <BookOpen        size={15} /> },
 ];
 
 const GUIDE_URL = "https://airnote.emiactech.com/guide";
@@ -316,7 +312,7 @@ function PerformanceMonitor() {
         </span>
         <span
           className={cn("ml-auto w-1.5 h-1.5 rounded-full", sample && !error && "animate-pulse")}
-          style={{ background: error ? "hsl(0 75% 62%)" : "hsl(var(--primary))" }}
+          style={{ background: error ? "hsl(var(--destructive))" : "hsl(var(--primary))" }}
         />
       </div>
 

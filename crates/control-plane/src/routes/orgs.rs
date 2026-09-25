@@ -369,7 +369,7 @@ fn normalize_role(raw: &str) -> Option<String> {
     }
 }
 
-/// Admin gate — mirrors vocab.rs::require_admin so the role semantics stay in sync.
+/// Admin gate: admin, company_admin and manager may manage the workspace.
 fn require_admin(role: &str) -> Result<(), (StatusCode, Json<Value>)> {
     if role.eq_ignore_ascii_case("admin")
         || role.eq_ignore_ascii_case("company_admin")

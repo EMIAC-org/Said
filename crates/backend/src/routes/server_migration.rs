@@ -13,8 +13,8 @@ use tracing::{info, warn};
 use crate::{
     AppState,
     store::{
-        self, email_memory, history as history_store, server_migration as mig_store,
-        server_migration::MigrationStatus, stt_replacements, users, vocabulary,
+        self, history as history_store, server_migration as mig_store,
+        server_migration::MigrationStatus, users,
     },
 };
 
@@ -206,19 +206,8 @@ async fn run_migration_task(
         0,
     );
 
-    // Step 3: Upload memory (vocab + aliases + emails)
-    let (vocab_n, alias_n, email_n) = upload_memory(&pool, &http, base, &token).await;
-    mig_store::update_counts(
-        &pool,
-        &user_id,
-        &server_account_id,
-        version,
-        0,
-        vocab_n,
-        alias_n,
-        email_n,
-        0,
-    );
+    // Learned words stay on this Mac (the dictionary); the server keeps no
+    // learning memory, so there is nothing more to upload.
 
     let final_status = if failed {
         MigrationStatus::Partial
@@ -371,91 +360,6 @@ async fn upload_history(
     }
 
     total_accepted
-}
-
-async fn upload_memory(
-    pool: &store::DbPool,
-    http: &reqwest::Client,
-    base: &str,
-    token: &str,
-) -> (i64, i64, i64) {
-    let url = format!("{base}/v1/runtime/memory/sync");
-
-    let terms = vocabulary::top_terms(pool, "default", 500);
-    let aliases = stt_replacements::load_all(pool, "default");
-    let emails = email_memory::load_candidates(pool, "default");
-
-    let vocab_items: Vec<Value> = terms
-        .iter()
-        .map(|t| {
-            json!({
-                "term": t.term,
-                "term_type": t.term_type,
-                "weight": t.weight,
-            })
-        })
-        .collect();
-
-    let alias_items: Vec<Value> = aliases
-        .iter()
-        .filter(|a| {
-            use stt_replacements::ExportTier;
-            !matches!(a.export_tier, ExportTier::Blocked)
-        })
-        .map(|a| {
-            json!({
-                "transcript_form": a.transcript_form,
-                "correct_form": a.correct_form,
-                "edit_type": "replace",
-            })
-        })
-        .collect();
-
-    let email_items: Vec<Value> = emails.iter().map(|e| json!({ "email": e })).collect();
-
-    let body = json!({
-        "vocab_terms": vocab_items,
-        "stt_replacements": alias_items,
-        "email_memory": email_items,
-    });
-
-    let res = http
-        .post(&url)
-        .bearer_auth(token)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await;
-
-    match res {
-        Ok(r) if r.status().is_success() => {
-            let v = r.json::<Value>().await.unwrap_or_default();
-            let vn = v
-                .get("accepted_vocab")
-                .and_then(Value::as_i64)
-                .unwrap_or(vocab_items.len() as i64);
-            let an = v
-                .get("accepted_aliases")
-                .and_then(Value::as_i64)
-                .unwrap_or(alias_items.len() as i64);
-            let en = v
-                .get("accepted_emails")
-                .and_then(Value::as_i64)
-                .unwrap_or(email_items.len() as i64);
-            (vn, an, en)
-        }
-        Ok(r) => {
-            warn!(
-                "[server-migration] memory upload failed status={}",
-                r.status()
-            );
-            (0, 0, 0)
-        }
-        Err(e) => {
-            warn!("[server-migration] memory upload error: {e}");
-            (0, 0, 0)
-        }
-    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

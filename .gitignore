@@ -87,3 +87,6 @@ todos.md
 
 # Local reference clones of other projects — not part of AirNote.
 reference-*/
+
+# Polish prompt benchmark: cache and reports (contain your dictations)
+/lab/polish_prompt_bench/out/

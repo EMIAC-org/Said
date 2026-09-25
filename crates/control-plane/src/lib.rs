@@ -8,26 +8,18 @@ pub mod auth;
 pub mod codex_client;
 pub mod costs;
 pub mod deepinfra;
-pub mod format_recover;
 pub mod lark_client;
 pub mod lark_sync;
-pub mod legacy_personal_memory;
 pub mod meeting_hub;
-pub mod memory_hygiene;
-pub mod memory_hygiene_worker;
 pub mod message_helpers;
 pub mod notification_hub;
 pub mod notification_worker;
-pub mod number_format;
 pub mod openai_compat_polish;
 pub mod org_quota;
-pub mod profile;
-pub mod prompt_profile_telemetry;
 pub mod routes;
 pub mod store;
 pub mod tenant;
 pub mod ttl_cache;
-pub mod vocab_worker;
 pub mod voice_polish_standalone;
 
 use std::sync::{Arc, LazyLock};
@@ -92,31 +84,14 @@ pub struct AppState {
     /// (None when the key is unconfigured). Avoids re-running the SHA-256 KDF +
     /// AES key schedule on every credential decrypt.
     pub runtime_cipher: Option<aes_gcm::Aes256Gcm>,
-    /// DeepSeek config read once at startup for background learning/profile jobs.
-    pub deepseek_api_key: String,
-    pub deepseek_base_url: String,
     /// Workspace whose COMPANY_ADMIN members may use the read-only platform
     /// observability endpoints. Empty disables cross-workspace access.
     pub platform_admin_org_slug: String,
     /// In-memory per-account caches that collapse the per-dictation setup
-    /// round-trips (active-org/role resolution and runtime learning memory).
+    /// round-trips (active-org/role resolution and provider credentials).
     /// ~200 accounts → a plain map with a short TTL + invalidate-on-write is
     /// plenty; no Redis. See `ttl_cache`.
     pub tenant_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
-    pub runtime_memory_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
-    pub profile_cache:
-        Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
-    pub app_bucket_cache:
-        Arc<ttl_cache::TtlCache<profile::AppBucketCacheKey, profile::CachedAppBucket>>,
-    pub bucket_profile_cache: Arc<
-        ttl_cache::TtlCache<profile::BucketProfileCacheKey, Option<profile::CachedBucketProfile>>,
-    >,
-    pub prompt_profile_context_cache: Arc<
-        ttl_cache::TtlCache<
-            profile::PromptProfileContextCacheKey,
-            profile::CachedPromptProfileContext,
-        >,
-    >,
     pub runtime_credential_cache: Arc<
         ttl_cache::TtlCache<
             routes::runtime::RuntimeCredentialCacheKey,
@@ -132,20 +107,6 @@ pub const SETUP_CACHE_TTL: Duration = Duration::from_secs(3 * 60 * 60);
 
 pub struct SetupCaches {
     pub tenant_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, tenant::TenantContext>>,
-    pub runtime_memory_cache: Arc<ttl_cache::TtlCache<uuid::Uuid, routes::runtime::RuntimeMemory>>,
-    pub profile_cache:
-        Arc<ttl_cache::TtlCache<profile::ProfileCacheKey, profile::CachedRuntimeProfile>>,
-    pub app_bucket_cache:
-        Arc<ttl_cache::TtlCache<profile::AppBucketCacheKey, profile::CachedAppBucket>>,
-    pub bucket_profile_cache: Arc<
-        ttl_cache::TtlCache<profile::BucketProfileCacheKey, Option<profile::CachedBucketProfile>>,
-    >,
-    pub prompt_profile_context_cache: Arc<
-        ttl_cache::TtlCache<
-            profile::PromptProfileContextCacheKey,
-            profile::CachedPromptProfileContext,
-        >,
-    >,
     pub runtime_credential_cache: Arc<
         ttl_cache::TtlCache<
             routes::runtime::RuntimeCredentialCacheKey,
@@ -159,11 +120,6 @@ pub struct SetupCaches {
 pub fn new_setup_caches() -> SetupCaches {
     SetupCaches {
         tenant_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
-        runtime_memory_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
-        profile_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
-        app_bucket_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
-        bucket_profile_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
-        prompt_profile_context_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
         runtime_credential_cache: Arc::new(ttl_cache::TtlCache::new(SETUP_CACHE_TTL)),
     }
 }
@@ -234,40 +190,8 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::runtime::problem_solve),
         )
         .route("/v1/runtime/status", get(routes::runtime::status))
-        .route(
-            "/v1/runtime/profile/insights",
-            get(routes::runtime_profile::get_profile_insights),
-        )
-        .route(
-            "/v1/runtime/profile/buckets",
-            get(routes::runtime_profile::get_app_buckets),
-        )
-        .route(
-            "/v1/runtime/profile/buckets/override",
-            post(routes::runtime_profile::set_app_bucket),
-        )
         .route("/v1/runtime/runs", get(routes::runtime::list_runs))
         .route("/v1/runtime/runs/:id", get(routes::runtime::run_detail))
-        .route(
-            "/v1/runtime/learning-events",
-            get(routes::runtime::list_learning_events),
-        )
-        .route(
-            "/v1/runtime/client-events",
-            post(routes::runtime::client_event),
-        )
-        .route(
-            "/v1/runtime/learning/analyze-edit",
-            post(routes::runtime::analyze_edit_learning),
-        )
-        .route(
-            "/v1/runtime/learning/confirm-batch",
-            post(routes::runtime::confirm_learning_batch),
-        )
-        .route(
-            "/v1/runtime/learning/meaning",
-            post(routes::runtime::vocabulary_meaning),
-        )
         .route(
             "/v1/runtime/notifications/ws",
             get(routes::runtime::notifications_ws),
@@ -302,14 +226,6 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::runtime_history::get_history_item)
                 .patch(routes::runtime_history::patch_history_item)
                 .delete(routes::runtime_history::delete_history_item),
-        )
-        .route(
-            "/v1/runtime/memory/sync",
-            post(routes::runtime_history::sync_memory),
-        )
-        .route(
-            "/v1/runtime/memory/dirty",
-            post(routes::runtime_history::mark_memory_dirty_route),
         )
         .route(
             "/v1/runtime/settings",
@@ -347,10 +263,6 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/orgs/:org_id/telemetry/users/:account_id/runs",
             get(routes::telemetry::user_runs),
         )
-        .route(
-            "/v1/orgs/:org_id/telemetry/users/:account_id/memory",
-            get(routes::telemetry::user_memory),
-        )
         .route("/v1/orgs/:org_id/runs", get(routes::telemetry::org_runs))
         .route(
             "/v1/orgs/:org_id/admin/overview",
@@ -377,20 +289,12 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::observability::get_org_dictation_detail),
         )
         .route(
-            "/v1/orgs/:org_id/observability/users/:account_id/aliases",
-            get(routes::observability::list_user_alias_events),
-        )
-        .route(
             "/v1/runtime/observability/dictation",
             post(routes::observability::ingest_dictation),
         )
         .route(
             "/v1/runtime/observability/dictation/:recording_id",
             patch(routes::observability::patch_dictation),
-        )
-        .route(
-            "/v1/runtime/observability/aliases",
-            post(routes::observability::ingest_aliases),
         )
         .route(
             "/v1/runtime/observability/meeting",
@@ -412,59 +316,6 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::clients::client_usage),
         )
         .route("/v1/orgs/:org_id/stats", get(routes::clients::org_stats))
-        // Enterprise — Company vocabulary bucket
-        .route(
-            "/v1/orgs/:org_id/vocab/terms",
-            get(routes::vocab::list_terms).post(routes::vocab::create_term),
-        )
-        .route(
-            "/v1/orgs/:org_id/vocab/terms/:term_id",
-            patch(routes::vocab::update_term).delete(routes::vocab::delete_term),
-        )
-        .route(
-            "/v1/orgs/:org_id/vocab/aliases",
-            get(routes::vocab::list_aliases).post(routes::vocab::create_alias),
-        )
-        .route(
-            "/v1/orgs/:org_id/vocab/aliases/:alias_id",
-            patch(routes::vocab::update_alias).delete(routes::vocab::delete_alias),
-        )
-        .route(
-            "/v1/orgs/:org_id/vocab/publish",
-            post(routes::vocab::publish),
-        )
-        .route(
-            "/v1/orgs/:org_id/vocab/releases",
-            get(routes::vocab::releases),
-        )
-        .route(
-            "/v1/orgs/:org_id/vocab/suggestions",
-            get(routes::vocab::list_suggestions),
-        )
-        .route(
-            "/v1/orgs/:org_id/vocab/suggestions/aggregate",
-            post(routes::vocab::aggregate_now),
-        )
-        .route(
-            "/v1/orgs/:org_id/vocab/suggestions/:suggestion_id",
-            patch(routes::vocab::update_suggestion),
-        )
-        .route(
-            "/v1/orgs/:org_id/clients/:account_id/vocab",
-            get(routes::vocab::user_vocab_detail),
-        )
-        .route(
-            "/v1/company-vocab/version",
-            get(routes::vocab::desktop_version),
-        )
-        .route(
-            "/v1/company-vocab/bucket",
-            get(routes::vocab::desktop_bucket),
-        )
-        .route(
-            "/v1/company-vocab/user-vocab",
-            post(routes::vocab::upload_user_vocab),
-        )
         // Enterprise — Orgs
         .route(
             "/v1/orgs",
@@ -532,6 +383,52 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin", get(admin_redirect))
         .route("/admin/", get(admin_index))
         .route("/admin/*path", get(admin_spa))
+        // Retired learning endpoints. Desktops 2.4.5 and 2.5.0 still call these
+        // from background uploaders that retry on failure; see `routes::retired`.
+        .route(
+            "/v1/runtime/client-events",
+            post(routes::retired::client_event),
+        )
+        .route(
+            "/v1/runtime/learning/meaning",
+            post(routes::retired::vocabulary_meaning),
+        )
+        .route(
+            "/v1/runtime/memory/sync",
+            post(routes::retired::memory_sync),
+        )
+        .route(
+            "/v1/runtime/memory/dirty",
+            post(routes::retired::memory_dirty),
+        )
+        .route(
+            "/v1/runtime/observability/aliases",
+            post(routes::retired::alias_events),
+        )
+        .route(
+            "/v1/runtime/profile/insights",
+            get(routes::retired::profile_insights),
+        )
+        .route(
+            "/v1/runtime/profile/buckets",
+            get(routes::retired::app_buckets),
+        )
+        .route(
+            "/v1/runtime/profile/buckets/override",
+            post(routes::retired::set_app_bucket),
+        )
+        .route(
+            "/v1/company-vocab/version",
+            get(routes::retired::company_vocab_version),
+        )
+        .route(
+            "/v1/company-vocab/bucket",
+            get(routes::retired::company_vocab_bucket),
+        )
+        .route(
+            "/v1/company-vocab/user-vocab",
+            post(routes::retired::company_vocab_upload),
+        )
         .fallback(not_found_or_admin_typo)
         .layer(cors)
         .with_state(state)

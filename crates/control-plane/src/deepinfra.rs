@@ -12,7 +12,7 @@ use crate::openai_compat_polish::{
 const DEEPINFRA_ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const DEEPINFRA_SERVICE_TIER: &str = "priority";
 const MIN_COMPLETION_TOKENS: usize = 128;
-const MAX_COMPLETION_TOKENS: usize = 1024;
+const MAX_COMPLETION_TOKENS: usize = 2048;
 
 pub async fn call_deepinfra(
     api_key: &str,
@@ -82,12 +82,9 @@ fn deepinfra_polish_body(
         "max_tokens": max_tokens,
         "stream": stream,
         "service_tier": DEEPINFRA_SERVICE_TIER,
-        "stop": [
-            "=== BEGIN TRANSCRIPT",
-            "=== END TRANSCRIPT",
-            "<transcript>",
-            "</transcript>"
-        ],
+        // Only the closing tag: a reply that opens by echoing `<transcript>`
+        // must not stop before the text.
+        "stop": ["</transcript>"],
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_message }
@@ -95,20 +92,17 @@ fn deepinfra_polish_body(
     })
 }
 
+/// Room for the cleaned transcript: Roman Hinglish runs to about three tokens
+/// a word, and a cut-off reply would be typed as it is.
 fn completion_token_budget(user_message: &str) -> u32 {
     let source = current_transcript_block(user_message).unwrap_or(user_message);
     let word_count = source.split_whitespace().count().max(1);
-    (word_count * 2 + 64).clamp(MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS) as u32
+    (word_count * 3 + 64).clamp(MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS) as u32
 }
 
 fn current_transcript_block(user_message: &str) -> Option<&str> {
-    let after_start = user_message
-        .split_once("=== BEGIN CURRENT TRANSCRIPT ===")?
-        .1;
-    let transcript = after_start
-        .split_once("=== END CURRENT TRANSCRIPT ===")?
-        .0
-        .trim();
+    let after_start = user_message.split_once("<transcript>")?.1;
+    let transcript = after_start.split_once("</transcript>")?.0.trim();
     (!transcript.is_empty()).then_some(transcript)
 }
 
@@ -122,14 +116,21 @@ mod tests {
 
     #[test]
     fn extracts_current_transcript_for_budgeting() {
-        let message = "before\n=== BEGIN CURRENT TRANSCRIPT ===\none two three\n=== END CURRENT TRANSCRIPT ===";
+        let message = said_core::polish::dictation::user_message(
+            "one two three",
+            &[said_core::polish::dictation::DictionaryEntry {
+                heard: Some("air note".into()),
+                written: "AirNote".into(),
+            }],
+        );
+        let message = message.as_str();
         assert_eq!(current_transcript_block(message), Some("one two three"));
     }
 
     #[test]
     fn completion_budget_is_bounded_for_short_and_long_dictation() {
         assert_eq!(completion_token_budget("Thik hai"), 128);
-        assert_eq!(completion_token_budget(&"word ".repeat(1_000)), 1024);
+        assert_eq!(completion_token_budget(&"word ".repeat(1_000)), 2048);
     }
 
     #[test]

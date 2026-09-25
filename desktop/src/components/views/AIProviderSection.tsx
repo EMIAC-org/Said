@@ -164,7 +164,7 @@ export function AIProviderSection() {
               className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
               style={{
                 background: "hsl(145 60% 12%)",
-                color: "hsl(145 70% 65%)",
+                color: "hsl(var(--chip-lime-fg))",
               }}
             >
               <Check size={16} />
@@ -222,7 +222,7 @@ export function AIProviderSection() {
                     className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors"
                     style={{
                       background: "hsl(0 60% 16%)",
-                      color: "hsl(0 75% 72%)",
+                      color: "hsl(var(--chip-red-fg))",
                     }}
                   >
                     {submitting ? <Loader2 size={11} className="animate-spin" /> : <LogOut size={11} />}
@@ -245,7 +245,7 @@ export function AIProviderSection() {
                   className="text-[12px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors"
                   style={{
                     background: "hsl(0 60% 16%)",
-                    color: "hsl(0 75% 72%)",
+                    color: "hsl(var(--chip-red-fg))",
                   }}
                 >
                   <LogOut size={11} />
@@ -361,7 +361,7 @@ export function AIProviderSection() {
           {error && (
             <div
               className="rounded-lg px-3 py-2 text-[12px]"
-              style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
+              style={{ background: "hsl(var(--chip-red-bg))", color: "hsl(var(--chip-red-fg))" }}
             >
               {error}
             </div>
@@ -427,7 +427,7 @@ export function AIProviderSection() {
         {error && (
           <div
             className="rounded-lg px-3 py-2 text-[12px]"
-            style={{ background: "hsl(0 70% 14%)", color: "hsl(0 85% 76%)" }}
+            style={{ background: "hsl(var(--chip-red-bg))", color: "hsl(var(--chip-red-fg))" }}
           >
             {error}
           </div>
