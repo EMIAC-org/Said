@@ -42,10 +42,29 @@ enum AirNoteDesign {
         light: UIColor(red: 0.070, green: 0.075, blue: 0.100, alpha: 0.145)
     )
 
-    static let accent = Color(red: 0.620, green: 0.700, blue: 0.980)
+    /// Periwinkle in dark mode; a deeper indigo in light mode so text and icons
+    /// keep contrast on white.
+    static let accent = adaptiveColor(
+        dark: UIColor(red: 0.620, green: 0.700, blue: 0.980, alpha: 1),
+        light: UIColor(red: 0.310, green: 0.360, blue: 0.880, alpha: 1)
+    )
     static let accent2 = accent
-    static let teal = Color(red: 0.620, green: 0.700, blue: 0.980)
-    static let success = Color(red: 0.530, green: 0.820, blue: 0.610)
+    static let teal = accent
+    /// Signature color for anything that runs on the iPhone itself (on-device AI).
+    static let onDevice = adaptiveColor(
+        dark: UIColor(red: 0.380, green: 0.880, blue: 0.730, alpha: 1),
+        light: UIColor(red: 0.040, green: 0.600, blue: 0.470, alpha: 1)
+    )
+    /// Color for anything that runs in AirNote's cloud.
+    static let cloud = accent
+    static let violet = adaptiveColor(
+        dark: UIColor(red: 0.700, green: 0.560, blue: 1.000, alpha: 1),
+        light: UIColor(red: 0.500, green: 0.330, blue: 0.900, alpha: 1)
+    )
+    static let success = adaptiveColor(
+        dark: UIColor(red: 0.530, green: 0.820, blue: 0.610, alpha: 1),
+        light: UIColor(red: 0.120, green: 0.620, blue: 0.330, alpha: 1)
+    )
     static let warning = Color(red: 0.980, green: 0.700, blue: 0.300)
     static let danger = Color(red: 0.940, green: 0.300, blue: 0.360)
     static let ink = Color(red: 0.045, green: 0.045, blue: 0.060)
@@ -62,14 +81,32 @@ enum AirNoteDesign {
         light: UIColor(red: 0.885, green: 0.895, blue: 0.930, alpha: 1)
     )
 
-    static let radius: CGFloat = 8
-    static let cardRadius: CGFloat = 12
-    static let tileRadius: CGFloat = 10
+    static let radius: CGFloat = 10
+    static let cardRadius: CGFloat = 22
+    static let tileRadius: CGFloat = 18
+    static let buttonRadius: CGFloat = 16
 
     static var accentGradient: LinearGradient {
         LinearGradient(colors: [accent.opacity(0.95), accent.opacity(0.72)],
                        startPoint: .topLeading,
                        endPoint: .bottomTrailing)
+    }
+
+    /// The hero gradient: deep indigo → violet. Used sparingly (Home hero, mic).
+    static var heroGradient: LinearGradient {
+        LinearGradient(
+            colors: [Color(red: 0.200, green: 0.200, blue: 0.560), Color(red: 0.380, green: 0.250, blue: 0.720), Color(red: 0.250, green: 0.430, blue: 0.900)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    static var micGradient: LinearGradient {
+        LinearGradient(
+            colors: [Color(red: 0.450, green: 0.520, blue: 1.000), Color(red: 0.560, green: 0.360, blue: 0.960)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     static var recordingGradient: LinearGradient {
@@ -81,10 +118,10 @@ enum AirNoteDesign {
     static var softCardFill: Color { surfaceRaised }
     static let cardShadow = adaptiveColor(
         dark: UIColor.black.withAlphaComponent(0.38),
-        light: UIColor(red: 0.060, green: 0.070, blue: 0.110, alpha: 0.12)
+        light: UIColor(red: 0.060, green: 0.070, blue: 0.160, alpha: 0.10)
     )
 
-    private static func adaptiveColor(dark: UIColor, light: UIColor) -> Color {
+    static func adaptiveColor(dark: UIColor, light: UIColor) -> Color {
         Color(UIColor { traits in
             traits.userInterfaceStyle == .dark ? dark : light
         })
@@ -193,8 +230,8 @@ struct AirNoteCard<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: AirNoteDesign.cardRadius, style: .continuous)
-                    .fill(AirNoteDesign.surface.opacity(0.92))
-                    .shadow(color: AirNoteDesign.cardShadow, radius: 22, x: 0, y: 12)
+                    .fill(AirNoteDesign.surface)
+                    .shadow(color: AirNoteDesign.cardShadow.opacity(0.55), radius: 18, x: 0, y: 8)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AirNoteDesign.cardRadius, style: .continuous)
@@ -247,21 +284,17 @@ struct AirNoteWaveMark: View {
 struct AirNotePrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(.subheadline, design: .default).weight(.semibold))
+            .font(.system(.body, design: .rounded).weight(.semibold))
             .foregroundStyle(AirNoteDesign.primaryButtonForeground)
             .frame(maxWidth: .infinity)
-            .frame(height: 44)
+            .frame(height: 52)
             .background(AirNoteDesign.primaryButtonFill.opacity(configuration.isPressed ? 0.88 : 1),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(AirNoteDesign.borderStrong, lineWidth: 1)
-            )
-            .shadow(color: Color.black.opacity(configuration.isPressed ? 0.18 : 0.30),
-                    radius: configuration.isPressed ? 6 : 16,
+                        in: RoundedRectangle(cornerRadius: AirNoteDesign.buttonRadius, style: .continuous))
+            .shadow(color: AirNoteDesign.cardShadow.opacity(configuration.isPressed ? 0.4 : 0.9),
+                    radius: configuration.isPressed ? 4 : 12,
                     x: 0,
-                    y: configuration.isPressed ? 3 : 8)
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+                    y: configuration.isPressed ? 2 : 6)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
@@ -269,17 +302,17 @@ struct AirNotePrimaryButtonStyle: ButtonStyle {
 struct AirNoteGhostButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(.subheadline, design: .default).weight(.semibold))
+            .font(.system(.body, design: .rounded).weight(.semibold))
             .foregroundStyle(AirNoteDesign.foreground)
             .frame(maxWidth: .infinity)
-            .frame(height: 44)
-            .background(AirNoteDesign.surfaceRaised.opacity(configuration.isPressed ? 0.72 : 0.52),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .frame(height: 50)
+            .background(AirNoteDesign.surfaceRaised.opacity(configuration.isPressed ? 0.95 : 0.7),
+                        in: RoundedRectangle(cornerRadius: AirNoteDesign.buttonRadius, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(AirNoteDesign.borderStrong, lineWidth: 1)
+                RoundedRectangle(cornerRadius: AirNoteDesign.buttonRadius, style: .continuous)
+                    .strokeBorder(AirNoteDesign.border, lineWidth: 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

@@ -90,3 +90,6 @@ reference-*/
 
 # Polish prompt benchmark: cache and reports (contain your dictations)
 /lab/polish_prompt_bench/out/
+# On-device STT (fetched by mobile/ios/scripts/fetch-local-stt.sh; too large / private to commit)
+mobile/ios/Vendor/
+mobile/ios/AirNoteApp/LocalModels/*.bin

@@ -40,7 +40,7 @@ struct ProviderKeysView: View {
                 .padding(18)
             }
         }
-        .navigationTitle("Voice keys")
+        .navigationTitle("Your own AI keys")
         .navigationBarTitleDisplayMode(.inline)
         .task { await env.refreshCredentials() }
     }
@@ -49,23 +49,16 @@ struct ProviderKeysView: View {
         AirNoteCard {
             VStack(alignment: .leading, spacing: 8) {
                 AirNoteSectionLabel(text: "Connect your voice")
-                Text("Local speech, cloud polish")
+                Text("Optional: use your own keys")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(AirNoteDesign.foreground)
-                Text("Speech recognition stays on this device. Add your Groq key for polish; a Gemini key is optional and sharpens how AirNote learns your words. Keys are stored encrypted on AirNote's servers under your account and used only for you.")
+                Text("You don't need these — speech recognition runs on this iPhone and AirNote polishes with its own key. Add your own keys only if your workspace asks you to. They're stored encrypted under your account and used only for you.")
                     .font(.caption)
                     .foregroundStyle(AirNoteDesign.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                if env.dictationAvailable {
-                    Label("Dictation is on", systemImage: "checkmark.circle.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AirNoteDesign.success)
-                } else {
-                    Label("Dictation needs a Groq polish key. Add it below to turn it on.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AirNoteDesign.warning)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Label("Dictation works without them", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AirNoteDesign.success)
             }
         }
     }

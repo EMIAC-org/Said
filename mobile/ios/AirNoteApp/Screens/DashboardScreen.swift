@@ -5,6 +5,7 @@ struct DashboardScreen: View {
     @EnvironmentObject private var env: AppEnvironment
     @ObservedObject private var warmHost = WarmDictationHost.shared
     @State private var showDictation = false
+    @State private var showOnDevice = false
 
     private var stats: DictationStats { DictationStats(items: env.history) }
 
@@ -12,87 +13,192 @@ struct DashboardScreen: View {
         NavigationStack {
             ZStack {
                 AirNoteBackground()
+                ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 16) {
+                    VStack(spacing: 18) {
                         header
-                        recordCard
-                        tryAnywhereCard
-                        if !env.missingRequiredProviders.isEmpty {
-                            voiceKeysNudge
-                        }
+                        heroCard
+                        OnDeviceModelCard()
+                        keyboardCard
                         if !env.history.isEmpty {
+                            ScreenSectionTitle(title: "Your week")
                             statsGrid
                             activityCard
                         }
-                        if env.permissions.keyboard != .ready {
-                            keyboardNudge
-                        }
-                        recentCard
+                        ScreenSectionTitle(
+                            title: "Recent",
+                            trailing: env.history.isEmpty ? nil : "See all",
+                            action: { env.selectedTab = 1 }
+                        )
+                        recentCard.id("recent")
                     }
                     .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 28)
+                    .padding(.top, 8)
+                    .padding(.bottom, 32)
+                }
+                .onAppear {
+                    #if DEBUG
+                    if AppEnvironment.demoRoute == "recent" {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { proxy.scrollTo("recent", anchor: .bottom) }
+                    }
+                    #endif
+                }
                 }
             }
-            .navigationTitle("Home")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
-            .task { await env.refreshHistory() }
+            .navigationDestination(isPresented: $showOnDevice) { OnDeviceAIScreen() }
+            .task {
+                #if DEBUG
+                switch AppEnvironment.demoRoute {
+                case "dictation": showDictation = true
+                case "ondevice": showOnDevice = true
+                default: break
+                }
+                #endif
+                await env.refreshHistory()
+            }
             .refreshable { await env.refreshHistory() }
         }
         .sheet(isPresented: $showDictation) {
             NavigationStack { DictationSheet(env: env, showsDoneButton: false) }
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(32)
         }
     }
 
-    /// A friendly "go use it anywhere" nudge once the session is live — mirrors
-    /// Wispr's "Try Flow in any app" card.
-    @ViewBuilder private var tryAnywhereCard: some View {
-        if env.dictationAvailable && warmHost.isSessionActive {
-            AirNoteCard(padding: 16) {
-                HStack(spacing: 14) {
-                    ZStack {
-                        Circle().fill(AirNoteDesign.accent.opacity(0.14)).frame(width: 44, height: 44)
-                        Image(systemName: "keyboard")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(AirNoteDesign.accent)
+    // MARK: Header
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(greeting)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AirNoteDesign.muted)
+                Text(firstName)
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(AirNoteDesign.foreground)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            Spacer()
+            NavigationLink {
+                ProfileScreen()
+            } label: {
+                AccountAvatar(
+                    email: env.account?.email ?? "A",
+                    size: 44,
+                    name: env.profileDisplayName,
+                    tint: ProfileAccent.color(env.profileAccentIndex)
+                )
+                .overlay(Circle().strokeBorder(AirNoteDesign.border, lineWidth: 1))
+            }
+            .accessibilityLabel("Your profile")
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 6)
+    }
+
+    private var firstName: String {
+        let name = env.profileDisplayName.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty { return String(name.split(separator: " ").first ?? Substring(name)) }
+        let local = (env.account?.email ?? "").split(separator: "@").first.map(String.init) ?? ""
+        return local.isEmpty ? "Welcome" : local.prefix(1).uppercased() + local.dropFirst()
+    }
+
+    // MARK: Hero
+
+    private var heroCard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Speak. AirNote writes.")
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("Hindi, English or Hinglish — understood on your iPhone, polished in a second.")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.white.opacity(0.78))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            PipelineStrip(onDark: true)
+                .padding(.vertical, 12)
+                .padding(.horizontal, 6)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            Button {
+                Haptics.tap()
+                showDictation = true
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("Start dictation")
+                }
+                .font(.system(.body, design: .rounded).weight(.bold))
+                .foregroundStyle(Color(red: 0.22, green: 0.20, blue: 0.55))
+                .frame(maxWidth: .infinity)
+                .frame(height: 54)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: AirNoteDesign.buttonRadius, style: .continuous))
+                .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 6)
+            }
+            .buttonStyle(PressScaleStyle())
+        }
+        .padding(20)
+        .background(
+            ZStack {
+                AirNoteDesign.heroGradient
+                RadialGradient(colors: [Color.white.opacity(0.22), .clear], center: .topTrailing, startRadius: 10, endRadius: 260)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        )
+        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+        .shadow(color: Color(red: 0.30, green: 0.22, blue: 0.70).opacity(0.35), radius: 24, x: 0, y: 14)
+    }
+
+    // MARK: Keyboard
+
+    @ViewBuilder private var keyboardCard: some View {
+        if env.permissions.keyboard != .ready {
+            NavigationLink(destination: KeyboardSetupGuide()) {
+                AirNoteCard(padding: 18) {
+                    HStack(spacing: 14) {
+                        IconTile(systemImage: "keyboard.badge.ellipsis", tint: AirNoteDesign.accent, size: 42)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Add the AirNote Keyboard")
+                                .font(.system(.headline, design: .rounded))
+                                .foregroundStyle(AirNoteDesign.foreground)
+                            Text("Dictate into WhatsApp, Mail, Slack — any app.")
+                                .font(.caption)
+                                .foregroundStyle(AirNoteDesign.muted)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AirNoteDesign.muted)
                     }
+                }
+            }
+            .buttonStyle(PressScaleStyle())
+        } else {
+            AirNoteCard(padding: 18) {
+                HStack(spacing: 14) {
+                    IconTile(systemImage: "keyboard.fill", tint: warmHost.isSessionActive ? AirNoteDesign.success : AirNoteDesign.muted, size: 42)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Try AirNote in any app")
-                            .font(.subheadline.weight(.bold))
+                        Text("Keyboard session")
+                            .font(.system(.headline, design: .rounded))
                             .foregroundStyle(AirNoteDesign.foreground)
-                        Text("Open Messages, Mail, or Slack, switch to the AirNote keyboard, and tap the mic.")
+                        Text(warmHost.isSessionActive
+                             ? "Live — tap the mic on the AirNote keyboard in any app."
+                             : "Off — turn on to dictate from the keyboard without opening AirNote.")
                             .font(.caption)
                             .foregroundStyle(AirNoteDesign.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 4)
+                    Toggle("", isOn: sessionBinding)
+                        .labelsHidden()
+                        .tint(AirNoteDesign.success)
                 }
             }
             .accessibilityElement(children: .combine)
-        }
-    }
-
-    /// Wispr-style session on/off: when on, the mic stays warm so the keyboard can
-    /// dictate in-place without re-opening the app. Shown once dictation can work.
-    @ViewBuilder private var sessionControl: some View {
-        if env.dictationAvailable {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(warmHost.isSessionActive ? AirNoteDesign.success : AirNoteDesign.muted)
-                    .frame(width: 7, height: 7)
-                Text(warmHost.isSessionActive ? "On" : "Off")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(AirNoteDesign.muted)
-                Toggle("", isOn: sessionBinding)
-                    .labelsHidden()
-                    .tint(AirNoteDesign.success)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Dictation session")
-            .accessibilityValue(warmHost.isSessionActive ? "On" : "Off")
-        } else {
-            AirNoteStatusPill(systemImage: "clock.fill", text: "Setup", color: AirNoteDesign.warning)
         }
     }
 
@@ -100,6 +206,7 @@ struct DashboardScreen: View {
         Binding(
             get: { warmHost.isSessionActive },
             set: { on in
+                Haptics.tap()
                 Task {
                     if on, env.permissions.micPermission != .granted {
                         _ = await env.permissions.requestMic()
@@ -110,189 +217,53 @@ struct DashboardScreen: View {
         )
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            AirNoteLogoTile(size: 42)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(greeting)
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(AirNoteDesign.foreground)
-                Text(env.account?.email ?? "AirNote")
-                    .font(.caption)
-                    .foregroundStyle(AirNoteDesign.muted)
-                    .lineLimit(1)
-            }
-            Spacer()
-            sessionControl
-            NavigationLink {
-                ProfileScreen()
-            } label: {
-                AccountAvatar(
-                    email: env.account?.email ?? "A",
-                    size: 38,
-                    name: env.profileDisplayName,
-                    tint: ProfileAccent.color(env.profileAccentIndex)
-                )
-            }
-            .accessibilityLabel("Your profile")
-        }
-    }
-
-    private var recordCard: some View {
-        AirNoteCard(padding: 18) {
-            VStack(alignment: .leading, spacing: 14) {
-                AirNoteSectionLabel(text: "Dictate")
-                Text("Speak, and AirNote writes it cleanly")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(AirNoteDesign.foreground)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(env.dictationAvailable
-                     ? "English, Hindi, or Hinglish — polished on AirNote's servers."
-                     : "Add your Groq polish key to turn on dictation.")
-                    .font(.subheadline)
-                    .foregroundStyle(AirNoteDesign.muted)
-                Button {
-                    showDictation = true
-                } label: {
-                    Label("Start dictation", systemImage: "mic.fill")
-                }
-                .buttonStyle(AirNotePrimaryButtonStyle())
-            }
-        }
-    }
-
-    private var isSessionWarm: Bool {
-        if let until = warmHost.warmUntil { return until > Date() }
-        return false
-    }
-
-    private var keyboardSessionCard: some View {
-        AirNoteCard(padding: 18) {
-            VStack(alignment: .leading, spacing: 12) {
-                AirNoteSectionLabel(text: "Keyboard session")
-                if isSessionWarm {
-                    HStack(spacing: 8) {
-                        Image(systemName: "dot.radiowaves.left.and.right")
-                            .foregroundStyle(AirNoteDesign.success)
-                        Text("Keyboard ready — dictate in any app")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AirNoteDesign.foreground)
-                    }
-                    Text("Switch to any app, tap the AirNote keyboard mic, and speak — no need to come back here. Auto-extends as you use it.")
-                        .font(.caption)
-                        .foregroundStyle(AirNoteDesign.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button {
-                        WarmDictationHost.shared.endWarmSession()
-                    } label: {
-                        Label("End session", systemImage: "stop.circle")
-                    }
-                    .buttonStyle(AirNoteGhostButtonStyle())
-                } else {
-                    Text("Start a session, then dictate hands-free from the AirNote keyboard in any app — no switching back. (The mic stays ready in the background.)")
-                        .font(.subheadline)
-                        .foregroundStyle(AirNoteDesign.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button {
-                        WarmDictationHost.shared.warmUp()
-                    } label: {
-                        Label("Start keyboard session", systemImage: "dot.radiowaves.left.and.right")
-                    }
-                    .buttonStyle(AirNotePrimaryButtonStyle())
-                }
-            }
-        }
-    }
+    // MARK: Stats
 
     private var statsGrid: some View {
-        HStack(spacing: 10) {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+            StatTile(value: stats.totalWords.compactString, label: "words dictated", systemImage: "text.alignleft")
+            StatTile(value: stats.timeSavedLabel, label: "saved vs typing", systemImage: "hourglass", tint: AirNoteDesign.violet)
+            StatTile(value: "\(stats.count)", label: stats.count == 1 ? "dictation" : "dictations", systemImage: "waveform", tint: AirNoteDesign.onDevice)
             StatTile(value: "\(stats.streak)", label: stats.streak == 1 ? "day streak" : "day streak", systemImage: "flame.fill", tint: AirNoteDesign.warning)
-            StatTile(value: stats.totalWords.compactString, label: "words", systemImage: "text.alignleft")
-            StatTile(value: "\(stats.count)", label: "dictations", systemImage: "waveform")
         }
     }
 
     private var activityCard: some View {
-        AirNoteCard(padding: 16) {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("Last 14 days")
+        AirNoteCard(padding: 18) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("Last 14 days")
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(AirNoteDesign.foreground)
+                    Spacer()
+                    Text("\(stats.activity.reduce(0, +)) dictations")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AirNoteDesign.muted)
+                }
                 ActivityChart(values: stats.activity, labels: stats.activityLabels)
             }
         }
     }
 
-    private var voiceKeysNudge: some View {
-        NavigationLink(destination: ProviderKeysView()) {
-            HStack(spacing: 12) {
-                Image(systemName: "key.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(AirNoteDesign.accent)
-                    .frame(width: 34, height: 34)
-                    .background(AirNoteDesign.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Connect your voice")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AirNoteDesign.foreground)
-                    Text("Add your Groq key to polish locally transcribed speech.")
-                        .font(.caption)
-                        .foregroundStyle(AirNoteDesign.muted)
-                }
-                Spacer()
-                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AirNoteDesign.muted)
-            }
-            .padding(14)
-            .background(AirNoteDesign.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AirNoteDesign.accent.opacity(0.35), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var keyboardNudge: some View {
-        NavigationLink(destination: KeyboardSetupGuide()) {
-            HStack(spacing: 12) {
-                Image(systemName: "keyboard.badge.ellipsis")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(AirNoteDesign.accent)
-                    .frame(width: 34, height: 34)
-                    .background(AirNoteDesign.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Finish the AirNote Keyboard")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AirNoteDesign.foreground)
-                    Text("Dictate into any app — Messages, Mail, Slack.")
-                        .font(.caption)
-                        .foregroundStyle(AirNoteDesign.muted)
-                }
-                Spacer()
-                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AirNoteDesign.muted)
-            }
-            .padding(14)
-            .background(AirNoteDesign.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(AirNoteDesign.accent.opacity(0.3), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-    }
-
+    // MARK: Recent
 
     private var recentCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionHeader("Recent")
-            AirNoteCard(padding: 14) {
-                if env.historyLoading && env.history.isEmpty {
-                    InlineLoading(text: "Loading your dictations…")
-                } else if env.history.isEmpty {
-                    EmptyStateCard(
-                        systemImage: "waveform",
-                        title: "No dictations yet",
-                        message: "Your polished dictations appear here."
-                    )
-                } else {
-                    VStack(spacing: 12) {
-                        ForEach(env.history.prefix(3)) { item in
-                            DictationRow(item: item)
-                            if item.id != env.history.prefix(3).last?.id {
-                                Divider().overlay(AirNoteDesign.border)
-                            }
+        AirNoteCard(padding: 6) {
+            if env.historyLoading && env.history.isEmpty {
+                InlineLoading(text: "Loading your dictations…")
+            } else if env.history.isEmpty {
+                EmptyStateCard(
+                    systemImage: "waveform",
+                    title: "No dictations yet",
+                    message: "Tap Start dictation and say anything — it shows up here."
+                )
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(env.history.prefix(3)) { item in
+                        DictationRow(item: item)
+                            .padding(12)
+                        if item.id != env.history.prefix(3).last?.id {
+                            Divider().overlay(AirNoteDesign.border).padding(.leading, 12)
                         }
                     }
                 }
@@ -314,20 +285,34 @@ struct DashboardScreen: View {
 struct DictationRow: View {
     var item: RuntimeHistoryItem
 
+    private var sourceLabel: (String, String) {
+        switch item.source {
+        case "ios_keyboard": return ("keyboard", "Keyboard")
+        case "ios_app": return ("iphone", "App")
+        case let s where s.contains("desktop") || s.contains("mac") || s.contains("windows"): return ("laptopcomputer", "Desktop")
+        default: return ("waveform", "Dictation")
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(item.displayText)
-                .font(.subheadline)
+                .font(.body)
                 .foregroundStyle(AirNoteDesign.foreground)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Label(sourceLabel.1, systemImage: sourceLabel.0)
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(AirNoteDesign.muted)
+                Text("·").foregroundStyle(AirNoteDesign.muted)
                 Text(item.createdAt, format: .relative(presentation: .named))
                     .font(.caption2)
                     .foregroundStyle(AirNoteDesign.muted)
                 Spacer()
                 Text("\(item.displayText.wordCount) words")
-                    .font(.caption2.weight(.medium))
+                    .font(.caption2.weight(.medium).monospacedDigit())
                     .foregroundStyle(AirNoteDesign.muted)
             }
         }
@@ -344,6 +329,14 @@ struct DictationStats {
     let streak: Int
     let activity: [Int]
     let activityLabels: [String]
+
+    /// Minutes saved vs typing: ~40 wpm typing on a phone vs ~150 wpm speaking.
+    var timeSavedLabel: String {
+        let minutes = Double(totalWords) / 40 - Double(totalWords) / 150
+        if minutes < 1 { return "<1m" }
+        if minutes < 60 { return "\(Int(minutes.rounded()))m" }
+        return String(format: "%.1fh", minutes / 60)
+    }
 
     init(items: [RuntimeHistoryItem], days: Int = 14, calendar: Calendar = .current, now: Date = Date()) {
         count = items.count

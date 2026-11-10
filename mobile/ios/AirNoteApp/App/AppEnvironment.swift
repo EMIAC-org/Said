@@ -35,10 +35,13 @@ final class AppEnvironment: ObservableObject {
 
     // MARK: Runtime / dictation availability
 
-    /// True once the server has provider credentials provisioned, so live
-    /// dictation will succeed. Until then the UI shows a calm "being set up"
-    /// state instead of a hard error.
-    @Published private(set) var dictationAvailable = false
+    /// Dictation works whenever someone is signed in: speech-to-text runs on the
+    /// iPhone, and polish uses AirNote's own cloud key (no user key needed).
+    var dictationAvailable: Bool { account != nil }
+
+    /// Selected main tab (Home=0, History=1, Words=2, Insights=3, Settings=4), so
+    /// cards can jump between tabs ("See all" → History).
+    @Published var selectedTab = 0
     @Published private(set) var runtimeStatusLabel = "Checking workspace…"
 
     // MARK: Provider credentials (BYOK — user's own polish keys, server-vaulted)
@@ -47,8 +50,10 @@ final class AppEnvironment: ObservableObject {
     @Published private(set) var credentialStatus = ""
     @Published private(set) var credentialWorking = false
 
-    /// Providers the runtime needs after local speech transcription.
-    static let requiredProviders = ["groq"]
+    /// Providers a user must add before dictation works. None: speech-to-text is
+    /// on-device and polish falls back to AirNote's platform key. Users can still
+    /// add their own keys (Settings → Advanced → Voice keys).
+    static let requiredProviders: [String] = []
 
     // MARK: Workspace / orgs (enterprise)
 
@@ -147,6 +152,9 @@ final class AppEnvironment: ObservableObject {
         guard !didBootstrap else { return }
         didBootstrap = true
         permissions.refreshAll()
+        #if DEBUG
+        if Self.isDemo { loadDemo(); return }
+        #endif
         if let token = authTokens.accessToken, !token.isEmpty {
             do {
                 let response = try await gateway.restoreSession(token: token)
@@ -324,7 +332,6 @@ final class AppEnvironment: ObservableObject {
         SharedStore.onboardingComplete = false
         UserDefaults.standard.removeObject(forKey: onboardingCompleteKey)
         account = nil
-        dictationAvailable = false
         runtimeStatusLabel = "Signed out"
         settingsLoaded = false
         settingsVersion = 0
@@ -347,6 +354,9 @@ final class AppEnvironment: ObservableObject {
     /// is routed back to authentication. Returns true if it was an auth failure.
     @discardableResult
     private func handleUnauthorized(_ error: Error) -> Bool {
+        #if DEBUG
+        if Self.isDemo { return true }   // demo account has no server session
+        #endif
         if let gatewayError = error as? GatewayError, gatewayError.isUnauthorized {
             // Only the first 401 signs out; ignore stale/concurrent 401s that
             // arrive after the user has already signed out or re-authenticated.
@@ -383,7 +393,7 @@ final class AppEnvironment: ObservableObject {
             // device-side; cloud credentials are only for polish/learning.
             runtimeStatusLabel = status.activeCredentialCount > 0
                 ? (status.serverMemoryReady ? "Personalized" : "Ready")
-                : "Setting up dictation"
+                : "Ready"
             vocabTermCount = status.personalVocabCount
             vocabAliasCount = status.personalAliasCount
         } catch {
@@ -454,6 +464,9 @@ final class AppEnvironment: ObservableObject {
     // MARK: History
 
     func refreshHistory() async {
+        #if DEBUG
+        if Self.isDemo { return }
+        #endif
         guard account != nil else {
             history = []
             historyStatus = "Sign in to sync your dictations"
@@ -565,9 +578,6 @@ final class AppEnvironment: ObservableObject {
         guard account != nil else { credentials = []; return }
         do {
             credentials = try await gateway.listCredentials()
-            // Dictation needs the required polish provider. An optional Gemini key
-            // alone must not turn this on.
-            dictationAvailable = missingRequiredProviders.isEmpty
         } catch {
             _ = handleUnauthorized(error)
         }
@@ -627,7 +637,6 @@ final class AppEnvironment: ObservableObject {
         do {
             try await gateway.deleteCredential(id: credential.id)
             clearLocalProviderKey(credential.provider)
-            dictationAvailable = missingRequiredProviders.isEmpty
             await refreshRuntimeStatus()
         } catch {
             if handleUnauthorized(error) { return }
@@ -996,4 +1005,60 @@ enum AppInfo {
     static var deviceID: String {
         UIDevice.current.identifierForVendor?.uuidString ?? "ios-\(UUID().uuidString)"
     }
+}
+
+// MARK: - Demo mode (Debug builds only)
+
+extension AppEnvironment {
+
+    #if DEBUG
+    /// Launch with `-AirNoteDemo` to review the UI in the simulator: a sample
+    /// account and history, no network, and a simulated dictation run.
+    static let isDemo = ProcessInfo.processInfo.arguments.contains("-AirNoteDemo")
+    /// `-AirNoteDemoRoute <name>`: open a screen directly for review
+    /// (dictation, ondevice, history, words, insights, settings, recent).
+    static var demoRoute: String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-AirNoteDemoRoute"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
+    private func loadDemo() {
+        account = MobileAccount(id: "demo", email: "you@airnote.app", licenseTier: "pro")
+        profileDisplayName = "Anugra"
+        runtimeStatusLabel = "Ready"
+        vocabTermCount = 42
+        vocabAliasCount = 9
+        let now = Date()
+        let samples: [(String, String, Double)] = [
+            ("Main aaj office thoda late aaunga, meeting ko 4 baje reschedule kar do.", "ios_keyboard", 0.02),
+            ("Please send the quarterly report to the client by Friday evening.", "ios_app", 0.2),
+            ("Kal ki standup mein Rahul ko AirNote ka demo dikhana hai.", "ios_keyboard", 1.1),
+            ("Remind me to book the flight to Bangalore before Thursday.", "ios_app", 2.3),
+            ("Invoice approve kar diya hai, payment Monday tak aa jayega.", "ios_keyboard", 3.4),
+            ("Can we move the design review to tomorrow at 11?", "desktop", 5.2),
+            ("Team ko bata do ki release Friday ko hoga.", "ios_keyboard", 6.1),
+            ("Thanks for the quick turnaround on the contract.", "ios_app", 8.0),
+        ]
+        history = samples.enumerated().map { index, sample in
+            RuntimeHistoryItem(
+                id: "demo-\(index)",
+                transcript: sample.0.lowercased(),
+                polishedOutput: sample.0,
+                finalText: sample.0,
+                source: sample.1,
+                createdAt: now.addingTimeInterval(-sample.2 * 86_400)
+            )
+        }
+        OnDeviceModelStatus.shared.seedDemo()
+        switch Self.demoRoute {
+        case "history": selectedTab = 1
+        case "words": selectedTab = 2
+        case "insights": selectedTab = 3
+        case "settings": selectedTab = 4
+        default: break
+        }
+        phase = .ready
+    }
+    #endif
 }

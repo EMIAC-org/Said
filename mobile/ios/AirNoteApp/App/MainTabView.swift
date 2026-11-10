@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 
 struct MainTabView: View {
+    @EnvironmentObject private var env: AppEnvironment
+
     init() { Self.styleTabBar() }
 
     /// A clean, blurred, shadowless tab bar with accent selection (Wispr-style).
@@ -23,18 +25,24 @@ struct MainTabView: View {
     }
 
     var body: some View {
-        TabView {
+        TabView(selection: $env.selectedTab) {
             DashboardScreen()
-                .tabItem { Label("Home", systemImage: "house.fill") }
+                .tabItem { Label("Home", systemImage: "waveform") }
+                .tag(0)
             HistoryScreen()
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
+                .tag(1)
             VocabularyScreen()
-                .tabItem { Label("Words", systemImage: "textformat.abc") }
+                .tabItem { Label("Words", systemImage: "character.book.closed.fill") }
+                .tag(2)
             InsightsScreen()
-                .tabItem { Label("Insights", systemImage: "chart.bar.fill") }
+                .tabItem { Label("Insights", systemImage: "chart.bar.xaxis") }
+                .tag(3)
             SettingsScreen()
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(4)
         }
         .tint(AirNoteDesign.accent)
+        .sensoryFeedback(.selection, trigger: env.selectedTab)
     }
 }

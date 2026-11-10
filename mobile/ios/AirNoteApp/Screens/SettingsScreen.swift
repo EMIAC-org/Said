@@ -14,13 +14,15 @@ struct SettingsScreen: View {
                 AirNoteBackground()
                 Form {
                     accountSection
+                    speechSection
+                    dictationSection
+                    permissionsSection
                     if !env.orgs.isEmpty { enterpriseSection }
                     workspaceSection
-                    dictationSection
                     if !env.orgs.isEmpty { ChatGPTConnectSection(gateway: env.gateway) }
-                    permissionsSection
                     appearanceSection
                     privacySection
+                    advancedSection
                     helpSection
                     aboutSection
                 }
@@ -73,6 +75,50 @@ struct SettingsScreen: View {
             }
         } header: {
             Text("Account")
+        }
+    }
+
+    // MARK: Speech recognition (on-device)
+
+    private var speechSection: some View {
+        Section {
+            NavigationLink(destination: OnDeviceAIScreen()) {
+                HStack(spacing: 12) {
+                    IconTile(systemImage: "cpu", tint: AirNoteDesign.onDevice, size: 32)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("On-device AI")
+                            .font(.subheadline.weight(.semibold))
+                        Text("\(OnDeviceModelStatus.modelName) · \(OnDeviceModelStatus.shared.stateLabel)")
+                            .font(.caption)
+                            .foregroundStyle(AirNoteDesign.muted)
+                    }
+                    Spacer()
+                    PlaceBadge(place: .onDevice)
+                }
+                .padding(.vertical, 2)
+            }
+        } header: {
+            Text("Speech recognition")
+        } footer: {
+            Text("Your voice is turned into text on this iPhone. Only the text goes to AirNote Cloud for polish.")
+        }
+    }
+
+    // MARK: Advanced
+
+    private var advancedSection: some View {
+        Section {
+            NavigationLink(destination: ProviderKeysView()) {
+                HStack {
+                    Label("Your own AI keys", systemImage: "key")
+                    Spacer()
+                    statusChip(env.credentials.isEmpty ? "Optional" : "\(env.credentials.count) added", color: AirNoteDesign.muted)
+                }
+            }
+        } header: {
+            Text("Advanced")
+        } footer: {
+            Text("Not needed — AirNote polishes with its own key. Add yours only if your workspace asks you to.")
         }
     }
 
@@ -144,14 +190,6 @@ struct SettingsScreen: View {
 
     private var dictationSection: some View {
         Section {
-            NavigationLink(destination: ProviderKeysView()) {
-                HStack {
-                    Label("Voice keys", systemImage: "key")
-                    Spacer()
-                    statusChip(env.dictationAvailable ? "On" : "Add keys",
-                               color: env.dictationAvailable ? AirNoteDesign.success : AirNoteDesign.warning)
-                }
-            }
             Picker("Language", selection: languageBinding) {
                 Text("Hinglish").tag("hinglish")
                 Text("English").tag("english")
@@ -208,7 +246,7 @@ struct SettingsScreen: View {
         } header: {
             Text("Dictation")
         } footer: {
-            Text("AirNote applies the names and corrections you teach it (in History → review an edit, or Vocabulary) to future dictations. The keyboard session is how long the mic stays warm in the background after you dictate — longer means fewer “Start session” taps, at no extra server cost (the mic only streams while you actually speak). Settings sync across your devices.")
+            Text("Language and tone shape how your text is polished. The keyboard session keeps AirNote listening-ready in the background so the keyboard can dictate without opening the app — audio is only kept while you speak, and never leaves the phone. Settings sync across your devices.")
         }
     }
 
@@ -276,6 +314,7 @@ struct SettingsScreen: View {
 
     private var privacySection: some View {
         Section {
+            Label("Audio never leaves this iPhone", systemImage: "iphone.gen3")
             Label("Recordings are never stored", systemImage: "waveform.slash")
             Label("AirNote skips password & OTP fields", systemImage: "lock.fill")
             if let privacyURL = URL(string: "https://airnote.emiactech.com/privacy") {
@@ -286,7 +325,7 @@ struct SettingsScreen: View {
         } header: {
             Text("Privacy")
         } footer: {
-            Text("Audio streams straight to transcription and is discarded — it is never saved on AirNote's servers.")
+            Text("Speech is transcribed on the phone and the audio is discarded right away. Only the resulting text is sent to AirNote Cloud for polish and History.")
         }
     }
 
@@ -319,7 +358,7 @@ struct KeyboardSetupGuide: View {
                             AirNoteSectionLabel(text: "Enable AirNote Keyboard")
                             StepRow(number: 1, title: "Open Settings", detail: "Tap the button below to jump to AirNote's settings.")
                             StepRow(number: 2, title: "Tap Keyboards", detail: "Go to Keyboards, then turn on “AirNote Keyboard”.")
-                            StepRow(number: 3, title: "Allow Full Access", detail: "Turn on Allow Full Access — this lets AirNote send your speech to its servers for transcription. Audio is handled securely and is never stored.")
+                            StepRow(number: 3, title: "Allow Full Access", detail: "Turn on Allow Full Access so the keyboard can talk to the AirNote app, which transcribes your voice on this iPhone. Your audio never leaves the phone.")
                             StepRow(number: 4, title: "Switch to it", detail: "In any app, tap the 🌐 globe key until you see AirNote.")
                         }
                     }

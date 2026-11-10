@@ -45,12 +45,11 @@ struct StatTile: View {
     var tint: Color = AirNoteDesign.accent
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(tint)
+        VStack(alignment: .leading, spacing: 10) {
+            IconTile(systemImage: systemImage, tint: tint, size: 30)
             Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .font(.system(size: 26, weight: .bold, design: .rounded))
+                .contentTransition(.numericText())
                 .foregroundStyle(AirNoteDesign.foreground)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -60,10 +59,11 @@ struct StatTile: View {
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
+        .padding(16)
         .background(
             RoundedRectangle(cornerRadius: AirNoteDesign.tileRadius, style: .continuous)
-                .fill(AirNoteDesign.surface.opacity(0.92))
+                .fill(AirNoteDesign.surface)
+                .shadow(color: AirNoteDesign.cardShadow.opacity(0.4), radius: 12, x: 0, y: 6)
         )
         .overlay(
             RoundedRectangle(cornerRadius: AirNoteDesign.tileRadius, style: .continuous)
@@ -157,8 +157,8 @@ struct ActivityChart: View {
         HStack(alignment: .bottom, spacing: 5) {
             ForEach(Array(values.enumerated()), id: \.offset) { index, value in
                 VStack(spacing: 5) {
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(value > 0 ? AirNoteDesign.accent.opacity(0.9) : AirNoteDesign.surfaceRaised)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(value > 0 ? AnyShapeStyle(AirNoteDesign.micGradient) : AnyShapeStyle(AirNoteDesign.surfaceRaised))
                         .frame(height: barHeight(for: value))
                         .frame(maxWidth: .infinity)
                     if index < labels.count {

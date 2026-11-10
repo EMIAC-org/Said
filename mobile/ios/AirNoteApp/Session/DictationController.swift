@@ -7,6 +7,12 @@ struct DictationResult: Equatable {
     var transcript: String
     var polished: String
     var latencyMS: Int
+    var audioSeconds: Double? = nil
+    var sttMS: Int? = nil
+    var polishMS: Int? = nil
+    /// True when the cloud polish didn't run (offline / server error) and the
+    /// on-device transcript was used as is.
+    var polishSkipped = false
 
     var displayText: String {
         let trimmed = polished.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -14,9 +20,9 @@ struct DictationResult: Equatable {
     }
 }
 
-/// Drives an in-app dictation: requests mic → opens the runtime session →
-/// streams 16 kHz audio to the server → surfaces live transcript + polished
-/// output. This is the app's primary, fully-working dictation surface.
+/// Drives an in-app dictation: requests mic → records 16 kHz audio →
+/// transcribes it on the phone (whisper.cpp + Clario Hinglish model) → sends the
+/// text to the server for polish → surfaces transcript + polished output.
 @MainActor
 final class DictationController: ObservableObject {
     enum Phase: Equatable {
@@ -47,12 +53,21 @@ final class DictationController: ObservableObject {
     @Published private(set) var lastLatencyMS: Int?
     @Published private(set) var errorMessage: String?
     @Published private(set) var result: DictationResult?
+    /// Which pipeline stage is running — drives the stage tracker.
+    @Published private(set) var stage: DictationStage = .idle
+    @Published private(set) var recordingStartedAtPublic: Date?
+    @Published private(set) var audioSeconds: Double?
+    @Published private(set) var sttMS: Int?
+    @Published private(set) var polishMS: Int?
+    @Published private(set) var polishSkipped = false
+    private var stoppedAt: Date?
+    private var transcribedAt: Date?
 
     // Strong reference: the controller is owned by a transient view while the
     // environment lives for the whole app, so this never creates a cycle and is
     // safe to touch from async stream callbacks.
     private let env: AppEnvironment
-    private let streamer = VoiceStreamingClient()
+    private let streamer = OnDeviceDictationClient()
     private var session: MobileSessionResponse?
     private var runID = ""
     private var finalizeTimeout: Task<Void, Never>?
@@ -94,6 +109,9 @@ final class DictationController: ObservableObject {
 
     func start() async {
         guard !isBusy else { return }
+        #if DEBUG
+        if AppEnvironment.isDemo { await runDemo(); return }
+        #endif
         // Release any warm background mic so this foreground dictation owns it.
         WarmDictationHost.shared.endWarmSession()
         cancelFinalizeTimeout()
@@ -104,6 +122,7 @@ final class DictationController: ObservableObject {
         maxLevel = 0
         recordingStartedAt = nil
         lastLoudAt = nil
+        resetTimings()
         phase = .preparing
 
         // Just-in-time microphone permission (Wispr-style: ask at first use).
@@ -129,7 +148,10 @@ final class DictationController: ObservableObject {
             self.session = session
             try await streamer.start(session: session, config: env.dictationConfig(runID: runID))
             phase = .recording
+            stage = .listening
             recordingStartedAt = Date()
+            recordingStartedAtPublic = recordingStartedAt
+            Haptics.start()
             env.track(.audioStarted)
         } catch let error as VoiceStreamError {
             failOrUnavailable(error.isCredentialMissing, message: error.message)
@@ -155,11 +177,17 @@ final class DictationController: ObservableObject {
         if maxLevel < 0.035 || elapsed < 0.4 {
             await streamer.cancel()
             interim = ""
+            stage = .idle
             phase = .failed
             errorMessage = "Didn't catch any speech — tap the mic and speak."
+            Haptics.warning()
             return
         }
 
+        Haptics.stop()
+        audioSeconds = elapsed
+        stoppedAt = Date()
+        stage = .transcribing
         phase = .processing
         await streamer.stop()
         startFinalizeTimeout()
@@ -170,7 +198,7 @@ final class DictationController: ObservableObject {
     private func startFinalizeTimeout() {
         finalizeTimeout?.cancel()
         finalizeTimeout = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 14 * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: 25 * 1_000_000_000)
             guard let self, !Task.isCancelled, self.phase == .processing else { return }
             await self.streamer.cancel()
             self.phase = .failed
@@ -188,8 +216,20 @@ final class DictationController: ObservableObject {
         reset()
     }
 
+    private func resetTimings() {
+        stage = .idle
+        audioSeconds = nil
+        sttMS = nil
+        polishMS = nil
+        stoppedAt = nil
+        transcribedAt = nil
+        recordingStartedAtPublic = nil
+        polishSkipped = false
+    }
+
     func reset() {
         cancelFinalizeTimeout()
+        resetTimings()
         phase = .idle
         interim = ""
         polishPreview = ""
@@ -200,9 +240,11 @@ final class DictationController: ObservableObject {
 
     private func failOrUnavailable(_ unavailable: Bool, message: String) {
         cancelFinalizeTimeout()
+        stage = .idle
+        Haptics.warning()
         if unavailable {
             phase = .unavailable
-            errorMessage = "Add your Groq polish key in Settings → Voice keys to turn on dictation."
+            errorMessage = "AirNote couldn't reach its polish service. Try again in a moment."
         } else if message.lowercased().contains("decrypt") {
             // The server has the keys but couldn't decrypt them (its credential key
             // rotated). Re-mirror our local copies to heal the vault for the next
@@ -234,11 +276,13 @@ final class DictationController: ObservableObject {
         case .interimTranscript(let text):
             interim = text
         case .finalTranscript(let text):
-            // The speech stream emits a "final" for each finished utterance WHILE the user
-            // is still speaking. That does NOT mean recording is over — keep the
-            // mic live (and the stop button enabled). Only stop() moves us to
-            // .processing once the user actually sends audio.end.
+            // On-device speech-to-text finished; polish starts next.
             interim = text
+            if phase == .processing, let stoppedAt {
+                transcribedAt = Date()
+                sttMS = Int(Date().timeIntervalSince(stoppedAt) * 1000)
+                stage = .polishing
+            }
         case .polishStarted:
             polishPreview = ""
             phase = .processing
@@ -254,7 +298,9 @@ final class DictationController: ObservableObject {
         case .error(let error):
             level = 0
             failOrUnavailable(error.isCredentialMissing, message: error.message)
-        case .sessionReady, .guardWarning:
+        case .guardWarning(let code):
+            if code == "polish_skipped" { polishSkipped = true }
+        case .sessionReady:
             break
         }
     }
@@ -278,12 +324,25 @@ final class DictationController: ObservableObject {
             errorMessage = "Didn't catch any speech — tap the mic and try again."
             return
         }
-        let value = DictationResult(transcript: transcript, polished: polished, latencyMS: latencyMS)
+        if let transcribedAt, !polishSkipped {
+            polishMS = Int(Date().timeIntervalSince(transcribedAt) * 1000)
+        }
+        let value = DictationResult(
+            transcript: transcript,
+            polished: polished,
+            latencyMS: latencyMS,
+            audioSeconds: audioSeconds,
+            sttMS: sttMS,
+            polishMS: polishMS,
+            polishSkipped: polishSkipped
+        )
         result = value
         polishPreview = polished
         lastLatencyMS = latencyMS
         level = 0
+        stage = .done
         phase = .completed
+        Haptics.success()
         UIPasteboard.general.string = value.displayText
         // The WS voice path doesn't write history server-side — persist it from the
         // client so it shows in History (and can be reviewed for learning).
@@ -296,4 +355,42 @@ final class DictationController: ObservableObject {
         // foreground dictation released it via start()).
         WarmDictationHost.shared.warmUp()
     }
+
+    #if DEBUG
+    /// Demo mode (`-AirNoteDemo`): walk through every stage with sample text so
+    /// the UI can be reviewed in the simulator without a mic or an account.
+    private func runDemo() async {
+        resetTimings()
+        errorMessage = nil
+        result = nil
+        interim = ""
+        polishPreview = ""
+        phase = .recording
+        stage = .listening
+        recordingStartedAt = Date()
+        recordingStartedAtPublic = recordingStartedAt
+        for tick in 0..<36 {
+            level = Float(0.25 + 0.35 * abs(sin(Double(tick) * 0.7)))
+            try? await Task.sleep(nanoseconds: 70_000_000)
+        }
+        level = 0
+        audioSeconds = 4.3
+        stoppedAt = Date()
+        stage = .transcribing
+        phase = .processing
+        try? await Task.sleep(nanoseconds: 1_100_000_000)
+        let transcript = "main aaj office thoda late aaunga meeting ko chaar baje reschedule kar do"
+        interim = transcript
+        sttMS = 1_180
+        stage = .polishing
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        polishMS = 760
+        let polished = "Main aaj office thoda late aaunga, meeting ko 4 baje reschedule kar do."
+        result = DictationResult(transcript: transcript, polished: polished, latencyMS: 1_940, audioSeconds: 4.3, sttMS: 1_180, polishMS: 760)
+        polishPreview = polished
+        stage = .done
+        phase = .completed
+        Haptics.success()
+    }
+    #endif
 }

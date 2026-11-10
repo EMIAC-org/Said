@@ -27,7 +27,7 @@ final class WarmDictationHost: ObservableObject {
     /// flickers off mid-use.
     @Published private(set) var isSessionActive: Bool = SharedStore.sessionEnabled
 
-    private let streamer = VoiceStreamingClient()
+    private let streamer = OnDeviceDictationClient()
     private let gateway = GatewayEnvironment.makeClient()
     private var warmWindowTask: Task<Void, Never>?
     /// Liveness heartbeat: while the mic is warm we stamp SharedStore every ~2s so

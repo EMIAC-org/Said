@@ -5,7 +5,7 @@ struct OnboardingFlow: View {
     @EnvironmentObject private var env: AppEnvironment
 
     enum Step: Int, CaseIterable {
-        case welcome, account, privacy, microphone, keyboard, voiceKeys, firstDictation, personalize
+        case welcome, account, privacy, onDevice, microphone, keyboard, firstDictation, personalize
     }
 
     @State private var step: Step = .welcome
@@ -51,12 +51,12 @@ struct OnboardingFlow: View {
             AccountStep()
         case .privacy:
             PrivacyStep(onContinue: advance)
+        case .onDevice:
+            OnDeviceStep(onContinue: advance)
         case .microphone:
             MicrophoneStep(onContinue: advance)
         case .keyboard:
             KeyboardStep(onContinue: advance)
-        case .voiceKeys:
-            VoiceKeysStep(onContinue: advance)
         case .firstDictation:
             FirstDictationStep(onContinue: advance)
         case .personalize:
@@ -309,12 +309,12 @@ private struct PrivacyStep: View {
         OnboardingScaffold(
             eyebrow: "Privacy",
             title: "Your words stay yours",
-            subtitle: "AirNote sends your speech to its servers to transcribe and polish it — then the audio is discarded."
+            subtitle: "AirNote understands your voice on this iPhone. Only the text is sent to the cloud to polish it."
         ) {
             VStack(spacing: 10) {
-                AirNoteSetupRow(icon: "waveform.slash", title: "Recordings are never stored", subtitle: "Audio streams to transcription and is dropped immediately.", status: "Always")
+                AirNoteSetupRow(icon: "iphone.gen3", title: "Audio stays on your iPhone", subtitle: "Speech is turned into text on the phone, then discarded.", status: "Always", tint: AirNoteDesign.onDevice)
                 AirNoteSetupRow(icon: "lock.fill", title: "Secure fields are skipped", subtitle: "AirNote never records into password or OTP fields.", status: "Safe")
-                AirNoteSetupRow(icon: "key.fill", title: "Provider keys stay server-side", subtitle: "Your account never holds raw API keys.", status: "Secure")
+                AirNoteSetupRow(icon: "sparkles", title: "Only text is polished in the cloud", subtitle: "Punctuation, tone and your words — never your voice.", status: "Text only")
                 Toggle(isOn: $accepted) {
                     Text("I understand how AirNote handles my dictation")
                         .font(.subheadline.weight(.medium))
@@ -440,48 +440,47 @@ private struct KeyboardStep: View {
     }
 }
 
-// MARK: - Voice keys (BYOK)
+// MARK: - On-device AI
 
-private struct VoiceKeysStep: View {
-    @EnvironmentObject private var env: AppEnvironment
+private struct OnDeviceStep: View {
     var onContinue: () -> Void
+    @State private var appeared = false
 
     var body: some View {
         OnboardingScaffold(
-            eyebrow: "Voice keys",
-            title: "Connect your voice",
-            subtitle: "Speech recognition stays local. Add your Groq key so AirNote can polish text in the cloud."
+            eyebrow: "On-device AI",
+            title: "Understood right on your iPhone",
+            subtitle: "AirNote ships with its own Hinglish speech model. It runs on the phone, so your voice stays private and dictation works even offline."
         ) {
-            VStack(spacing: 12) {
-                ProviderKeyCard(
-                    provider: "groq",
-                    name: "Groq",
-                    role: "AI polish",
-                    badge: "G",
-                    color: Color(red: 0.96, green: 0.31, blue: 0.21),
-                    getKeyURL: URL(string: "https://console.groq.com/keys")!,
-                    placeholder: "gsk_…"
-                )
-                if !env.credentialStatus.isEmpty {
-                    Text(env.credentialStatus)
-                        .font(.caption)
-                        .foregroundStyle(env.credentialStatus.hasPrefix("Couldn't") || env.credentialStatus.contains("too short") ? AirNoteDesign.danger : AirNoteDesign.success)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 16) {
+                ZStack {
+                    Circle().fill(AirNoteDesign.onDevice.opacity(0.12)).frame(width: 128, height: 128)
+                    Image(systemName: "iphone.gen3")
+                        .font(.system(size: 58, weight: .light))
+                        .foregroundStyle(AirNoteDesign.onDevice)
+                    Image(systemName: "waveform")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(AirNoteDesign.onDevice)
+                        .symbolEffect(.variableColor.iterative, options: .repeating, isActive: appeared)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                PipelineStrip()
+                    .padding(.vertical, 14)
+                    .padding(.horizontal, 6)
+                    .background(AirNoteDesign.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(AirNoteDesign.border, lineWidth: 1))
+                AirNoteSetupRow(icon: "lock.fill", title: "Private by design", subtitle: "Your audio never leaves this iPhone.", status: "On iPhone", tint: AirNoteDesign.onDevice)
+                AirNoteSetupRow(icon: "wifi.slash", title: "Works offline", subtitle: "No signal? You still get your exact words.", status: "On iPhone", tint: AirNoteDesign.onDevice)
+                AirNoteSetupRow(icon: "sparkles", title: "Polished in the cloud", subtitle: "Only text is sent to add punctuation and tone.", status: "Cloud", tint: AirNoteDesign.cloud)
             }
         } footer: {
-            if env.dictationAvailable {
-                Label("Dictation is ready", systemImage: "checkmark.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AirNoteDesign.success)
-                    .frame(maxWidth: .infinity)
-            }
             Button(action: onContinue) {
-                Label(env.dictationAvailable ? "Continue" : "I'll add keys later", systemImage: "arrow.right")
+                Label("Continue", systemImage: "arrow.right")
             }
             .buttonStyle(AirNotePrimaryButtonStyle())
         }
-        .task { await env.refreshCredentials() }
+        .onAppear { appeared = true }
     }
 }
 
@@ -499,9 +498,7 @@ private struct FirstDictationStep: View {
             title: didDictate ? "Nice — that's it!" : "Your first dictation",
             subtitle: didDictate
                 ? "That's all there is to it. Speak, and AirNote writes it cleanly."
-                : (env.dictationAvailable
-                   ? "Tap the mic, say a sentence, and watch AirNote polish it."
-                   : "Dictation turns on automatically once your workspace finishes setup — you're all set to continue.")
+                : "Tap the mic, say a sentence, and watch it get transcribed on your iPhone and polished."
         ) {
             VStack(spacing: 14) {
                 ZStack {

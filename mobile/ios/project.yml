@@ -91,9 +91,20 @@ targets:
     platform: iOS
     sources:
       - path: AirNoteApp
+        excludes:
+          - LocalModels
+      # On-device STT models, bundled as resources (fetched by scripts/fetch-local-stt.sh).
+      - path: AirNoteApp/LocalModels/clario-hinglish-stt-base-q8.bin
+        buildPhase: resources
+      - path: AirNoteApp/LocalModels/ggml-silero-v5.1.2.bin
+        buildPhase: resources
       - path: AirNoteShared/SessionIntents.swift   # also a member here so perform() runs in-app
     dependencies:
       - target: AirNoteShared
+        embed: true
+      # whisper.cpp for on-device speech-to-text (app only — the keyboard
+      # extension never records; the app transcribes for it).
+      - framework: Vendor/whisper.xcframework
         embed: true
       - target: AirNoteKeyboard
         embed: true
